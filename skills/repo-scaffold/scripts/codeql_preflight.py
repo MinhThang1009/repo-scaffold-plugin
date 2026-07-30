@@ -46,6 +46,7 @@ GH_REQUEST_TIMEOUT_SECONDS = 60
 MAX_INSPECTION_SECONDS = 600
 MAX_GH_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_GH_RESPONSE_BYTES = 128 * 1024 * 1024
+MAX_GH_JSON_NESTING = 100
 MAX_REUSABLE_WORKFLOWS_PER_ROOT = 50
 MAX_REUSABLE_REFERENCES_PER_ROOT = 500
 MAX_WORKFLOW_LEVELS = 10
@@ -105,7 +106,7 @@ def resolve_path_executable(name: str, *, forbidden_root: Path) -> str | None:
         directory = Path(raw_directory.strip('"'))
         if not directory.is_absolute():
             continue
-        candidate = shutil.which(str(directory / name))
+        candidate = shutil.which(name, path=str(directory))
         if candidate is None:
             continue
         try:
@@ -116,6 +117,32 @@ def resolve_path_executable(name: str, *, forbidden_root: Path) -> str | None:
         except (OSError, RuntimeError):
             continue
     return None
+
+
+def _require_json_nesting_within_limit(payload: str) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in payload:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_GH_JSON_NESTING:
+                raise InspectionError(
+                    "GitHub API JSON exceeds the nesting safety cap of "
+                    f"{MAX_GH_JSON_NESTING}."
+                )
+        elif character in "]}":
+            depth -= 1
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -281,8 +308,10 @@ class GitHubClient:
         return stdout_text
 
     def json(self, endpoint: str) -> Any:
+        payload = self._run(endpoint)
+        _require_json_nesting_within_limit(payload)
         try:
-            return json.loads(self._run(endpoint))
+            return json.loads(payload)
         except (ValueError, RecursionError) as exc:
             raise InspectionError(
                 f"GitHub API returned invalid JSON for {endpoint!r}."

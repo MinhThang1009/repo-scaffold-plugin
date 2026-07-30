@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import argparse
+import json
 import os
 import re
 import sys
@@ -1546,7 +1547,7 @@ class WorkflowDiscoveryTests(unittest.TestCase):
                 codeql_preflight.require_safe_path(linked_component / "workflows", root)
 
     def test_safe_root_rejects_a_linked_repository_root(self) -> None:
-        root = Path("C:/repository")
+        root = Path("C:/repository") if os.name == "nt" else Path("/repository")
         with (
             mock.patch.object(codeql_preflight.os.path, "lexists", return_value=True),
             mock.patch.object(
@@ -1649,9 +1650,15 @@ class GitHubClientTests(unittest.TestCase):
         payload = "[" * 20_000 + "]" * 20_000
         with mock.patch.object(client, "_run", return_value=payload):
             with self.assertRaisesRegex(
-                codeql_preflight.InspectionError, "invalid JSON"
+                codeql_preflight.InspectionError, "nesting safety cap"
             ):
                 client.json("repos/octo/repo")
+
+    def test_json_nesting_characters_inside_strings_are_ignored(self) -> None:
+        client = codeql_preflight.GitHubClient("github.com")
+        payload = json.dumps({"value": "[" * 20_000})
+        with mock.patch.object(client, "_run", return_value=payload):
+            self.assertEqual(client.json("repos/octo/repo"), json.loads(payload))
 
     def test_api_timeout_fails_closed(self) -> None:
         client = codeql_preflight.GitHubClient("github.com")

@@ -20,7 +20,7 @@ def resolve_path_executable(name: str, *, forbidden_root: Path) -> str | None:
         directory = Path(raw_directory.strip('"'))
         if not directory.is_absolute():
             continue
-        candidate = shutil.which(str(directory / name))
+        candidate = shutil.which(name, path=str(directory))
         if candidate is None:
             continue
         try:
