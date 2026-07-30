@@ -9,5 +9,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Cross-platform CI, dependency review, and Dependabot configuration.
+- ShellCheck-enforced workflow linting and deterministic repository contract checks.
 - Tag-driven GitHub Release automation for versioned plugin archives.
 - Repository ownership, editor, ignore, and community-documentation hardening.

@@ -19,6 +19,7 @@ Content follows GitHub's community-standards format and is pulled from canonical
 
 - [`gh`](https://cli.github.com/) (GitHub CLI), authenticated to GitHub.com (`gh auth status --active --hostname github.com`) — used for every GitHub API call and configuration step.
 - `git`.
+- `actionlint` and ShellCheck are required for local workflow validation.
 - Python 3.10 or newer with PyYAML is required only for the fail-closed CodeQL default-setup preflight. The preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime. It also requires separate confirmation that no external or indirect process uploads CodeQL results; without either prerequisite, the plugin skips that mutation and reports the verification gap.
 - Remote automation supports GitHub.com only. GitHub Enterprise Server and GHE.com repositories receive host-independent local community files, but bundled workflows, GitHub.com badges, and remote configuration are skipped.
 - Without a remote, the plugin can generate host-independent local files. It defers workflows, badges, and GitHub configuration until a GitHub.com remote exists; it never creates that remote without confirmation.
@@ -94,6 +95,7 @@ repo-scaffold/
 ├── LICENSE
 ├── requirements-dev.txt
 ├── scripts/
+│   ├── validate_repository.py
 │   └── validate_workflows.py
 └── skills/
     └── repo-scaffold/
@@ -119,17 +121,23 @@ python -m pip install --requirement requirements-dev.txt
 python -m pytest -q
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py scripts/validate_workflows.py tests/test_codeql_preflight.py
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python scripts/validate_workflows.py
+python scripts/validate_repository.py
 ```
 
-Run ShellCheck separately against extracted `run` blocks when it is available. The pinned action tags and release-please schema are external facts, so verify them against their upstream repositories during release audits.
+Workflow validation runs actionlint with ShellCheck enabled against both installed
+and templated workflows. Repository validation checks JSON/YAML uniqueness and
+syntax, plugin metadata, issue templates and forms, Dependabot configuration,
+relative Markdown links, and the exact release archive shape. The pinned action
+tags and release-please schema are external facts, so verify them against their
+upstream repositories during release audits.
 
 GitHub Actions runs the test suite on Ubuntu and Windows with the minimum and
 latest supported Python feature releases. A separate quality job runs formatting,
-lint, type, compile, and workflow checks. Dependabot checks the pinned Python
-development tools and GitHub Actions weekly.
+lint, type, compile, workflow, metadata, link, and release-archive checks.
+Dependabot checks the pinned Python development tools and GitHub Actions weekly.
 
 ## Releases
 

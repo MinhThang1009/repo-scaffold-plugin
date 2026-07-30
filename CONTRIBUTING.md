@@ -37,9 +37,9 @@ The plugin has no build step. Development checks require:
 - Ruff
 - mypy
 - actionlint
+- ShellCheck
 
-ShellCheck and PSScriptAnalyzer are recommended for the shell and PowerShell
-snippets.
+PSScriptAnalyzer is recommended when a change adds PowerShell snippets.
 
 Install the pinned development toolchain from the repository root:
 
@@ -68,13 +68,14 @@ Run these commands from the repository root:
 python -m pytest -q
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py scripts/validate_workflows.py tests/test_codeql_preflight.py
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python scripts/validate_workflows.py
+python scripts/validate_repository.py
 ```
 
-When available, also run ShellCheck against extracted Bash blocks and
-PSScriptAnalyzer against every PowerShell block.
+`validate_workflows.py` runs actionlint with ShellCheck enabled. When a change
+adds PowerShell blocks, also run PSScriptAnalyzer against each block.
 
 ## Open a pull request
 
