@@ -1,0 +1,34 @@
+{
+  "name": "repo-scaffold",
+  "version": "1.0.0+codex.20260729165125",
+  "description": "Scaffold a repository to production GitHub.com standard with community-health files, workflows, and repository configuration.",
+  "author": {
+    "name": "Minh Thang",
+    "url": "https://github.com/MinhThang1009"
+  },
+  "license": "MIT",
+  "keywords": [
+    "scaffold",
+    "repository",
+    "github",
+    "community-health",
+    "ci",
+    "release",
+    "automation"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Repo Scaffold",
+    "shortDescription": "Set up repositories to GitHub.com production standard.",
+    "longDescription": "Generates host-independent community-health files and, for verified GitHub.com remotes, GitHub Actions workflows, Dependabot setup, release automation, and repository configuration guidance.",
+    "developerName": "Minh Thang",
+    "category": "Productivity",
+    "capabilities": [
+      "Write",
+      "GitHub"
+    ],
+    "defaultPrompt": [
+      "Scaffold this repo to production GitHub.com standard."
+    ]
+  }
+}

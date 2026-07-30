@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+contact_links:
+  # {{REPO_SCAFFOLD_DISCUSSIONS_CONTACT_LINK}}
+  - name: Security report
+    url: https://github.com/{{REPO_SCAFFOLD_OWNER}}/{{REPO_SCAFFOLD_REPO}}/security/policy
+    about: Report security vulnerabilities privately, not as a public issue.

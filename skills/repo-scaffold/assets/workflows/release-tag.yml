@@ -1,0 +1,19 @@
+name: Release on version tag
+
+# Manual-tag mode only. Do not install this dispatcher with release-please: that
+# tool creates its tag before its draft Release and calls release.yml directly
+# after the draft exists.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ github.ref_name }}
+      commit_sha: ${{ github.sha }}

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.6.0/schemas/config.json",
+  "release-type": "{{REPO_SCAFFOLD_RELEASE_TYPE_JSON_ESCAPED}}",
+  "draft": true,
+  "force-tag-creation": true,
+  "packages": {
+    ".": {}
+  }
+}
