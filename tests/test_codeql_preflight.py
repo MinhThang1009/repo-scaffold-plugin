@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import argparse
+import os
 import re
 import sys
 import tempfile
@@ -21,6 +22,49 @@ if SPEC is None or SPEC.loader is None:
 codeql_preflight = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = codeql_preflight
 SPEC.loader.exec_module(codeql_preflight)
+
+VALIDATOR_PATH = PLUGIN_ROOT / "scripts" / "validate_workflows.py"
+VALIDATOR_SPEC = importlib.util.spec_from_file_location(
+    "validate_workflows", VALIDATOR_PATH
+)
+if VALIDATOR_SPEC is None or VALIDATOR_SPEC.loader is None:
+    raise RuntimeError("Could not load validate_workflows.py")
+validate_workflows = importlib.util.module_from_spec(VALIDATOR_SPEC)
+sys.modules[VALIDATOR_SPEC.name] = validate_workflows
+VALIDATOR_SPEC.loader.exec_module(validate_workflows)
+
+
+class ExecutableResolutionTests(unittest.TestCase):
+    def test_resolver_ignores_repository_controlled_path_entry(self) -> None:
+        executable_name = "probe"
+        executable_filename = (
+            f"{executable_name}.exe" if os.name == "nt" else executable_name
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "repository"
+            trusted_tools = root / "trusted-tools"
+            repository.mkdir()
+            trusted_tools.mkdir()
+            repository_executable = repository / executable_filename
+            trusted_executable = trusted_tools / executable_filename
+            for executable in (repository_executable, trusted_executable):
+                executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                executable.chmod(0o755)
+
+            path_value = os.pathsep.join((str(repository), str(trusted_tools)))
+            with mock.patch.dict(os.environ, {"PATH": path_value}):
+                for resolver in (
+                    codeql_preflight.resolve_path_executable,
+                    validate_workflows.resolve_path_executable,
+                ):
+                    with self.subTest(module=resolver.__module__):
+                        resolved = resolver(executable_name, forbidden_root=repository)
+                        self.assertIsNotNone(resolved)
+                        self.assertEqual(
+                            Path(cast(str, resolved)).resolve(),
+                            trusted_executable.resolve(),
+                        )
 
 
 class FlatResolver:
@@ -1618,9 +1662,11 @@ class GitHubClientTests(unittest.TestCase):
         ) as run_mock:
             with self.assertRaisesRegex(codeql_preflight.InspectionError, "timed out"):
                 client.json("repos/octo/repo")
+        command = run_mock.call_args.args[0]
+        self.assertTrue(Path(command[0]).is_absolute())
         self.assertEqual(
-            run_mock.call_args.args[0],
-            ["gh", "api", "--hostname", "github.com", "repos/octo/repo"],
+            command[1:],
+            ["api", "--hostname", "github.com", "repos/octo/repo"],
         )
         self.assertFalse(run_mock.call_args.kwargs.get("shell", False))
         self.assertEqual(run_mock.call_args.kwargs["timeout"], 60)
@@ -1718,8 +1764,10 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             request_count = 0
             endpoints: list[str] = []
 
-            def __init__(self, hostname: str) -> None:
-                del hostname
+            def __init__(
+                self, hostname: str, *, forbidden_root: Path | None = None
+            ) -> None:
+                del hostname, forbidden_root
 
             def json(self, endpoint: str) -> object:
                 self.endpoints.append(endpoint)
@@ -1749,8 +1797,10 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             request_count = 0
             deadline = float("inf")
 
-            def __init__(self, hostname: str) -> None:
-                del hostname
+            def __init__(
+                self, hostname: str, *, forbidden_root: Path | None = None
+            ) -> None:
+                del hostname, forbidden_root
 
             def json(self, endpoint: str) -> object:
                 self.request_count += 1
@@ -1776,8 +1826,10 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             request_count = 0
             deadline = float("inf")
 
-            def __init__(self, hostname: str) -> None:
-                del hostname
+            def __init__(
+                self, hostname: str, *, forbidden_root: Path | None = None
+            ) -> None:
+                del hostname, forbidden_root
 
             def json(self, endpoint: str) -> object:
                 if endpoint.endswith("code-scanning/default-setup"):
@@ -1821,8 +1873,10 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             request_count = 0
             deadline = float("inf")
 
-            def __init__(self, hostname: str) -> None:
-                del hostname
+            def __init__(
+                self, hostname: str, *, forbidden_root: Path | None = None
+            ) -> None:
+                del hostname, forbidden_root
 
             def json(self, endpoint: str) -> object:
                 if endpoint.endswith("code-scanning/default-setup"):
@@ -1938,7 +1992,7 @@ class PlaceholderContractTests(unittest.TestCase):
         )
         self.assertIn("already published and mutable", workflow)
         self.assertNotIn("Backward compatibility for Releases", workflow)
-        self.assertIn("${#artifact_tag} > 120", workflow)
+        self.assertIn('"${#artifact_tag}" -gt 120', workflow)
         self.assertIn("sha256sum", workflow)
 
     def test_release_please_mutations_are_serialized_per_branch(self) -> None:

@@ -16,8 +16,8 @@ preflight helper, and its regression tests.
 
 ## Report a bug or request a feature
 
-Use the repository's issue template chooser after the repository is published
-with Issues enabled:
+Use the repository's
+[issue template chooser](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/new/choose):
 
 - Bug reports should include the plugin version, Codex environment, target
   repository stack, reproduction steps, expected behavior, and actual behavior.
@@ -41,6 +41,12 @@ The plugin has no build step. Development checks require:
 ShellCheck and PSScriptAnalyzer are recommended for the shell and PowerShell
 snippets.
 
+Install the pinned development toolchain from the repository root:
+
+```powershell
+python -m pip install --requirement requirements-dev.txt
+```
+
 ## Make a change
 
 1. Create a focused branch from the default branch.
@@ -60,13 +66,11 @@ Run these commands from the repository root:
 
 ```powershell
 python -m pytest -q
-python -m ruff format --check skills tests
-python -m ruff check skills tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py tests/test_codeql_preflight.py
-python -m compileall -q skills/repo-scaffold/scripts tests
-
-$workflowFiles = Get-ChildItem skills/repo-scaffold/assets/workflows -Filter *.yml
-actionlint -no-color -shellcheck= $workflowFiles.FullName
+python -m ruff format --check skills scripts tests
+python -m ruff check skills scripts tests
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py scripts/validate_workflows.py tests/test_codeql_preflight.py
+python -m compileall -q skills/repo-scaffold/scripts scripts tests
+python scripts/validate_workflows.py
 ```
 
 When available, also run ShellCheck against extracted Bash blocks and
@@ -84,3 +88,29 @@ Include:
 
 Leave changes unstaged and uncommitted unless the repository maintainer
 explicitly requests Git operations.
+
+## Cut a release
+
+Only release a commit on `main` after CI is green.
+
+1. Set the intended SemVer base in `.codex-plugin/plugin.json`, then use the
+   `plugin-creator` cachebuster helper to refresh the single
+   `+codex.<cachebuster>` suffix.
+2. Move the relevant entries in `CHANGELOG.md` from `Unreleased` to a dated
+   version section and validate the plugin and repository.
+3. Merge the release commit to `main` and wait for `ci-success`.
+4. Create an annotated tag equal to `v` plus the exact manifest version and push
+   that tag:
+
+```powershell
+$version = (Get-Content -Raw .codex-plugin/plugin.json |
+  ConvertFrom-Json).version
+git tag -a "v$version" -m "Release v$version"
+git push origin "v$version"
+```
+
+The tag dispatcher verifies that the tag resolves to the event commit and that
+its value matches the manifest. The reusable release engine builds the plugin
+archive with read-only contents permission, transfers it to a separate publish
+job, creates or updates only a draft Release, and then publishes it. It refuses
+to replace assets on an already published Release; publish a new version instead.

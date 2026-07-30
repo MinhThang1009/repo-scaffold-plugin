@@ -1,8 +1,8 @@
 name: Release engine
 
-# Reusable engine that builds and publishes one GitHub Release for an explicit tag.
-# Assets are attached while the Release is a draft, then the draft is published so
-# the workflow is compatible with repositories that enforce immutable releases.
+# Reusable engine that builds and publishes one GitHub Release for an explicit
+# tag. Assets are attached while the Release is a draft, then the draft is
+# published so the workflow is compatible with immutable releases.
 on:
   workflow_call:
     inputs:
@@ -19,8 +19,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Release state is shared by tag. Serialize duplicate callers instead of letting
-  # them both observe the same draft/absent state and race the following mutations.
+  # Release state is shared by tag. Serialize duplicate callers instead of
+  # letting both observe the same draft or absent state and race mutations.
   group: repo-scaffold-release-${{ inputs.tag }}
   cancel-in-progress: false
 
@@ -100,22 +100,20 @@ jobs:
           verify_tag_target
 
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # A short tag name is ambiguous when a branch has the same name and
-          # does not bind checkout to the commit that triggered the release.
           ref: ${{ inputs.commit_sha }}
-          # Do not expose the job's contents:write token to project build scripts
-          # through the repository's local Git configuration.
           persist-credentials: false
 
-      - name: Build artifact
-        # Default: archive the tracked source tree (git archive respects
-        # .gitattributes `export-ignore`). Replace with the real build for the
-        # project (compile a binary, package a plugin, bundle assets, etc.). Put
-        # every file that should be attached to the Release under dist/.
+      - name: Build plugin archive
         run: |
           set -euo pipefail
+
+          manifest_version="$(jq -er '.version | strings | select(length > 0)' .codex-plugin/plugin.json)"
+          if [[ "${RELEASE_TAG}" != "v${manifest_version}" ]]; then
+            echo "::error::Release tag ${RELEASE_TAG} does not match plugin manifest version v${manifest_version}."
+            exit 1
+          fi
 
           artifact_tag=""
           unsafe_run=false
@@ -143,8 +141,13 @@ jobs:
             artifact_tag_hash="$(printf '%s' "${artifact_tag}" | sha256sum)"
             artifact_tag="${artifact_tag:0:100}-${artifact_tag_hash:0:16}"
           fi
+
           mkdir -p dist
-          git archive --format=zip --output "dist/{{REPO_SCAFFOLD_ARTIFACT_BASENAME}}-${artifact_tag}.zip" HEAD
+          git archive \
+            --format=zip \
+            --prefix="repo-scaffold/" \
+            --output "dist/repo-scaffold-plugin-${artifact_tag}.zip" \
+            HEAD -- .codex-plugin skills README.md LICENSE
 
       - name: Validate release artifacts
         shell: bash
@@ -164,7 +167,7 @@ jobs:
           fi
 
       - name: Transfer release artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets-${{ inputs.commit_sha }}
           path: dist/
@@ -183,7 +186,7 @@ jobs:
       RELEASE_COMMIT_SHA: ${{ inputs.commit_sha }}
     steps:
       - name: Receive release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-assets-${{ inputs.commit_sha }}
           path: dist/
@@ -191,9 +194,8 @@ jobs:
       - name: Attach assets and publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        # release-please creates a draft for this tag. Manual tags have no Release yet.
-        # Drafts are returned by the list endpoint to tokens with push access; the
-        # get-by-tag endpoint only returns published Releases.
+        # Release drafts are returned by the list endpoint to tokens with push
+        # access; the get-by-tag endpoint only returns published Releases.
         run: |
           set -euo pipefail
 
@@ -281,11 +283,10 @@ jobs:
           verify_tag_target
 
           publish_draft() {
-            # Keep a moved tag from crossing the publication boundary. The second
-            # check detects the remaining request-sized race window; immutable
-            # releases lock the tag when publication succeeds.
             verify_tag_target
-            gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft=false
             if ! verify_tag_target; then
               echo "::error::The Release was published while its tag target changed. Treat this as a release-integrity incident."
               return 1
@@ -299,21 +300,29 @@ jobs:
           read -r is_draft is_immutable <<<"${release_state}"
 
           if [[ -z "${release_state}" ]]; then
-            # Never let gh recreate a tag that disappeared after verification.
-            gh release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --verify-tag --draft \
-              --title "${RELEASE_TAG}" --generate-notes
-            gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" "${assets[@]}" --clobber
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --draft \
+              --title "${RELEASE_TAG}" \
+              --generate-notes
+            gh release upload "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              "${assets[@]}" \
+              --clobber
             publish_draft
           elif [[ "${is_draft}" == "true" ]]; then
-            gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" "${assets[@]}" --clobber
+            gh release upload "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              "${assets[@]}" \
+              --clobber
             publish_draft
           elif [[ "${is_immutable}" == "true" ]]; then
             echo "::error::The Release is already published and immutable; its assets cannot be changed."
             exit 1
           else
-            # `gh release upload --clobber` deletes an existing asset before it uploads
-            # the replacement. A failed upload would therefore damage a published
-            # mutable Release, so reruns may repair drafts but never published Releases.
+            # `--clobber` deletes the public asset before uploading a replacement.
+            # Never risk losing a published asset during a failed rerun.
             echo "::error::The Release is already published and mutable; refusing to replace public assets. Create a new version tag instead."
             exit 1
           fi

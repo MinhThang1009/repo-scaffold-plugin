@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -95,6 +96,28 @@ class InspectionError(RuntimeError):
     """Raised when the preflight cannot prove that mutation is safe."""
 
 
+def resolve_path_executable(name: str, *, forbidden_root: Path) -> str | None:
+    """Resolve a tool only from absolute PATH entries outside the target repository."""
+    forbidden = forbidden_root.resolve(strict=True)
+    for raw_directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not raw_directory:
+            continue
+        directory = Path(raw_directory.strip('"'))
+        if not directory.is_absolute():
+            continue
+        candidate = shutil.which(str(directory / name))
+        if candidate is None:
+            continue
+        try:
+            resolved = Path(candidate).resolve(strict=True)
+            resolved.relative_to(forbidden)
+        except ValueError:
+            return str(resolved)
+        except (OSError, RuntimeError):
+            continue
+    return None
+
+
 class UniqueKeyBaseLoader(yaml.BaseLoader):
     """BaseLoader variant that rejects duplicate mapping keys."""
 
@@ -175,8 +198,17 @@ class WorkflowNode:
 
 
 class GitHubClient:
-    def __init__(self, hostname: str) -> None:
+    def __init__(self, hostname: str, *, forbidden_root: Path | None = None) -> None:
         self.hostname = hostname
+        gh_executable = resolve_path_executable(
+            "gh", forbidden_root=forbidden_root or Path.cwd()
+        )
+        if gh_executable is None:
+            raise InspectionError(
+                "GitHub CLI was not found on an absolute PATH entry outside the "
+                "repository."
+            )
+        self.gh_executable = gh_executable
         self.request_count = 0
         self.response_bytes = 0
         self.deadline = time.monotonic() + MAX_INSPECTION_SECONDS
@@ -204,7 +236,7 @@ class GitHubClient:
                 f"GitHub API inspection exceeded the {MAX_INSPECTION_SECONDS}-second safety cap."
             )
         timeout = min(GH_REQUEST_TIMEOUT_SECONDS, max(1, int(remaining)))
-        command = ["gh", "api", "--hostname", self.hostname]
+        command = [self.gh_executable, "api", "--hostname", self.hostname]
         if raw:
             command.extend(["-H", "Accept: application/vnd.github.raw+json"])
         command.append(endpoint)
@@ -212,7 +244,7 @@ class GitHubClient:
         environment.update({"GH_PAGER": "cat", "NO_COLOR": "1"})
         try:
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-                result = subprocess.run(
+                result = subprocess.run(  # noqa: S603 - executable is resolved safely
                     command,
                     check=False,
                     stdout=stdout,
@@ -2841,7 +2873,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require_safe_root(repo_root)
     if not repo_root.is_dir():
         raise InspectionError("Repository root is not a directory.")
-    client = GitHubClient(args.hostname)
+    client = GitHubClient(args.hostname, forbidden_root=repo_root)
 
     current_setup = client.json(f"repos/{owner}/{repo}/code-scanning/default-setup")
     if not isinstance(current_setup, dict) or not isinstance(

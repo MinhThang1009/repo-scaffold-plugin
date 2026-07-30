@@ -66,8 +66,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Verify all matrix jobs passed
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
         run: |
-          if [ "${{ needs.test.result }}" != "success" ]; then
-            echo "A matrix job failed: ${{ needs.test.result }}"; exit 1
+          if [ "$TEST_RESULT" != "success" ]; then
+            echo "A matrix job failed: $TEST_RESULT"
+            exit 1
           fi
           echo "All matrix jobs passed."

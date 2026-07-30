@@ -49,4 +49,4 @@ For a short README, skip the manual TOC and rely on GitHub's auto-generated tabl
 
 ## Links and images
 
-Use relative links to other files in the repo (e.g. `[Contributing](CONTRIBUTING.md)`, `docs/CONTRIBUTING.md`), not absolute `https://github.com/...` URLs — GitHub recommends relative links so they keep working in clones, forks, and on other hosts. The same applies to embedded images: reference repo files relatively (`docs/screenshot.png`). External resources (the project site, CI badge endpoints) stay absolute.
+Use relative links to other files in the repo (e.g. `` `[Contributing](CONTRIBUTING.md)` ``, `docs/CONTRIBUTING.md`), not absolute `https://github.com/...` URLs — GitHub recommends relative links so they keep working in clones, forks, and on other hosts. The same applies to embedded images: reference repo files relatively (`docs/screenshot.png`). External resources (the project site, CI badge endpoints) stay absolute.

@@ -1,12 +1,15 @@
 # repo-scaffold
 
+[![CI](https://github.com/MinhThang1009/repo-scaffold-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/MinhThang1009/repo-scaffold-plugin/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Codex plugin that scaffolds a new repository to production GitHub.com standard.
 
 ## What it does
 
 Provides the `repo-scaffold` skill, which Codex activates when you ask to set up a new repository's standard files. It:
 
-- Generates community-health files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue/PR templates, Dependabot, `.gitignore`, and `.gitattributes`.
+- Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue/PR templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
 - For a verified GitHub.com remote, adds GitHub Actions workflows: a CI workflow tailored to the detected stack and a release-on-tag workflow, plus optional ones (release-please, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
 
@@ -75,8 +78,23 @@ codex plugin remove repo-scaffold@personal
 repo-scaffold/
 ├── .codex-plugin/
 │   └── plugin.json
+├── .github/
+│   ├── CODEOWNERS
+│   ├── dependabot.yml
+│   ├── release.yml
+│   └── workflows/
+│       ├── ci.yml
+│       ├── dependency-review.yml
+│       ├── release-tag.yml
+│       └── release.yml
+├── .editorconfig
+├── .gitattributes
+├── CHANGELOG.md
 ├── README.md
 ├── LICENSE
+├── requirements-dev.txt
+├── scripts/
+│   └── validate_workflows.py
 └── skills/
     └── repo-scaffold/
         ├── SKILL.md
@@ -97,16 +115,35 @@ SKILL.md → Resources lists every generated file.
 The plugin has no compilation step. Its Python preflight tests require Python 3.10 or newer, PyYAML, and pytest. Run the repository checks from its root:
 
 ```powershell
+python -m pip install --requirement requirements-dev.txt
 python -m pytest -q
-python -m ruff format --check skills tests
-python -m ruff check skills tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py tests/test_codeql_preflight.py
-python -m compileall -q skills/repo-scaffold/scripts tests
-$workflowFiles = Get-ChildItem skills/repo-scaffold/assets/workflows -Filter *.yml
-actionlint -no-color -shellcheck= $workflowFiles.FullName
+python -m ruff format --check skills scripts tests
+python -m ruff check skills scripts tests
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py scripts/validate_workflows.py tests/test_codeql_preflight.py
+python -m compileall -q skills/repo-scaffold/scripts scripts tests
+python scripts/validate_workflows.py
 ```
 
 Run ShellCheck separately against extracted `run` blocks when it is available. The pinned action tags and release-please schema are external facts, so verify them against their upstream repositories during release audits.
+
+GitHub Actions runs the test suite on Ubuntu and Windows with the minimum and
+latest supported Python feature releases. A separate quality job runs formatting,
+lint, type, compile, and workflow checks. Dependabot checks the pinned Python
+development tools and GitHub Actions weekly.
+
+## Releases
+
+This repository uses the manual tag release mode. A tag whose name is exactly
+`v` followed by the version in `.codex-plugin/plugin.json` invokes the reusable
+release engine. The engine verifies the tag target, builds
+`repo-scaffold-plugin-<filesystem-safe-tag>.zip` from the immutable commit,
+attaches it to a draft GitHub Release, and publishes the draft only after the
+asset is present.
+
+The archive contains `.codex-plugin/`, `skills/`, `README.md`, and `LICENSE`
+under a `repo-scaffold/` directory. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+the maintainer release checklist. Release Please is intentionally not installed
+alongside the tag dispatcher because the two callers can race for the same tag.
 
 ## Maintainers and contributing
 
