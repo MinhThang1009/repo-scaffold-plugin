@@ -64,10 +64,14 @@ LOCAL_CALL = re.compile(r"^\./(?P<path>\.github/workflows/[^\\]+)$")
 CODEQL_ACTION = re.compile(
     r"^github/codeql-action/(?:init|autobuild|analyze)@[^\s]+$", re.IGNORECASE
 )
+# Keep token branches first-character-disjoint because workflow text is untrusted.
+SHELL_ASSIGNMENT_VALUE_PATTERN = (
+    r"""(?:[^\s;&|"'\\]|\\[^\r\n]|"(?:\\[^\r\n]|[^"\\\r\n])*"|'[^'\r\n]*')+"""
+)
 CODEQL_CLI = re.compile(
     r"(?:^|[\n;&|(){}]|\bthen\b|\bdo\b)\s*"
     r"(?:(?:sudo|env|command)\s+)*"
-    r"(?:[A-Za-z_][A-Za-z0-9_]*=(?:[^\s;&|]+|\"[^\"]*\"|'[^']*')\s+)*"
+    rf"(?:[A-Za-z_][A-Za-z0-9_]*={SHELL_ASSIGNMENT_VALUE_PATTERN}\s+)*"
     r"(?:\"[^\"]*[/\\]codeql(?:\.exe)?\"|'[^']*[/\\]codeql(?:\.exe)?'|"
     r"(?:[^\s;&|\"']+[/\\])?codeql(?:\.exe)?|\"?\$\{?CODEQL\}?\"?)\s+"
     r"(?:database|github|pack|query|resolve|execute|bqrs|dataset)\b",
@@ -90,6 +94,10 @@ POWERSHELL_START_PROCESS_CODEQL = re.compile(
     r"'(?:[^'\r\n]*[/\\])?codeql(?:\.exe)?'|"
     r"(?:[^\s;|\"']+[/\\])?codeql(?:\.exe)?)"
     r"(?=[^;|\r\n]*\b(?:database|github|pack|query|resolve|execute|bqrs|dataset)\b)",
+)
+# Exclude quote/backtick openers from fallback branches to keep matching linear.
+POWERSHELL_ARGUMENT_PATTERN = (
+    r"""(?:"(?:`[^\r\n]|[^"`\r\n])*"|'(?:''|[^'\r\n])*'|[^\s;|&"']+)"""
 )
 
 
@@ -1849,14 +1857,13 @@ def _powershell_static_alias_value(value: str) -> str | None:
 def _powershell_alias_definition(
     segment: str,
 ) -> tuple[str | None, str | None] | None:
-    argument_pattern = r"""(?:"(?:`.|[^"])*"|'(?:''|[^'])*'|[^\s;|&]+)"""
     match = re.match(
         r"(?i)^\s*(?:Set-Alias|sal|New-Alias|nal)(?:\s+|$)(?P<arguments>.*)$",
         segment,
     )
     if match is None:
         return None
-    arguments = re.findall(argument_pattern, match.group("arguments"))
+    arguments = re.findall(POWERSHELL_ARGUMENT_PATTERN, match.group("arguments"))
     named: dict[str, str] = {}
     positional: list[str] = []
     value_parameters = {"-description", "-option", "-scope"}
@@ -1899,9 +1906,9 @@ def _powershell_alias_definition(
 def _powershell_alias_segments(
     text: str, aliases: dict[str, str | None] | None = None
 ) -> list[tuple[str, dict[str, str | None]]]:
-    argument_pattern = r"""(?:"(?:`.|[^"])*"|'(?:''|[^'])*'|[^\s;|&]+)"""
     removal = re.compile(
-        rf"(?i)^\s*(?:Remove-Alias)\s+(?:-Name\s+)?(?P<name>{argument_pattern})"
+        rf"(?i)^\s*(?:Remove-Alias)\s+"
+        rf"(?:-Name\s+)?(?P<name>{POWERSHELL_ARGUMENT_PATTERN})"
         r"(?:\s|$)"
     )
     active_aliases = dict(aliases or {})

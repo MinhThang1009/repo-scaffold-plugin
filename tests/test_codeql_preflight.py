@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -144,6 +145,34 @@ class FanInResolver:
 
 
 class WorkflowParserTests(unittest.TestCase):
+    def assert_adversarial_regex_probe_completes(self, case: str) -> None:
+        probe = r"""
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1])
+if sys.argv[2] == "env":
+    payload = "\n_=" + ('"" _=' * 128) + "!"
+    module["CODEQL_CLI"].search(payload)
+elif sys.argv[2] == "alias":
+    payload = 'Set-Alias -Name "' + ('`!' * 128)
+    module["_powershell_alias_definition"](payload)
+else:
+    raise AssertionError(f"Unknown probe: {sys.argv[2]}")
+"""
+        subprocess.run(
+            [sys.executable, "-c", probe, str(SCRIPT_PATH), case],
+            check=True,
+            capture_output=True,
+            timeout=2,
+        )
+
+    def test_direct_codeql_regex_handles_adversarial_assignments(self) -> None:
+        self.assert_adversarial_regex_probe_completes("env")
+
+    def test_powershell_alias_regex_handles_adversarial_quotes(self) -> None:
+        self.assert_adversarial_regex_probe_completes("alias")
+
     def test_deeply_nested_yaml_fails_closed_without_recursion_traceback(self) -> None:
         nesting = 500
         text = (
@@ -201,6 +230,10 @@ jobs:
                 self.assertTrue(
                     codeql_preflight.parse_workflow(text, name).has_advanced_setup
                 )
+
+    def test_detects_codeql_after_concatenated_assignment_value(self) -> None:
+        command = 'SCAN=prefix"quoted suffix" codeql database create db'
+        self.assertTrue(codeql_preflight.contains_codeql_cli(command, "bash"))
 
     def test_ignores_codeql_text_outside_executable_steps(self) -> None:
         for name, prefix in {
