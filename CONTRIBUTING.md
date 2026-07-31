@@ -1,8 +1,8 @@
 # Contributing to repo-scaffold
 
 Thank you for helping improve `repo-scaffold`. This repository contains a Codex
-skill, community-health templates, GitHub Actions templates, a Python CodeQL
-preflight helper, and its regression tests.
+skill, community-health templates, GitHub Actions templates including CodeQL
+advanced setup, a Python CodeQL preflight helper, and regression tests.
 
 ## Before you start
 
@@ -92,26 +92,24 @@ explicitly requests Git operations.
 
 ## Cut a release
 
-Only release a commit on `main` after CI is green.
+Releases are automated from `main` through Release Please.
 
-1. Set the intended SemVer base in `.codex-plugin/plugin.json`, then use the
-   `plugin-creator` cachebuster helper to refresh the single
-   `+codex.<cachebuster>` suffix.
-2. Move the relevant entries in `CHANGELOG.md` from `Unreleased` to a dated
-   version section and validate the plugin and repository.
-3. Merge the release commit to `main` and wait for `ci-success`.
-4. Create an annotated tag equal to `v` plus the exact manifest version and push
-   that tag:
+1. Use Conventional Commit titles for changes merged into `main` and wait for
+   all required checks.
+2. Review the Release Please pull request. It updates `CHANGELOG.md`,
+   `version.txt`, `.release-please-manifest.json`, and
+   `.codex-plugin/plugin.json` to the proposed SemVer.
+3. Merge the release pull request after its checks pass. Release Please creates
+   the tag and draft GitHub Release, then invokes the reusable release engine.
+4. Verify that the release asset is attached and that the release is published.
 
-```powershell
-$version = (Get-Content -Raw .codex-plugin/plugin.json |
-  ConvertFrom-Json).version
-git tag -a "v$version" -m "Release v$version"
-git push origin "v$version"
-```
+The workflow requires a fine-grained PAT stored as `RELEASE_PLEASE_TOKEN`,
+scoped only to this repository with **Contents: Read and write** and
+**Pull requests: Read and write**. Add **Issues: Read and write** because Release
+Please manages release pull request labels. Never place the token in a file,
+commit, command output, issue, or chat message.
 
-The tag dispatcher verifies that the tag resolves to the event commit and that
-its value matches the manifest. The reusable release engine builds the plugin
-archive with read-only contents permission, transfers it to a separate publish
-job, creates or updates only a draft Release, and then publishes it. It refuses
-to replace assets on an already published Release; publish a new version instead.
+The reusable release engine builds the plugin archive with read-only contents
+permission, transfers it to a separate publish job, and publishes only the
+matching draft Release. It refuses to replace assets on an already published
+Release; publish a new version instead.

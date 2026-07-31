@@ -10,7 +10,7 @@ A Codex plugin that scaffolds a new repository to production GitHub.com standard
 Provides the `repo-scaffold` skill, which Codex activates when you ask to set up a new repository's standard files. It:
 
 - Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue/PR templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
-- For a verified GitHub.com remote, adds GitHub Actions workflows: a CI workflow tailored to the detected stack and a release-on-tag workflow, plus optional ones (release-please, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
+- For a verified GitHub.com remote, adds GitHub Actions workflows: a CI workflow tailored to the detected stack and a release workflow, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
 
 Content follows GitHub's community-standards format and is pulled from canonical sources where possible (LICENSE, `.gitignore`, and Code of Conduct via the GitHub API), with project-specific content generated from the repository itself. External GitHub Actions are pinned to immutable commit SHAs and kept current by Dependabot; shipped workflows do not delegate execution to a mutable container tag.
@@ -77,23 +77,31 @@ codex plugin remove repo-scaffold@personal
 
 ```
 repo-scaffold/
+├── .release-please-manifest.json
 ├── .codex-plugin/
 │   └── plugin.json
 ├── .github/
 │   ├── CODEOWNERS
 │   ├── dependabot.yml
+│   ├── labeler.yml
 │   ├── release.yml
 │   └── workflows/
 │       ├── ci.yml
+│       ├── codeql.yml
+│       ├── commitlint.yml
 │       ├── dependency-review.yml
-│       ├── release-tag.yml
-│       └── release.yml
+│       ├── labeler.yml
+│       ├── release-please.yml
+│       ├── release.yml
+│       └── stale.yml
 ├── .editorconfig
 ├── .gitattributes
 ├── CHANGELOG.md
 ├── README.md
 ├── LICENSE
+├── release-please-config.json
 ├── requirements-dev.txt
+├── version.txt
 ├── scripts/
 │   ├── validate_repository.py
 │   └── validate_workflows.py
@@ -106,7 +114,7 @@ repo-scaffold/
         │   ├── readme.md          # README structure guidance
         │   └── github-setup.md    # exact gh configuration commands
         └── assets/                # community-health files + config files (labeler, release configs)
-            └── workflows/         # ci, release engine/dispatcher, release-please, dependency-review,
+            └── workflows/         # ci, release engine/dispatcher, release-please, CodeQL, dependency-review,
                                    # dependabot-auto-merge, auto-merge, commitlint, stale, labeler
 ```
 
@@ -141,17 +149,18 @@ Dependabot checks the pinned Python development tools and GitHub Actions weekly.
 
 ## Releases
 
-This repository uses the manual tag release mode. A tag whose name is exactly
-`v` followed by the version in `.codex-plugin/plugin.json` invokes the reusable
-release engine. The engine verifies the tag target, builds
-`repo-scaffold-plugin-<filesystem-safe-tag>.zip` from the immutable commit,
-attaches it to a draft GitHub Release, and publishes the draft only after the
-asset is present.
+This repository uses Release Please with Conventional Commits. Each push to
+`main` updates a release pull request. Merging that pull request updates
+`CHANGELOG.md`, `version.txt`, and `.codex-plugin/plugin.json`, creates the tag
+and draft GitHub Release, then invokes the reusable release engine.
 
-The archive contains `.codex-plugin/`, `skills/`, `README.md`, and `LICENSE`
-under a `repo-scaffold/` directory. See [CONTRIBUTING.md](CONTRIBUTING.md) for
-the maintainer release checklist. Release Please is intentionally not installed
-alongside the tag dispatcher because the two callers can race for the same tag.
+The engine verifies the tag target, builds
+`repo-scaffold-plugin-<filesystem-safe-tag>.zip` from the immutable commit,
+attaches it to the draft, and publishes only after the asset is present. The
+archive contains `.codex-plugin/`, `skills/`, `README.md`, and `LICENSE` under a
+`repo-scaffold/` directory. The workflow requires a fine-grained PAT stored as
+`RELEASE_PLEASE_TOKEN`; see [CONTRIBUTING.md](CONTRIBUTING.md) for the release
+process and token scope.
 
 ## Maintainers and contributing
 

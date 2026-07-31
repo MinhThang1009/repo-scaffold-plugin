@@ -2014,6 +2014,50 @@ class PlaceholderContractTests(unittest.TestCase):
         self.assertIn("group: release-please-${{ github.ref }}", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
 
+    def test_codeql_advanced_setup_is_pinned_and_repository_managed(self) -> None:
+        installed_path = PLUGIN_ROOT / ".github" / "workflows" / "codeql.yml"
+        asset_path = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "codeql.yml"
+        )
+        expected_sha = "f205ea1c3313d32999d8d6a48b4f6530d4437b38"
+
+        for path in (installed_path, asset_path):
+            workflow = path.read_text(encoding="utf-8")
+            document = codeql_preflight.yaml.load(
+                workflow,
+                Loader=codeql_preflight.UniqueKeyBaseLoader,
+            )
+            with self.subTest(workflow=path.as_posix()):
+                self.assertEqual(document["permissions"]["contents"], "read")
+                self.assertEqual(document["permissions"]["packages"], "read")
+                self.assertEqual(document["permissions"]["security-events"], "write")
+                self.assertEqual(
+                    set(document["on"]), {"push", "pull_request", "schedule"}
+                )
+                codeql_uses = re.findall(
+                    r"github/codeql-action/(init|autobuild|analyze)@([0-9a-f]{40})",
+                    workflow,
+                )
+                self.assertEqual(
+                    codeql_uses,
+                    [
+                        ("init", expected_sha),
+                        ("autobuild", expected_sha),
+                        ("analyze", expected_sha),
+                    ],
+                )
+                self.assertIn("if: contains(fromJSON(", workflow)
+
+        self.assertIn('language: ["python"]', installed_path.read_text("utf-8"))
+        self.assertIn(
+            "{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}", asset_path.read_text("utf-8")
+        )
+
     def test_regular_workflow_jobs_have_finite_timeouts(self) -> None:
         workflow_root = (
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "workflows"
@@ -2030,6 +2074,36 @@ class PlaceholderContractTests(unittest.TestCase):
                     timeout = int(job.get("timeout-minutes", "0"))
                     self.assertGreater(timeout, 0)
                     self.assertLessEqual(timeout, 360)
+
+    def test_checkout_steps_do_not_persist_credentials(self) -> None:
+        workflow_roots = (
+            PLUGIN_ROOT / ".github" / "workflows",
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "workflows",
+        )
+        checkout_count = 0
+        for workflow_root in workflow_roots:
+            for path in workflow_root.glob("*.yml"):
+                document = codeql_preflight.yaml.load(
+                    path.read_text(encoding="utf-8"),
+                    Loader=codeql_preflight.UniqueKeyBaseLoader,
+                )
+                for job_name, job in document.get("jobs", {}).items():
+                    for index, step in enumerate(job.get("steps", [])):
+                        if not str(step.get("uses", "")).startswith(
+                            "actions/checkout@"
+                        ):
+                            continue
+                        checkout_count += 1
+                        with self.subTest(
+                            workflow=path.name,
+                            job=job_name,
+                            step=index,
+                        ):
+                            self.assertEqual(
+                                step.get("with", {}).get("persist-credentials"),
+                                "false",
+                            )
+        self.assertGreater(checkout_count, 0)
 
     def test_community_survey_guards_links_before_traversal(self) -> None:
         setup = (

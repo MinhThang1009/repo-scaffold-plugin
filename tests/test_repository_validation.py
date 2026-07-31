@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -96,6 +97,87 @@ class PluginManifestValidationTests(unittest.TestCase):
             self.assertIn(
                 ".codex-plugin/plugin.json: skills must stay inside the repository",
                 validate_repository.validate_plugin_manifest(root),
+            )
+
+
+class ReleasePleaseValidationTests(unittest.TestCase):
+    def write_valid_configuration(self, root: Path) -> None:
+        workflow_root = root / ".github" / "workflows"
+        workflow_root.mkdir(parents=True)
+        (workflow_root / "release-please.yml").write_text(
+            """
+on:
+  push:
+    branches: ["main"]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.RELEASE_PLEASE_TOKEN }}
+""".strip(),
+            encoding="utf-8",
+        )
+        plugin_root = root / ".codex-plugin"
+        plugin_root.mkdir()
+        (plugin_root / "plugin.json").write_text(
+            '{"version": "1.2.3+codex.test"}', encoding="utf-8"
+        )
+        (root / "release-please-config.json").write_text(
+            json.dumps(
+                {
+                    "release-type": "simple",
+                    "draft": True,
+                    "force-tag-creation": True,
+                    "packages": {
+                        ".": {
+                            "extra-files": [
+                                {
+                                    "type": "json",
+                                    "path": ".codex-plugin/plugin.json",
+                                    "jsonpath": "$.version",
+                                }
+                            ]
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (root / ".release-please-manifest.json").write_text(
+            '{".": "1.2.3+codex.test"}', encoding="utf-8"
+        )
+        (root / "version.txt").write_text("1.2.3+codex.test\n", encoding="utf-8")
+
+    def test_accepts_single_release_mode_with_synchronized_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+
+            self.assertEqual(validate_repository.validate_release_please(root), [])
+
+    def test_rejects_tag_dispatcher_and_version_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            (root / ".github" / "workflows" / "release-tag.yml").write_text(
+                "on:\n  push:\n    tags: ['v*']\n", encoding="utf-8"
+            )
+            (root / "version.txt").write_text("1.2.4\n", encoding="utf-8")
+
+            problems = validate_repository.validate_release_please(root)
+
+            self.assertIn(
+                ".github/workflows/release-tag.yml: must not coexist with "
+                "Release Please",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release-tag.yml: tag push trigger conflicts "
+                "with Release Please",
+                problems,
+            )
+            self.assertIn(
+                "release version files must contain the same version", problems
             )
 
 

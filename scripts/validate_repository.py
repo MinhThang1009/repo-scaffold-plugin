@@ -200,6 +200,109 @@ def validate_plugin_manifest(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_release_please(repository_root: Path) -> list[str]:
+    """Validate the repository's single automated release mode and version state."""
+    workflow_root = repository_root / ".github" / "workflows"
+    workflow_path = workflow_root / "release-please.yml"
+    manual_dispatcher = workflow_root / "release-tag.yml"
+    config_path = repository_root / "release-please-config.json"
+    versions_path = repository_root / ".release-please-manifest.json"
+    plugin_path = repository_root / ".codex-plugin" / "plugin.json"
+    version_path = repository_root / "version.txt"
+    problems: list[str] = []
+
+    if not workflow_path.is_file():
+        problems.append(".github/workflows/release-please.yml: missing")
+    if manual_dispatcher.exists():
+        problems.append(
+            ".github/workflows/release-tag.yml: must not coexist with Release Please"
+        )
+
+    try:
+        config = load_json(config_path)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        return [f"release-please-config.json: invalid JSON: {error}", *problems]
+    if not isinstance(config, dict):
+        return ["release-please-config.json: root must be an object", *problems]
+    if config.get("release-type") != "simple":
+        problems.append("release-please-config.json: release-type must be simple")
+    if config.get("draft") is not True:
+        problems.append("release-please-config.json: draft must be true")
+    if config.get("force-tag-creation") is not True:
+        problems.append("release-please-config.json: force-tag-creation must be true")
+    packages = config.get("packages")
+    root_package = packages.get(".") if isinstance(packages, dict) else None
+    if not isinstance(root_package, dict):
+        problems.append("release-please-config.json: packages must define root package")
+    else:
+        required_extra_file = {
+            "type": "json",
+            "path": ".codex-plugin/plugin.json",
+            "jsonpath": "$.version",
+        }
+        extra_files = root_package.get("extra-files")
+        if not isinstance(extra_files, list) or required_extra_file not in extra_files:
+            problems.append(
+                "release-please-config.json: root package must update plugin version"
+            )
+
+    versions: dict[str, Any] = {}
+    try:
+        manifest = load_json(versions_path)
+        if isinstance(manifest, dict) and set(manifest) == {"."}:
+            versions[".release-please-manifest.json"] = manifest["."]
+        else:
+            problems.append(
+                ".release-please-manifest.json: must contain only the root package"
+            )
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        problems.append(f".release-please-manifest.json: invalid JSON: {error}")
+    try:
+        plugin = load_json(plugin_path)
+        if isinstance(plugin, dict):
+            versions[".codex-plugin/plugin.json"] = plugin.get("version")
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        problems.append(f".codex-plugin/plugin.json: invalid JSON: {error}")
+    try:
+        versions["version.txt"] = version_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as error:
+        problems.append(f"version.txt: unreadable: {error}")
+
+    invalid_versions = [
+        version_source
+        for version_source, version in versions.items()
+        if not isinstance(version, str) or not SEMVER.fullmatch(version)
+    ]
+    for version_source in invalid_versions:
+        problems.append(f"{version_source}: release version must be valid SemVer")
+    valid_versions = {
+        version
+        for version_source, version in versions.items()
+        if version_source not in invalid_versions
+    }
+    if len(versions) == 3 and len(valid_versions) > 1:
+        problems.append("release version files must contain the same version")
+
+    for workflow_file in sorted(workflow_root.glob("*.yml")):
+        try:
+            document = load_yaml(workflow_file)
+        except (OSError, UnicodeError, yaml.YAMLError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        triggers = document.get("on")
+        if not isinstance(triggers, dict):
+            continue
+        push = triggers.get("push")
+        if isinstance(push, dict) and "tags" in push:
+            problems.append(
+                f"{workflow_file.relative_to(repository_root).as_posix()}: tag push "
+                "trigger conflicts "
+                "with Release Please"
+            )
+    return problems
+
+
 def read_front_matter(path: Path) -> tuple[Any, str]:
     """Return parsed YAML front matter and the remaining Markdown body."""
     text = path.read_text(encoding="utf-8")
@@ -585,6 +688,7 @@ def validate_repository(repository_root: Path) -> list[str]:
     validators = (
         validate_serialized_files,
         validate_plugin_manifest,
+        validate_release_please,
         validate_issue_templates,
         validate_dependabot,
         validate_markdown_links,
