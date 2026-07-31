@@ -11,8 +11,9 @@ the plugin. Include:
 - the scaffold options requested;
 - the exact non-sensitive error output.
 
-After this repository is published with GitHub Issues enabled, use its issue
-template chooser for reproducible bugs and feature requests.
+Use the repository's
+[issue template chooser](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/new/choose)
+for reproducible bugs and feature requests.
 
 ## Security
 

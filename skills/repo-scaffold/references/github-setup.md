@@ -921,7 +921,9 @@ Run each eligible command separately after confirmation and only report a featur
   gh repo edit github.com/OWNER/REPO --enable-secret-scanning --enable-secret-scanning-push-protection
   ```
 
-- **Code scanning default setup**: requires an eligible repository and supported detected language. First inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
+- **CodeQL advanced setup**: when the user explicitly chooses a repository-managed configuration, install `assets/workflows/codeql.yml`, render the verified default branch through `{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}` plus a supported detected language, and keep CodeQL default setup not configured. Inspect workflows and existing analyses first, and do not install a second advanced uploader silently. If default setup is already configured, stop and obtain explicit approval before switching modes.
+
+- **Code scanning default setup**: requires an eligible repository and supported detected language. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
 
   The bundled preflight requires Python 3.10 or newer with PyYAML.
 
