@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.1](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.1.0...v1.1.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **security:** ngăn ReDoS trong preflight ([#7](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/7)) ([bebaa0c](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/bebaa0c10166023487d7c7da5ab88b7f7c57e91d))
+
 ## [1.1.0](https://github.com/MinhThang1009/repo-scaffold-plugin/releases/tag/v1.1.0) (2026-07-31)
 
 
