@@ -1259,6 +1259,15 @@ The repository API setting `squash_merge_commit_title=PR_TITLE` makes the final 
 
 ## release-please token (RELEASE_PLEASE_TOKEN)
 
+Treat plugin-creator's local `+codex.<cachebuster>` suffix as installation identity only. Do not copy it into the public release manifest, plugin version, changelog, or tag; confirm and use the clean public SemVer instead. Preserve other SemVer build metadata only when the user explicitly confirms it is part of the public release identity.
+
+The shipped `release.yml` also supports a verified manual recovery path without a `push.tags` trigger. Run it only after the exact tag exists and resolves to the supplied full commit SHA:
+
+```bash
+gh workflow run release.yml --repo OWNER/REPO --ref DEFAULT_BRANCH \
+  -f tag=vX.Y.Z -f commit_sha=FULL_COMMIT_SHA
+```
+
 Only when the repo ships `release-please.yml` (or `auto-merge.yml`, which prefers this token). Use a fine-grained PAT so release-please-created PRs can trigger their required checks and merges performed by the label-gated workflow can trigger the default-branch release-please run; events created by the default `GITHUB_TOKEN` do not start another workflow run.
 
 `auto-merge.yml` may read this PAT only from its trusted-base `pull_request_target` workflow after the human-user and same-repository guards pass. Never change that workflow to `pull_request` while it references the PAT, and never add a checkout, fetch, artifact download, or command that executes PR-controlled content.

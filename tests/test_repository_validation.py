@@ -120,7 +120,7 @@ jobs:
         plugin_root = root / ".codex-plugin"
         plugin_root.mkdir()
         (plugin_root / "plugin.json").write_text(
-            '{"version": "1.2.3+codex.test"}', encoding="utf-8"
+            '{"version": "1.2.3"}', encoding="utf-8"
         )
         (root / "release-please-config.json").write_text(
             json.dumps(
@@ -144,9 +144,9 @@ jobs:
             encoding="utf-8",
         )
         (root / ".release-please-manifest.json").write_text(
-            '{".": "1.2.3+codex.test"}', encoding="utf-8"
+            '{".": "1.2.3"}', encoding="utf-8"
         )
-        (root / "version.txt").write_text("1.2.3+codex.test\n", encoding="utf-8")
+        (root / "version.txt").write_text("1.2.3\n", encoding="utf-8")
 
     def test_accepts_single_release_mode_with_synchronized_versions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -154,6 +154,45 @@ jobs:
             self.write_valid_configuration(root)
 
             self.assertEqual(validate_repository.validate_release_please(root), [])
+
+    def test_accepts_intentional_semver_build_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            (root / ".codex-plugin" / "plugin.json").write_text(
+                '{"version": "1.2.3+build.7"}', encoding="utf-8"
+            )
+            (root / ".release-please-manifest.json").write_text(
+                '{".": "1.2.3+build.7"}', encoding="utf-8"
+            )
+            (root / "version.txt").write_text("1.2.3+build.7\n", encoding="utf-8")
+
+            self.assertEqual(validate_repository.validate_release_please(root), [])
+
+    def test_rejects_local_codex_cachebuster_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            (root / ".codex-plugin" / "plugin.json").write_text(
+                '{"version": "1.2.3+codex.test"}', encoding="utf-8"
+            )
+            (root / ".release-please-manifest.json").write_text(
+                '{".": "1.2.3+codex.test"}', encoding="utf-8"
+            )
+            (root / "version.txt").write_text("1.2.3+codex.test\n", encoding="utf-8")
+
+            problems = validate_repository.validate_release_please(root)
+
+            for source in (
+                ".codex-plugin/plugin.json",
+                ".release-please-manifest.json",
+                "version.txt",
+            ):
+                self.assertIn(
+                    f"{source}: public release version must not use a local "
+                    "Codex cachebuster",
+                    problems,
+                )
 
     def test_rejects_tag_dispatcher_and_version_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

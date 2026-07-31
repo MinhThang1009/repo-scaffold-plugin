@@ -2002,6 +2002,32 @@ class PlaceholderContractTests(unittest.TestCase):
         self.assertIn('"${#artifact_tag}" -gt 120', workflow)
         self.assertIn("sha256sum", workflow)
 
+    def test_release_engine_supports_verified_manual_dispatch(self) -> None:
+        installed_path = PLUGIN_ROOT / ".github" / "workflows" / "release.yml"
+        asset_path = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "release.yml"
+        )
+
+        for path in (installed_path, asset_path):
+            document = codeql_preflight.yaml.load(
+                path.read_text(encoding="utf-8"),
+                Loader=codeql_preflight.UniqueKeyBaseLoader,
+            )
+            with self.subTest(workflow=path.as_posix()):
+                self.assertEqual(
+                    set(document["on"]), {"workflow_call", "workflow_dispatch"}
+                )
+                for trigger in ("workflow_call", "workflow_dispatch"):
+                    inputs = document["on"][trigger]["inputs"]
+                    self.assertEqual(set(inputs), {"tag", "commit_sha"})
+                    self.assertEqual(inputs["tag"]["required"], "true")
+                    self.assertEqual(inputs["commit_sha"]["required"], "true")
+
     def test_release_please_mutations_are_serialized_per_branch(self) -> None:
         workflow = (
             PLUGIN_ROOT
