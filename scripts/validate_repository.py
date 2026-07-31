@@ -275,6 +275,15 @@ def validate_release_please(repository_root: Path) -> list[str]:
     ]
     for version_source in invalid_versions:
         problems.append(f"{version_source}: release version must be valid SemVer")
+    for version_source, version in versions.items():
+        if version_source in invalid_versions:
+            continue
+        build_metadata = version.partition("+")[2]
+        if build_metadata.startswith("codex."):
+            problems.append(
+                f"{version_source}: public release version must not use a local "
+                "Codex cachebuster"
+            )
     valid_versions = {
         version
         for version_source, version in versions.items()

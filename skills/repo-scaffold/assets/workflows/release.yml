@@ -1,10 +1,21 @@
 name: Release engine
 
-# Reusable engine that builds and publishes one GitHub Release for an explicit tag.
-# Assets are attached while the Release is a draft, then the draft is published so
-# the workflow is compatible with repositories that enforce immutable releases.
+# Reusable and manually dispatchable engine that builds and publishes one GitHub
+# Release for an explicit tag. Assets are attached while the Release is a draft,
+# then the draft is published so the workflow is compatible with repositories
+# that enforce immutable releases.
 on:
   workflow_call:
+    inputs:
+      tag:
+        description: Full version tag to build and publish
+        required: true
+        type: string
+      commit_sha:
+        description: Full commit SHA that the version tag must resolve to
+        required: true
+        type: string
+  workflow_dispatch:
     inputs:
       tag:
         description: Full version tag to build and publish
