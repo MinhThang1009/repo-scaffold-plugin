@@ -99,6 +99,100 @@ class PluginManifestValidationTests(unittest.TestCase):
             )
 
 
+class IssueFormValidationTests(unittest.TestCase):
+    def test_upload_input_matches_current_github_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            (template_root / "evidence.yml").write_text(
+                """
+name: Evidence upload
+description: Attach files that help reproduce the problem.
+body:
+  - type: upload
+    id: evidence
+    attributes:
+      label: Attach relevant files
+      description: Include screenshots or non-sensitive logs.
+    validations:
+      required: false
+      accept: ".png,.jpg,.log"
+""".strip(),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_repository.validate_issue_templates(root),
+                [],
+            )
+
+    def test_issue_form_requires_unique_valid_ids_and_an_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            (template_root / "invalid.yml").write_text(
+                """
+name: Invalid form
+description: Exercise issue-form validation.
+body:
+  - type: markdown
+    id: invalid id
+    attributes:
+      value: Guidance
+  - type: markdown
+    id: duplicate
+    attributes:
+      value: More guidance
+  - type: markdown
+    id: duplicate
+    attributes:
+      value: Final guidance
+""".strip(),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_issue_templates(root)
+            relative = Path(".github") / "ISSUE_TEMPLATE" / "invalid.yml"
+
+            self.assertIn(
+                f"{relative}: body[0].id may contain only letters, numbers, -, and _",
+                problems,
+            )
+            self.assertIn(
+                f"{relative}: body[2].id must be unique",
+                problems,
+            )
+            self.assertIn(
+                f"{relative}: body must contain a non-markdown input",
+                problems,
+            )
+
+    def test_issue_form_requires_documented_yml_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            path = template_root / "bug.yaml"
+            path.write_text(
+                """
+name: Bug report
+description: Report a problem.
+body:
+  - type: textarea
+    attributes:
+      label: What happened?
+""".strip(),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_repository.validate_issue_templates(root),
+                [f"{path.relative_to(root)}: issue forms must use the .yml extension"],
+            )
+
+
 class WorkflowShellValidationTests(unittest.TestCase):
     def test_bash_block_is_normalized_to_binary_lf_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -38,6 +38,15 @@ SEMVER = re.compile(
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
 TEMPLATE_TOKEN = re.compile(r"(?:\{\{|\$\{\{)")
+ISSUE_FORM_ID = re.compile(r"^[0-9A-Za-z_-]+$")
+ISSUE_FORM_INPUT_TYPES = {
+    "checkboxes",
+    "dropdown",
+    "input",
+    "markdown",
+    "textarea",
+    "upload",
+}
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -207,6 +216,101 @@ def read_front_matter(path: Path) -> tuple[Any, str]:
     )
 
 
+def validate_issue_form_body(relative: Path, form_body: list[Any]) -> list[str]:
+    """Validate current GitHub issue-form body types and core constraints."""
+    problems: list[str] = []
+    seen_ids: set[str] = set()
+    has_input = False
+    for index, item in enumerate(form_body):
+        prefix = f"{relative}: body[{index}]"
+        if not isinstance(item, dict):
+            problems.append(f"{prefix} must be a mapping")
+            continue
+        item_type = item.get("type")
+        if item_type not in ISSUE_FORM_INPUT_TYPES:
+            problems.append(f"{prefix} has invalid type")
+            continue
+        if item_type != "markdown":
+            has_input = True
+
+        item_id = item.get("id")
+        if item_id is not None:
+            if not isinstance(item_id, str) or not ISSUE_FORM_ID.fullmatch(item_id):
+                problems.append(
+                    f"{prefix}.id may contain only letters, numbers, -, and _"
+                )
+            elif item_id in seen_ids:
+                problems.append(f"{prefix}.id must be unique")
+            else:
+                seen_ids.add(item_id)
+
+        attributes = item.get("attributes")
+        if not isinstance(attributes, dict):
+            problems.append(f"{prefix}.attributes must be a mapping")
+            continue
+        required_attribute = "value" if item_type == "markdown" else "label"
+        if not nonempty_string(attributes.get(required_attribute)):
+            problems.append(
+                f"{prefix}.attributes.{required_attribute} must be nonempty"
+            )
+
+        if item_type == "dropdown":
+            options = attributes.get("options")
+            if (
+                not isinstance(options, list)
+                or not options
+                or any(not nonempty_string(option) for option in options)
+            ):
+                problems.append(
+                    f"{prefix}.attributes.options must be a nonempty string list"
+                )
+            elif len(set(options)) != len(options):
+                problems.append(f"{prefix}.attributes.options must be unique")
+        elif item_type == "checkboxes":
+            options = attributes.get("options")
+            if not isinstance(options, list) or not options:
+                problems.append(f"{prefix}.attributes.options must be a nonempty list")
+            else:
+                labels: list[str] = []
+                for option_index, option in enumerate(options):
+                    if not isinstance(option, dict) or not nonempty_string(
+                        option.get("label")
+                    ):
+                        problems.append(
+                            f"{prefix}.attributes.options[{option_index}].label "
+                            "must be nonempty"
+                        )
+                        continue
+                    labels.append(option["label"])
+                    required = option.get("required")
+                    if required is not None and required not in {"true", "false"}:
+                        problems.append(
+                            f"{prefix}.attributes.options[{option_index}].required "
+                            "must be a boolean"
+                        )
+                if len(set(labels)) != len(labels):
+                    problems.append(
+                        f"{prefix}.attributes.options labels must be unique"
+                    )
+
+        validations = item.get("validations")
+        if validations is not None:
+            if not isinstance(validations, dict):
+                problems.append(f"{prefix}.validations must be a mapping")
+            else:
+                required = validations.get("required")
+                if required is not None and required not in {"true", "false"}:
+                    problems.append(f"{prefix}.validations.required must be a boolean")
+                accept = validations.get("accept")
+                if item_type == "upload" and accept is not None:
+                    if not nonempty_string(accept):
+                        problems.append(f"{prefix}.validations.accept must be nonempty")
+
+    if not has_input:
+        problems.append(f"{relative}: body must contain a non-markdown input")
+    return problems
+
+
 def validate_issue_templates(repository_root: Path) -> list[str]:
     """Validate issue template front matter, forms, and chooser configuration."""
     problems: list[str] = []
@@ -228,12 +332,17 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
             for field in ("name", "about"):
                 if not nonempty_string(front_matter.get(field)):
                     problems.append(f"{relative}: {field} must be nonempty")
+            name = front_matter.get("name")
+            if isinstance(name, str) and len(name.strip()) <= 3:
+                problems.append(f"{relative}: name must be more than 3 characters")
             if not template_body.strip():
                 problems.append(f"{relative}: template body must be nonempty")
 
-        for path in sorted(template_root.glob("*.yaml")) + sorted(
-            template_root.glob("*.yml")
-        ):
+        for path in sorted(template_root.glob("*.yaml")):
+            relative = path.relative_to(repository_root)
+            problems.append(f"{relative}: issue forms must use the .yml extension")
+
+        for path in sorted(template_root.glob("*.yml")):
             if path.name == "config.yml":
                 continue
             relative = path.relative_to(repository_root)
@@ -248,26 +357,14 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
             for field in ("name", "description"):
                 if not nonempty_string(document.get(field)):
                     problems.append(f"{relative}: {field} must be nonempty")
+            name = document.get("name")
+            if isinstance(name, str) and len(name.strip()) <= 3:
+                problems.append(f"{relative}: name must be more than 3 characters")
             form_body = document.get("body")
             if not isinstance(form_body, list) or not form_body:
                 problems.append(f"{relative}: body must be a nonempty list")
                 continue
-            for index, item in enumerate(form_body):
-                if not isinstance(item, dict):
-                    problems.append(f"{relative}: body[{index}] must be a mapping")
-                    continue
-                if item.get("type") not in {
-                    "checkboxes",
-                    "dropdown",
-                    "input",
-                    "markdown",
-                    "textarea",
-                }:
-                    problems.append(f"{relative}: body[{index}] has invalid type")
-                if not isinstance(item.get("attributes"), dict):
-                    problems.append(
-                        f"{relative}: body[{index}].attributes must be a mapping"
-                    )
+            problems.extend(validate_issue_form_body(relative, form_body))
 
         config_path = template_root / "config.yml"
         if not config_path.is_file():
