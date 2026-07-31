@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -45,6 +46,7 @@ GH_REQUEST_TIMEOUT_SECONDS = 60
 MAX_INSPECTION_SECONDS = 600
 MAX_GH_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_GH_RESPONSE_BYTES = 128 * 1024 * 1024
+MAX_GH_JSON_NESTING = 100
 MAX_REUSABLE_WORKFLOWS_PER_ROOT = 50
 MAX_REUSABLE_REFERENCES_PER_ROOT = 500
 MAX_WORKFLOW_LEVELS = 10
@@ -93,6 +95,54 @@ POWERSHELL_START_PROCESS_CODEQL = re.compile(
 
 class InspectionError(RuntimeError):
     """Raised when the preflight cannot prove that mutation is safe."""
+
+
+def resolve_path_executable(name: str, *, forbidden_root: Path) -> str | None:
+    """Resolve a tool only from absolute PATH entries outside the target repository."""
+    forbidden = forbidden_root.resolve(strict=True)
+    for raw_directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not raw_directory:
+            continue
+        directory = Path(raw_directory.strip('"'))
+        if not directory.is_absolute():
+            continue
+        candidate = shutil.which(name, path=str(directory))
+        if candidate is None:
+            continue
+        try:
+            resolved = Path(candidate).resolve(strict=True)
+            resolved.relative_to(forbidden)
+        except ValueError:
+            return str(resolved)
+        except (OSError, RuntimeError):
+            continue
+    return None
+
+
+def _require_json_nesting_within_limit(payload: str) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in payload:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_GH_JSON_NESTING:
+                raise InspectionError(
+                    "GitHub API JSON exceeds the nesting safety cap of "
+                    f"{MAX_GH_JSON_NESTING}."
+                )
+        elif character in "]}":
+            depth -= 1
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -175,8 +225,17 @@ class WorkflowNode:
 
 
 class GitHubClient:
-    def __init__(self, hostname: str) -> None:
+    def __init__(self, hostname: str, *, forbidden_root: Path | None = None) -> None:
         self.hostname = hostname
+        gh_executable = resolve_path_executable(
+            "gh", forbidden_root=forbidden_root or Path.cwd()
+        )
+        if gh_executable is None:
+            raise InspectionError(
+                "GitHub CLI was not found on an absolute PATH entry outside the "
+                "repository."
+            )
+        self.gh_executable = gh_executable
         self.request_count = 0
         self.response_bytes = 0
         self.deadline = time.monotonic() + MAX_INSPECTION_SECONDS
@@ -204,7 +263,7 @@ class GitHubClient:
                 f"GitHub API inspection exceeded the {MAX_INSPECTION_SECONDS}-second safety cap."
             )
         timeout = min(GH_REQUEST_TIMEOUT_SECONDS, max(1, int(remaining)))
-        command = ["gh", "api", "--hostname", self.hostname]
+        command = [self.gh_executable, "api", "--hostname", self.hostname]
         if raw:
             command.extend(["-H", "Accept: application/vnd.github.raw+json"])
         command.append(endpoint)
@@ -212,7 +271,7 @@ class GitHubClient:
         environment.update({"GH_PAGER": "cat", "NO_COLOR": "1"})
         try:
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-                result = subprocess.run(
+                result = subprocess.run(  # noqa: S603 - executable is resolved safely
                     command,
                     check=False,
                     stdout=stdout,
@@ -249,8 +308,10 @@ class GitHubClient:
         return stdout_text
 
     def json(self, endpoint: str) -> Any:
+        payload = self._run(endpoint)
+        _require_json_nesting_within_limit(payload)
         try:
-            return json.loads(self._run(endpoint))
+            return json.loads(payload)
         except (ValueError, RecursionError) as exc:
             raise InspectionError(
                 f"GitHub API returned invalid JSON for {endpoint!r}."
@@ -2841,7 +2902,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require_safe_root(repo_root)
     if not repo_root.is_dir():
         raise InspectionError("Repository root is not a directory.")
-    client = GitHubClient(args.hostname)
+    client = GitHubClient(args.hostname, forbidden_root=repo_root)
 
     current_setup = client.json(f"repos/{owner}/{repo}/code-scanning/default-setup")
     if not isinstance(current_setup, dict) or not isinstance(

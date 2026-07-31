@@ -1,8 +1,8 @@
 # Contributing to repo-scaffold
 
 Thank you for helping improve `repo-scaffold`. This repository contains a Codex
-skill, community-health templates, GitHub Actions templates, a Python CodeQL
-preflight helper, and its regression tests.
+skill, community-health templates, GitHub Actions templates including CodeQL
+advanced setup, a Python CodeQL preflight helper, and regression tests.
 
 ## Before you start
 
@@ -16,8 +16,8 @@ preflight helper, and its regression tests.
 
 ## Report a bug or request a feature
 
-Use the repository's issue template chooser after the repository is published
-with Issues enabled:
+Use the repository's
+[issue template chooser](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/new/choose):
 
 - Bug reports should include the plugin version, Codex environment, target
   repository stack, reproduction steps, expected behavior, and actual behavior.
@@ -37,9 +37,15 @@ The plugin has no build step. Development checks require:
 - Ruff
 - mypy
 - actionlint
+- ShellCheck
 
-ShellCheck and PSScriptAnalyzer are recommended for the shell and PowerShell
-snippets.
+PSScriptAnalyzer is recommended when a change adds PowerShell snippets.
+
+Install the pinned development toolchain from the repository root:
+
+```powershell
+python -m pip install --requirement requirements-dev.txt
+```
 
 ## Make a change
 
@@ -60,17 +66,16 @@ Run these commands from the repository root:
 
 ```powershell
 python -m pytest -q
-python -m ruff format --check skills tests
-python -m ruff check skills tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py tests/test_codeql_preflight.py
-python -m compileall -q skills/repo-scaffold/scripts tests
-
-$workflowFiles = Get-ChildItem skills/repo-scaffold/assets/workflows -Filter *.yml
-actionlint -no-color -shellcheck= $workflowFiles.FullName
+python -m ruff format --check skills scripts tests
+python -m ruff check skills scripts tests
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m compileall -q skills/repo-scaffold/scripts scripts tests
+python scripts/validate_workflows.py
+python scripts/validate_repository.py
 ```
 
-When available, also run ShellCheck against extracted Bash blocks and
-PSScriptAnalyzer against every PowerShell block.
+`validate_workflows.py` runs actionlint with ShellCheck enabled. When a change
+adds PowerShell blocks, also run PSScriptAnalyzer against each block.
 
 ## Open a pull request
 
@@ -84,3 +89,27 @@ Include:
 
 Leave changes unstaged and uncommitted unless the repository maintainer
 explicitly requests Git operations.
+
+## Cut a release
+
+Releases are automated from `main` through Release Please.
+
+1. Use Conventional Commit titles for changes merged into `main` and wait for
+   all required checks.
+2. Review the Release Please pull request. It updates `CHANGELOG.md`,
+   `version.txt`, `.release-please-manifest.json`, and
+   `.codex-plugin/plugin.json` to the proposed SemVer.
+3. Merge the release pull request after its checks pass. Release Please creates
+   the tag and draft GitHub Release, then invokes the reusable release engine.
+4. Verify that the release asset is attached and that the release is published.
+
+The workflow requires a fine-grained PAT stored as `RELEASE_PLEASE_TOKEN`,
+scoped only to this repository with **Contents: Read and write** and
+**Pull requests: Read and write**. Add **Issues: Read and write** because Release
+Please manages release pull request labels. Never place the token in a file,
+commit, command output, issue, or chat message.
+
+The reusable release engine builds the plugin archive with read-only contents
+permission, transfers it to a separate publish job, and publishes only the
+matching draft Release. It refuses to replace assets on an already published
+Release; publish a new version instead.

@@ -4,3 +4,23 @@
 .coverage*
 __pycache__/
 *.py[cod]
+
+# Local environments and secret-bearing configuration.
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Credentials and private key material.
+credentials.json
+*.key
+*.pem
+*.p12
+*.jks
+id_rsa*
+
+# Packaging artifacts.
+build/
+dist/
+*.egg-info/
