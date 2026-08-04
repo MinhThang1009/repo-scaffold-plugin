@@ -150,12 +150,14 @@ jobs:
             "https://github.com/${SHELLCHECK_REPOSITORY}/releases/download/${SHELLCHECK_TAG}/${archive}"
           printf '%s  %s\n' "$SHELLCHECK_SHA256" "$archive" |
             sha256sum --check --strict
+          extract_dir="$RUNNER_TEMP/shellcheck-extract"
+          mkdir "$extract_dir"
           case "$SHELLCHECK_ARCHIVE_FORMAT" in
-            tar.gz) tar --extract --gzip --file "$archive" "$SHELLCHECK_EXECUTABLE_PATH" ;;
-            tar.xz) tar --extract --xz --file "$archive" "$SHELLCHECK_EXECUTABLE_PATH" ;;
+            tar.gz) tar --extract --gzip --file "$archive" --directory "$extract_dir" "$SHELLCHECK_EXECUTABLE_PATH" ;;
+            tar.xz) tar --extract --xz --file "$archive" --directory "$extract_dir" "$SHELLCHECK_EXECUTABLE_PATH" ;;
             *) printf 'Unsupported archive format: %s\n' "$SHELLCHECK_ARCHIVE_FORMAT" >&2; exit 1 ;;
           esac
-          install -m 0755 "$SHELLCHECK_EXECUTABLE_PATH" "$RUNNER_TEMP/shellcheck"
+          install -m 0755 "$extract_dir/$SHELLCHECK_EXECUTABLE_PATH" "$RUNNER_TEMP/shellcheck"
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Install actionlint
@@ -175,12 +177,14 @@ jobs:
             "https://github.com/${ACTIONLINT_REPOSITORY}/releases/download/${ACTIONLINT_TAG}/${archive}"
           printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" |
             sha256sum --check --strict
+          extract_dir="$RUNNER_TEMP/actionlint-extract"
+          mkdir "$extract_dir"
           case "$ACTIONLINT_ARCHIVE_FORMAT" in
-            tar.gz) tar --extract --gzip --file "$archive" "$ACTIONLINT_EXECUTABLE_PATH" ;;
-            tar.xz) tar --extract --xz --file "$archive" "$ACTIONLINT_EXECUTABLE_PATH" ;;
+            tar.gz) tar --extract --gzip --file "$archive" --directory "$extract_dir" "$ACTIONLINT_EXECUTABLE_PATH" ;;
+            tar.xz) tar --extract --xz --file "$archive" --directory "$extract_dir" "$ACTIONLINT_EXECUTABLE_PATH" ;;
             *) printf 'Unsupported archive format: %s\n' "$ACTIONLINT_ARCHIVE_FORMAT" >&2; exit 1 ;;
           esac
-          install -m 0755 "$ACTIONLINT_EXECUTABLE_PATH" "$RUNNER_TEMP/actionlint"
+          install -m 0755 "$extract_dir/$ACTIONLINT_EXECUTABLE_PATH" "$RUNNER_TEMP/actionlint"
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Lint GitHub Actions workflows

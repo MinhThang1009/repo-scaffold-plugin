@@ -274,6 +274,26 @@ class CiToolchainContractValidationTests(unittest.TestCase):
                 problems,
             )
 
+    def test_installing_from_the_extraction_target_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                '"$extract_dir/$ACTIONLINT_EXECUTABLE_PATH"',
+                '"$ACTIONLINT_EXECUTABLE_PATH"',
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertIn(
+                ".github/workflows/ci.yml: Install actionlint must extract "
+                "before install",
+                problems,
+            )
+
 
 class MirroredDependencyMetadataTests(unittest.TestCase):
     def test_repository_mirrored_metadata_is_synchronized(self) -> None:

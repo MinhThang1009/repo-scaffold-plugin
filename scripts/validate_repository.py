@@ -708,6 +708,20 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
             "ACTIONLINT_SHA256": "${{ needs.prepare_ci.outputs.actionlint_sha256 }}",
         },
     }
+    expected_extraction_fragments = {
+        "Install ShellCheck": (
+            'extract_dir="$RUNNER_TEMP/shellcheck-extract"',
+            '--directory "$extract_dir"',
+            'install -m 0755 "$extract_dir/$SHELLCHECK_EXECUTABLE_PATH" '
+            '"$RUNNER_TEMP/shellcheck"',
+        ),
+        "Install actionlint": (
+            'extract_dir="$RUNNER_TEMP/actionlint-extract"',
+            '--directory "$extract_dir"',
+            'install -m 0755 "$extract_dir/$ACTIONLINT_EXECUTABLE_PATH" '
+            '"$RUNNER_TEMP/actionlint"',
+        ),
+    }
     for step_name, expected_environment in expected_environments.items():
         matching = [
             step
@@ -717,6 +731,15 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         if len(matching) != 1 or matching[0].get("env") != expected_environment:
             problems.append(
                 f".github/workflows/ci.yml: {step_name} must consume policy outputs"
+            )
+            continue
+        run_script = matching[0].get("run")
+        if not isinstance(run_script, str) or any(
+            fragment not in run_script
+            for fragment in expected_extraction_fragments[step_name]
+        ):
+            problems.append(
+                f".github/workflows/ci.yml: {step_name} must extract before install"
             )
     if isinstance(installed_tools, dict):
         forbidden_workflow_literals: set[str] = set()
