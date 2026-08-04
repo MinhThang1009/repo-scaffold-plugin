@@ -19,13 +19,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  prepare_python:
-    name: prepare-python-matrix
+  prepare_ci:
+    name: prepare-ci-policy
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.support.outputs.matrix }}
       latest: ${{ steps.support.outputs.latest }}
+      shellcheck_version: ${{ steps.toolchain.outputs.shellcheck_version }}
+      shellcheck_sha256: ${{ steps.toolchain.outputs.shellcheck_sha256 }}
+      actionlint_version: ${{ steps.toolchain.outputs.actionlint_version }}
+      actionlint_sha256: ${{ steps.toolchain.outputs.actionlint_sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,9 +41,14 @@ jobs:
         shell: bash
         run: python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"
 
+      - name: Load CI toolchain policy
+        id: toolchain
+        shell: bash
+        run: python skills/repo-scaffold/scripts/ci_toolchain.py emit-github-output >> "$GITHUB_OUTPUT"
+
   test:
     name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    needs: prepare_python
+    needs: prepare_ci
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     defaults:
@@ -47,7 +56,7 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare_python.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.prepare_ci.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,7 +81,7 @@ jobs:
 
   quality:
     name: quality
-    needs: prepare_python
+    needs: prepare_ci
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -89,7 +98,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ needs.prepare_python.outputs.latest }}
+          python-version: ${{ needs.prepare_ci.outputs.latest }}
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
@@ -106,6 +115,7 @@ jobs:
         run: >-
           python -m mypy
           skills/repo-scaffold/scripts/codeql_preflight.py
+          skills/repo-scaffold/scripts/ci_toolchain.py
           skills/repo-scaffold/scripts/validate_scaffold.py
           scripts/python_support.py
           scripts/validate_repository.py
@@ -117,8 +127,8 @@ jobs:
 
       - name: Install ShellCheck
         env:
-          SHELLCHECK_VERSION: "0.11.0"
-          SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+          SHELLCHECK_VERSION: ${{ needs.prepare_ci.outputs.shellcheck_version }}
+          SHELLCHECK_SHA256: ${{ needs.prepare_ci.outputs.shellcheck_sha256 }}
         run: |
           set -euo pipefail
           archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
@@ -136,8 +146,8 @@ jobs:
 
       - name: Install actionlint
         env:
-          ACTIONLINT_VERSION: "1.7.12"
-          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+          ACTIONLINT_VERSION: ${{ needs.prepare_ci.outputs.actionlint_version }}
+          ACTIONLINT_SHA256: ${{ needs.prepare_ci.outputs.actionlint_sha256 }}
         run: |
           set -euo pipefail
           archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
@@ -187,6 +197,20 @@ jobs:
 
       - name: Detect undeclared stable Python releases
         run: python scripts/python_support.py verify-latest-runtime
+
+  toolchain-drift-canary:
+    name: toolchain-drift-canary
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect standalone CI tool release drift
+        run: python skills/repo-scaffold/scripts/ci_toolchain.py verify-latest-releases
 
   ci-success:
     name: ci-success

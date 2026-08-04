@@ -247,7 +247,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
     if not isinstance(jobs, dict):
         problems.append(".github/workflows/ci.yml: jobs must be a mapping")
     else:
-        prepare = jobs.get("prepare_python")
+        prepare = jobs.get("prepare_ci")
         test = jobs.get("test")
         quality = jobs.get("quality")
         canary = jobs.get("python-latest-canary")
@@ -256,12 +256,13 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             "matrix": "${{ steps.support.outputs.matrix }}",
             "latest": "${{ steps.support.outputs.latest }}",
         }
-        if (
-            not isinstance(prepare, dict)
-            or prepare.get("outputs") != expected_prepare_outputs
+        prepare_outputs = prepare.get("outputs") if isinstance(prepare, dict) else None
+        if not isinstance(prepare_outputs, dict) or any(
+            prepare_outputs.get(name) != value
+            for name, value in expected_prepare_outputs.items()
         ):
             problems.append(
-                ".github/workflows/ci.yml: prepare_python must expose policy "
+                ".github/workflows/ci.yml: prepare_ci must expose policy "
                 "matrix and latest outputs"
             )
         prepare_steps = prepare.get("steps") if isinstance(prepare, dict) else None
@@ -272,28 +273,28 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             for step in prepare_steps
         ):
             problems.append(
-                ".github/workflows/ci.yml: prepare_python must load the centralized policy"
+                ".github/workflows/ci.yml: prepare_ci must load the centralized policy"
             )
-        expected_matrix = "${{ fromJSON(needs.prepare_python.outputs.matrix) }}"
+        expected_matrix = "${{ fromJSON(needs.prepare_ci.outputs.matrix) }}"
         if (
             not isinstance(test, dict)
-            or test.get("needs") != "prepare_python"
+            or test.get("needs") != "prepare_ci"
             or not isinstance(test.get("strategy"), dict)
             or test["strategy"].get("matrix") != expected_matrix
         ):
             problems.append(
-                ".github/workflows/ci.yml: test matrix must come from prepare_python"
+                ".github/workflows/ci.yml: test matrix must come from prepare_ci"
             )
         quality_steps = quality.get("steps") if isinstance(quality, dict) else None
         if (
             not isinstance(quality, dict)
-            or quality.get("needs") != "prepare_python"
+            or quality.get("needs") != "prepare_ci"
             or not isinstance(quality_steps, list)
             or not any(
                 isinstance(step, dict)
                 and isinstance(step.get("with"), dict)
                 and step["with"].get("python-version")
-                == "${{ needs.prepare_python.outputs.latest }}"
+                == "${{ needs.prepare_ci.outputs.latest }}"
                 for step in quality_steps
             )
         ):
@@ -381,6 +382,343 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             if requirement not in skill_text:
                 problems.append(
                     "skills/repo-scaffold/SKILL.md: missing Python support "
+                    f"requirement {requirement!r}"
+                )
+    return problems
+
+
+def iter_uses_values(value: Any) -> Iterable[Any]:
+    """Yield every workflow ``uses`` value from a decoded YAML tree."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "uses":
+                yield child
+            yield from iter_uses_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_uses_values(child)
+
+
+def validate_action_references(repository_root: Path) -> list[str]:
+    """Require immutable digests for every external workflow dependency."""
+    workflow_roots = (
+        repository_root / ".github" / "workflows",
+        repository_root / "skills" / "repo-scaffold" / "assets" / "workflows",
+    )
+    paths = sorted(
+        {
+            path
+            for root in workflow_roots
+            if root.is_dir()
+            for pattern in ("*.yml", "*.yaml")
+            for path in root.glob(pattern)
+            if path.is_file()
+        }
+    )
+    problems: list[str] = []
+    for path in paths:
+        relative = path.relative_to(repository_root)
+        try:
+            document = load_yaml(path)
+        except (OSError, UnicodeError, yaml.YAMLError):
+            continue
+        for reference in iter_uses_values(document):
+            if not isinstance(reference, str) or not reference.strip():
+                problems.append(f"{relative}: uses must be a nonempty string")
+                continue
+            if reference.startswith("./"):
+                continue
+            if reference.startswith("docker://"):
+                if re.fullmatch(r"docker://[^\s@]+@sha256:[0-9a-f]{64}", reference):
+                    continue
+                problems.append(
+                    f"{relative}: external container reference must use a full "
+                    f"sha256 digest: {reference}"
+                )
+                continue
+            if re.fullmatch(
+                r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?"
+                r"@[0-9a-fA-F]{40}",
+                reference,
+            ):
+                continue
+            problems.append(
+                f"{relative}: external action or workflow must use a full "
+                f"commit SHA: {reference}"
+            )
+    return problems
+
+
+def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
+    """Validate centralized CI bootstrap and standalone-tool consumers."""
+    script = (
+        repository_root / "skills" / "repo-scaffold" / "scripts" / "ci_toolchain.py"
+    )
+    policy_paths = (
+        repository_root / ".github" / "ci-toolchain.json",
+        repository_root / "skills" / "repo-scaffold" / "assets" / "ci-toolchain.json",
+    )
+    if not script.is_file():
+        return [
+            "CI toolchain contract: "
+            "skills/repo-scaffold/scripts/ci_toolchain.py is missing"
+        ]
+
+    problems: list[str] = []
+    for policy_path in policy_paths:
+        relative = policy_path.relative_to(repository_root)
+        if not policy_path.is_file():
+            problems.append(f"CI toolchain contract: {relative} is missing")
+            continue
+        command = [
+            sys.executable,
+            str(script),
+            "--policy",
+            str(policy_path),
+            "validate",
+        ]
+        try:
+            result = subprocess.run(  # noqa: S603 - interpreter/script are explicit
+                command,
+                cwd=repository_root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            problems.append(f"CI toolchain contract: {relative} validation timed out")
+            continue
+        if result.returncode != 0:
+            detail = (
+                result.stderr.strip() or result.stdout.strip() or "validation failed"
+            )
+            problems.extend(
+                f"CI toolchain contract: {relative}: {line}"
+                for line in detail.splitlines()
+            )
+
+    installed_policy_path = policy_paths[0]
+    asset_policy_path = policy_paths[1]
+    try:
+        installed_policy = load_json(installed_policy_path)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        installed_policy = None
+    installed_tools = (
+        installed_policy.get("standalone-tools")
+        if isinstance(installed_policy, dict)
+        else None
+    )
+    if not isinstance(installed_tools, dict) or set(installed_tools) != {
+        "actionlint",
+        "shellcheck",
+    }:
+        problems.append(
+            ".github/ci-toolchain.json: standalone-tools must define exactly "
+            "actionlint and shellcheck for repository workflow validation"
+        )
+    try:
+        asset_policy = load_json(asset_policy_path)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        asset_policy = None
+    if not isinstance(asset_policy, dict) or asset_policy.get("standalone-tools") != {}:
+        problems.append(
+            "skills/repo-scaffold/assets/ci-toolchain.json: generic scaffold "
+            "must not prescribe unused standalone tools"
+        )
+
+    for document_name in ("README.md", "CONTRIBUTING.md"):
+        path = repository_root / document_name
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"{document_name}: could not verify CI toolchain link: {error}"
+            )
+            continue
+        if ".github/ci-toolchain.json" not in text:
+            problems.append(f"{document_name}: must reference the CI toolchain policy")
+
+    workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
+    try:
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow = load_yaml(workflow_path)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        problems.append(
+            f".github/workflows/ci.yml: could not verify toolchain: {error}"
+        )
+        workflow_text = ""
+        workflow = None
+    if re.search(
+        r"(?m)^\s*(?:SHELLCHECK|ACTIONLINT)_VERSION:\s*['\"]?\d",
+        workflow_text,
+    ):
+        problems.append(
+            ".github/workflows/ci.yml: standalone tool versions must not be hardcoded"
+        )
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if isinstance(jobs, dict):
+        prepare = jobs.get("prepare_ci")
+        quality = jobs.get("quality")
+        canary = jobs.get("toolchain-drift-canary")
+    else:
+        prepare = quality = canary = None
+        problems.append(".github/workflows/ci.yml: jobs must be a mapping")
+    expected_outputs = {
+        "shellcheck_version": "${{ steps.toolchain.outputs.shellcheck_version }}",
+        "shellcheck_sha256": "${{ steps.toolchain.outputs.shellcheck_sha256 }}",
+        "actionlint_version": "${{ steps.toolchain.outputs.actionlint_version }}",
+        "actionlint_sha256": "${{ steps.toolchain.outputs.actionlint_sha256 }}",
+    }
+    prepare_outputs = prepare.get("outputs") if isinstance(prepare, dict) else None
+    prepare_steps = prepare.get("steps") if isinstance(prepare, dict) else None
+    if not isinstance(prepare_outputs, dict) or any(
+        prepare_outputs.get(name) != value for name, value in expected_outputs.items()
+    ):
+        problems.append(
+            ".github/workflows/ci.yml: prepare_ci must expose standalone tool outputs"
+        )
+    if not isinstance(prepare_steps, list) or not any(
+        isinstance(step, dict)
+        and step.get("id") == "toolchain"
+        and step.get("run")
+        == "python skills/repo-scaffold/scripts/ci_toolchain.py "
+        'emit-github-output >> "$GITHUB_OUTPUT"'
+        for step in prepare_steps
+    ):
+        problems.append(
+            ".github/workflows/ci.yml: prepare_ci must load the CI toolchain policy"
+        )
+    quality_steps = quality.get("steps") if isinstance(quality, dict) else None
+    expected_environments = {
+        "Install ShellCheck": {
+            "SHELLCHECK_VERSION": "${{ needs.prepare_ci.outputs.shellcheck_version }}",
+            "SHELLCHECK_SHA256": "${{ needs.prepare_ci.outputs.shellcheck_sha256 }}",
+        },
+        "Install actionlint": {
+            "ACTIONLINT_VERSION": "${{ needs.prepare_ci.outputs.actionlint_version }}",
+            "ACTIONLINT_SHA256": "${{ needs.prepare_ci.outputs.actionlint_sha256 }}",
+        },
+    }
+    for step_name, expected_environment in expected_environments.items():
+        matching = [
+            step
+            for step in quality_steps or []
+            if isinstance(step, dict) and step.get("name") == step_name
+        ]
+        if len(matching) != 1 or matching[0].get("env") != expected_environment:
+            problems.append(
+                f".github/workflows/ci.yml: {step_name} must consume policy outputs"
+            )
+    canary_steps = canary.get("steps") if isinstance(canary, dict) else None
+    triggers = workflow.get("on") if isinstance(workflow, dict) else None
+    if (
+        not isinstance(canary, dict)
+        or canary.get("if")
+        != "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
+        or not isinstance(canary_steps, list)
+        or not any(
+            isinstance(step, dict)
+            and step.get("run")
+            == "python skills/repo-scaffold/scripts/ci_toolchain.py "
+            "verify-latest-releases"
+            for step in canary_steps
+        )
+        or not isinstance(triggers, dict)
+        or "schedule" not in triggers
+    ):
+        problems.append(
+            ".github/workflows/ci.yml: scheduled/manual toolchain drift canary "
+            "must verify latest releases"
+        )
+
+    documentation_path = (
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "documentation.yml"
+    )
+    try:
+        documentation_text = documentation_path.read_text(encoding="utf-8")
+        documentation = load_yaml(documentation_path)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        problems.append(
+            "skills/repo-scaffold/assets/workflows/documentation.yml: "
+            f"could not verify toolchain: {error}"
+        )
+        documentation_text = ""
+        documentation = None
+    if re.search(r"(?m)^\s*python-version:\s*['\"]?3\.\d+", documentation_text):
+        problems.append(
+            "skills/repo-scaffold/assets/workflows/documentation.yml: "
+            "documentation Python must not be hardcoded"
+        )
+    documentation_jobs = (
+        documentation.get("jobs") if isinstance(documentation, dict) else None
+    )
+    if isinstance(documentation_jobs, dict):
+        docs_prepare = documentation_jobs.get("prepare_docs")
+        docs_contract = documentation_jobs.get("docs-contract")
+    else:
+        docs_prepare = docs_contract = None
+    docs_outputs = (
+        docs_prepare.get("outputs") if isinstance(docs_prepare, dict) else None
+    )
+    docs_prepare_steps = (
+        docs_prepare.get("steps") if isinstance(docs_prepare, dict) else None
+    )
+    docs_steps = docs_contract.get("steps") if isinstance(docs_contract, dict) else None
+    if (
+        docs_outputs
+        != {
+            "documentation_python": "${{ steps.toolchain.outputs.documentation_python }}"
+        }
+        or not isinstance(docs_prepare_steps, list)
+        or not any(
+            isinstance(step, dict)
+            and step.get("id") == "toolchain"
+            and step.get("run")
+            == 'python scripts/ci_toolchain.py emit-github-output >> "$GITHUB_OUTPUT"'
+            for step in docs_prepare_steps
+        )
+    ):
+        problems.append(
+            "skills/repo-scaffold/assets/workflows/documentation.yml: "
+            "prepare_docs must load the CI toolchain policy"
+        )
+    if (
+        not isinstance(docs_contract, dict)
+        or docs_contract.get("needs") != "prepare_docs"
+        or not isinstance(docs_steps, list)
+        or not any(
+            isinstance(step, dict)
+            and isinstance(step.get("with"), dict)
+            and step["with"].get("python-version")
+            == "${{ needs.prepare_docs.outputs.documentation_python }}"
+            for step in docs_steps
+        )
+    ):
+        problems.append(
+            "skills/repo-scaffold/assets/workflows/documentation.yml: "
+            "docs-contract must consume the rolling policy runtime"
+        )
+
+    skill_path = repository_root / "skills" / "repo-scaffold" / "SKILL.md"
+    try:
+        skill_text = skill_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"skills/repo-scaffold/SKILL.md: {error}")
+    else:
+        for requirement in (
+            ".github/ci-toolchain.json",
+            "scheduled/manual drift canary",
+            "must not install an unreviewed release automatically",
+        ):
+            if requirement not in skill_text:
+                problems.append(
+                    "skills/repo-scaffold/SKILL.md: missing CI toolchain "
                     f"requirement {requirement!r}"
                 )
     return problems
@@ -1128,7 +1466,9 @@ def validate_repository(repository_root: Path) -> list[str]:
     """Run every deterministic repository validation."""
     validators = (
         validate_serialized_files,
+        validate_action_references,
         validate_python_support_contract,
+        validate_ci_toolchain_contract,
         validate_plugin_manifest,
         validate_release_please,
         validate_release_attestation,
@@ -1152,8 +1492,8 @@ def main() -> int:
             print(f"error: {problem}", file=sys.stderr)
         return 1
     print(
-        "Repository metadata, Python support, links, templates, attestations, "
-        "and release archive are valid."
+        "Repository metadata, action pins, CI policies, links, templates, "
+        "attestations, and release archive are valid."
     )
     return 0
 

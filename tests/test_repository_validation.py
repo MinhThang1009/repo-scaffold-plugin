@@ -81,7 +81,7 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             self.copy_contract(root)
             workflow_path = root / ".github" / "workflows" / "ci.yml"
             workflow = workflow_path.read_text(encoding="utf-8").replace(
-                "${{ needs.prepare_python.outputs.latest }}",
+                "${{ needs.prepare_ci.outputs.latest }}",
                 '"3.14"',
                 1,
             )
@@ -97,6 +97,120 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             self.assertIn(
                 ".github/workflows/ci.yml: quality must use the policy's latest "
                 "release",
+                problems,
+            )
+
+
+class ActionReferenceValidationTests(unittest.TestCase):
+    def test_repository_action_references_are_immutable(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_action_references(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_mutable_action_reference_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            (workflow_root / "ci.yml").write_text(
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: actions/checkout@v7\n"
+                "      - uses: ./local-action\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_repository.validate_action_references(root),
+                [
+                    f"{Path('.github') / 'workflows' / 'ci.yml'}: external action or workflow "
+                    "must use a full commit SHA: actions/checkout@v7"
+                ],
+            )
+
+
+class CiToolchainContractValidationTests(unittest.TestCase):
+    CONTRACT_FILES = (
+        ".github/ci-toolchain.json",
+        ".github/workflows/ci.yml",
+        "CONTRIBUTING.md",
+        "README.md",
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/assets/ci-toolchain.json",
+        "skills/repo-scaffold/assets/workflows/documentation.yml",
+        "skills/repo-scaffold/scripts/ci_toolchain.py",
+    )
+
+    def copy_contract(self, root: Path) -> None:
+        for relative in self.CONTRACT_FILES:
+            source = PLUGIN_ROOT / relative
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+    def test_repository_ci_toolchain_contract_is_synchronized(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_ci_toolchain_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_hardcoded_documentation_python_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "workflows"
+                / "documentation.yml"
+            )
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "${{ needs.prepare_docs.outputs.documentation_python }}",
+                '"3.10"',
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertIn(
+                "skills/repo-scaffold/assets/workflows/documentation.yml: "
+                "documentation Python must not be hardcoded",
+                problems,
+            )
+            self.assertIn(
+                "skills/repo-scaffold/assets/workflows/documentation.yml: "
+                "docs-contract must consume the rolling policy runtime",
+                problems,
+            )
+
+    def test_hardcoded_standalone_tool_version_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "${{ needs.prepare_ci.outputs.shellcheck_version }}",
+                '"0.11.0"',
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertIn(
+                ".github/workflows/ci.yml: standalone tool versions must not "
+                "be hardcoded",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/ci.yml: Install ShellCheck must consume "
+                "policy outputs",
                 problems,
             )
 

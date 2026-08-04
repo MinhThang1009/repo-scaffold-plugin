@@ -43,6 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+* Centralized rolling CI bootstrap settings and reviewed standalone-tool release
+  pins in a machine-readable policy, with scheduled upstream drift detection.
 * Centered the README header and badges, numbered its outline, and added a
   complete manual table of contents.
 * Made documentation language detection and Markdown/template conventions
