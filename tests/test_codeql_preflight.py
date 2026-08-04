@@ -2092,6 +2092,7 @@ class PlaceholderContractTests(unittest.TestCase):
                 Loader=codeql_preflight.UniqueKeyBaseLoader,
             )
             with self.subTest(workflow=path.as_posix()):
+                self.assertEqual(document["permissions"]["actions"], "read")
                 self.assertEqual(document["permissions"]["contents"], "read")
                 self.assertEqual(document["permissions"]["packages"], "read")
                 self.assertEqual(document["permissions"]["security-events"], "write")
@@ -2112,9 +2113,73 @@ class PlaceholderContractTests(unittest.TestCase):
                 )
                 self.assertIn("if: contains(fromJSON(", workflow)
 
-        self.assertIn('language: ["python"]', installed_path.read_text("utf-8"))
-        self.assertIn(
-            "{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}", asset_path.read_text("utf-8")
+        installed = codeql_preflight.yaml.load(
+            installed_path.read_text(encoding="utf-8"),
+            Loader=codeql_preflight.UniqueKeyBaseLoader,
+        )
+        asset = codeql_preflight.yaml.load(
+            asset_path.read_text(encoding="utf-8"),
+            Loader=codeql_preflight.UniqueKeyBaseLoader,
+        )
+        self.assertEqual(
+            installed["jobs"]["analyze"]["strategy"]["matrix"]["language"],
+            ["actions", "python"],
+        )
+        self.assertEqual(
+            asset["jobs"]["analyze"]["strategy"]["matrix"]["language"],
+            ["actions", "{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"],
+        )
+
+    def test_scorecard_workflows_are_pinned_and_publish_sarif(self) -> None:
+        installed_path = PLUGIN_ROOT / ".github" / "workflows" / "scorecard.yml"
+        asset_path = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "scorecard.yml"
+        )
+        expected_uses = [
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc",
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            "github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38",
+        ]
+
+        documents = {}
+        for path in (installed_path, asset_path):
+            document = codeql_preflight.yaml.load(
+                path.read_text(encoding="utf-8"),
+                Loader=codeql_preflight.UniqueKeyBaseLoader,
+            )
+            documents[path] = document
+            job = document["jobs"]["analysis"]
+            with self.subTest(workflow=path.as_posix()):
+                self.assertEqual(document["permissions"], "read-all")
+                self.assertEqual(
+                    set(document["on"]),
+                    {"branch_protection_rule", "push", "schedule"},
+                )
+                self.assertEqual(job["permissions"]["contents"], "read")
+                self.assertEqual(job["permissions"]["id-token"], "write")
+                self.assertEqual(job["permissions"]["security-events"], "write")
+                self.assertEqual(
+                    [step["uses"] for step in job["steps"] if "uses" in step],
+                    expected_uses,
+                )
+                scorecard_step = next(
+                    step
+                    for step in job["steps"]
+                    if step.get("uses", "").startswith("ossf/scorecard-action@")
+                )
+                self.assertEqual(scorecard_step["with"]["publish_results"], "true")
+                self.assertEqual(scorecard_step["with"]["results_format"], "sarif")
+
+        self.assertEqual(documents[installed_path]["on"]["push"]["branches"], ["main"])
+        self.assertEqual(
+            documents[asset_path]["on"]["push"]["branches"],
+            ["{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}"],
         )
 
     def test_regular_workflow_jobs_have_finite_timeouts(self) -> None:
@@ -2229,6 +2294,8 @@ class PlaceholderContractTests(unittest.TestCase):
         )
         self.assertIn("required_status_checks.strict", protection)
         self.assertIn("unexpectedly required", protection)
+        self.assertNotIn("contexts = @()", protection)
+        self.assertIn("Send only `checks`", protection)
 
     def test_codeql_preflight_reads_the_tooling_python_policy(self) -> None:
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")

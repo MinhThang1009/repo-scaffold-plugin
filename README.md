@@ -117,6 +117,7 @@ repo-scaffold/
 │       ├── links.yml
 │       ├── release-please.yml
 │       ├── release.yml
+│       ├── scorecard.yml
 │       └── stale.yml
 ├── .editorconfig
 ├── .gitattributes
@@ -142,7 +143,7 @@ repo-scaffold/
         │   └── github-setup.md    # exact gh configuration commands
         └── assets/                # community-health files + config files (labeler, release configs)
             └── workflows/         # ci, docs, links, release engine/dispatcher, release-please, CodeQL,
-                                   # dependency-review, auto-merge, commitlint, stale, labeler
+                                   # Scorecard, dependency-review, auto-merge, commitlint, stale, labeler
 ```
 
 SKILL.md → Resources lists every generated file.

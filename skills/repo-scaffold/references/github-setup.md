@@ -740,7 +740,8 @@ if ($protectionExitCode -eq 0) {
   $payload = @{
     required_status_checks = @{
       strict = $true
-      contexts = @()
+      # GitHub's request schema treats `contexts` and `checks` as alternative
+      # shapes. Send only `checks` so each context keeps its verified app binding.
       checks = $checks
     }
     enforce_admins = $true
