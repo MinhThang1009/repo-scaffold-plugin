@@ -172,6 +172,220 @@ def validate_serialized_files(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_python_support_contract(repository_root: Path) -> list[str]:
+    """Validate the centralized Python policy and every repository consumer."""
+    script = repository_root / "scripts" / "python_support.py"
+    policy_path = repository_root / ".github" / "python-support.json"
+    if not script.is_file():
+        return ["Python support contract: scripts/python_support.py is missing"]
+    if not policy_path.is_file():
+        return ["Python support contract: .github/python-support.json is missing"]
+
+    command = [
+        sys.executable,
+        str(script),
+        "--policy",
+        str(policy_path),
+        "validate",
+    ]
+    try:
+        result = subprocess.run(  # noqa: S603 - interpreter and script are explicit
+            command,
+            cwd=repository_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return ["Python support contract: policy validation timed out"]
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "validation failed"
+        return [f"Python support contract: {line}" for line in detail.splitlines()]
+
+    problems: list[str] = []
+    policy_reference = ".github/python-support.json"
+    for relative in ("README.md", "CONTRIBUTING.md", "requirements-dev.txt"):
+        path = repository_root / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(f"{relative}: could not verify Python policy link: {error}")
+            continue
+        if policy_reference not in text:
+            problems.append(
+                f"{relative}: must reference the centralized Python support policy"
+            )
+        if re.search(
+            r"(?i)\b(?:CPython|Python)\s+3\.\d+"
+            r"(?:\s*(?:through|-)\s*3\.\d+|\s+or newer)",
+            text,
+        ):
+            problems.append(
+                f"{relative}: must not duplicate the supported Python version range"
+            )
+
+    workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
+    asset_path = (
+        repository_root / "skills" / "repo-scaffold" / "assets" / "workflows" / "ci.yml"
+    )
+    skill_path = repository_root / "skills" / "repo-scaffold" / "SKILL.md"
+    try:
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow = load_yaml(workflow_path)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        problems.append(f".github/workflows/ci.yml: could not verify contract: {error}")
+        workflow_text = ""
+        workflow = None
+
+    if re.search(r"(?m)^\s*python-version:\s*['\"]?3\.\d+", workflow_text):
+        problems.append(
+            ".github/workflows/ci.yml: supported Python feature releases must "
+            "not be hardcoded"
+        )
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if not isinstance(jobs, dict):
+        problems.append(".github/workflows/ci.yml: jobs must be a mapping")
+    else:
+        prepare = jobs.get("prepare_python")
+        test = jobs.get("test")
+        quality = jobs.get("quality")
+        canary = jobs.get("python-latest-canary")
+        ci_success = jobs.get("ci-success")
+        expected_prepare_outputs = {
+            "matrix": "${{ steps.support.outputs.matrix }}",
+            "latest": "${{ steps.support.outputs.latest }}",
+        }
+        if (
+            not isinstance(prepare, dict)
+            or prepare.get("outputs") != expected_prepare_outputs
+        ):
+            problems.append(
+                ".github/workflows/ci.yml: prepare_python must expose policy "
+                "matrix and latest outputs"
+            )
+        prepare_steps = prepare.get("steps") if isinstance(prepare, dict) else None
+        if not isinstance(prepare_steps, list) or not any(
+            isinstance(step, dict)
+            and step.get("run")
+            == 'python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"'
+            for step in prepare_steps
+        ):
+            problems.append(
+                ".github/workflows/ci.yml: prepare_python must load the centralized policy"
+            )
+        expected_matrix = "${{ fromJSON(needs.prepare_python.outputs.matrix) }}"
+        if (
+            not isinstance(test, dict)
+            or test.get("needs") != "prepare_python"
+            or not isinstance(test.get("strategy"), dict)
+            or test["strategy"].get("matrix") != expected_matrix
+        ):
+            problems.append(
+                ".github/workflows/ci.yml: test matrix must come from prepare_python"
+            )
+        quality_steps = quality.get("steps") if isinstance(quality, dict) else None
+        if (
+            not isinstance(quality, dict)
+            or quality.get("needs") != "prepare_python"
+            or not isinstance(quality_steps, list)
+            or not any(
+                isinstance(step, dict)
+                and isinstance(step.get("with"), dict)
+                and step["with"].get("python-version")
+                == "${{ needs.prepare_python.outputs.latest }}"
+                for step in quality_steps
+            )
+        ):
+            problems.append(
+                ".github/workflows/ci.yml: quality must use the policy's latest release"
+            )
+        canary_steps = canary.get("steps") if isinstance(canary, dict) else None
+        canary_setup = isinstance(canary_steps, list) and any(
+            isinstance(step, dict)
+            and isinstance(step.get("with"), dict)
+            and step["with"].get("python-version") == "3.x"
+            and step["with"].get("check-latest") == "true"
+            for step in canary_steps
+        )
+        canary_verification = isinstance(canary_steps, list) and any(
+            isinstance(step, dict)
+            and step.get("run")
+            == "python scripts/python_support.py verify-latest-runtime"
+            for step in canary_steps
+        )
+        canary_install = isinstance(canary_steps, list) and any(
+            isinstance(step, dict)
+            and step.get("run")
+            == "python -m pip install --disable-pip-version-check "
+            "--requirement requirements-dev.txt"
+            for step in canary_steps
+        )
+        canary_tests = isinstance(canary_steps, list) and any(
+            isinstance(step, dict) and step.get("run") == "python -m pytest -q"
+            for step in canary_steps
+        )
+        triggers = workflow.get("on") if isinstance(workflow, dict) else None
+        if (
+            not isinstance(canary, dict)
+            or canary.get("if")
+            != "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
+            or not canary_setup
+            or not canary_install
+            or not canary_tests
+            or not canary_verification
+            or not isinstance(triggers, dict)
+            or "schedule" not in triggers
+        ):
+            problems.append(
+                ".github/workflows/ci.yml: scheduled 3.x canary must test and "
+                "detect undeclared stable releases"
+            )
+        ci_success_needs = (
+            ci_success.get("needs") if isinstance(ci_success, dict) else None
+        )
+        if not isinstance(ci_success_needs, list) or set(ci_success_needs) != {
+            "test",
+            "quality",
+        }:
+            problems.append(
+                ".github/workflows/ci.yml: ci-success must keep the scheduled "
+                "canary outside the required gate"
+            )
+
+    try:
+        asset_text = asset_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"{asset_path.relative_to(repository_root)}: {error}")
+    else:
+        if (
+            "prepare_runtime:" not in asset_text
+            or "fromJSON(needs.prepare_runtime.outputs.matrix)" not in asset_text
+            or "latest-runtime-canary:" not in asset_text
+            or "schedule:" not in asset_text
+        ):
+            problems.append(
+                "skills/repo-scaffold/assets/workflows/ci.yml: scaffold CI must "
+                "load a runtime policy dynamically and retain a scheduled canary"
+            )
+    try:
+        skill_text = skill_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"{skill_path.relative_to(repository_root)}: {error}")
+    else:
+        for requirement in (
+            "single source of truth",
+            "scheduled compatibility canary",
+            "do not duplicate supported versions",
+        ):
+            if requirement not in skill_text:
+                problems.append(
+                    "skills/repo-scaffold/SKILL.md: missing Python support "
+                    f"requirement {requirement!r}"
+                )
+    return problems
+
+
 def validate_plugin_manifest(repository_root: Path) -> list[str]:
     """Validate the installed plugin manifest and its referenced skill tree."""
     path = repository_root / ".codex-plugin" / "plugin.json"
@@ -914,6 +1128,7 @@ def validate_repository(repository_root: Path) -> list[str]:
     """Run every deterministic repository validation."""
     validators = (
         validate_serialized_files,
+        validate_python_support_contract,
         validate_plugin_manifest,
         validate_release_please,
         validate_release_attestation,
@@ -937,8 +1152,8 @@ def main() -> int:
             print(f"error: {problem}", file=sys.stderr)
         return 1
     print(
-        "Repository metadata, links, templates, attestations, and release "
-        "archive are valid."
+        "Repository metadata, Python support, links, templates, attestations, "
+        "and release archive are valid."
     )
     return 0
 

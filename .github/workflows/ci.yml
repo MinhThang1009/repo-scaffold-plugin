@@ -7,6 +7,8 @@ on:
     types: [opened, edited, reopened, synchronize]
   merge_group:
     types: [checks_requested]
+  schedule:
+    - cron: "23 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -17,8 +19,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare_python:
+    name: prepare-python-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.support.outputs.matrix }}
+      latest: ${{ steps.support.outputs.latest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load Python support policy
+        id: support
+        shell: bash
+        run: python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"
+
   test:
     name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    needs: prepare_python
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     defaults:
@@ -26,9 +47,7 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.14"]
+      matrix: ${{ fromJSON(needs.prepare_python.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +72,7 @@ jobs:
 
   quality:
     name: quality
+    needs: prepare_python
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -69,7 +89,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.14"
+          python-version: ${{ needs.prepare_python.outputs.latest }}
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
@@ -87,6 +107,7 @@ jobs:
           python -m mypy
           skills/repo-scaffold/scripts/codeql_preflight.py
           skills/repo-scaffold/scripts/validate_scaffold.py
+          scripts/python_support.py
           scripts/validate_repository.py
           scripts/validate_workflows.py
           tests
@@ -135,6 +156,37 @@ jobs:
 
       - name: Validate repository contracts
         run: python scripts/validate_repository.py
+
+  python-latest-canary:
+    name: python-latest-canary
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up latest stable Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+          check-latest: true
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install development dependencies
+        run: python -m pip install --disable-pip-version-check --requirement requirements-dev.txt
+
+      - name: Verify dependency consistency
+        run: python -m pip check
+
+      - name: Run tests on the latest stable Python
+        run: python -m pytest -q
+
+      - name: Detect undeclared stable Python releases
+        run: python scripts/python_support.py verify-latest-runtime
 
   ci-success:
     name: ci-success

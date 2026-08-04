@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -47,6 +48,57 @@ class SerializedFileValidationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "duplicate JSON member"):
                 validate_repository.load_json(path)
+
+
+class PythonSupportContractValidationTests(unittest.TestCase):
+    CONTRACT_FILES = (
+        ".github/python-support.json",
+        ".github/workflows/ci.yml",
+        "CONTRIBUTING.md",
+        "README.md",
+        "requirements-dev.txt",
+        "scripts/python_support.py",
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/assets/workflows/ci.yml",
+    )
+
+    def copy_contract(self, root: Path) -> None:
+        for relative in self.CONTRACT_FILES:
+            source = PLUGIN_ROOT / relative
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+    def test_repository_python_support_contract_is_synchronized(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_python_support_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_hardcoded_workflow_version_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "${{ needs.prepare_python.outputs.latest }}",
+                '"3.14"',
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_python_support_contract(root)
+
+            self.assertIn(
+                ".github/workflows/ci.yml: supported Python feature releases "
+                "must not be hardcoded",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/ci.yml: quality must use the policy's latest "
+                "release",
+                problems,
+            )
 
 
 class MarkdownLinkValidationTests(unittest.TestCase):

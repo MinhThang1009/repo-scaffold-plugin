@@ -31,7 +31,7 @@ sensitive information.
 
 The plugin has no build step. Development checks require:
 
-- Python 3.10 or newer
+- A CPython release declared in [`.github/python-support.json`](.github/python-support.json)
 - PyYAML
 - pytest
 - Ruff
@@ -69,7 +69,7 @@ Run these commands from the repository root:
 python -m pytest -q
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/python_support.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#.git/**" "#build/**" "#dist/**" "#node_modules/**"
 python scripts/validate_workflows.py
