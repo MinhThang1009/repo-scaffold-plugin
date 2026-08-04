@@ -220,6 +220,128 @@ jobs:
             )
 
 
+class ReleaseAttestationValidationTests(unittest.TestCase):
+    def write_valid_configuration(self, root: Path) -> None:
+        action_sha = "a" * 40
+        engine = {
+            "jobs": {
+                "build": {"permissions": {"contents": "read"}},
+                "attest": {
+                    "needs": "build",
+                    "runs-on": "ubuntu-latest",
+                    "timeout-minutes": 15,
+                    "permissions": {
+                        "contents": "read",
+                        "id-token": "write",
+                        "attestations": "write",
+                    },
+                    "steps": [
+                        {
+                            "name": "Receive release artifacts",
+                            "uses": f"actions/download-artifact@{action_sha}",
+                            "with": {
+                                "name": "release-assets-${{ inputs.commit_sha }}",
+                                "path": "dist/",
+                            },
+                        },
+                        {
+                            "name": "Validate downloaded artifacts",
+                            "shell": "bash",
+                            "run": validate_repository.ATTESTATION_VALIDATION_SCRIPT,
+                        },
+                        {
+                            "name": "Attest release artifacts",
+                            "uses": f"actions/attest@{action_sha}",
+                            "with": {"subject-path": "dist/**"},
+                        },
+                    ],
+                },
+                "publish": {
+                    "needs": ["build", "attest"],
+                    "permissions": {"contents": "write"},
+                },
+            }
+        }
+        caller_permissions = {
+            "contents": "write",
+            "id-token": "write",
+            "attestations": "write",
+        }
+        documents = {
+            ".github/workflows/release.yml": engine,
+            "skills/repo-scaffold/assets/workflows/release.yml": engine,
+            ".github/workflows/release-please.yml": {
+                "jobs": {"publish_release": {"permissions": caller_permissions}}
+            },
+            "skills/repo-scaffold/assets/workflows/release-please.yml": {
+                "jobs": {"publish_release": {"permissions": caller_permissions}}
+            },
+            "skills/repo-scaffold/assets/workflows/release-tag.yml": {
+                "jobs": {"release": {"permissions": caller_permissions}}
+            },
+        }
+        for relative, document in documents.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    def test_accepts_isolated_attestation_and_permission_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+
+            self.assertEqual(validate_repository.validate_release_attestation(root), [])
+
+    def test_rejects_privilege_and_publish_gate_regressions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            engine_path = root / ".github" / "workflows" / "release.yml"
+            engine = yaml.safe_load(engine_path.read_text(encoding="utf-8"))
+            engine["jobs"]["attest"]["permissions"].pop("id-token")
+            engine["jobs"]["attest"]["steps"].insert(
+                0,
+                {
+                    "name": "Unsafe checkout",
+                    "uses": "actions/checkout@" + "b" * 40,
+                },
+            )
+            engine["jobs"]["publish"]["needs"] = ["build"]
+            engine_path.write_text(
+                yaml.safe_dump(engine, sort_keys=False), encoding="utf-8"
+            )
+            caller_path = root / ".github" / "workflows" / "release-please.yml"
+            caller = yaml.safe_load(caller_path.read_text(encoding="utf-8"))
+            caller["jobs"]["publish_release"]["permissions"].pop("attestations")
+            caller_path.write_text(
+                yaml.safe_dump(caller, sort_keys=False), encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_release_attestation(root)
+
+            self.assertIn(
+                ".github/workflows/release.yml: attest permissions must be "
+                "contents: read, id-token: write, and attestations: write",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release.yml: attest must contain exactly "
+                "receive, validate, and attest steps",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release.yml: publish must depend on build and "
+                "attest",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release-please.yml: publish_release must pass "
+                "contents: write, id-token: write, and attestations: write to the "
+                "reusable release engine",
+                problems,
+            )
+
+
 class IssueFormValidationTests(unittest.TestCase):
     def test_upload_input_matches_current_github_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

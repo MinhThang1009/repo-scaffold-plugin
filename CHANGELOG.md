@@ -30,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 * Added pinned markdownlint and scheduled link-health Actions, plus a
   deterministic rendered-document validator for current and future scaffolds.
+* Added signed SLSA build-provenance attestations for release assets, isolated
+  from project builds with least-privilege reusable-workflow permissions.
 * Cross-platform CI, dependency review, and Dependabot configuration.
 * Commitlint, pull-request labeling, and stale issue/PR automation.
 * Repository-managed CodeQL advanced setup for Python, with a reusable
@@ -49,5 +51,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   inputs and documented `.yml` recognition requirements.
 * Refreshed bundled GitHub Actions to verified current releases with immutable
   commit pins.
+* Extended repository validation to enforce the release attestation boundary,
+  caller permissions, artifact scope, and publish gate.
 * Replaced the repository's manual tag dispatcher with Release Please while
   preserving the isolated reusable release engine.

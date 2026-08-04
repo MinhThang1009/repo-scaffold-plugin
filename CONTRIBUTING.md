@@ -105,7 +105,14 @@ Releases are automated from `main` through Release Please.
    `.codex-plugin/plugin.json` to the proposed SemVer.
 3. Merge the release pull request after its checks pass. Release Please creates
    the tag and draft GitHub Release, then invokes the reusable release engine.
-4. Verify that the release asset is attached and that the release is published.
+4. Verify that the release asset is attached, its provenance attestation passes,
+   and the release is published:
+
+   ```bash
+   gh attestation verify repo-scaffold-plugin-vX.Y.Z.zip \
+     --repo MinhThang1009/repo-scaffold-plugin \
+     --signer-workflow MinhThang1009/repo-scaffold-plugin/.github/workflows/release.yml
+   ```
 
 The workflow requires a fine-grained PAT stored as `RELEASE_PLEASE_TOKEN`,
 scoped only to this repository with **Contents: Read and write** and
@@ -114,6 +121,8 @@ Please manages release pull request labels. Never place the token in a file,
 commit, command output, issue, or chat message.
 
 The reusable release engine builds the plugin archive with read-only contents
-permission, transfers it to a separate publish job, and publishes only the
-matching draft Release. It refuses to replace assets on an already published
-Release; publish a new version instead.
+permission, transfers it to a separate attestation job that alone receives the
+OIDC and attestation permissions, then allows the contents-write publish job to
+publish only the matching draft Release. Neither privileged job checks out or
+executes project code. The engine refuses to replace assets on an already
+published Release; publish a new version instead.

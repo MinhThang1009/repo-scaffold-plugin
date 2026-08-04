@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate repository metadata, links, templates, and release contents."""
+"""Validate repository metadata, links, templates, attestations, and releases."""
 
 from __future__ import annotations
 
@@ -47,6 +47,21 @@ ISSUE_FORM_INPUT_TYPES = {
     "textarea",
     "upload",
 }
+ATTESTATION_VALIDATION_SCRIPT = """\
+set -euo pipefail
+if [[ ! -d dist ]] || ! find dist -type f -print -quit | grep -q .; then
+  echo "::error::No release artifacts were downloaded under dist/."
+  exit 1
+fi
+if find dist -type l -print -quit | grep -q .; then
+  echo "::error::Downloaded release artifacts must not contain symbolic links."
+  exit 1
+fi
+if find dist ! -type d ! -type f -print -quit | grep -q .; then
+  echo "::error::Downloaded release artifacts must contain only directories and regular files."
+  exit 1
+fi
+"""
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -308,6 +323,170 @@ def validate_release_please(repository_root: Path) -> list[str]:
                 f"{workflow_file.relative_to(repository_root).as_posix()}: tag push "
                 "trigger conflicts "
                 "with Release Please"
+            )
+    return problems
+
+
+def validate_release_attestation(repository_root: Path) -> list[str]:
+    """Validate provenance isolation and reusable-workflow permission flow."""
+    engine_paths = (
+        repository_root / ".github" / "workflows" / "release.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "release.yml",
+    )
+    caller_jobs = (
+        (
+            repository_root / ".github" / "workflows" / "release-please.yml",
+            "publish_release",
+        ),
+        (
+            repository_root
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "release-please.yml",
+            "publish_release",
+        ),
+        (
+            repository_root
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "release-tag.yml",
+            "release",
+        ),
+    )
+    caller_permissions = {
+        "contents": "write",
+        "id-token": "write",
+        "attestations": "write",
+    }
+    attest_permissions = {
+        "contents": "read",
+        "id-token": "write",
+        "attestations": "write",
+    }
+    problems: list[str] = []
+
+    for path in engine_paths:
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            document = load_yaml(path)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: release engine is unreadable: {error}")
+            continue
+        jobs = document.get("jobs") if isinstance(document, dict) else None
+        if not isinstance(jobs, dict):
+            problems.append(f"{relative}: jobs must be a mapping")
+            continue
+
+        build = jobs.get("build")
+        attest = jobs.get("attest")
+        publish = jobs.get("publish")
+        if not isinstance(build, dict):
+            problems.append(f"{relative}: build job is missing")
+        elif build.get("permissions") != {"contents": "read"}:
+            problems.append(f"{relative}: build permissions must be contents: read")
+
+        if not isinstance(attest, dict):
+            problems.append(f"{relative}: attest job is missing")
+        else:
+            if attest.get("needs") != "build":
+                problems.append(f"{relative}: attest must depend only on build")
+            if attest.get("runs-on") != "ubuntu-latest":
+                problems.append(f"{relative}: attest must run on ubuntu-latest")
+            if attest.get("timeout-minutes") != "15":
+                problems.append(f"{relative}: attest timeout must be 15 minutes")
+            if attest.get("permissions") != attest_permissions:
+                problems.append(
+                    f"{relative}: attest permissions must be contents: read, "
+                    "id-token: write, and attestations: write"
+                )
+
+            steps = attest.get("steps")
+            if (
+                not isinstance(steps, list)
+                or len(steps) != 3
+                or not all(isinstance(step, dict) for step in steps)
+            ):
+                problems.append(
+                    f"{relative}: attest must contain exactly receive, validate, "
+                    "and attest steps"
+                )
+            else:
+                receive, validate, generate = steps
+                receive_ref = receive.get("uses")
+                if not isinstance(receive_ref, str) or not re.fullmatch(
+                    r"actions/download-artifact@[0-9a-f]{40}", receive_ref
+                ):
+                    problems.append(
+                        f"{relative}: attest receive step must use a full-SHA "
+                        "actions/download-artifact pin"
+                    )
+                if receive.get("with") != {
+                    "name": "release-assets-${{ inputs.commit_sha }}",
+                    "path": "dist/",
+                }:
+                    problems.append(
+                        f"{relative}: attest must download the build artifact to dist/"
+                    )
+                if (
+                    validate.get("name") != "Validate downloaded artifacts"
+                    or validate.get("shell") != "bash"
+                    or not isinstance(validate.get("run"), str)
+                    or validate["run"].strip() != ATTESTATION_VALIDATION_SCRIPT.strip()
+                ):
+                    problems.append(
+                        f"{relative}: attest validation step must match the "
+                        "non-executing artifact safety contract"
+                    )
+                attest_ref = generate.get("uses")
+                if not isinstance(attest_ref, str) or not re.fullmatch(
+                    r"actions/attest@[0-9a-f]{40}", attest_ref
+                ):
+                    problems.append(
+                        f"{relative}: provenance step must use a full-SHA "
+                        "actions/attest pin"
+                    )
+                if generate.get("with") != {"subject-path": "dist/**"}:
+                    problems.append(
+                        f"{relative}: provenance subjects must cover dist/** only"
+                    )
+
+        if not isinstance(publish, dict):
+            problems.append(f"{relative}: publish job is missing")
+        else:
+            if publish.get("needs") != ["build", "attest"]:
+                problems.append(f"{relative}: publish must depend on build and attest")
+            if publish.get("permissions") != {"contents": "write"}:
+                problems.append(
+                    f"{relative}: publish permissions must be contents: write"
+                )
+
+    for path, job_name in caller_jobs:
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            document = load_yaml(path)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: release caller is unreadable: {error}")
+            continue
+        jobs = document.get("jobs") if isinstance(document, dict) else None
+        job = jobs.get(job_name) if isinstance(jobs, dict) else None
+        if not isinstance(job, dict):
+            problems.append(f"{relative}: {job_name} caller job is missing")
+        else:
+            effective_permissions = job.get("permissions", document.get("permissions"))
+            if effective_permissions == caller_permissions:
+                continue
+            problems.append(
+                f"{relative}: {job_name} must pass contents: write, id-token: "
+                "write, and attestations: write to the reusable release engine"
             )
     return problems
 
@@ -737,6 +916,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_serialized_files,
         validate_plugin_manifest,
         validate_release_please,
+        validate_release_attestation,
         validate_issue_templates,
         validate_dependabot,
         validate_markdown_links,
@@ -756,7 +936,10 @@ def main() -> int:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         return 1
-    print("Repository metadata, links, templates, and release archive are valid.")
+    print(
+        "Repository metadata, links, templates, attestations, and release "
+        "archive are valid."
+    )
     return 0
 
 

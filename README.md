@@ -30,7 +30,7 @@ A Codex plugin that scaffolds a new repository to production GitHub.com standard
 Provides the `repo-scaffold` skill, which Codex activates when you ask to set up a new repository's standard files. It:
 
 - Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue/PR templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
-- For a verified GitHub.com remote, adds deterministic documentation checks, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
+- For a verified GitHub.com remote, adds deterministic documentation checks, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow with provenance attestations when the repository is eligible, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
 
 Content follows GitHub's community-standards format and is pulled from canonical sources where possible (LICENSE, `.gitignore`, and Code of Conduct via the GitHub API), with project-specific content generated from the repository itself. External GitHub Actions are pinned to immutable commit SHAs and kept current by Dependabot; shipped workflows do not delegate execution to a mutable container tag.
@@ -165,7 +165,8 @@ and templated workflows. Markdownlint covers every project-owned Markdown file.
 Repository validation checks the centered and numbered README contract, unresolved
 scaffold markers, Markdown issue and pull-request templates, relative links,
 JSON/YAML uniqueness and syntax, plugin metadata, issue forms, Dependabot
-configuration, and the exact release archive shape. The pinned action tags and
+configuration, release-attestation isolation and permission flow, and the exact
+release archive shape. The pinned action tags and
 release-please schema are external facts, so verify them against their upstream
 repositories during release audits.
 
@@ -183,11 +184,20 @@ and draft GitHub Release, then invokes the reusable release engine.
 
 The engine verifies the tag target, builds
 `repo-scaffold-plugin-<filesystem-safe-tag>.zip` from the immutable commit,
-attaches it to the draft, and publishes only after the asset is present. The
+generates signed SLSA build provenance in a separate no-checkout job, attaches
+the asset to the draft, and publishes only after attestation succeeds. The
 archive contains `.codex-plugin/`, `skills/`, `README.md`, and `LICENSE` under a
 `repo-scaffold/` directory. The workflow requires a fine-grained PAT stored as
 `RELEASE_PLEASE_TOKEN`; see [CONTRIBUTING.md](CONTRIBUTING.md) for the release
 process and token scope.
+
+After downloading an asset, verify its provenance and signer workflow:
+
+```bash
+gh attestation verify repo-scaffold-plugin-vX.Y.Z.zip \
+  --repo MinhThang1009/repo-scaffold-plugin \
+  --signer-workflow MinhThang1009/repo-scaffold-plugin/.github/workflows/release.yml
+```
 
 ## 12. Maintainers and contributing
 
