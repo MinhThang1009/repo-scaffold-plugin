@@ -36,6 +36,7 @@ The plugin has no build step. Development checks require:
 - pytest
 - Ruff
 - mypy
+- Node.js with `npx` for markdownlint
 - actionlint
 - ShellCheck
 
@@ -68,14 +69,17 @@ Run these commands from the repository root:
 python -m pytest -q
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
+npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#.git/**" "#build/**" "#dist/**" "#node_modules/**"
 python scripts/validate_workflows.py
 python scripts/validate_repository.py
 ```
 
-`validate_workflows.py` runs actionlint with ShellCheck enabled. When a change
-adds PowerShell blocks, also run PSScriptAnalyzer against each block.
+`validate_workflows.py` runs actionlint with ShellCheck enabled. The Markdown
+checks cover all project-owned `.md` files, README layout, unresolved scaffold
+markers, relative links, and Markdown issue/PR templates. When a change adds
+PowerShell blocks, also run PSScriptAnalyzer against each block.
 
 ## Open a pull request
 

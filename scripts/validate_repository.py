@@ -623,6 +623,45 @@ def validate_markdown_links(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_scaffold_contract(repository_root: Path) -> list[str]:
+    """Run the distributable rendered-document contract against this plugin."""
+    script = (
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "scripts"
+        / "validate_scaffold.py"
+    )
+    template_root = repository_root / "skills" / "repo-scaffold" / "assets"
+    if not script.is_file():
+        return [
+            "scaffold contract: skills/repo-scaffold/scripts/validate_scaffold.py is missing"
+        ]
+    command = [
+        sys.executable,
+        str(script),
+        "--repository-root",
+        str(repository_root),
+        "--template-root",
+        str(template_root),
+    ]
+    try:
+        result = subprocess.run(  # noqa: S603 - interpreter and script are explicit
+            command,
+            cwd=repository_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return ["scaffold contract: validation timed out"]
+    if result.returncode == 0:
+        return []
+    detail = result.stderr.strip() or result.stdout.strip() or "validation failed"
+    return [f"scaffold contract: {line}" for line in detail.splitlines()]
+
+
 def validate_release_archive(repository_root: Path) -> list[str]:
     """Build and inspect the exact archive shape used by the release workflow."""
     git = resolve_path_executable("git", forbidden_root=repository_root)
@@ -701,6 +740,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_issue_templates,
         validate_dependabot,
         validate_markdown_links,
+        validate_scaffold_contract,
         validate_release_archive,
     )
     problems: list[str] = []

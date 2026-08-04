@@ -14,7 +14,7 @@ Use the centered header from `../assets/README-header.md` (title + tagline + opt
 
 Use an H1 title (inside the centered header), then numbered sections with numbered subsections:
 
-```
+```markdown
 ## 1. Overview
 ## 2. Requirements
 ## 3. Installation
@@ -30,9 +30,9 @@ Numbering is a formal style chosen by preference; the typical GitHub README conv
 
 ## Table of contents
 
-For a long README, add a manual table of contents near the top (just below the header): a bulleted list of anchor links to each section. GitHub auto-generates an anchor from each heading by lowercasing it, replacing spaces with hyphens, and stripping punctuation — e.g. `## 3. Installation` becomes `#3-installation`:
+A README is long when it has eight or more numbered H2 sections. For a long README, add a manual table of contents near the top (just below the header): a bulleted list of anchor links to every numbered section and subsection. Translate the table-of-contents heading with the rest of the document when needed. GitHub auto-generates an anchor from each heading by lowercasing it, replacing spaces with hyphens, and stripping punctuation — e.g. `## 3. Installation` becomes `#3-installation`:
 
-```
+```markdown
 ## Table of Contents
 
 - [1. Overview](#1-overview)

@@ -21,27 +21,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Normalized the public version to clean SemVer and added an explicit,
+* Normalized the public version to clean SemVer and added an explicit,
   tag-and-commit-verified manual release path.
 
 ## [Unreleased]
 
 ### Added
 
-- Cross-platform CI, dependency review, and Dependabot configuration.
-- Commitlint, pull-request labeling, and stale issue/PR automation.
-- Repository-managed CodeQL advanced setup for Python, with a reusable
+* Added pinned markdownlint and scheduled link-health Actions, plus a
+  deterministic rendered-document validator for current and future scaffolds.
+* Cross-platform CI, dependency review, and Dependabot configuration.
+* Commitlint, pull-request labeling, and stale issue/PR automation.
+* Repository-managed CodeQL advanced setup for Python, with a reusable
   stack-rendered workflow asset.
-- Release Please configuration for automated versioning and releases.
-- ShellCheck-enforced workflow linting and deterministic repository contract checks.
-- Tag-driven GitHub Release automation for versioned plugin archives.
-- Repository ownership, editor, ignore, and community-documentation hardening.
+* Release Please configuration for automated versioning and releases.
+* ShellCheck-enforced workflow linting and deterministic repository contract checks.
+* Tag-driven GitHub Release automation for versioned plugin archives.
+* Repository ownership, editor, ignore, and community-documentation hardening.
 
 ### Changed
 
-- Updated issue-form validation for GitHub's current schema, including upload
+* Centered the README header and badges, numbered its outline, and added a
+  complete manual table of contents.
+* Made documentation language detection and Markdown/template conventions
+  explicit in the scaffold workflow.
+* Updated issue-form validation for GitHub's current schema, including upload
   inputs and documented `.yml` recognition requirements.
-- Refreshed bundled GitHub Actions to verified current releases with immutable
+* Refreshed bundled GitHub Actions to verified current releases with immutable
   commit pins.
-- Replaced the repository's manual tag dispatcher with Release Please while
+* Replaced the repository's manual tag dispatcher with Release Please while
   preserving the isolated reusable release engine.
