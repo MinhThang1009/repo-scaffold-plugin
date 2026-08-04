@@ -26,9 +26,17 @@ jobs:
     outputs:
       matrix: ${{ steps.support.outputs.matrix }}
       latest: ${{ steps.support.outputs.latest }}
-      shellcheck_version: ${{ steps.toolchain.outputs.shellcheck_version }}
+      shellcheck_repository: ${{ steps.toolchain.outputs.shellcheck_repository }}
+      shellcheck_tag: ${{ steps.toolchain.outputs.shellcheck_tag }}
+      shellcheck_asset: ${{ steps.toolchain.outputs.shellcheck_asset }}
+      shellcheck_archive_format: ${{ steps.toolchain.outputs.shellcheck_archive_format }}
+      shellcheck_executable_path: ${{ steps.toolchain.outputs.shellcheck_executable_path }}
       shellcheck_sha256: ${{ steps.toolchain.outputs.shellcheck_sha256 }}
-      actionlint_version: ${{ steps.toolchain.outputs.actionlint_version }}
+      actionlint_repository: ${{ steps.toolchain.outputs.actionlint_repository }}
+      actionlint_tag: ${{ steps.toolchain.outputs.actionlint_tag }}
+      actionlint_asset: ${{ steps.toolchain.outputs.actionlint_asset }}
+      actionlint_archive_format: ${{ steps.toolchain.outputs.actionlint_archive_format }}
+      actionlint_executable_path: ${{ steps.toolchain.outputs.actionlint_executable_path }}
       actionlint_sha256: ${{ steps.toolchain.outputs.actionlint_sha256 }}
     steps:
       - name: Checkout
@@ -127,38 +135,52 @@ jobs:
 
       - name: Install ShellCheck
         env:
-          SHELLCHECK_VERSION: ${{ needs.prepare_ci.outputs.shellcheck_version }}
+          SHELLCHECK_REPOSITORY: ${{ needs.prepare_ci.outputs.shellcheck_repository }}
+          SHELLCHECK_TAG: ${{ needs.prepare_ci.outputs.shellcheck_tag }}
+          SHELLCHECK_ASSET: ${{ needs.prepare_ci.outputs.shellcheck_asset }}
+          SHELLCHECK_ARCHIVE_FORMAT: ${{ needs.prepare_ci.outputs.shellcheck_archive_format }}
+          SHELLCHECK_EXECUTABLE_PATH: ${{ needs.prepare_ci.outputs.shellcheck_executable_path }}
           SHELLCHECK_SHA256: ${{ needs.prepare_ci.outputs.shellcheck_sha256 }}
         run: |
           set -euo pipefail
-          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          archive="$SHELLCHECK_ASSET"
           cd "$RUNNER_TEMP"
           curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
             --output "$archive" \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}"
+            "https://github.com/${SHELLCHECK_REPOSITORY}/releases/download/${SHELLCHECK_TAG}/${archive}"
           printf '%s  %s\n' "$SHELLCHECK_SHA256" "$archive" |
             sha256sum --check --strict
-          tar --extract --xz --file "$archive"
-          install -m 0755 \
-            "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
-            "$RUNNER_TEMP/shellcheck"
+          case "$SHELLCHECK_ARCHIVE_FORMAT" in
+            tar.gz) tar --extract --gzip --file "$archive" "$SHELLCHECK_EXECUTABLE_PATH" ;;
+            tar.xz) tar --extract --xz --file "$archive" "$SHELLCHECK_EXECUTABLE_PATH" ;;
+            *) printf 'Unsupported archive format: %s\n' "$SHELLCHECK_ARCHIVE_FORMAT" >&2; exit 1 ;;
+          esac
+          install -m 0755 "$SHELLCHECK_EXECUTABLE_PATH" "$RUNNER_TEMP/shellcheck"
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Install actionlint
         env:
-          ACTIONLINT_VERSION: ${{ needs.prepare_ci.outputs.actionlint_version }}
+          ACTIONLINT_REPOSITORY: ${{ needs.prepare_ci.outputs.actionlint_repository }}
+          ACTIONLINT_TAG: ${{ needs.prepare_ci.outputs.actionlint_tag }}
+          ACTIONLINT_ASSET: ${{ needs.prepare_ci.outputs.actionlint_asset }}
+          ACTIONLINT_ARCHIVE_FORMAT: ${{ needs.prepare_ci.outputs.actionlint_archive_format }}
+          ACTIONLINT_EXECUTABLE_PATH: ${{ needs.prepare_ci.outputs.actionlint_executable_path }}
           ACTIONLINT_SHA256: ${{ needs.prepare_ci.outputs.actionlint_sha256 }}
         run: |
           set -euo pipefail
-          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          archive="$ACTIONLINT_ASSET"
           cd "$RUNNER_TEMP"
           curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
             --output "$archive" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+            "https://github.com/${ACTIONLINT_REPOSITORY}/releases/download/${ACTIONLINT_TAG}/${archive}"
           printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" |
             sha256sum --check --strict
-          tar --extract --gzip --file "$archive" actionlint
-          chmod 0755 actionlint
+          case "$ACTIONLINT_ARCHIVE_FORMAT" in
+            tar.gz) tar --extract --gzip --file "$archive" "$ACTIONLINT_EXECUTABLE_PATH" ;;
+            tar.xz) tar --extract --xz --file "$archive" "$ACTIONLINT_EXECUTABLE_PATH" ;;
+            *) printf 'Unsupported archive format: %s\n' "$ACTIONLINT_ARCHIVE_FORMAT" >&2; exit 1 ;;
+          esac
+          install -m 0755 "$ACTIONLINT_EXECUTABLE_PATH" "$RUNNER_TEMP/actionlint"
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Lint GitHub Actions workflows
@@ -209,7 +231,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Detect standalone CI tool release drift
+      - name: Detect reviewed CI tool release drift
         run: python skills/repo-scaffold/scripts/ci_toolchain.py verify-latest-releases
 
   ci-success:

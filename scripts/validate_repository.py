@@ -384,6 +384,33 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
                     "skills/repo-scaffold/SKILL.md: missing Python support "
                     f"requirement {requirement!r}"
                 )
+
+    ruff_path = repository_root / "ruff.toml"
+    try:
+        policy = load_json(policy_path)
+        ruff_text = ruff_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        problems.append(f"ruff.toml: could not verify Python target: {error}")
+    else:
+        versions = policy.get("versions") if isinstance(policy, dict) else None
+        target_matches = re.findall(
+            r'(?m)^target-version\s*=\s*"(py\d+)"\s*$', ruff_text
+        )
+        if (
+            not isinstance(versions, list)
+            or not versions
+            or not all(isinstance(version, str) for version in versions)
+        ):
+            problems.append(
+                ".github/python-support.json: cannot derive the Ruff target"
+            )
+        else:
+            expected_target = "py" + versions[0].replace(".", "")
+            if target_matches != [expected_target]:
+                problems.append(
+                    "ruff.toml: target-version must match the minimum Python "
+                    f"policy release ({expected_target})"
+                )
     return problems
 
 
@@ -416,6 +443,7 @@ def validate_action_references(repository_root: Path) -> list[str]:
         }
     )
     problems: list[str] = []
+    action_pins: dict[str, dict[str, set[str]]] = {}
     for path in paths:
         relative = path.relative_to(repository_root)
         try:
@@ -436,16 +464,35 @@ def validate_action_references(repository_root: Path) -> list[str]:
                     f"sha256 digest: {reference}"
                 )
                 continue
-            if re.fullmatch(
-                r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?"
-                r"@[0-9a-fA-F]{40}",
+            match = re.fullmatch(
+                r"(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+                r"(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})",
                 reference,
-            ):
+            )
+            if match is not None:
+                action_repository = "/".join(
+                    match.group("action").split("/")[:2]
+                ).casefold()
+                sha = match.group("sha").lower()
+                action_pins.setdefault(action_repository, {}).setdefault(
+                    sha, set()
+                ).add(relative.as_posix())
                 continue
             problems.append(
                 f"{relative}: external action or workflow must use a full "
                 f"commit SHA: {reference}"
             )
+    for action_repository, pins in sorted(action_pins.items()):
+        if len(pins) <= 1:
+            continue
+        evidence = "; ".join(
+            f"{sha} in {', '.join(sorted(locations))}"
+            for sha, locations in sorted(pins.items())
+        )
+        problems.append(
+            f"workflow action pin drift: {action_repository} uses multiple "
+            f"commit SHAs: {evidence}"
+        )
     return problems
 
 
@@ -517,6 +564,11 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
             ".github/ci-toolchain.json: standalone-tools must define exactly "
             "actionlint and shellcheck for repository workflow validation"
         )
+    installed_npm_tools = (
+        installed_policy.get("npm-tools")
+        if isinstance(installed_policy, dict)
+        else None
+    )
     try:
         asset_policy = load_json(asset_policy_path)
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
@@ -525,6 +577,35 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         problems.append(
             "skills/repo-scaffold/assets/ci-toolchain.json: generic scaffold "
             "must not prescribe unused standalone tools"
+        )
+    asset_npm_tools = (
+        asset_policy.get("npm-tools") if isinstance(asset_policy, dict) else None
+    )
+    installed_tooling_python = (
+        installed_policy.get("tooling-python-minimum")
+        if isinstance(installed_policy, dict)
+        else None
+    )
+    asset_tooling_python = (
+        asset_policy.get("tooling-python-minimum")
+        if isinstance(asset_policy, dict)
+        else None
+    )
+    if (
+        not nonempty_string(installed_tooling_python)
+        or installed_tooling_python != asset_tooling_python
+    ):
+        problems.append(
+            "CI toolchain policies: tooling Python minimum must stay synchronized"
+        )
+    if (
+        not isinstance(installed_npm_tools, dict)
+        or set(installed_npm_tools) != {"markdownlint-cli2"}
+        or installed_npm_tools != asset_npm_tools
+    ):
+        problems.append(
+            "CI toolchain policies: markdownlint-cli2 npm pin must be defined "
+            "once per policy and stay synchronized"
         )
 
     for document_name in ("README.md", "CONTRIBUTING.md"):
@@ -538,6 +619,14 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
             continue
         if ".github/ci-toolchain.json" not in text:
             problems.append(f"{document_name}: must reference the CI toolchain policy")
+        if "ci_toolchain.py run-markdownlint" not in text:
+            problems.append(
+                f"{document_name}: markdownlint must consume the CI toolchain policy"
+            )
+        if re.search(r"markdownlint-cli2@\d", text):
+            problems.append(
+                f"{document_name}: markdownlint version must not be hardcoded"
+            )
 
     workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
     try:
@@ -565,16 +654,27 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         prepare = quality = canary = None
         problems.append(".github/workflows/ci.yml: jobs must be a mapping")
     expected_outputs = {
-        "shellcheck_version": "${{ steps.toolchain.outputs.shellcheck_version }}",
+        "shellcheck_repository": "${{ steps.toolchain.outputs.shellcheck_repository }}",
+        "shellcheck_tag": "${{ steps.toolchain.outputs.shellcheck_tag }}",
+        "shellcheck_asset": "${{ steps.toolchain.outputs.shellcheck_asset }}",
+        "shellcheck_archive_format": "${{ steps.toolchain.outputs.shellcheck_archive_format }}",
+        "shellcheck_executable_path": "${{ steps.toolchain.outputs.shellcheck_executable_path }}",
         "shellcheck_sha256": "${{ steps.toolchain.outputs.shellcheck_sha256 }}",
-        "actionlint_version": "${{ steps.toolchain.outputs.actionlint_version }}",
+        "actionlint_repository": "${{ steps.toolchain.outputs.actionlint_repository }}",
+        "actionlint_tag": "${{ steps.toolchain.outputs.actionlint_tag }}",
+        "actionlint_asset": "${{ steps.toolchain.outputs.actionlint_asset }}",
+        "actionlint_archive_format": "${{ steps.toolchain.outputs.actionlint_archive_format }}",
+        "actionlint_executable_path": "${{ steps.toolchain.outputs.actionlint_executable_path }}",
         "actionlint_sha256": "${{ steps.toolchain.outputs.actionlint_sha256 }}",
+    }
+    expected_prepare_outputs = {
+        "matrix": "${{ steps.support.outputs.matrix }}",
+        "latest": "${{ steps.support.outputs.latest }}",
+        **expected_outputs,
     }
     prepare_outputs = prepare.get("outputs") if isinstance(prepare, dict) else None
     prepare_steps = prepare.get("steps") if isinstance(prepare, dict) else None
-    if not isinstance(prepare_outputs, dict) or any(
-        prepare_outputs.get(name) != value for name, value in expected_outputs.items()
-    ):
+    if prepare_outputs != expected_prepare_outputs:
         problems.append(
             ".github/workflows/ci.yml: prepare_ci must expose standalone tool outputs"
         )
@@ -592,11 +692,19 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
     quality_steps = quality.get("steps") if isinstance(quality, dict) else None
     expected_environments = {
         "Install ShellCheck": {
-            "SHELLCHECK_VERSION": "${{ needs.prepare_ci.outputs.shellcheck_version }}",
+            "SHELLCHECK_REPOSITORY": "${{ needs.prepare_ci.outputs.shellcheck_repository }}",
+            "SHELLCHECK_TAG": "${{ needs.prepare_ci.outputs.shellcheck_tag }}",
+            "SHELLCHECK_ASSET": "${{ needs.prepare_ci.outputs.shellcheck_asset }}",
+            "SHELLCHECK_ARCHIVE_FORMAT": "${{ needs.prepare_ci.outputs.shellcheck_archive_format }}",
+            "SHELLCHECK_EXECUTABLE_PATH": "${{ needs.prepare_ci.outputs.shellcheck_executable_path }}",
             "SHELLCHECK_SHA256": "${{ needs.prepare_ci.outputs.shellcheck_sha256 }}",
         },
         "Install actionlint": {
-            "ACTIONLINT_VERSION": "${{ needs.prepare_ci.outputs.actionlint_version }}",
+            "ACTIONLINT_REPOSITORY": "${{ needs.prepare_ci.outputs.actionlint_repository }}",
+            "ACTIONLINT_TAG": "${{ needs.prepare_ci.outputs.actionlint_tag }}",
+            "ACTIONLINT_ASSET": "${{ needs.prepare_ci.outputs.actionlint_asset }}",
+            "ACTIONLINT_ARCHIVE_FORMAT": "${{ needs.prepare_ci.outputs.actionlint_archive_format }}",
+            "ACTIONLINT_EXECUTABLE_PATH": "${{ needs.prepare_ci.outputs.actionlint_executable_path }}",
             "ACTIONLINT_SHA256": "${{ needs.prepare_ci.outputs.actionlint_sha256 }}",
         },
     }
@@ -610,6 +718,27 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
             problems.append(
                 f".github/workflows/ci.yml: {step_name} must consume policy outputs"
             )
+    if isinstance(installed_tools, dict):
+        forbidden_workflow_literals: set[str] = set()
+        for tool in installed_tools.values():
+            if not isinstance(tool, dict):
+                continue
+            version = str(tool.get("version", ""))
+            for field in ("repository", "tag-template", "asset-template"):
+                value = tool.get(field)
+                if isinstance(value, str):
+                    forbidden_workflow_literals.add(value.replace("{version}", version))
+            executable = tool.get("executable-path-template")
+            if isinstance(executable, str) and "/" in executable:
+                forbidden_workflow_literals.add(
+                    executable.replace("{version}", version)
+                )
+        for literal in sorted(forbidden_workflow_literals):
+            if literal in workflow_text:
+                problems.append(
+                    ".github/workflows/ci.yml: standalone tool metadata must "
+                    f"come from policy outputs, found {literal!r}"
+                )
     canary_steps = canary.get("steps") if isinstance(canary, dict) else None
     triggers = workflow.get("on") if isinstance(workflow, dict) else None
     if (
@@ -713,6 +842,7 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
     else:
         for requirement in (
             ".github/ci-toolchain.json",
+            "ci_toolchain.py run-markdownlint",
             "scheduled/manual drift canary",
             "must not install an unreviewed release automatically",
         ):
@@ -721,6 +851,87 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
                     "skills/repo-scaffold/SKILL.md: missing CI toolchain "
                     f"requirement {requirement!r}"
                 )
+    setup_path = (
+        repository_root / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+    )
+    try:
+        setup_text = setup_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"skills/repo-scaffold/references/github-setup.md: {error}")
+    else:
+        if "tooling-python-minimum" not in setup_text:
+            problems.append(
+                "skills/repo-scaffold/references/github-setup.md: CodeQL "
+                "preflight must read the tooling Python policy"
+            )
+        if re.search(r"Python\s+3\.\d+\s+or newer", setup_text):
+            problems.append(
+                "skills/repo-scaffold/references/github-setup.md: tooling Python "
+                "minimum must not be hardcoded"
+            )
+    return problems
+
+
+def validate_mirrored_dependency_metadata(repository_root: Path) -> list[str]:
+    """Keep intentionally mirrored dependency metadata synchronized."""
+    problems: list[str] = []
+    requirement_paths = (
+        repository_root / "requirements-dev.txt",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "requirements-docs.txt",
+    )
+    requirement_pins: list[str | None] = []
+    for path in requirement_paths:
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            matches = re.findall(
+                r"(?im)^PyYAML==([^\s#]+)\s*$", path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError) as error:
+            problems.append(f"{relative}: could not verify PyYAML pin: {error}")
+            requirement_pins.append(None)
+            continue
+        if len(matches) != 1:
+            problems.append(f"{relative}: must contain exactly one PyYAML pin")
+            requirement_pins.append(None)
+        else:
+            requirement_pins.append(matches[0])
+    if None not in requirement_pins and len(set(requirement_pins)) != 1:
+        problems.append(
+            "PyYAML pin drift: requirements-dev.txt and the scaffold docs "
+            "requirements must match"
+        )
+
+    release_config_paths = (
+        repository_root / "release-please-config.json",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "release-please-config.json",
+    )
+    schema_values: list[str | None] = []
+    for path in release_config_paths:
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            document = load_json(path)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            problems.append(f"{relative}: could not verify $schema pin: {error}")
+            schema_values.append(None)
+            continue
+        schema = document.get("$schema") if isinstance(document, dict) else None
+        if not nonempty_string(schema):
+            problems.append(f"{relative}: $schema must be a nonempty string")
+            schema_values.append(None)
+        else:
+            schema_values.append(schema)
+    if None not in schema_values and len(set(schema_values)) != 1:
+        problems.append(
+            "Release Please schema drift: installed and scaffold configs must match"
+        )
     return problems
 
 
@@ -1469,6 +1680,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_action_references,
         validate_python_support_contract,
         validate_ci_toolchain_contract,
+        validate_mirrored_dependency_metadata,
         validate_plugin_manifest,
         validate_release_please,
         validate_release_attestation,

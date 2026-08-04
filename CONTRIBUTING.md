@@ -40,9 +40,11 @@ The plugin has no build step. Development checks require:
 - actionlint
 - ShellCheck
 
-CI pins for standalone downloaded tools and the rolling documentation bootstrap
-runtime are maintained in [`.github/ci-toolchain.json`](.github/ci-toolchain.json).
-Change that policy only after reviewing the upstream release and asset digest.
+CI pins for markdownlint and standalone downloaded tools, plus the rolling
+documentation bootstrap and minimum bundled-tooling Python runtimes, are
+maintained in [`.github/ci-toolchain.json`](.github/ci-toolchain.json). Change
+that policy only after reviewing the npm or upstream release and any asset
+digest.
 
 PSScriptAnalyzer is recommended when a change adds PowerShell snippets.
 
@@ -75,7 +77,7 @@ python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
 python -m mypy skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/python_support.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
-npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#.git/**" "#build/**" "#dist/**" "#node_modules/**"
+python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
 python scripts/validate_repository.py
 ```

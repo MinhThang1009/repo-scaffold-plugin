@@ -925,7 +925,8 @@ Run each eligible command separately after confirmation and only report a featur
 
 - **Code scanning default setup**: requires an eligible repository and supported detected language. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
 
-  The bundled preflight requires Python 3.10 or newer with PyYAML.
+  The bundled preflight requires PyYAML and a Python feature release at or above
+  `tooling-python-minimum` in `.github/ci-toolchain.json`.
 
   Resolve `REPO_SCAFFOLD_SKILL_ROOT` to the installed/source directory that contains this skill's `SKILL.md`; do not guess it from the current working directory. Run the bundled structural preflight with an available Python interpreter. It uses PyYAML's non-coercing `BaseLoader`, rejects duplicate keys, inspects only direct files under `.github/workflows`, inspects semantic `jobs.*.uses`, `jobs.*.steps[*].uses`, and shell-aware executable `run` content, and honors step, job, and workflow shell selection. For recognized Bash and PowerShell shells it masks inert heredoc, here-string, arithmetic-shift, literal, comment, and uninvoked function content, including function definitions whose opening brace is on the following line. It retains transitively invoked function bodies, literal `eval` and trap handlers, exported functions invoked by literal nested-shell commands, statically resolvable Bash/PowerShell aliases, direct shell-heredoc, recognized command wrappers, GNU `env` split strings, `xargs` with supported GNU/BSD options, direct `find` executors, shell `-c`, pipeline-fed shells, backtick/`$()` command substitution, Bash process substitution, PowerShell scriptblocks, nested PowerShell `-Command`, `Invoke-Expression`, `Start-Process`, direct `cmd /c` or `/k` CodeQL commands, quoted call-operator commands, and PowerShell `$()` execution. An unresolved command position, call-operator expression, recognized dynamic executor or alias target, encoded PowerShell command with a non-literal payload, or a malformed or unterminated construct fails closed. An unsupported or unresolved effective shell also fails closed instead of falling back to raw-text inspection. If default setup is already configured, it returns the safe preserve decision without the unnecessary workflow/analysis queries, sets those uninspected evidence fields to `null`, and sets `workflow_inspection_performed` and `analysis_inspection_performed` to false. Any other state must be exactly `not-configured`; an unknown default-setup state fails closed. It follows reusable workflows per top-level caller, rejects cycles, enforces GitHub's limit of 50 unique called workflows and 10 total levels on every call path, retains a separate 500-edge traversal safety cap, bounds API requests, and applies a timeout to each `gh api` subprocess. If Python, PyYAML, the effective shell, shell syntax, a workflow, a linked path, an API response, or the separate external/indirect CodeQL confirmation is unavailable, it exits inconclusive and mutation remains forbidden.
 
@@ -946,11 +947,25 @@ Run each eligible command separately after confirmation and only report a featur
   if (-not (Test-Path -LiteralPath $preflightScript -PathType Leaf)) {
     throw "The bundled CodeQL preflight script is missing; do not PATCH default setup."
   }
+  $toolchainPolicyPath = Join-Path $REPO_ROOT ".github/ci-toolchain.json"
+  if (-not (Test-Path -LiteralPath $toolchainPolicyPath -PathType Leaf)) {
+    throw "The CI toolchain policy is missing; do not PATCH default setup."
+  }
+  try {
+    $toolchainPolicy = Get-Content -LiteralPath $toolchainPolicyPath -Raw -Encoding UTF8 |
+      ConvertFrom-Json
+    $minimumPython = $toolchainPolicy.'tooling-python-minimum'
+  } catch {
+    throw "The CI toolchain policy is invalid; do not PATCH default setup."
+  }
+  if ($minimumPython -notmatch '^3\.(0|[1-9][0-9]*)$') {
+    throw "The tooling-python-minimum policy value is invalid; do not PATCH default setup."
+  }
   $pythonCommand = $null
   foreach ($pythonName in @("python3", "python")) {
     $candidate = Get-Command $pythonName -ErrorAction SilentlyContinue
     if ($null -eq $candidate) { continue }
-    & $candidate.Source -c "import sys, yaml; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
+    & $candidate.Source -c "import sys, yaml; required=tuple(map(int, sys.argv[1].split('.'))); raise SystemExit(0 if sys.version_info[:2] >= required else 1)" $minimumPython 2>$null
     if ($LASTEXITCODE -eq 0) {
       $pythonCommand = $candidate
       break
@@ -960,7 +975,7 @@ Run each eligible command separately after confirmation and only report a featur
   $noExternalCodeqlConfirmed = $false
 
   if ($null -eq $pythonCommand) {
-    Write-Warning "No Python 3.10 or newer interpreter with PyYAML is available for structural workflow inspection; do not PATCH default setup."
+    Write-Warning "No Python $minimumPython or newer interpreter with PyYAML is available for structural workflow inspection; do not PATCH default setup."
   } else {
     $preflightArguments = @(
       "--repo-root", $REPO_ROOT,

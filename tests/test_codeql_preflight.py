@@ -2230,13 +2230,15 @@ class PlaceholderContractTests(unittest.TestCase):
         self.assertIn("required_status_checks.strict", protection)
         self.assertIn("unexpectedly required", protection)
 
-    def test_codeql_preflight_documents_policy_and_probes_python_310(self) -> None:
+    def test_codeql_preflight_reads_the_tooling_python_policy(self) -> None:
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         setup = (
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
         ).read_text(encoding="utf-8")
         self.assertIn(".github/python-support.json", readme)
-        self.assertIn("sys.version_info >= (3, 10)", setup)
+        self.assertIn("tooling-python-minimum", setup)
+        self.assertIn("sys.version_info[:2] >= required", setup)
+        self.assertNotIn("Python 3.10 or newer", setup)
 
 
 if __name__ == "__main__":

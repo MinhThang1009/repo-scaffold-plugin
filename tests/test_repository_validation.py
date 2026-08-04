@@ -57,6 +57,7 @@ class PythonSupportContractValidationTests(unittest.TestCase):
         "CONTRIBUTING.md",
         "README.md",
         "requirements-dev.txt",
+        "ruff.toml",
         "scripts/python_support.py",
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/assets/workflows/ci.yml",
@@ -100,6 +101,22 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                 problems,
             )
 
+    def test_ruff_target_must_match_the_policy_minimum(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "ruff.toml").write_text(
+                'target-version = "py311"\n', encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_python_support_contract(root)
+
+            self.assertIn(
+                "ruff.toml: target-version must match the minimum Python "
+                "policy release (py310)",
+                problems,
+            )
+
 
 class ActionReferenceValidationTests(unittest.TestCase):
     def test_repository_action_references_are_immutable(self) -> None:
@@ -130,6 +147,28 @@ class ActionReferenceValidationTests(unittest.TestCase):
                     "must use a full commit SHA: actions/checkout@v7"
                 ],
             )
+
+    def test_mismatched_action_repository_pins_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed = root / ".github" / "workflows"
+            asset = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            installed.mkdir(parents=True)
+            asset.mkdir(parents=True)
+            for path, sha in (
+                (installed / "ci.yml", "a" * 40),
+                (asset / "ci.yml", "b" * 40),
+            ):
+                path.write_text(
+                    "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+                    f"      - uses: actions/checkout@{sha}\n",
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_action_references(root)
+
+            self.assertEqual(len(problems), 1)
+            self.assertIn("workflow action pin drift: actions/checkout", problems[0])
 
 
 class CiToolchainContractValidationTests(unittest.TestCase):
@@ -195,8 +234,9 @@ class CiToolchainContractValidationTests(unittest.TestCase):
             self.copy_contract(root)
             workflow_path = root / ".github" / "workflows" / "ci.yml"
             workflow = workflow_path.read_text(encoding="utf-8").replace(
-                "${{ needs.prepare_ci.outputs.shellcheck_version }}",
-                '"0.11.0"',
+                "          SHELLCHECK_REPOSITORY:",
+                '          SHELLCHECK_VERSION: "0.11.0"\n'
+                "          SHELLCHECK_REPOSITORY:",
                 1,
             )
             workflow_path.write_text(workflow, encoding="utf-8")
@@ -211,6 +251,67 @@ class CiToolchainContractValidationTests(unittest.TestCase):
             self.assertIn(
                 ".github/workflows/ci.yml: Install ShellCheck must consume "
                 "policy outputs",
+                problems,
+            )
+
+    def test_hardcoded_standalone_repository_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "${{ needs.prepare_ci.outputs.shellcheck_repository }}",
+                "koalaman/shellcheck",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertIn(
+                ".github/workflows/ci.yml: standalone tool metadata must come "
+                "from policy outputs, found 'koalaman/shellcheck'",
+                problems,
+            )
+
+
+class MirroredDependencyMetadataTests(unittest.TestCase):
+    def test_repository_mirrored_metadata_is_synchronized(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_mirrored_dependency_metadata(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_pyyaml_pin_and_release_schema_drift_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            asset_root = root / "skills" / "repo-scaffold" / "assets"
+            asset_root.mkdir(parents=True)
+            (root / "requirements-dev.txt").write_text(
+                "PyYAML==6.0.3\n", encoding="utf-8"
+            )
+            (asset_root / "requirements-docs.txt").write_text(
+                "PyYAML==6.0.2\n", encoding="utf-8"
+            )
+            (root / "release-please-config.json").write_text(
+                '{"$schema":"https://example.test/v2/schema.json"}',
+                encoding="utf-8",
+            )
+            (asset_root / "release-please-config.json").write_text(
+                '{"$schema":"https://example.test/v1/schema.json"}',
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mirrored_dependency_metadata(root)
+
+            self.assertIn(
+                "PyYAML pin drift: requirements-dev.txt and the scaffold docs "
+                "requirements must match",
+                problems,
+            )
+            self.assertIn(
+                "Release Please schema drift: installed and scaffold configs "
+                "must match",
                 problems,
             )
 

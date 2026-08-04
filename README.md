@@ -39,9 +39,9 @@ Content follows GitHub's community-standards format and is pulled from canonical
 
 - [`gh`](https://cli.github.com/) (GitHub CLI), authenticated to GitHub.com (`gh auth status --active --hostname github.com`) — used for every GitHub API call and configuration step.
 - `git`.
-- `actionlint` and ShellCheck are required for local workflow validation. CI obtains their reviewed versions and release-asset digests from the centralized [CI toolchain policy](.github/ci-toolchain.json).
+- `actionlint` and ShellCheck are required for local workflow validation. CI obtains their reviewed versions, release metadata, archive layout, and asset digests from the centralized [CI toolchain policy](.github/ci-toolchain.json).
 - Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with PyYAML, for deterministic scaffold validation and the fail-closed CodeQL default-setup preflight. The preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime. It also requires separate confirmation that no external or indirect process uploads CodeQL results; without either prerequisite, the plugin skips that mutation and reports the verification gap.
-- Node.js with `npx` is required only to reproduce the pinned markdownlint check locally.
+- Node.js with `npx` is required only to reproduce the markdownlint package pinned by the [CI toolchain policy](.github/ci-toolchain.json).
 - Remote automation supports GitHub.com only. GitHub Enterprise Server and GHE.com repositories receive host-independent local community files, but bundled workflows, GitHub.com badges, and remote configuration are skipped.
 - Without a remote, the plugin can generate host-independent local files. It defers workflows, badges, and GitHub configuration until a GitHub.com remote exists; it never creates that remote without confirmation.
 
@@ -158,7 +158,7 @@ python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
 python -m mypy skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/python_support.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
-npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#.git/**" "#build/**" "#dist/**" "#node_modules/**"
+python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
 python scripts/validate_repository.py
 ```
@@ -182,10 +182,11 @@ policy update. Repository validation rejects policy, workflow, scaffold, and
 documentation drift. The quality job also runs formatting, lint, type, compile,
 workflow, metadata, link, and release-archive checks.
 The [CI toolchain policy](.github/ci-toolchain.json) separately centralizes the
-rolling documentation bootstrap runtime and reviewed standalone-tool release
-digests. Workflows consume its outputs instead of embedding those versions, and
-a non-required scheduled/manual canary reports upstream release or digest drift
-for review.
+rolling documentation bootstrap runtime, minimum Python for bundled tooling,
+the markdownlint npm pin, and reviewed standalone-tool release metadata and
+digests. Workflows and setup guidance consume that policy instead of embedding
+those values, and a non-required scheduled/manual canary reports npm, upstream
+release, or digest drift for review.
 Dependabot checks the pinned Python development tools and GitHub Actions weekly.
 
 ## 11. Releases
