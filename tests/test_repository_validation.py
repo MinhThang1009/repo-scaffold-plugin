@@ -1356,6 +1356,26 @@ jobs:
 
         self.assertTrue(any("validate exported results" in item for item in problems))
 
+    def test_line_coverage_prepass_must_remain_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            config_path = root / "pyproject.toml"
+            config = config_path.read_text(encoding="utf-8").replace(
+                "mutate_only_covered_lines = false",
+                "mutate_only_covered_lines = true",
+                1,
+            )
+            config_path.write_text(config, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            "pyproject.toml: missing mutation setting "
+            "'mutate_only_covered_lines = false'",
+            problems,
+        )
+
     def test_config_docs_exports_and_ignore_regressions_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1375,7 +1395,7 @@ jobs:
             "pyproject.toml: pytest must collect only first-party tests from tests/",
             problems,
         )
-        self.assertEqual(sum("mutation guidance" in p for p in problems), 2)
+        self.assertEqual(sum("mutation guidance" in p for p in problems), 3)
         self.assertEqual(sum("must be export-ignore" in p for p in problems), 3)
         self.assertIn(".gitignore: mutants/ must be ignored", problems)
 

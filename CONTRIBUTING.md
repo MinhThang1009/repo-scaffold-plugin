@@ -116,9 +116,14 @@ Windows:
 python -m pip install --require-hashes --requirement requirements-mutation.lock
 mutmut run --max-children 4
 mutmut export-cicd-stats
-mutmut results --all > mutants/mutation-results.txt
+mutmut results --all true > mutants/mutation-results.txt
 python scripts/validate_mutation_results.py
 ```
+
+The repository already enforces 100% branch coverage. Mutmut therefore uses its
+default call-based selection instead of the optional Coverage.py line prepass,
+which keeps in-process trampoline association reliable without narrowing the
+mutation scope.
 
 The result validator fails on surviving, skipped, untested, suspicious, timed
 out, interrupted, or crashed mutants. Do not suppress a valid mutant merely to

@@ -1380,7 +1380,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         'pytest_add_cli_args_test_selection = ["tests"]',
         '"requirements-mutation.lock"',
         '"requirements-mutation.txt"',
-        "mutate_only_covered_lines = true",
+        "mutate_only_covered_lines = false",
     ):
         if fragment not in config_text:
             problems.append(f"pyproject.toml: missing mutation setting {fragment!r}")
@@ -1394,6 +1394,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "CONTRIBUTING.md": (
             "requirements-mutation.lock",
             "mutmut run --max-children 4",
+            "mutmut results --all true > mutants/mutation-results.txt",
         ),
     }
     for relative, fragments in documentation_contract.items():
