@@ -740,7 +740,8 @@ if ($protectionExitCode -eq 0) {
   $payload = @{
     required_status_checks = @{
       strict = $true
-      contexts = @()
+      # GitHub's request schema treats `contexts` and `checks` as alternative
+      # shapes. Send only `checks` so each context keeps its verified app binding.
       checks = $checks
     }
     enforce_admins = $true
@@ -925,7 +926,8 @@ Run each eligible command separately after confirmation and only report a featur
 
 - **Code scanning default setup**: requires an eligible repository and supported detected language. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
 
-  The bundled preflight requires Python 3.10 or newer with PyYAML.
+  The bundled preflight requires PyYAML and a Python feature release at or above
+  `tooling-python-minimum` in `.github/ci-toolchain.json`.
 
   Resolve `REPO_SCAFFOLD_SKILL_ROOT` to the installed/source directory that contains this skill's `SKILL.md`; do not guess it from the current working directory. Run the bundled structural preflight with an available Python interpreter. It uses PyYAML's non-coercing `BaseLoader`, rejects duplicate keys, inspects only direct files under `.github/workflows`, inspects semantic `jobs.*.uses`, `jobs.*.steps[*].uses`, and shell-aware executable `run` content, and honors step, job, and workflow shell selection. For recognized Bash and PowerShell shells it masks inert heredoc, here-string, arithmetic-shift, literal, comment, and uninvoked function content, including function definitions whose opening brace is on the following line. It retains transitively invoked function bodies, literal `eval` and trap handlers, exported functions invoked by literal nested-shell commands, statically resolvable Bash/PowerShell aliases, direct shell-heredoc, recognized command wrappers, GNU `env` split strings, `xargs` with supported GNU/BSD options, direct `find` executors, shell `-c`, pipeline-fed shells, backtick/`$()` command substitution, Bash process substitution, PowerShell scriptblocks, nested PowerShell `-Command`, `Invoke-Expression`, `Start-Process`, direct `cmd /c` or `/k` CodeQL commands, quoted call-operator commands, and PowerShell `$()` execution. An unresolved command position, call-operator expression, recognized dynamic executor or alias target, encoded PowerShell command with a non-literal payload, or a malformed or unterminated construct fails closed. An unsupported or unresolved effective shell also fails closed instead of falling back to raw-text inspection. If default setup is already configured, it returns the safe preserve decision without the unnecessary workflow/analysis queries, sets those uninspected evidence fields to `null`, and sets `workflow_inspection_performed` and `analysis_inspection_performed` to false. Any other state must be exactly `not-configured`; an unknown default-setup state fails closed. It follows reusable workflows per top-level caller, rejects cycles, enforces GitHub's limit of 50 unique called workflows and 10 total levels on every call path, retains a separate 500-edge traversal safety cap, bounds API requests, and applies a timeout to each `gh api` subprocess. If Python, PyYAML, the effective shell, shell syntax, a workflow, a linked path, an API response, or the separate external/indirect CodeQL confirmation is unavailable, it exits inconclusive and mutation remains forbidden.
 
@@ -946,11 +948,25 @@ Run each eligible command separately after confirmation and only report a featur
   if (-not (Test-Path -LiteralPath $preflightScript -PathType Leaf)) {
     throw "The bundled CodeQL preflight script is missing; do not PATCH default setup."
   }
+  $toolchainPolicyPath = Join-Path $REPO_ROOT ".github/ci-toolchain.json"
+  if (-not (Test-Path -LiteralPath $toolchainPolicyPath -PathType Leaf)) {
+    throw "The CI toolchain policy is missing; do not PATCH default setup."
+  }
+  try {
+    $toolchainPolicy = Get-Content -LiteralPath $toolchainPolicyPath -Raw -Encoding UTF8 |
+      ConvertFrom-Json
+    $minimumPython = $toolchainPolicy.'tooling-python-minimum'
+  } catch {
+    throw "The CI toolchain policy is invalid; do not PATCH default setup."
+  }
+  if ($minimumPython -notmatch '^3\.(0|[1-9][0-9]*)$') {
+    throw "The tooling-python-minimum policy value is invalid; do not PATCH default setup."
+  }
   $pythonCommand = $null
   foreach ($pythonName in @("python3", "python")) {
     $candidate = Get-Command $pythonName -ErrorAction SilentlyContinue
     if ($null -eq $candidate) { continue }
-    & $candidate.Source -c "import sys, yaml; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
+    & $candidate.Source -c "import sys, yaml; required=tuple(map(int, sys.argv[1].split('.'))); raise SystemExit(0 if sys.version_info[:2] >= required else 1)" $minimumPython 2>$null
     if ($LASTEXITCODE -eq 0) {
       $pythonCommand = $candidate
       break
@@ -960,7 +976,7 @@ Run each eligible command separately after confirmation and only report a featur
   $noExternalCodeqlConfirmed = $false
 
   if ($null -eq $pythonCommand) {
-    Write-Warning "No Python 3.10 or newer interpreter with PyYAML is available for structural workflow inspection; do not PATCH default setup."
+    Write-Warning "No Python $minimumPython or newer interpreter with PyYAML is available for structural workflow inspection; do not PATCH default setup."
   } else {
     $preflightArguments = @(
       "--repo-root", $REPO_ROOT,
@@ -1272,7 +1288,15 @@ Only when the repo ships `release-please.yml` (or `auto-merge.yml`, which prefer
 
 `auto-merge.yml` may read this PAT only from its trusted-base `pull_request_target` workflow after the human-user and same-repository guards pass. Never change that workflow to `pull_request` while it references the PAT, and never add a checkout, fetch, artifact download, or command that executes PR-controlled content.
 
-When installing release-please, also copy `assets/release-please-config.json` and `assets/release-please-manifest.json` to the repository root as `release-please-config.json` and `.release-please-manifest.json`. The config intentionally combines `draft: true` with `force-tag-creation: true`. release-please creates the tag before it creates the draft Release, so never pair this mode with `release-tag.yml` or another `push.tags: v*` caller: that caller could observe the tag before the draft exists. The shipped `release-please.yml` instead waits for the release-please action to complete, then invokes reusable `release.yml` with the emitted tag and the action's `sha` output. The engine serializes callers by tag. A read-only build job verifies the tag through the authenticated Git database references/tags REST APIs, checks out that immutable commit without persisted credentials, builds and validates regular-file artifacts, then transfers them through SHA-pinned artifact actions. A separate write-enabled publish job on a fresh runner downloads but never executes those artifacts, verifies the tag immediately before publishing, and checks it once more after publication. When it creates a missing draft Release, `--verify-tag` prevents GitHub CLI from silently recreating a tag that disappeared after verification. A pre-publication mismatch leaves the Release as a draft and fails. A post-publication mismatch is an integrity incident that the workflow reports but cannot roll back; use an effective tag ruleset or immutable releases when tag movement must be prevented rather than merely detected. Reruns may repair a draft, but they must refuse every published Release, including a legacy mutable one: `gh release upload --clobber` deletes an existing public asset before uploading its replacement, so an upload failure can lose the original. Create a new version tag instead. Fill the manifest with a confirmed current version without a leading `v`; do not invent an initial version. Do not remove either option or collapse the build/publish permission boundary while `release.yml` is responsible for artifacts.
+When installing release-please, also copy `assets/release-please-config.json` and `assets/release-please-manifest.json` to the repository root as `release-please-config.json` and `.release-please-manifest.json`. The config intentionally combines `draft: true` with `force-tag-creation: true`. release-please creates the tag before it creates the draft Release, so never pair this mode with `release-tag.yml` or another `push.tags: v*` caller: that caller could observe the tag before the draft exists. The shipped `release-please.yml` instead waits for the release-please action to complete, then invokes reusable `release.yml` with the emitted tag and the action's `sha` output. The engine serializes callers by tag. A read-only build job verifies the tag through the authenticated Git database references/tags REST APIs, checks out that immutable commit without persisted credentials, builds and validates regular-file artifacts, then transfers them through SHA-pinned artifact actions. For an eligible repository, a fresh attestation job downloads those files without a checkout, validates them without executing project code, and generates SLSA build provenance with `actions/attest`; it alone receives `id-token: write` and `attestations: write`, while the reusable-workflow caller passes those permissions through. GitHub currently supports attestations for public repositories on current plans and for private/internal repositories on GitHub Enterprise Cloud. For an ineligible repository, render the documented no-attestation variant rather than leaving a gate that cannot succeed. A separate write-enabled publish job on a fresh runner downloads but never executes those artifacts, waits for attestation when enabled, verifies the tag immediately before publishing, and checks it once more after publication. When it creates a missing draft Release, `--verify-tag` prevents GitHub CLI from silently recreating a tag that disappeared after verification. A pre-publication mismatch leaves the Release as a draft and fails. A post-publication mismatch is an integrity incident that the workflow reports but cannot roll back; use an effective tag ruleset or immutable releases when tag movement must be prevented rather than merely detected. Reruns may repair a draft, but they must refuse every published Release, including a legacy mutable one: `gh release upload --clobber` deletes an existing public asset before uploading its replacement, so an upload failure can lose the original. Create a new version tag instead. Fill the manifest with a confirmed current version without a leading `v`; do not invent an initial version. Do not remove either option or collapse the build, eligible attestation, and publish permission boundaries while `release.yml` is responsible for artifacts.
+
+After downloading a published artifact, verify both its provenance and the reusable signer workflow:
+
+```bash
+gh attestation verify PATH/TO/ARTIFACT \
+  --repo OWNER/REPO \
+  --signer-workflow OWNER/REPO/.github/workflows/release.yml
+```
 
 1. Create the PAT (GitHub UI → Settings → Developer settings → Fine-grained tokens, or `gh` if available). Scope it least-privilege: **only this repository**, permissions **Contents: Read and write** + **Pull requests: Read and write** (add **Issues: Read and write** if release-please manages issues). Nothing else.
 2. Add it as a repository secret named **exactly** `RELEASE_PLEASE_TOKEN` (Settings → Secrets and variables → Actions → New repository secret). The name must match the `secrets.RELEASE_PLEASE_TOKEN` reference in the workflows character-for-character — secret names allow only letters, digits, and underscores (no hyphens/spaces), so a mismatch makes the action fail with "Input required: token".

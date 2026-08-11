@@ -7,6 +7,8 @@ on:
     types: [opened, edited, reopened, synchronize]
   merge_group:
     types: [checks_requested]
+  schedule:
+    - cron: "23 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -17,8 +19,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare_ci:
+    name: prepare-ci-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.support.outputs.matrix }}
+      latest: ${{ steps.support.outputs.latest }}
+      shellcheck_repository: ${{ steps.toolchain.outputs.shellcheck_repository }}
+      shellcheck_tag: ${{ steps.toolchain.outputs.shellcheck_tag }}
+      shellcheck_asset: ${{ steps.toolchain.outputs.shellcheck_asset }}
+      shellcheck_archive_format: ${{ steps.toolchain.outputs.shellcheck_archive_format }}
+      shellcheck_executable_path: ${{ steps.toolchain.outputs.shellcheck_executable_path }}
+      shellcheck_sha256: ${{ steps.toolchain.outputs.shellcheck_sha256 }}
+      actionlint_repository: ${{ steps.toolchain.outputs.actionlint_repository }}
+      actionlint_tag: ${{ steps.toolchain.outputs.actionlint_tag }}
+      actionlint_asset: ${{ steps.toolchain.outputs.actionlint_asset }}
+      actionlint_archive_format: ${{ steps.toolchain.outputs.actionlint_archive_format }}
+      actionlint_executable_path: ${{ steps.toolchain.outputs.actionlint_executable_path }}
+      actionlint_sha256: ${{ steps.toolchain.outputs.actionlint_sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load Python support policy
+        id: support
+        shell: bash
+        run: python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"
+
+      - name: Load CI toolchain policy
+        id: toolchain
+        shell: bash
+        run: python skills/repo-scaffold/scripts/ci_toolchain.py emit-github-output >> "$GITHUB_OUTPUT"
+
   test:
     name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    needs: prepare_ci
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     defaults:
@@ -26,9 +64,7 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.14"]
+      matrix: ${{ fromJSON(needs.prepare_ci.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +89,7 @@ jobs:
 
   quality:
     name: quality
+    needs: prepare_ci
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -61,10 +98,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
+        with:
+          globs: "**/*.md"
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.14"
+          python-version: ${{ needs.prepare_ci.outputs.latest }}
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
@@ -81,6 +123,9 @@ jobs:
         run: >-
           python -m mypy
           skills/repo-scaffold/scripts/codeql_preflight.py
+          skills/repo-scaffold/scripts/ci_toolchain.py
+          skills/repo-scaffold/scripts/validate_scaffold.py
+          scripts/python_support.py
           scripts/validate_repository.py
           scripts/validate_workflows.py
           tests
@@ -90,38 +135,56 @@ jobs:
 
       - name: Install ShellCheck
         env:
-          SHELLCHECK_VERSION: "0.11.0"
-          SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+          SHELLCHECK_REPOSITORY: ${{ needs.prepare_ci.outputs.shellcheck_repository }}
+          SHELLCHECK_TAG: ${{ needs.prepare_ci.outputs.shellcheck_tag }}
+          SHELLCHECK_ASSET: ${{ needs.prepare_ci.outputs.shellcheck_asset }}
+          SHELLCHECK_ARCHIVE_FORMAT: ${{ needs.prepare_ci.outputs.shellcheck_archive_format }}
+          SHELLCHECK_EXECUTABLE_PATH: ${{ needs.prepare_ci.outputs.shellcheck_executable_path }}
+          SHELLCHECK_SHA256: ${{ needs.prepare_ci.outputs.shellcheck_sha256 }}
         run: |
           set -euo pipefail
-          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          archive="$SHELLCHECK_ASSET"
           cd "$RUNNER_TEMP"
           curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
             --output "$archive" \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}"
+            "https://github.com/${SHELLCHECK_REPOSITORY}/releases/download/${SHELLCHECK_TAG}/${archive}"
           printf '%s  %s\n' "$SHELLCHECK_SHA256" "$archive" |
             sha256sum --check --strict
-          tar --extract --xz --file "$archive"
-          install -m 0755 \
-            "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
-            "$RUNNER_TEMP/shellcheck"
+          extract_dir="$RUNNER_TEMP/shellcheck-extract"
+          mkdir "$extract_dir"
+          case "$SHELLCHECK_ARCHIVE_FORMAT" in
+            tar.gz) tar --extract --gzip --file "$archive" --directory "$extract_dir" "$SHELLCHECK_EXECUTABLE_PATH" ;;
+            tar.xz) tar --extract --xz --file "$archive" --directory "$extract_dir" "$SHELLCHECK_EXECUTABLE_PATH" ;;
+            *) printf 'Unsupported archive format: %s\n' "$SHELLCHECK_ARCHIVE_FORMAT" >&2; exit 1 ;;
+          esac
+          install -m 0755 "$extract_dir/$SHELLCHECK_EXECUTABLE_PATH" "$RUNNER_TEMP/shellcheck"
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Install actionlint
         env:
-          ACTIONLINT_VERSION: "1.7.12"
-          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+          ACTIONLINT_REPOSITORY: ${{ needs.prepare_ci.outputs.actionlint_repository }}
+          ACTIONLINT_TAG: ${{ needs.prepare_ci.outputs.actionlint_tag }}
+          ACTIONLINT_ASSET: ${{ needs.prepare_ci.outputs.actionlint_asset }}
+          ACTIONLINT_ARCHIVE_FORMAT: ${{ needs.prepare_ci.outputs.actionlint_archive_format }}
+          ACTIONLINT_EXECUTABLE_PATH: ${{ needs.prepare_ci.outputs.actionlint_executable_path }}
+          ACTIONLINT_SHA256: ${{ needs.prepare_ci.outputs.actionlint_sha256 }}
         run: |
           set -euo pipefail
-          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          archive="$ACTIONLINT_ASSET"
           cd "$RUNNER_TEMP"
           curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
             --output "$archive" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+            "https://github.com/${ACTIONLINT_REPOSITORY}/releases/download/${ACTIONLINT_TAG}/${archive}"
           printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" |
             sha256sum --check --strict
-          tar --extract --gzip --file "$archive" actionlint
-          chmod 0755 actionlint
+          extract_dir="$RUNNER_TEMP/actionlint-extract"
+          mkdir "$extract_dir"
+          case "$ACTIONLINT_ARCHIVE_FORMAT" in
+            tar.gz) tar --extract --gzip --file "$archive" --directory "$extract_dir" "$ACTIONLINT_EXECUTABLE_PATH" ;;
+            tar.xz) tar --extract --xz --file "$archive" --directory "$extract_dir" "$ACTIONLINT_EXECUTABLE_PATH" ;;
+            *) printf 'Unsupported archive format: %s\n' "$ACTIONLINT_ARCHIVE_FORMAT" >&2; exit 1 ;;
+          esac
+          install -m 0755 "$extract_dir/$ACTIONLINT_EXECUTABLE_PATH" "$RUNNER_TEMP/actionlint"
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Lint GitHub Actions workflows
@@ -129,6 +192,51 @@ jobs:
 
       - name: Validate repository contracts
         run: python scripts/validate_repository.py
+
+  python-latest-canary:
+    name: python-latest-canary
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up latest stable Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+          check-latest: true
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install development dependencies
+        run: python -m pip install --disable-pip-version-check --requirement requirements-dev.txt
+
+      - name: Verify dependency consistency
+        run: python -m pip check
+
+      - name: Run tests on the latest stable Python
+        run: python -m pytest -q
+
+      - name: Detect undeclared stable Python releases
+        run: python scripts/python_support.py verify-latest-runtime
+
+  toolchain-drift-canary:
+    name: toolchain-drift-canary
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect reviewed CI tool release drift
+        run: python skills/repo-scaffold/scripts/ci_toolchain.py verify-latest-releases
 
   ci-success:
     name: ci-success

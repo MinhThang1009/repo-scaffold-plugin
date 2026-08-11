@@ -31,13 +31,20 @@ sensitive information.
 
 The plugin has no build step. Development checks require:
 
-- Python 3.10 or newer
+- A CPython release declared in [`.github/python-support.json`](.github/python-support.json)
 - PyYAML
 - pytest
 - Ruff
 - mypy
+- Node.js with `npx` for markdownlint
 - actionlint
 - ShellCheck
+
+CI pins for markdownlint and standalone downloaded tools, plus the rolling
+documentation bootstrap and minimum bundled-tooling Python runtimes, are
+maintained in [`.github/ci-toolchain.json`](.github/ci-toolchain.json). Change
+that policy only after reviewing the npm or upstream release and any asset
+digest.
 
 PSScriptAnalyzer is recommended when a change adds PowerShell snippets.
 
@@ -68,14 +75,17 @@ Run these commands from the repository root:
 python -m pytest -q
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/python_support.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
+python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
 python scripts/validate_repository.py
 ```
 
-`validate_workflows.py` runs actionlint with ShellCheck enabled. When a change
-adds PowerShell blocks, also run PSScriptAnalyzer against each block.
+`validate_workflows.py` runs actionlint with ShellCheck enabled. The Markdown
+checks cover all project-owned `.md` files, README layout, unresolved scaffold
+markers, relative links, and Markdown issue/PR templates. When a change adds
+PowerShell blocks, also run PSScriptAnalyzer against each block.
 
 ## Open a pull request
 
@@ -101,7 +111,14 @@ Releases are automated from `main` through Release Please.
    `.codex-plugin/plugin.json` to the proposed SemVer.
 3. Merge the release pull request after its checks pass. Release Please creates
    the tag and draft GitHub Release, then invokes the reusable release engine.
-4. Verify that the release asset is attached and that the release is published.
+4. Verify that the release asset is attached, its provenance attestation passes,
+   and the release is published:
+
+   ```bash
+   gh attestation verify repo-scaffold-plugin-vX.Y.Z.zip \
+     --repo MinhThang1009/repo-scaffold-plugin \
+     --signer-workflow MinhThang1009/repo-scaffold-plugin/.github/workflows/release.yml
+   ```
 
 The workflow requires a fine-grained PAT stored as `RELEASE_PLEASE_TOKEN`,
 scoped only to this repository with **Contents: Read and write** and
@@ -110,6 +127,8 @@ Please manages release pull request labels. Never place the token in a file,
 commit, command output, issue, or chat message.
 
 The reusable release engine builds the plugin archive with read-only contents
-permission, transfers it to a separate publish job, and publishes only the
-matching draft Release. It refuses to replace assets on an already published
-Release; publish a new version instead.
+permission, transfers it to a separate attestation job that alone receives the
+OIDC and attestation permissions, then allows the contents-write publish job to
+publish only the matching draft Release. Neither privileged job checks out or
+executes project code. The engine refuses to replace assets on an already
+published Release; publish a new version instead.
