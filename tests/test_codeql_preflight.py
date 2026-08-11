@@ -2130,7 +2130,7 @@ class PlaceholderContractTests(unittest.TestCase):
             ["actions", "{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"],
         )
 
-    def test_scorecard_workflows_are_pinned_and_publish_sarif(self) -> None:
+    def test_scorecard_workflows_use_git_mode_and_publish_sarif(self) -> None:
         installed_path = PLUGIN_ROOT / ".github" / "workflows" / "scorecard.yml"
         asset_path = (
             PLUGIN_ROOT
@@ -2173,6 +2173,7 @@ class PlaceholderContractTests(unittest.TestCase):
                     for step in job["steps"]
                     if step.get("uses", "").startswith("ossf/scorecard-action@")
                 )
+                self.assertEqual(scorecard_step["with"]["file_mode"], "git")
                 self.assertEqual(scorecard_step["with"]["publish_results"], "true")
                 self.assertEqual(scorecard_step["with"]["results_format"], "sarif")
 
