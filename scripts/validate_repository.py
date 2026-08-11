@@ -1332,6 +1332,22 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: install the hashed lock, run "
             "mutmut, and validate exported results"
         )
+    mutation_run_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("run") == "mutmut run --max-children 4"
+    ]
+    expected_mutation_environment = {
+        "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
+    }
+    if (
+        len(mutation_run_steps) != 1
+        or mutation_run_steps[0].get("env") != expected_mutation_environment
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: mutation run must expose "
+            "the tracked source root for archive validation"
+        )
     export_steps = [
         step
         for step in steps
@@ -2089,9 +2105,29 @@ def validate_scaffold_contract(repository_root: Path) -> list[str]:
     return [f"scaffold contract: {line}" for line in detail.splitlines()]
 
 
+def release_archive_source_root(repository_root: Path) -> Path:
+    """Use the tracked source worktree for a generated mutmut workspace."""
+    raw_source_root = os.environ.get("REPO_SCAFFOLD_MUTATION_SOURCE_ROOT")
+    if not raw_source_root:
+        return repository_root
+    try:
+        source_root = Path(raw_source_root).resolve(strict=True)
+        generated_root = repository_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return repository_root
+    if (
+        generated_root.parent == source_root
+        and generated_root.name == "mutants"
+        and (source_root / ".git").exists()
+    ):
+        return source_root
+    return repository_root
+
+
 def validate_release_archive(repository_root: Path) -> list[str]:
     """Build and inspect the exact archive shape used by the release workflow."""
-    git = resolve_path_executable("git", forbidden_root=repository_root)
+    source_root = release_archive_source_root(repository_root)
+    git = resolve_path_executable("git", forbidden_root=source_root)
     if git is None:
         return ["release archive: git is unavailable outside the repository"]
     with tempfile.TemporaryDirectory(prefix="repo-scaffold-archive-") as directory:
@@ -2113,7 +2149,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
         try:
             result = subprocess.run(  # noqa: S603 - executable is resolved safely
                 command,
-                cwd=repository_root,
+                cwd=source_root,
                 check=False,
                 capture_output=True,
                 text=True,

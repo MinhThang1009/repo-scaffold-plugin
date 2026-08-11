@@ -1318,6 +1318,28 @@ jobs:
             problems,
         )
 
+    def test_mutation_run_must_expose_the_tracked_source_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "        env:\n"
+                "          REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: "
+                "${{ github.workspace }}\n",
+                "",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: mutation run must expose "
+            "the tracked source root for archive validation",
+            problems,
+        )
+
     def test_mutation_results_all_option_requires_a_boolean_value(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1418,6 +1440,58 @@ class MarkdownLinkValidationTests(unittest.TestCase):
 
 
 class ScaffoldAndArchiveValidationTests(unittest.TestCase):
+    def test_release_archive_uses_only_the_matching_mutation_source_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source_root = Path(directory).resolve()
+            (source_root / ".git").mkdir()
+            generated_root = source_root / "mutants"
+            generated_root.mkdir()
+            unrelated_root = source_root / "other"
+            unrelated_root.mkdir()
+            untracked_source_root = source_root / "untracked"
+            untracked_source_root.mkdir()
+            untracked_generated_root = untracked_source_root / "mutants"
+            untracked_generated_root.mkdir()
+
+            with mock.patch.dict(
+                os.environ,
+                {"REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": str(source_root)},
+            ):
+                self.assertEqual(
+                    validate_repository.release_archive_source_root(generated_root),
+                    source_root,
+                )
+                self.assertEqual(
+                    validate_repository.release_archive_source_root(unrelated_root),
+                    unrelated_root,
+                )
+
+            with mock.patch.dict(
+                os.environ,
+                {"REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": str(untracked_source_root)},
+            ):
+                self.assertEqual(
+                    validate_repository.release_archive_source_root(
+                        untracked_generated_root
+                    ),
+                    untracked_generated_root,
+                )
+
+            with mock.patch.dict(
+                os.environ,
+                {"REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": str(source_root / "missing")},
+            ):
+                self.assertEqual(
+                    validate_repository.release_archive_source_root(generated_root),
+                    generated_root,
+                )
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    validate_repository.release_archive_source_root(generated_root),
+                    generated_root,
+                )
+
     def test_scaffold_contract_reports_missing_timeout_failure_and_success(
         self,
     ) -> None:
