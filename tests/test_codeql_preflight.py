@@ -247,10 +247,13 @@ elif sys.argv[2] == "alias":
 else:
     raise AssertionError(f"Unknown probe: {sys.argv[2]}")
 """
+        environment = os.environ.copy()
+        environment.pop("MUTANT_UNDER_TEST", None)
         subprocess.run(
             [sys.executable, "-c", probe, str(SCRIPT_PATH), case],
             check=True,
             capture_output=True,
+            env=environment,
             timeout=2,
         )
 
