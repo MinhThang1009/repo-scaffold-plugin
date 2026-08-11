@@ -178,6 +178,13 @@ def nonempty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def child_process_environment() -> dict[str, str]:
+    """Keep mutmut's in-process selector out of child Python processes."""
+    environment = os.environ.copy()
+    environment.pop("MUTANT_UNDER_TEST", None)
+    return environment
+
+
 def validate_serialized_files(repository_root: Path) -> list[str]:
     """Validate every first-party JSON and YAML document."""
     problems: list[str] = []
@@ -218,6 +225,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         result = subprocess.run(  # noqa: S603 - interpreter and script are explicit
             command,
             cwd=repository_root,
+            env=child_process_environment(),
             check=False,
             capture_output=True,
             text=True,
@@ -554,6 +562,7 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
             result = subprocess.run(  # noqa: S603 - interpreter/script are explicit
                 command,
                 cwd=repository_root,
+                env=child_process_environment(),
                 check=False,
                 capture_output=True,
                 text=True,
@@ -1322,6 +1331,18 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: install the hashed lock, run "
             "mutmut, and validate exported results"
         )
+    export_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and "python scripts/validate_mutation_results.py" in step["run"]
+    ]
+    if len(export_steps) != 1 or export_steps[0].get("if") != "${{ always() }}":
+        problems.append(
+            ".github/workflows/mutation-testing.yml: mutation diagnostics must "
+            "export after failed runs"
+        )
     cache_paths = [
         step.get("with", {}).get("cache-dependency-path")
         for step in steps
@@ -2049,6 +2070,7 @@ def validate_scaffold_contract(repository_root: Path) -> list[str]:
         result = subprocess.run(  # noqa: S603 - interpreter and script are explicit
             command,
             cwd=repository_root,
+            env=child_process_environment(),
             check=False,
             capture_output=True,
             text=True,

@@ -71,6 +71,14 @@ class SerializedFileValidationTests(unittest.TestCase):
             self.assertTrue(validate_repository.nonempty_string(" value "))
             self.assertFalse(validate_repository.nonempty_string(" "))
             self.assertFalse(validate_repository.nonempty_string(7))
+            with mock.patch.dict(
+                os.environ,
+                {"MUTANT_UNDER_TEST": "stats", "PRESERVED_VALUE": "yes"},
+                clear=True,
+            ):
+                child_environment = validate_repository.child_process_environment()
+                self.assertEqual(child_environment, {"PRESERVED_VALUE": "yes"})
+                self.assertEqual(os.environ["MUTANT_UNDER_TEST"], "stats")
             self.assertEqual(
                 validate_repository.reject_duplicate_json_pairs(
                     [("first", 1), ("second", 2)]
@@ -1281,6 +1289,26 @@ jobs:
         self.assertTrue(any("bounded Ubuntu" in item for item in unsafe))
         self.assertTrue(any("install the hashed lock" in item for item in unsafe))
         self.assertTrue(any("Python cache must key" in item for item in unsafe))
+
+    def test_mutation_diagnostics_must_export_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "      - name: Export mutation results\n        if: ${{ always() }}\n",
+                "      - name: Export mutation results\n",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: mutation diagnostics must "
+            "export after failed runs",
+            problems,
+        )
 
     def test_config_docs_exports_and_ignore_regressions_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
