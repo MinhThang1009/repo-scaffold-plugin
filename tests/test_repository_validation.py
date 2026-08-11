@@ -413,6 +413,10 @@ jobs:
             json.dumps(
                 {
                     "release-type": "simple",
+                    **validate_repository.RELEASE_PLEASE_VIETNAMESE_TEXT,
+                    "changelog-sections": (
+                        validate_repository.RELEASE_PLEASE_VIETNAMESE_CHANGELOG_SECTIONS
+                    ),
                     "draft": True,
                     "force-tag-creation": True,
                     "packages": {
@@ -441,6 +445,85 @@ jobs:
             self.write_valid_configuration(root)
 
             self.assertEqual(validate_repository.validate_release_please(root), [])
+
+    def test_rejects_release_metadata_that_is_not_fully_vietnamese(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            config_path = root / "release-please-config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["pull-request-header"] = "Automated release PR"
+            config["changelog-sections"][0]["section"] = "Features"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+
+            problems = validate_repository.validate_release_please(root)
+
+            self.assertIn(
+                "release-please-config.json: pull-request-header must use the "
+                "approved Vietnamese release text",
+                problems,
+            )
+            self.assertIn(
+                "release-please-config.json: changelog-sections must preserve the "
+                "approved Vietnamese headings and default visibility",
+                problems,
+            )
+
+    def test_template_exposes_every_localizable_release_field(self) -> None:
+        config = json.loads(
+            (
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "release-please-config.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            config["pull-request-title-pattern"],
+            "chore${scope}: release${component} ${version}",
+        )
+        self.assertEqual(
+            config["pull-request-header"],
+            ":robot: I have created a release *beep* *boop*",
+        )
+        self.assertIn("Release Please", config["pull-request-footer"])
+        self.assertEqual(
+            config["changelog-sections"],
+            [
+                {"type": "feat", "section": "Features"},
+                {"type": "feature", "section": "Features"},
+                {"type": "fix", "section": "Bug Fixes"},
+                {"type": "perf", "section": "Performance Improvements"},
+                {"type": "revert", "section": "Reverts"},
+                {"type": "docs", "section": "Documentation", "hidden": True},
+                {"type": "style", "section": "Styles", "hidden": True},
+                {
+                    "type": "chore",
+                    "section": "Miscellaneous Chores",
+                    "hidden": True,
+                },
+                {
+                    "type": "refactor",
+                    "section": "Code Refactoring",
+                    "hidden": True,
+                },
+                {"type": "test", "section": "Tests", "hidden": True},
+                {"type": "build", "section": "Build System", "hidden": True},
+                {
+                    "type": "ci",
+                    "section": "Continuous Integration",
+                    "hidden": True,
+                },
+            ],
+        )
+
+        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Before changing `pull-request-title-pattern`", skill)
+        self.assertIn("update each existing release PR title", skill)
 
     def test_accepts_intentional_semver_build_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
