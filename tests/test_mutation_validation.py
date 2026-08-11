@@ -129,6 +129,10 @@ class MutationStatisticsTests(unittest.TestCase):
             artifact = root / "mutants" / "mutmut-cicd-stats.json"
             artifact.parent.mkdir()
             artifact.write_text(json.dumps(statistics()), encoding="utf-8")
+            # Instrumented trampolines resolve Mutmut's configured source paths
+            # against the current directory before recording the function hit.
+            for source_path in ("scripts", "skills/repo-scaffold/scripts"):
+                (root / source_path).mkdir(parents=True)
             original_cwd = Path.cwd()
             try:
                 os.chdir(root)
