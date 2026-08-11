@@ -4,6 +4,18 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.1.1...v1.2.0) (2026-08-11)
+
+
+### Features
+
+* **scaffold:** thực thi chuẩn tài liệu và release ([#9](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/9)) ([17f9db1](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/17f9db178ee879cc050365f094d36b6282105afa))
+
+
+### Bug Fixes
+
+* **links:** xử lý tag release chưa tạo ([#12](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/12)) ([cb5f29a](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/cb5f29a8c53325acdd2f80630f552f46c5a40ec4))
+
 ## [1.1.1](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.1.0...v1.1.1) (2026-07-31)
 
 
