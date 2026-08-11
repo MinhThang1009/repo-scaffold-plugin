@@ -32,13 +32,17 @@ sensitive information.
 The plugin has no build step. Development checks require:
 
 - A CPython release declared in [`.github/python-support.json`](.github/python-support.json)
+- Coverage.py
 - PyYAML
 - pytest
+- mutmut, on Linux or Windows through WSL
 - Ruff
 - mypy
 - Node.js with `npx` for markdownlint
 - actionlint
 - ShellCheck
+- The reviewed `pip-tools` version recorded in `requirements-dev.lock`, only
+  when regenerating a lock
 
 CI pins for markdownlint and standalone downloaded tools, plus the rolling
 documentation bootstrap and minimum bundled-tooling Python runtimes, are
@@ -48,11 +52,27 @@ digest.
 
 PSScriptAnalyzer is recommended when a change adds PowerShell snippets.
 
-Install the pinned development toolchain from the repository root:
+Install the fully resolved, hash-verified development toolchain from the
+repository root:
 
 ```powershell
-python -m pip install --requirement requirements-dev.txt
+python -m pip install --require-hashes --requirement requirements-dev.lock
 ```
+
+When changing a direct pin in `requirements-dev.txt`, regenerate
+`requirements-dev.lock` with the reviewed `pip-tools` version and exact command
+recorded in the lockfile header. Inspect the complete transitive diff and verify
+the lock against every operating-system and Python target in
+`.github/python-support.json` before committing it.
+The unconditional `exceptiongroup` and `tomli` pins keep the single lock
+installable on the minimum supported Python even when it is regenerated on a
+newer interpreter.
+
+Mutation testing uses a separate Linux/WSL-only lock. After changing
+`requirements-mutation.txt`, regenerate `requirements-mutation.lock` with the
+same reviewed `pip-tools` version and hash-mode options. Its unconditional
+`toml` pin preserves mutmut's Python 3.10 dependency when the lock is generated
+on a newer interpreter.
 
 ## Make a change
 
@@ -72,7 +92,9 @@ real check with a hardcoded result.
 Run these commands from the repository root:
 
 ```powershell
-python -m pytest -q
+python -m coverage erase
+python -m coverage run -m pytest -q
+python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
 python -m mypy skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/python_support.py scripts/validate_repository.py scripts/validate_workflows.py tests
@@ -81,6 +103,26 @@ python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
 python scripts/validate_repository.py
 ```
+
+The coverage command enforces the repository's 100% branch-coverage floor from
+`.coveragerc`.
+
+Mutation testing runs monthly and on manual dispatch because a complete run is
+substantially more expensive than the required pull-request checks. Mutmut
+requires operating-system `fork` support, so run it on Linux or in WSL on
+Windows:
+
+```bash
+python -m pip install --require-hashes --requirement requirements-mutation.lock
+mutmut run --max-children 4
+mutmut export-cicd-stats
+mutmut results --all > mutants/mutation-results.txt
+python scripts/validate_mutation_results.py
+```
+
+The result validator fails on surviving, skipped, untested, suspicious, timed
+out, interrupted, or crashed mutants. Do not suppress a valid mutant merely to
+make the score pass; classify equivalent mutants during review.
 
 `validate_workflows.py` runs actionlint with ShellCheck enabled. The Markdown
 checks cover all project-owned `.md` files, README layout, unresolved scaffold

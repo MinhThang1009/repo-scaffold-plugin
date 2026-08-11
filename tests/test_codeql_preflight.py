@@ -5,12 +5,15 @@ import argparse
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import BinaryIO, Protocol, cast
 from unittest import mock
 
 
@@ -36,7 +39,33 @@ sys.modules[VALIDATOR_SPEC.name] = validate_workflows
 VALIDATOR_SPEC.loader.exec_module(validate_workflows)
 
 
+class GitHubClientProtocol(Protocol):
+    request_count: int
+    response_bytes: int
+    deadline: float
+
+    def _run(self, endpoint: str, *, raw: bool = False) -> str: ...
+
+    def json(self, endpoint: str) -> object: ...
+
+    def raw(self, endpoint: str) -> str: ...
+
+
 class ExecutableResolutionTests(unittest.TestCase):
+    def test_module_reports_missing_pyyaml_without_a_coverage_exclusion(self) -> None:
+        output = StringIO()
+        with (
+            mock.patch.dict(sys.modules, {"yaml": None}),
+            redirect_stdout(output),
+            self.assertRaises(SystemExit),
+        ):
+            runpy.run_path(str(SCRIPT_PATH), run_name="codeql_without_yaml")
+
+        self.assertEqual(
+            json.loads(output.getvalue())["error"],
+            "PyYAML is required for structural workflow inspection.",
+        )
+
     def test_resolver_ignores_repository_controlled_path_entry(self) -> None:
         executable_name = "probe"
         executable_filename = (
@@ -67,6 +96,64 @@ class ExecutableResolutionTests(unittest.TestCase):
                             Path(cast(str, resolved)).resolve(),
                             trusted_executable.resolve(),
                         )
+
+    def test_resolver_skips_empty_relative_missing_and_unresolvable_entries(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "repository"
+            broken_directory = root / "broken"
+            trusted = root / "trusted"
+            repository.mkdir()
+            broken_directory.mkdir()
+            trusted.mkdir()
+            broken = broken_directory / "gh"
+            executable = trusted / "gh"
+            executable.touch()
+            original_resolve = Path.resolve
+
+            def resolve_path(path: Path, strict: bool = False) -> Path:
+                if path == broken:
+                    raise RuntimeError("unresolvable")
+                return original_resolve(path, strict=strict)
+
+            def find_tool(_name: str, *, path: str) -> str | None:
+                if path == str(broken_directory):
+                    return str(broken)
+                if path == str(trusted):
+                    return str(executable)
+                return None
+
+            path_value = os.pathsep.join(
+                [
+                    "",
+                    "relative",
+                    str(root / "missing"),
+                    str(broken_directory),
+                    str(trusted),
+                ]
+            )
+            with (
+                mock.patch.dict(os.environ, {"PATH": path_value}),
+                mock.patch.object(
+                    codeql_preflight.shutil, "which", side_effect=find_tool
+                ),
+                mock.patch.object(codeql_preflight.Path, "resolve", resolve_path),
+            ):
+                self.assertEqual(
+                    codeql_preflight.resolve_path_executable(
+                        "gh", forbidden_root=repository
+                    ),
+                    str(executable.resolve()),
+                )
+
+            with mock.patch.dict(os.environ, {"PATH": "relative"}):
+                self.assertIsNone(
+                    codeql_preflight.resolve_path_executable(
+                        "gh", forbidden_root=repository
+                    )
+                )
 
 
 class FlatResolver:
@@ -1416,6 +1503,750 @@ jobs:
                 "duplicate",
             )
 
+    def test_rejects_unhashable_keys_and_invalid_workflow_shapes(self) -> None:
+        cases = [
+            ("? [jobs]\n: value\n", "Could not parse workflow"),
+            ("- invalid\n", "not a YAML mapping"),
+            ("jobs: []\n", "no non-empty jobs mapping"),
+            ("jobs: {}\n", "no non-empty jobs mapping"),
+            ("jobs: {test: invalid}\n", "job 'test' is not a mapping"),
+            ("jobs: {test: {uses: []}}\n", "unsupported reusable-workflow"),
+            ("jobs: {test: {steps: {run: echo}}}\n", "steps is not a list"),
+            ("jobs: {test: {steps: [invalid]}}\n", "step 0 is not a mapping"),
+            (
+                "jobs: {test: {steps: [{run: echo, shell: []}]}}\n",
+                "shell is not a string",
+            ),
+        ]
+
+        for text, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(codeql_preflight.InspectionError, message):
+                    codeql_preflight.parse_workflow(text, "invalid")
+
+    def test_parser_checks_deadline_before_during_and_after_workflow(self) -> None:
+        checks = mock.Mock()
+        signals = codeql_preflight.parse_workflow(
+            "jobs: {test: {runs-on: ubuntu-latest, steps: [{run: echo ok}]}}",
+            "deadline",
+            checks,
+        )
+
+        self.assertFalse(signals.has_advanced_setup)
+        self.assertGreaterEqual(checks.call_count, 4)
+
+    def test_context_key_normalizes_remote_identity(self) -> None:
+        context = codeql_preflight.WorkflowContext("exact", "Owner", "Repo", "A" * 40)
+        self.assertEqual(context.key, ("exact", "owner", "repo", "a" * 40))
+
+
+class BashParserHelperTests(unittest.TestCase):
+    def test_escape_and_heredoc_helpers_cover_literal_and_error_paths(self) -> None:
+        self.assertTrue(codeql_preflight._is_powershell_escaped('`"', 1))
+        self.assertFalse(codeql_preflight._is_powershell_escaped('``"', 2))
+        self.assertEqual(
+            codeql_preflight._parse_heredoc_delimiter(r"\EOF", 0, 4)[0],
+            "EOF",
+        )
+        self.assertEqual(
+            codeql_preflight._parse_heredoc_delimiter(r'"E\"OF"', 0, 7)[0],
+            'E"OF',
+        )
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "incomplete"):
+            codeql_preflight._parse_heredoc_delimiter("\\", 0, 1)
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "unterminated"):
+            codeql_preflight._parse_heredoc_delimiter("'EOF", 0, 4)
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "no static"):
+            codeql_preflight._parse_heredoc_delimiter("", 0, 0)
+
+        self.assertTrue(codeql_preflight._bash_heredoc_executes_body("sh <<EOF", 3))
+        self.assertTrue(codeql_preflight._bash_heredoc_executes_body("source <<EOF", 7))
+        self.assertFalse(codeql_preflight._bash_heredoc_executes_body(" <<EOF", 1))
+        self.assertFalse(codeql_preflight._bash_heredoc_executes_body("echo <<EOF", 5))
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "malformed"):
+            codeql_preflight._bash_heredoc_executes_body("'broken <<EOF", 8)
+
+    def test_command_unwrapping_covers_supported_options_and_fail_closed_paths(
+        self,
+    ) -> None:
+        cases = [
+            (["builtin", "codeql", "database"], ["codeql", "database"]),
+            (["coproc", "codeql", "database"], ["codeql", "database"]),
+            (["command", "-p", "codeql", "database"], ["codeql", "database"]),
+            (["command", "-v", "codeql"], []),
+            (["exec", "--", "codeql", "database"], ["codeql", "database"]),
+            (["exec", "-c", "codeql", "database"], ["codeql", "database"]),
+            (["exec", "-a"], []),
+            (["exec", "-x", "codeql"], []),
+            (["env"], []),
+            (
+                ["env", "--split-string=codeql database", "create"],
+                ["codeql", "database", "create"],
+            ),
+            (
+                ["env", "-Scodeql database", "create"],
+                ["codeql", "database", "create"],
+            ),
+            (["env", "--unset=NAME", "codeql", "database"], ["codeql", "database"]),
+            (["env", "--unset"], []),
+            (["env", "--unknown", "codeql", "database"], ["codeql", "database"]),
+            (["sudo", "--user=root", "codeql", "database"], ["codeql", "database"]),
+            (["sudo", "-u"], []),
+            (["timeout", "--signal=TERM", "5", "codeql"], ["codeql"]),
+            (["timeout", "-k", "1", "5", "codeql"], ["codeql"]),
+            (["timeout", "-s"], []),
+            (["timeout"], []),
+            (["time", "--format=%E", "codeql"], ["codeql"]),
+            (["nohup", "--", "codeql"], ["codeql"]),
+            (["nohup", "--help"], []),
+            (["nice", "-n"], []),
+            (["nice", "-10", "codeql"], ["codeql"]),
+            (["nice", "codeql"], ["codeql"]),
+            (["stdbuf", "--output=L", "codeql"], ["codeql"]),
+            (["stdbuf", "-o", "L", "codeql"], ["codeql"]),
+            (["stdbuf", "-o"], []),
+        ]
+        for words, expected in cases:
+            with self.subTest(words=words):
+                self.assertEqual(codeql_preflight._bash_unwrap_command(words), expected)
+
+        with (
+            mock.patch.object(codeql_preflight, "MAX_ENV_SPLIT_EXPANSIONS", 0),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "nesting"),
+        ):
+            codeql_preflight._bash_unwrap_command(["env", "-Scodeql database"])
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "non-literal"):
+            codeql_preflight._bash_unwrap_command(["env", "-S$COMMAND"])
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "malformed"):
+            codeql_preflight._bash_unwrap_command(["env", "-S'unterminated"])
+
+        words = ["--", "value"]
+        self.assertTrue(codeql_preflight._bash_pop_option(words, set(), set()))
+        self.assertEqual(words, ["value"])
+
+    def test_xargs_shell_and_dynamic_helpers_cover_option_and_payload_edges(
+        self,
+    ) -> None:
+        xargs_cases = [
+            ([], []),
+            (["--", "codeql", "database"], ["codeql", "database"]),
+            (["-0", "codeql", "database"], ["codeql", "database"]),
+            (["-n", "2", "codeql"], ["codeql"]),
+            (["-n"], []),
+            (["-n2", "codeql"], ["codeql"]),
+            (["--max-args=2", "codeql"], ["codeql"]),
+            (["--unknown", "codeql"], []),
+        ]
+        for arguments, expected in xargs_cases:
+            with self.subTest(arguments=arguments):
+                self.assertEqual(
+                    codeql_preflight._bash_xargs_command(arguments), expected
+                )
+
+        shell_index_cases = [
+            (["echo"], None),
+            (["sh", "-c", "body"], 2),
+            (["bash", "-O", "extglob", "-c", "body"], 4),
+            (["bash", "--rcfile=file", "-c", "body"], 3),
+            (["sh", "-c", "--", "body"], 3),
+            (["sh", "script.sh"], None),
+            (["sh", "-c"], 2),
+            (["sh", "--verbose"], None),
+        ]
+        for shell_words, expected_index in shell_index_cases:
+            with self.subTest(words=shell_words):
+                self.assertEqual(
+                    codeql_preflight._bash_shell_command_string_index(shell_words),
+                    expected_index,
+                )
+
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "nesting"):
+            codeql_preflight._bash_words_contain_codeql(
+                ["codeql", "database"], codeql_preflight.MAX_DYNAMIC_EXECUTION_DEPTH + 1
+            )
+        with self.assertRaisesRegex(
+            codeql_preflight.InspectionError, "no literal payload"
+        ):
+            codeql_preflight._bash_words_contain_codeql(["xargs", "sh", "-c"], 0)
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "non-literal"):
+            codeql_preflight._bash_words_contain_codeql(
+                ["xargs", "sh", "-c", "$COMMAND"], 0
+            )
+        self.assertTrue(
+            codeql_preflight._bash_words_contain_codeql(
+                ["xargs", "sh", "-c", "codeql database create db"], 0
+            )
+        )
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "malformed"):
+            codeql_preflight._bash_contains_wrapped_codeql("'unterminated")
+        self.assertFalse(
+            codeql_preflight._bash_words_contain_codeql(["xargs", "echo", "ok"], 0)
+        )
+        self.assertFalse(
+            codeql_preflight._bash_words_contain_codeql(
+                [
+                    "find",
+                    ".",
+                    "-exec",
+                    "sh",
+                    "-c",
+                    "echo first",
+                    ";",
+                    "-exec",
+                    "sh",
+                    "-c",
+                    "echo second",
+                    ";",
+                ],
+                0,
+            )
+        )
+
+    def test_dynamic_body_trap_here_string_and_alias_helpers(self) -> None:
+        self.assertEqual(codeql_preflight._bash_here_string_payload(["sh", "<<<"]), "")
+        self.assertEqual(
+            codeql_preflight._bash_here_string_payload(["sh", "<<<payload"]),
+            "payload",
+        )
+        self.assertIsNone(codeql_preflight._bash_here_string_payload(["sh"]))
+        self.assertEqual(
+            codeql_preflight._bash_trap_handler(["trap", "--", "handler", "EXIT"]),
+            "handler",
+        )
+        self.assertIsNone(codeql_preflight._bash_trap_handler(["trap", "-l"]))
+        self.assertIsNone(codeql_preflight._bash_trap_handler(["echo", "handler"]))
+
+        self.assertTrue(
+            codeql_preflight._bash_dynamic_execution_is_unresolved("echo x | sh")
+        )
+        self.assertTrue(
+            codeql_preflight._bash_dynamic_execution_is_unresolved("sh <<< '$COMMAND'")
+        )
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "malformed"):
+            codeql_preflight._bash_dynamic_execution_is_unresolved("'unterminated")
+
+        bodies = codeql_preflight._bash_dynamic_execution_bodies(
+            "trap -- 'echo trap' EXIT; eval 'echo eval'; sh -c 'echo shell'; sh <<< 'echo here'"
+        )
+        self.assertEqual(bodies, ["echo trap", "echo eval", "echo shell", "echo here"])
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "malformed"):
+            codeql_preflight._bash_dynamic_execution_bodies("'unterminated")
+
+        aliases = codeql_preflight._bash_alias_expansions(
+            "shopt -s expand_aliases\n"
+            "alias scan='codeql database create db'\n"
+            "scan\n"
+            "unalias -- scan\n"
+            "scan\n"
+            "shopt -u expand_aliases\n"
+        )
+        self.assertIn("codeql database create db", aliases)
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "alias command"):
+            codeql_preflight._bash_alias_expansions("alias 'unterminated")
+        self.assertEqual(
+            codeql_preflight._bash_alias_expansions(
+                "shopt -s expand_aliases\n"
+                "alias -- -p invalid scan='echo scan'\n"
+                "unalias -a\n"
+                "shopt -q expand_aliases\n"
+                "alias bad.name='echo invalid'\n"
+                "eval '$SCAN'\n"
+                "eval 'echo safe'\n"
+            ),
+            [],
+        )
+
+    def test_alias_state_quoted_role_and_array_assignment_helpers(self) -> None:
+        aliases, enabled, enabled_line = codeql_preflight._bash_alias_state(
+            "shopt -s expand_aliases\n"
+            "alias -- ignored bad-name=value scan='codeql database'\n"
+        )
+        self.assertTrue(enabled)
+        self.assertGreater(enabled_line, 0)
+        self.assertEqual(aliases["scan"][0], "codeql database")
+
+        aliases, enabled, _line = codeql_preflight._bash_alias_state(
+            "shopt -s expand_aliases\n"
+            "alias one=value two=value\n"
+            "unalias -- one\n"
+            "unalias -a\n"
+            "shopt -u expand_aliases\n"
+            "shopt -q expand_aliases\n"
+            "alias bad.name=value\n"
+            "echo safe\n"
+        )
+        self.assertEqual(aliases, {})
+        self.assertFalse(enabled)
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "alias command"):
+            codeql_preflight._bash_alias_state("alias 'unterminated")
+
+        self.assertFalse(
+            codeql_preflight._bash_function_is_invoked(
+                "export -f other; eval '$BODY'; export -f scan; sh -c '$BODY'",
+                "scan",
+            )
+        )
+
+        role_cases = [
+            ('VALUE="text"', "literal"),
+            ('"command"', "command"),
+            ('sh -c "codeql database"', "shell-command"),
+            ('xargs sh -c "codeql database"', "shell-command"),
+            ('find . -exec sh -c "codeql database"', "shell-command"),
+            ('eval "codeql database"', "eval"),
+            ('echo "literal"', "literal"),
+        ]
+        for line, expected in role_cases:
+            with self.subTest(line=line):
+                self.assertEqual(
+                    codeql_preflight._bash_quoted_string_role(line, line.index('"')),
+                    expected,
+                )
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "malformed"):
+            codeql_preflight._bash_quoted_string_role("echo 'broken \"", 13)
+
+        self.assertFalse(codeql_preflight._bash_opens_array_assignment("(", 0))
+        self.assertTrue(codeql_preflight._bash_opens_array_assignment("items=(", 6))
+        self.assertTrue(codeql_preflight._bash_opens_array_assignment("items+=(", 7))
+        self.assertFalse(codeql_preflight._bash_opens_array_assignment("1items=(", 7))
+        self.assertFalse(
+            codeql_preflight._bash_opens_array_assignment("echo-items=(", 11)
+        )
+
+    def test_bash_executable_text_rejects_unterminated_constructs(self) -> None:
+        cases = [
+            ("cat <<EOF\nbody\n", "heredoc"),
+            ("echo 'unterminated\n", "multiline string"),
+            ("echo `date\n", "command substitution"),
+            ("items=(one\n", "array assignment"),
+            ("echo $((1 + 2\n", "arithmetic expression"),
+        ]
+        for text, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(codeql_preflight.InspectionError, message):
+                    codeql_preflight.shell_executable_text(text, "bash")
+
+    def test_bash_executable_text_preserves_executable_constructs_and_masks_data(
+        self,
+    ) -> None:
+        cases = [
+            ("cat <<-  'EOF'\n\tbody\n\tEOF\n", "cat", "body"),
+            (
+                'echo `printf \'single\' "double\\"quoted" \\ value`\n',
+                "printf",
+                None,
+            ),
+            (
+                'echo "$(printf \'%s\' \\"double\\" \\ value $(date))"\n',
+                "$(date)",
+                None,
+            ),
+            ("echo \"`printf 'inside'`\"\n", "printf 'inside'", None),
+            ("echo $((1 + (2)))\n", "$((1 + (2)))", None),
+            ("items=($(echo (one)))\n", "$(echo (one))", None),
+            ('echo "$(printf "a\\"b")"\n', 'printf "a\\"b"', None),
+            ("echo $((1 + \\\n2))\n", "$((1 + \\\n2))", None),
+        ]
+        for text, executable_fragment, masked_fragment in cases:
+            with self.subTest(text=text):
+                executable_text = codeql_preflight.shell_executable_text(text, "bash")
+                self.assertIn(executable_fragment, executable_text)
+                if masked_fragment is not None:
+                    self.assertNotIn(masked_fragment, executable_text)
+
+
+class PowerShellParserHelperTests(unittest.TestCase):
+    def test_here_string_start_and_subexpression_parsing(self) -> None:
+        self.assertEqual(
+            codeql_preflight._powershell_here_string_start("@' # comment", 12),
+            (0, "'"),
+        )
+        self.assertIsNone(codeql_preflight._powershell_here_string_start("# @'", 4))
+        self.assertIsNone(
+            codeql_preflight._powershell_here_string_start('Write-Output "@\'"', 17)
+        )
+
+        visible = codeql_preflight._powershell_subexpression_text(
+            "literal $(Write-Output ('nested')) tail"
+        )
+        self.assertIn("$(Write-Output ('nested'))", visible)
+        self.assertNotIn("literal", visible)
+        escaped = codeql_preflight._powershell_subexpression_text("literal `$(ignored)")
+        self.assertNotIn("ignored", escaped)
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "not terminated"):
+            codeql_preflight._powershell_subexpression_text("$(Write-Output")
+
+        self.assertIsNone(
+            codeql_preflight._powershell_here_string_start(
+                '"doubled""quote" `"escaped @\' suffix', 36
+            )
+        )
+        nested = codeql_preflight._powershell_subexpression_text(
+            '$(Write-Output "escaped `"quote")'
+        )
+        self.assertIn("Write-Output", nested)
+        here_line = '"escaped `" quote" @\''
+        self.assertEqual(
+            codeql_preflight._powershell_here_string_start(here_line, len(here_line)),
+            (here_line.index("@"), "'"),
+        )
+        self.assertIsNone(
+            codeql_preflight._powershell_here_string_start(
+                "@' trailing", len("@' trailing")
+            )
+        )
+
+    def test_here_string_execution_masking_and_termination(self) -> None:
+        executed = codeql_preflight._powershell_executable_text(
+            "iex @'\ncodeql database create db\n'@\n"
+        )
+        self.assertIn("codeql database create db", executed)
+        piped = codeql_preflight._powershell_executable_text(
+            "@'\ncodeql database create db\n'@ | iex\n"
+        )
+        self.assertIn("codeql database create db", piped)
+        interpolated = codeql_preflight._powershell_executable_text(
+            '@"\nliteral $(codeql database create db)\n"@\n'
+        )
+        self.assertIn("$(codeql database create db)", interpolated)
+        literal = codeql_preflight._powershell_executable_text(
+            "@'\ncodeql database create db\n'@\n"
+        )
+        self.assertNotIn("codeql database create db", literal)
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "here-string"):
+            codeql_preflight._powershell_executable_text("@'\nunterminated\n")
+
+    def test_comment_string_and_statement_masking(self) -> None:
+        text = (
+            "<# block ; | #> Write-Output 'literal;value'; "
+            'Write-Output "$(codeql database create db)" # trailing\nnext'
+        )
+        masked = codeql_preflight._powershell_mask_comments_and_multiline_literals(text)
+        self.assertNotIn("block", masked)
+        self.assertNotIn("literal;value", masked)
+        self.assertIn("$(codeql database create db)", masked)
+        self.assertNotIn("trailing", masked)
+
+        parts = codeql_preflight._powershell_statement_parts(text)
+        self.assertGreaterEqual(len(parts), 3)
+        self.assertTrue(
+            any("literal;value" in segment for _separator, segment in parts)
+        )
+        self.assertEqual(
+            codeql_preflight._powershell_statement_segments("one; 'two;three' | four"),
+            ["one", " 'two;three' ", " four"],
+        )
+
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "block comment"):
+            codeql_preflight._powershell_mask_comments_and_multiline_literals("<# open")
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "string literal"):
+            codeql_preflight._powershell_mask_comments_and_multiline_literals("'open")
+
+        edge_text = "# comment without newline\n\"escaped `\" quote\"; 'doubled''quote'"
+        self.assertIsInstance(
+            codeql_preflight._powershell_mask_comments_and_multiline_literals(
+                edge_text
+            ),
+            str,
+        )
+        self.assertGreaterEqual(
+            len(codeql_preflight._powershell_statement_parts(edge_text)), 2
+        )
+        self.assertEqual(
+            codeql_preflight._powershell_mask_comments_and_multiline_literals(
+                "# comment without newline"
+            ).strip(),
+            "",
+        )
+
+    def test_matching_brace_ignores_quotes_comments_and_nested_blocks(self) -> None:
+        powershell = '{ "}" <# } #> { } # }\n }'
+        self.assertEqual(
+            codeql_preflight._matching_shell_brace(powershell, 0, "powershell"),
+            len(powershell) - 1,
+        )
+        bash = '{ "}" { } # ignored }\n }'
+        self.assertEqual(
+            codeql_preflight._matching_shell_brace(bash, 0, "bash"),
+            len(bash) - 1,
+        )
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "not terminated"):
+            codeql_preflight._matching_shell_brace("{ nested", 0, "bash")
+
+        escaped_powershell = "{ \"escaped `\" }\"; 'doubled'' } quote'; }"
+        self.assertEqual(
+            codeql_preflight._matching_shell_brace(escaped_powershell, 0, "powershell"),
+            len(escaped_powershell) - 1,
+        )
+        escaped_bash = '{ "escaped \\" } quote"; }'
+        self.assertEqual(
+            codeql_preflight._matching_shell_brace(escaped_bash, 0, "bash"),
+            len(escaped_bash) - 1,
+        )
+
+    def test_function_definition_and_bash_invocation_paths(self) -> None:
+        bash = "scan() { echo scan; }\nfunction other { echo other; }\n"
+        self.assertEqual(
+            [
+                name
+                for name, _start, _end in codeql_preflight._shell_function_definitions(
+                    bash, "bash"
+                )
+            ],
+            ["scan", "other"],
+        )
+        powershell = "function global:Scan { Write-Output scan }\n"
+        self.assertEqual(
+            [
+                name
+                for name, _start, _end in codeql_preflight._shell_function_definitions(
+                    powershell, "powershell"
+                )
+            ],
+            ["global:Scan"],
+        )
+
+        for text in (
+            "scan",
+            "time --verbose scan",
+            "trap 'scan' EXIT",
+            "eval 'scan'",
+            "export -f scan; sh -c 'scan'",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    codeql_preflight._bash_function_is_invoked(text, "scan")
+                )
+        self.assertFalse(
+            codeql_preflight._bash_function_is_invoked("echo scan", "scan")
+        )
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "nesting"):
+            codeql_preflight._bash_function_is_invoked(
+                "scan", "scan", codeql_preflight.MAX_DYNAMIC_EXECUTION_DEPTH + 1
+            )
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "malformed"):
+            codeql_preflight._bash_function_is_invoked("'unterminated", "scan")
+
+    def test_powershell_alias_definition_resolution_and_invocation_paths(self) -> None:
+        self.assertEqual(
+            codeql_preflight._powershell_static_alias_value("'codeql'"), "codeql"
+        )
+        self.assertIsNone(codeql_preflight._powershell_static_alias_value("$dynamic"))
+        self.assertIsNone(
+            codeql_preflight._powershell_alias_definition("Write-Output ok")
+        )
+        self.assertEqual(
+            codeql_preflight._powershell_alias_definition("Set-Alias scan codeql"),
+            ("scan", "codeql"),
+        )
+        self.assertEqual(
+            codeql_preflight._powershell_alias_definition(
+                "Set-Alias -Name scan -Value codeql -Force -Scope Local"
+            ),
+            ("scan", "codeql"),
+        )
+        for definition in (
+            "Set-Alias -Name",
+            "Set-Alias -Unknown value",
+            "Set-Alias only-name",
+        ):
+            with self.subTest(definition=definition):
+                self.assertEqual(
+                    codeql_preflight._powershell_alias_definition(definition),
+                    (None, None),
+                )
+
+        text = (
+            "Set-Alias scan codeql; "
+            "scan database create db; "
+            "Remove-Alias -Name scan; "
+            "scan database create ignored"
+        )
+        invocations = codeql_preflight._powershell_alias_invocations(text)
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0][0], "codeql")
+        self.assertTrue(codeql_preflight._powershell_contains_codeql_alias(text))
+
+        self.assertEqual(
+            codeql_preflight._powershell_resolve_alias(
+                "first", {"first": "second", "second": "codeql"}
+            ),
+            "codeql",
+        )
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "cycle"):
+            codeql_preflight._powershell_resolve_alias(
+                "first", {"first": "second", "second": "first"}
+            )
+
+        self.assertTrue(
+            codeql_preflight._powershell_function_is_invoked("& Scan", "scan")
+        )
+        self.assertTrue(
+            codeql_preflight._powershell_function_is_invoked(
+                "invoke", "scan", {"invoke": "scan"}
+            )
+        )
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "not a static"):
+            codeql_preflight._powershell_function_is_invoked(
+                "invoke", "scan", {"invoke": None}
+            )
+
+        states = codeql_preflight._powershell_function_invocation_states(
+            "Set-Alias invoke scan; invoke", "scan"
+        )
+        self.assertEqual(len(states), 1)
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "not a static"):
+            codeql_preflight._powershell_function_invocation_states(
+                "invoke", "scan", {"invoke": None}
+            )
+        self.assertFalse(
+            codeql_preflight._powershell_function_is_invoked(
+                "invoke", "scan", {"invoke": "other"}
+            )
+        )
+
+        segments = codeql_preflight._powershell_alias_segments(
+            "Set-Alias $dynamic codeql; Remove-Alias $dynamic; Write-Output ok"
+        )
+        self.assertEqual(len(segments), 1)
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "not a static"):
+            codeql_preflight._powershell_contains_codeql_alias(
+                "Set-Alias scan $dynamic; scan database create db"
+            )
+        self.assertTrue(
+            codeql_preflight._powershell_contains_codeql_alias(
+                "function unused { Write-Output unused }; "
+                "Set-Alias scan codeql; scan database create db"
+            )
+        )
+
+    def test_quoted_dynamic_body_and_unresolved_execution_variants(self) -> None:
+        self.assertIsNone(codeql_preflight._powershell_quoted_body("plain"))
+        self.assertEqual(
+            codeql_preflight._powershell_quoted_body('"escaped `"quote"'),
+            'escaped `"quote',
+        )
+        self.assertEqual(
+            codeql_preflight._powershell_quoted_body("'doubled''quote'"),
+            "doubled''quote",
+        )
+        self.assertIsNone(codeql_preflight._powershell_quoted_body("'body' trailing"))
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "not terminated"):
+            codeql_preflight._powershell_quoted_body("'unterminated")
+
+        bodies = codeql_preflight._powershell_dynamic_execution_bodies(
+            "iex 'echo iex'; "
+            "pwsh -Command 'echo shell'; "
+            "& ([scriptblock]::Create('echo invoked')); "
+            ". [scriptblock]::Create('echo sourced'); "
+            "[scriptblock]::Create('echo method').Invoke(); "
+            "& { echo block }"
+        )
+        self.assertEqual(
+            bodies,
+            [
+                "echo iex",
+                "echo shell",
+                "echo invoked",
+                "echo sourced",
+                "echo method",
+                " echo block ",
+            ],
+        )
+        for text in (
+            "iex $dynamic",
+            "pwsh -Command $dynamic",
+            "& ([scriptblock]::Create($dynamic))",
+            ". [scriptblock]::Create($dynamic)",
+        ):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "non-literal"
+                ):
+                    codeql_preflight._powershell_dynamic_execution_bodies(text)
+
+        unresolved = (
+            "pwsh -EncodedCommand ZQBjAGgAbwA=",
+            "Start-Process $program",
+            "cmd /c codeql database create db",
+            "& $command",
+            "& (Get-Command codeql)",
+            ". $command",
+            ". (Get-Command codeql)",
+        )
+        for text in unresolved:
+            with self.subTest(text=text):
+                self.assertTrue(
+                    codeql_preflight._powershell_dynamic_execution_is_unresolved(text)
+                )
+        self.assertFalse(
+            codeql_preflight._powershell_dynamic_execution_is_unresolved(
+                "Write-Output safe"
+            )
+        )
+        self.assertEqual(
+            codeql_preflight._powershell_dynamic_execution_bodies(
+                "iex; pwsh script.ps1"
+            ),
+            [],
+        )
+        self.assertFalse(
+            codeql_preflight._powershell_dynamic_execution_is_unresolved(
+                ". ([scriptblock]::Create('Write-Output safe'))"
+            )
+        )
+        self.assertFalse(
+            codeql_preflight._powershell_dynamic_execution_is_unresolved(". ./safe.ps1")
+        )
+
+    def test_shell_configuration_inference_and_dispatch(self) -> None:
+        self.assertIsNone(codeql_preflight._configured_shell(None))
+        self.assertIsNone(codeql_preflight._configured_shell({"run": []}))
+        self.assertIsNone(codeql_preflight._configured_shell({"run": {"shell": 7}}))
+        self.assertEqual(
+            codeql_preflight._configured_shell({"run": {"shell": "pwsh"}}),
+            "pwsh",
+        )
+
+        shell_cases = [
+            ("'/usr/bin/bash' -e {0}", None, "bash"),
+            ("C:\\Tools\\pwsh.exe -File {0}", None, "powershell"),
+            ("python", None, "unknown"),
+            (None, "windows-latest", "powershell"),
+            (None, ["ubuntu-latest", "self-hosted"], "bash"),
+            (None, ["custom"], "unknown"),
+            (None, 7, "unknown"),
+        ]
+        for shell, runs_on, expected in shell_cases:
+            with self.subTest(shell=shell, runs_on=runs_on):
+                self.assertEqual(codeql_preflight._shell_kind(shell, runs_on), expected)
+
+        self.assertEqual(
+            codeql_preflight.shell_executable_text("plain", "unknown"), "plain"
+        )
+        self.assertFalse(codeql_preflight._contains_direct_codeql("echo safe"))
+        with self.assertRaisesRegex(
+            codeql_preflight.InspectionError, "unsupported shell"
+        ):
+            codeql_preflight.contains_codeql_cli("echo safe", "unknown")
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "nesting"):
+            codeql_preflight.contains_codeql_cli(
+                "echo safe",
+                "bash",
+                codeql_preflight.MAX_DYNAMIC_EXECUTION_DEPTH + 1,
+            )
+
+    def test_reachable_powershell_function_cycle_is_visited_once(self) -> None:
+        text = "function A { B }; function B { A }; A"
+        definitions = codeql_preflight._shell_function_definitions(text, "powershell")
+        top_level = list(text)
+        for _name, start, end in definitions:
+            codeql_preflight._mask(top_level, start, end)
+        calls = codeql_preflight._powershell_reachable_function_calls(
+            text, definitions, "".join(top_level)
+        )
+        self.assertEqual({name for name, _body, _aliases in calls}, {"A", "B"})
+
 
 class ReusableWorkflowTraversalTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1535,6 +2366,36 @@ class ReusableWorkflowTraversalTests(unittest.TestCase):
                 signals,
                 self.context,
                 GraphResolver(graph),
+            )
+
+    def test_reference_cap_and_advanced_workflow_evidence_are_reported(self) -> None:
+        signals = codeql_preflight.WorkflowSignals(True, ("advanced",))
+        advanced_node = codeql_preflight.WorkflowNode(
+            ("advanced",),
+            "called:advanced",
+            self.context,
+            codeql_preflight.WorkflowSignals(True, ()),
+        )
+        resolver = mock.Mock()
+        resolver.resolve.return_value = advanced_node
+
+        self.assertEqual(
+            codeql_preflight.inspect_root(
+                "root", ("root",), signals, self.context, resolver
+            ),
+            ["root", "called:advanced"],
+        )
+
+        with (
+            mock.patch.object(codeql_preflight, "MAX_REUSABLE_REFERENCES_PER_ROOT", 0),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "edge traversal"),
+        ):
+            codeql_preflight.inspect_root(
+                "root",
+                ("root",),
+                codeql_preflight.WorkflowSignals(False, ("call",)),
+                self.context,
+                resolver,
             )
 
 
@@ -1676,8 +2537,292 @@ class WorkflowDiscoveryTests(unittest.TestCase):
                     "expired",
                 )
 
+    def test_safe_root_and_path_reject_relative_root_anchor_missing_and_escape(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "absolute path"):
+            codeql_preflight.require_safe_root(Path("relative"))
+
+        anchor = Path(Path.cwd().anchor)
+        with self.assertRaisesRegex(
+            codeql_preflight.InspectionError, "filesystem root"
+        ):
+            codeql_preflight.require_safe_root(anchor)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            codeql_preflight.require_safe_root(root)
+            with self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "does not exist"
+            ):
+                codeql_preflight.require_safe_root(root / "missing")
+            with self.assertRaisesRegex(codeql_preflight.InspectionError, "escapes"):
+                codeql_preflight.require_safe_path(root.parent, root)
+            codeql_preflight.require_safe_path(root / "future" / "file.yml", root)
+
+    def test_reparse_point_uses_platform_file_attributes(self) -> None:
+        fake_stat = mock.Mock(st_file_attributes=4)
+        with (
+            mock.patch.object(codeql_preflight.Path, "lstat", return_value=fake_stat),
+            mock.patch.object(
+                codeql_preflight.stat,
+                "FILE_ATTRIBUTE_REPARSE_POINT",
+                4,
+                create=True,
+            ),
+        ):
+            self.assertTrue(codeql_preflight.is_reparse_point(Path("entry")))
+
+    def test_local_workflow_loader_rejects_file_root_encoding_size_and_count(
+        self,
+    ) -> None:
+        workflow = "jobs: {test: {runs-on: ubuntu-latest, steps: []}}"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.parent.mkdir(parents=True)
+            workflow_root.write_text("not a directory", encoding="utf-8")
+            with self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "not a directory"
+            ):
+                codeql_preflight.load_local_workflows(root)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            invalid = workflow_root / "invalid.yml"
+            invalid.write_bytes(b"\xff")
+            with self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "not valid UTF-8"
+            ):
+                codeql_preflight.load_local_workflows(root)
+
+            invalid.write_text(workflow, encoding="utf-8")
+            with (
+                mock.patch.object(codeql_preflight, "MAX_WORKFLOW_BYTES", 8),
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "byte safety cap"
+                ),
+            ):
+                codeql_preflight.load_local_workflows(root)
+
+            with (
+                mock.patch.object(codeql_preflight, "MAX_LOCAL_WORKFLOWS", 0),
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "workflow count"
+                ),
+            ):
+                codeql_preflight.load_local_workflows(root)
+
+    def test_local_workflow_loader_rechecks_bytes_and_wraps_read_errors(self) -> None:
+        workflow = "jobs: {test: {runs-on: ubuntu-latest, steps: []}}"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            path = workflow_root / "ci.yml"
+            path.write_text(workflow, encoding="utf-8")
+            original_stat = Path.stat
+
+            def small_stat(candidate: Path, *, follow_symlinks: bool = True) -> object:
+                if candidate == path:
+                    return mock.Mock(
+                        st_size=0,
+                        st_mode=original_stat(
+                            candidate, follow_symlinks=follow_symlinks
+                        ).st_mode,
+                    )
+                return original_stat(candidate, follow_symlinks=follow_symlinks)
+
+            with (
+                mock.patch.object(codeql_preflight, "require_safe_path"),
+                mock.patch.object(codeql_preflight.Path, "stat", small_stat),
+                mock.patch.object(codeql_preflight, "MAX_WORKFLOW_BYTES", 8),
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "byte safety cap"
+                ),
+            ):
+                codeql_preflight.load_local_workflows(root)
+
+            with (
+                mock.patch.object(
+                    codeql_preflight.Path,
+                    "read_bytes",
+                    side_effect=OSError("read failed"),
+                ),
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "Could not read"
+                ),
+            ):
+                codeql_preflight.load_local_workflows(root)
+
+
+class WorkflowResolverTests(unittest.TestCase):
+    WORKFLOW = "jobs: {test: {runs-on: ubuntu-latest, steps: []}}"
+
+    def test_local_and_exact_local_calls_validate_paths_and_cache_content(self) -> None:
+        path = ".github/workflows/reusable.yml"
+        signals = codeql_preflight.WorkflowSignals(False, ())
+        client = mock.Mock()
+        client.raw.return_value = self.WORKFLOW
+        resolver = codeql_preflight.WorkflowResolver(client, {path: signals})
+
+        local = resolver.resolve(f"./{path}", codeql_preflight.WorkflowContext("local"))
+        self.assertEqual(local.identity, ("local", path))
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "does not exist"):
+            resolver.resolve(
+                "./.github/workflows/missing.yml",
+                codeql_preflight.WorkflowContext("local"),
+            )
+        for call, message in (
+            ("./.github/workflows/../escape.yml", "traversal"),
+            ("./.github/workflows/nested/reusable.yml", "not a direct"),
+        ):
+            with self.subTest(call=call):
+                with self.assertRaisesRegex(codeql_preflight.InspectionError, message):
+                    resolver.resolve(call, codeql_preflight.WorkflowContext("local"))
+
+        exact_context = codeql_preflight.WorkflowContext(
+            "exact", "Owner", "Repo", "A" * 40
+        )
+        exact = resolver.resolve(f"./{path}", exact_context)
+        repeated = resolver.resolve(f"./{path}", exact_context)
+        self.assertEqual(exact.identity, repeated.identity)
+        client.raw.assert_called_once()
+
+        seeded = codeql_preflight.WorkflowSignals(True, ())
+        resolver.seed_exact_workflow("Owner", "Repo", "A" * 40, path, seeded)
+        self.assertIs(
+            resolver.resolve(f"./{path}", exact_context).signals,
+            seeded,
+        )
+
+    def test_external_calls_resolve_ref_and_content_once_and_reject_bad_commits(
+        self,
+    ) -> None:
+        client = mock.Mock()
+        client.json.return_value = {"sha": "a" * 40}
+        client.raw.return_value = self.WORKFLOW
+        resolver = codeql_preflight.WorkflowResolver(client, {})
+        call = "Owner/Repo/.github/workflows/reusable.yml@main"
+
+        first = resolver.resolve(call, codeql_preflight.WorkflowContext("local"))
+        second = resolver.resolve(call, codeql_preflight.WorkflowContext("local"))
+
+        self.assertEqual(first.identity, second.identity)
+        self.assertEqual(first.context.kind, "exact")
+        client.json.assert_called_once()
+        client.raw.assert_called_once()
+
+        invalid_client = mock.Mock()
+        invalid_client.json.return_value = {"sha": "short"}
+        invalid = codeql_preflight.WorkflowResolver(invalid_client, {})
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "full object ID"):
+            invalid.resolve(call, codeql_preflight.WorkflowContext("local"))
+
+        for invalid_call, message in (
+            ("owner/repo/.github/workflows/../escape.yml@main", "traversal"),
+            ("owner/repo/.github/workflows/nested/file.yml@main", "not a direct"),
+            ("unsupported", "Unsupported"),
+        ):
+            with self.subTest(call=invalid_call):
+                with self.assertRaisesRegex(codeql_preflight.InspectionError, message):
+                    resolver.resolve(
+                        invalid_call, codeql_preflight.WorkflowContext("local")
+                    )
+
+    def test_remote_default_branch_validates_commit_tree_count_blob_and_content(
+        self,
+    ) -> None:
+        commit = "a" * 40
+        blob = "b" * 40
+        client = mock.Mock()
+        client.json.side_effect = [
+            {"sha": commit},
+            {
+                "truncated": False,
+                "tree": [
+                    {"type": "tree", "path": ".github/workflows"},
+                    {"type": "blob", "path": "README.md", "sha": "c" * 40},
+                    {
+                        "type": "blob",
+                        "path": ".github/workflows/ci.yml",
+                        "sha": blob,
+                    },
+                ],
+            },
+        ]
+        client.raw.return_value = self.WORKFLOW
+
+        resolved_commit, workflows = codeql_preflight.load_remote_default_branch(
+            client, "owner", "repo", "main"
+        )
+
+        self.assertEqual(resolved_commit, commit)
+        self.assertEqual(set(workflows), {".github/workflows/ci.yml"})
+        client.raw.assert_called_once_with(f"repos/owner/repo/git/blobs/{blob}")
+
+        invalid_responses = [
+            ([{}, {}], "full Git object ID"),
+            ([{"sha": commit}, {"truncated": True}], "invalid, or truncated"),
+            ([{"sha": commit}, {"truncated": False, "tree": {}}], "no tree array"),
+            (
+                [
+                    {"sha": commit},
+                    {
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "type": "blob",
+                                "path": ".github/workflows/ci.yml",
+                                "sha": "short",
+                            }
+                        ],
+                    },
+                ],
+                "invalid blob ID",
+            ),
+        ]
+        for responses, message in invalid_responses:
+            invalid_client = mock.Mock()
+            invalid_client.json.side_effect = responses
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(codeql_preflight.InspectionError, message):
+                    codeql_preflight.load_remote_default_branch(
+                        invalid_client, "owner", "repo", "main"
+                    )
+
+        many_client = mock.Mock()
+        many_client.json.side_effect = [
+            {"sha": commit},
+            {
+                "truncated": False,
+                "tree": [
+                    {
+                        "type": "blob",
+                        "path": ".github/workflows/ci.yml",
+                        "sha": blob,
+                    }
+                ],
+            },
+        ]
+        with (
+            mock.patch.object(codeql_preflight, "MAX_REMOTE_WORKFLOWS", 0),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "workflow count"),
+        ):
+            codeql_preflight.load_remote_default_branch(
+                many_client, "owner", "repo", "main"
+            )
+
 
 class GitHubClientTests(unittest.TestCase):
+    def client(self) -> object:
+        with mock.patch.object(
+            codeql_preflight, "resolve_path_executable", return_value="/tools/gh"
+        ):
+            return codeql_preflight.GitHubClient("github.com")
+
     def test_deeply_nested_api_json_fails_closed(self) -> None:
         client = codeql_preflight.GitHubClient("github.com")
         payload = "[" * 20_000 + "]" * 20_000
@@ -1692,6 +2837,97 @@ class GitHubClientTests(unittest.TestCase):
         payload = json.dumps({"value": "[" * 20_000})
         with mock.patch.object(client, "_run", return_value=payload):
             self.assertEqual(client.json("repos/octo/repo"), json.loads(payload))
+
+        escaped_payload = '{"value":"escaped \\" quote and [ bracket"}'
+        with mock.patch.object(client, "_run", return_value=escaped_payload):
+            self.assertEqual(
+                client.json("repos/octo/repo"), json.loads(escaped_payload)
+            )
+
+    def test_client_requires_gh_and_rejects_invalid_json(self) -> None:
+        with (
+            mock.patch.object(
+                codeql_preflight, "resolve_path_executable", return_value=None
+            ),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "not found"),
+        ):
+            codeql_preflight.GitHubClient("github.com")
+
+        client = cast(GitHubClientProtocol, self.client())
+        with (
+            mock.patch.object(client, "_run", return_value="{"),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "invalid JSON"),
+        ):
+            client.json("repos/octo/repo")
+
+    def test_api_request_and_deadline_caps_fail_before_process_start(self) -> None:
+        client = cast(GitHubClientProtocol, self.client())
+        client.request_count = codeql_preflight.MAX_GH_REQUESTS
+        with self.assertRaisesRegex(
+            codeql_preflight.InspectionError, "request safety cap"
+        ):
+            client.raw("repos/octo/repo")
+
+        client.request_count = 0
+        client.deadline = 1.0
+        with (
+            mock.patch.object(codeql_preflight.time, "monotonic", return_value=2.0),
+            mock.patch.object(codeql_preflight.subprocess, "run") as run,
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "second safety cap"
+            ),
+        ):
+            client.raw("repos/octo/repo")
+        run.assert_not_called()
+
+    def test_api_process_missing_failure_raw_header_and_total_size_cap(self) -> None:
+        client = cast(GitHubClientProtocol, self.client())
+        with (
+            mock.patch.object(
+                codeql_preflight.subprocess, "run", side_effect=FileNotFoundError()
+            ),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "not installed"),
+        ):
+            client.raw("repos/octo/repo")
+
+        def fail_request(*_args: object, **kwargs: object) -> mock.Mock:
+            cast(BinaryIO, kwargs["stderr"]).write(b"denied")
+            return mock.Mock(returncode=1)
+
+        with (
+            mock.patch.object(
+                codeql_preflight.subprocess, "run", side_effect=fail_request
+            ),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "denied"),
+        ):
+            client.raw("repos/octo/repo")
+
+        def successful_raw(*args: object, **kwargs: object) -> mock.Mock:
+            command = cast(list[str], args[0])
+            self.assertIn("Accept: application/vnd.github.raw+json", command)
+            cast(BinaryIO, kwargs["stdout"]).write(b"workflow")
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(
+            codeql_preflight.subprocess, "run", side_effect=successful_raw
+        ):
+            self.assertEqual(client.raw("repos/octo/repo"), "workflow")
+
+        client.response_bytes = 0
+
+        def bounded_response(*_args: object, **kwargs: object) -> mock.Mock:
+            cast(BinaryIO, kwargs["stdout"]).write(b"12345")
+            cast(BinaryIO, kwargs["stderr"]).write(b"67890")
+            return mock.Mock(returncode=0)
+
+        with (
+            mock.patch.object(codeql_preflight, "MAX_TOTAL_GH_RESPONSE_BYTES", 9),
+            mock.patch.object(
+                codeql_preflight.subprocess, "run", side_effect=bounded_response
+            ),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "total response"),
+        ):
+            client.raw("repos/octo/repo")
 
     def test_api_timeout_fails_closed(self) -> None:
         client = codeql_preflight.GitHubClient("github.com")
@@ -1965,6 +3201,203 @@ jobs:
         with patches[0], patches[1], patches[2]:
             result = codeql_preflight.run(args)
         self.assertEqual(result["decision"], "require-explicit-switch-confirmation")
+
+    def test_run_rejects_nondirectory_root_and_invalid_default_setup_response(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root_file = Path(directory) / "repository"
+            root_file.write_text("not a directory", encoding="utf-8")
+            args = argparse.Namespace(
+                repo_root=str(root_file),
+                repository="octo/repo",
+                default_branch="main",
+                hostname="github.com",
+                confirm_no_external_codeql=True,
+            )
+            with (
+                mock.patch.object(codeql_preflight, "require_safe_root"),
+                mock.patch.object(codeql_preflight, "GitHubClient") as client,
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "not a directory"
+                ),
+            ):
+                codeql_preflight.run(args)
+            client.assert_not_called()
+
+        class InvalidClient:
+            request_count = 0
+
+            def __init__(
+                self, hostname: str, *, forbidden_root: Path | None = None
+            ) -> None:
+                del hostname, forbidden_root
+
+            def json(self, _endpoint: str) -> object:
+                return []
+
+        args.repo_root = str(PLUGIN_ROOT)
+        with (
+            mock.patch.object(codeql_preflight, "GitHubClient", InvalidClient),
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "invalid response"
+            ),
+        ):
+            codeql_preflight.run(args)
+
+    def test_remote_workflows_are_seeded_inspected_and_combined_with_analysis(
+        self,
+    ) -> None:
+        class FakeClient:
+            request_count = 0
+            deadline = float("inf")
+
+            def __init__(
+                self, hostname: str, *, forbidden_root: Path | None = None
+            ) -> None:
+                del hostname, forbidden_root
+
+            def json(self, endpoint: str) -> object:
+                self.request_count += 1
+                if endpoint.endswith("code-scanning/default-setup"):
+                    return {"state": "not-configured"}
+                if "code-scanning/analyses" in endpoint:
+                    return [{"id": 1}]
+                raise AssertionError(endpoint)
+
+        commit = "a" * 40
+        path = ".github/workflows/codeql.yml"
+        signals = codeql_preflight.WorkflowSignals(True, ())
+        args = argparse.Namespace(
+            repo_root=str(PLUGIN_ROOT),
+            repository="octo/repo",
+            default_branch="main",
+            hostname="github.com",
+            confirm_no_external_codeql=True,
+        )
+        with (
+            mock.patch.object(codeql_preflight, "GitHubClient", FakeClient),
+            mock.patch.object(
+                codeql_preflight, "load_local_workflows", return_value={}
+            ),
+            mock.patch.object(
+                codeql_preflight,
+                "load_remote_default_branch",
+                return_value=(commit, {path: signals}),
+            ),
+        ):
+            result = codeql_preflight.run(args)
+
+        self.assertEqual(result["decision"], "require-explicit-switch-confirmation")
+        self.assertTrue(result["has_codeql_analysis"])
+        self.assertEqual(result["advanced_workflows"], [f"remote:{path}@{commit}"])
+
+    def test_invalid_analyses_response_fails_closed(self) -> None:
+        class FakeClient:
+            request_count = 0
+            deadline = float("inf")
+
+            def __init__(
+                self, hostname: str, *, forbidden_root: Path | None = None
+            ) -> None:
+                del hostname, forbidden_root
+
+            def json(self, endpoint: str) -> object:
+                if endpoint.endswith("code-scanning/default-setup"):
+                    return {"state": "not-configured"}
+                if "code-scanning/analyses" in endpoint:
+                    return {}
+                raise AssertionError(endpoint)
+
+        args = argparse.Namespace(
+            repo_root=str(PLUGIN_ROOT),
+            repository="octo/repo",
+            default_branch="main",
+            hostname="github.com",
+            confirm_no_external_codeql=True,
+        )
+        with (
+            mock.patch.object(codeql_preflight, "GitHubClient", FakeClient),
+            mock.patch.object(
+                codeql_preflight, "load_local_workflows", return_value={}
+            ),
+            mock.patch.object(
+                codeql_preflight,
+                "load_remote_default_branch",
+                return_value=("a" * 40, {}),
+            ),
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "analyses endpoint"
+            ),
+        ):
+            codeql_preflight.run(args)
+
+
+class CommandLineTests(unittest.TestCase):
+    def test_parse_args_and_main_success_and_failure(self) -> None:
+        argv = [
+            str(SCRIPT_PATH),
+            "--repo-root",
+            str(PLUGIN_ROOT),
+            "--repository",
+            "octo/repo",
+            "--default-branch",
+            "main",
+            "--confirm-no-external-codeql",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            args = codeql_preflight.parse_args()
+        self.assertTrue(args.confirm_no_external_codeql)
+        self.assertEqual(args.hostname, "github.com")
+
+        output = StringIO()
+        with (
+            mock.patch.object(codeql_preflight, "parse_args", return_value=args),
+            mock.patch.object(
+                codeql_preflight, "run", return_value={"decision": "safe"}
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(codeql_preflight.main(), 0)
+        self.assertEqual(json.loads(output.getvalue()), {"decision": "safe"})
+
+        output = StringIO()
+        with (
+            mock.patch.object(codeql_preflight, "parse_args", return_value=args),
+            mock.patch.object(
+                codeql_preflight,
+                "run",
+                side_effect=codeql_preflight.InspectionError("blocked"),
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(codeql_preflight.main(), 2)
+        failure = json.loads(output.getvalue())
+        self.assertFalse(failure["inspection_complete"])
+        self.assertEqual(failure["decision"], "inconclusive")
+
+    def test_script_entrypoint_returns_inconclusive_status(self) -> None:
+        argv = [
+            str(SCRIPT_PATH),
+            "--repo-root",
+            str(PLUGIN_ROOT),
+            "--repository",
+            "octo/repo",
+            "--default-branch",
+            "main",
+            "--hostname",
+            "invalid.example",
+        ]
+        output = StringIO()
+        with (
+            mock.patch.object(sys, "argv", argv),
+            redirect_stdout(output),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(json.loads(output.getvalue())["decision"], "inconclusive")
 
 
 class PlaceholderContractTests(unittest.TestCase):

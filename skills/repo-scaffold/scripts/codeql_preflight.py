@@ -16,14 +16,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 try:
     import yaml
-except (
-    ImportError
-) as exc:  # pragma: no cover - exercised in environments without PyYAML
+except ImportError as exc:
     print(
         json.dumps(
             {
@@ -1710,11 +1708,11 @@ def _shell_function_definitions(
     definitions: list[tuple[str, int, int]] = []
     search_index = 0
     while match := pattern.search(text, search_index):
-        name = match.groupdict().get("function_name") or match.groupdict().get(
-            "posix_name"
+        name = cast(
+            str,
+            match.groupdict().get("function_name")
+            or match.groupdict().get("posix_name"),
         )
-        if name is None:  # pragma: no cover - the patterns always capture a name
-            raise InspectionError("Shell function has no static name.")
         open_index = text.rfind("{", match.start(), match.end())
         close_index = _matching_shell_brace(text, open_index, shell_kind)
         definitions.append((name, match.start(), close_index + 1))
@@ -2460,24 +2458,18 @@ def contains_codeql_cli(
         ):
             return True
         return False
-    if shell_kind == "powershell":
-        dynamic_text = _mask_uninvoked_functions(text, "powershell")
-        if _powershell_contains_cmd_codeql(executable_text):
-            return True
-        if _powershell_contains_codeql_alias(executable_text):
-            return True
-        if _powershell_dynamic_execution_is_unresolved(dynamic_text):
-            raise InspectionError(
-                "PowerShell dynamic command has a non-literal payload."
-            )
-        return (
-            _powershell_contains_start_process_codeql(executable_text)
-            or _powershell_contains_dynamic_codeql(
-                executable_text, dynamic_execution_depth
-            )
-            or _powershell_contains_quoted_codeql_command(executable_text)
-        )
-    return False
+    dynamic_text = _mask_uninvoked_functions(text, "powershell")
+    if _powershell_contains_cmd_codeql(executable_text):
+        return True
+    if _powershell_contains_codeql_alias(executable_text):
+        return True
+    if _powershell_dynamic_execution_is_unresolved(dynamic_text):
+        raise InspectionError("PowerShell dynamic command has a non-literal payload.")
+    return (
+        _powershell_contains_start_process_codeql(executable_text)
+        or _powershell_contains_dynamic_codeql(executable_text, dynamic_execution_depth)
+        or _powershell_contains_quoted_codeql_command(executable_text)
+    )
 
 
 def is_direct_workflow_path(path: str) -> bool:
@@ -2538,8 +2530,6 @@ def parse_workflow(
         job_shell = _configured_shell(job.get("defaults")) or workflow_shell
         runs_on = job.get("runs-on")
         steps = job.get("steps", [])
-        if steps is None:
-            steps = []
         if not isinstance(steps, list):
             raise InspectionError(
                 f"Workflow {source!r} job {job_name!r} steps is not a list."

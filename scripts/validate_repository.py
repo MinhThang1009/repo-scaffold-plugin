@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import configparser
+import ast
 import json
 import os
 import re
@@ -31,6 +33,7 @@ CACHE_DIRECTORIES = {
     "venv",
     ".venv",
 }
+COVERAGE_FAIL_UNDER = 100
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)\n]+)\)")
 MARKDOWN_REFERENCE = re.compile(r"(?m)^\s{0,3}\[[^\]]+\]:\s*(\S+)")
 SEMVER = re.compile(
@@ -342,7 +345,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             isinstance(step, dict)
             and step.get("run")
             == "python -m pip install --disable-pip-version-check "
-            "--requirement requirements-dev.txt"
+            "--require-hashes --requirement requirements-dev.lock"
             for step in canary_steps
         )
         canary_tests = isinstance(canary_steps, list) and any(
@@ -978,6 +981,404 @@ def validate_mirrored_dependency_metadata(repository_root: Path) -> list[str]:
         problems.append(
             "Release Please schema drift: installed and scaffold configs must match"
         )
+    return problems
+
+
+def normalize_package_name(name: str) -> str:
+    """Normalize one Python distribution name using the PyPA comparison rule."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def validate_development_dependency_contract(repository_root: Path) -> list[str]:
+    """Validate the hashed development lock and its CI coverage consumers."""
+    problems: list[str] = []
+    direct_path = repository_root / "requirements-dev.txt"
+    lock_path = repository_root / "requirements-dev.lock"
+    try:
+        direct_text = direct_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        return [f"requirements-dev.txt: could not verify direct pins: {error}"]
+    try:
+        lock_text = lock_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        return [f"requirements-dev.lock: could not verify hashed lock: {error}"]
+
+    direct_pins: dict[str, str] = {}
+    for line_number, raw_line in enumerate(direct_text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;\\]+)", line)
+        if match is None:
+            problems.append(
+                "requirements-dev.txt:"
+                f"{line_number}: direct dependencies must use exact name==version pins"
+            )
+            continue
+        name = normalize_package_name(match.group(1))
+        if name in direct_pins:
+            problems.append(
+                f"requirements-dev.txt:{line_number}: duplicate direct pin for {name}"
+            )
+        direct_pins[name] = match.group(2)
+
+    for name, version in {"exceptiongroup": "1.3.1", "tomli": "2.4.1"}.items():
+        if direct_pins.get(name) != version:
+            problems.append(
+                "requirements-dev.txt: the cross-version lock requires "
+                f"{name}=={version}"
+            )
+
+    entry_pattern = re.compile(r"(?m)^([A-Za-z0-9_.-]+)==([^\s;\\]+)\s+\\$")
+    matches = list(entry_pattern.finditer(lock_text))
+    lock_pins: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        name = normalize_package_name(match.group(1))
+        version = match.group(2)
+        block_end = (
+            matches[index + 1].start() if index + 1 < len(matches) else len(lock_text)
+        )
+        block = lock_text[match.start() : block_end]
+        hashes = re.findall(r"--hash=sha256:([0-9a-f]{64})(?:\s*\\)?", block)
+        if not hashes:
+            problems.append(
+                f"requirements-dev.lock: {name}=={version} must have a SHA-256 hash"
+            )
+        if name in lock_pins:
+            problems.append(f"requirements-dev.lock: duplicate locked package {name}")
+        lock_pins[name] = version
+
+    if not matches:
+        problems.append("requirements-dev.lock: no locked package entries found")
+    if "--generate-hashes" not in lock_text:
+        problems.append("requirements-dev.lock: generator header must record hash mode")
+    if re.search(r"(?m)^--(?:index-url|trusted-host)\b", lock_text):
+        problems.append(
+            "requirements-dev.lock: repository-specific index settings are forbidden"
+        )
+    for name, version in direct_pins.items():
+        locked_version = lock_pins.get(name)
+        if locked_version is None:
+            problems.append(f"requirements-dev.lock: direct package {name} is missing")
+        elif locked_version != version:
+            problems.append(
+                f"requirements-dev.lock: {name} pin {locked_version} does not match "
+                f"requirements-dev.txt pin {version}"
+            )
+
+    workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
+    try:
+        workflow = load_yaml(workflow_path)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        problems.append(f".github/workflows/ci.yml: could not verify lock use: {error}")
+        workflow = None
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    install_runs: list[str] = []
+    cache_paths: list[Any] = []
+    if isinstance(jobs, dict):
+        for job in jobs.values():
+            steps = job.get("steps") if isinstance(job, dict) else None
+            if not isinstance(steps, list):
+                continue
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                run = step.get("run")
+                if (
+                    isinstance(run, str)
+                    and "python -m pip install" in run
+                    and "requirements-dev" in run
+                ):
+                    install_runs.append(" ".join(run.split()))
+                uses = step.get("uses")
+                step_with = step.get("with")
+                if (
+                    isinstance(uses, str)
+                    and uses.startswith("actions/setup-python@")
+                    and isinstance(step_with, dict)
+                ):
+                    cache_paths.append(step_with.get("cache-dependency-path"))
+    expected_install = (
+        "python -m pip install --disable-pip-version-check --require-hashes "
+        "--requirement requirements-dev.lock"
+    )
+    if len(install_runs) != 3 or any(run != expected_install for run in install_runs):
+        problems.append(
+            ".github/workflows/ci.yml: every development install must use the "
+            "hashed requirements-dev.lock"
+        )
+    if len(cache_paths) != 3 or any(
+        path != "requirements-dev.lock" for path in cache_paths
+    ):
+        problems.append(
+            ".github/workflows/ci.yml: every Python cache must key on "
+            "requirements-dev.lock"
+        )
+
+    quality = jobs.get("quality") if isinstance(jobs, dict) else None
+    quality_steps = quality.get("steps") if isinstance(quality, dict) else None
+    expected_coverage = (
+        "python -m coverage erase\n"
+        "python -m coverage run -m pytest -q\n"
+        "python -m coverage report"
+    )
+    if not isinstance(quality_steps, list) or not any(
+        isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and step["run"].rstrip("\n") == expected_coverage
+        for step in quality_steps
+    ):
+        problems.append(
+            ".github/workflows/ci.yml: quality must enforce the repository coverage gate"
+        )
+
+    coverage_path = repository_root / ".coveragerc"
+    coverage_config = configparser.ConfigParser()
+    try:
+        coverage_config.read_string(coverage_path.read_text(encoding="utf-8"))
+        branch = coverage_config.getboolean("run", "branch")
+        sources = {
+            line.strip().replace("\\", "/")
+            for line in coverage_config.get("run", "source").splitlines()
+            if line.strip()
+        }
+        fail_under = coverage_config.getfloat("report", "fail_under")
+    except (OSError, UnicodeError, configparser.Error, ValueError) as error:
+        problems.append(f".coveragerc: could not verify coverage policy: {error}")
+    else:
+        expected_sources = {"scripts", "skills/repo-scaffold/scripts"}
+        if (
+            not branch
+            or sources != expected_sources
+            or fail_under < COVERAGE_FAIL_UNDER
+        ):
+            problems.append(
+                ".coveragerc: require branch coverage for both script trees with "
+                f"a fail-under floor of at least {COVERAGE_FAIL_UNDER}"
+            )
+
+    for relative in ("README.md", "CONTRIBUTING.md"):
+        path = repository_root / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"{relative}: could not verify dependency guidance: {error}"
+            )
+            continue
+        for required in (
+            "requirements-dev.lock",
+            "python -m coverage run -m pytest -q",
+            "python -m coverage report",
+        ):
+            if required not in text:
+                problems.append(
+                    f"{relative}: development guidance must include {required}"
+                )
+
+    attributes_path = repository_root / ".gitattributes"
+    try:
+        attributes = attributes_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f".gitattributes: could not verify export exclusions: {error}")
+    else:
+        for relative in (".coveragerc", "requirements-dev.lock"):
+            if not re.search(
+                rf"(?m)^{re.escape(relative)}\s+export-ignore\s*$", attributes
+            ):
+                problems.append(f".gitattributes: {relative} must be export-ignore")
+
+    ignore_path = repository_root / ".gitignore"
+    try:
+        ignore_lines = {
+            line.strip()
+            for line in ignore_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+    except (OSError, UnicodeError) as error:
+        problems.append(f".gitignore: could not verify coverage exclusions: {error}")
+    else:
+        if ".coverage*" in ignore_lines or not {
+            ".coverage",
+            ".coverage.*",
+        }.issubset(ignore_lines):
+            problems.append(
+                ".gitignore: ignore coverage data files without ignoring .coveragerc"
+            )
+    return problems
+
+
+def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
+    """Validate the isolated, fail-closed mutation-testing configuration."""
+    relative_paths = (
+        ".gitattributes",
+        ".github/workflows/mutation-testing.yml",
+        ".gitignore",
+        "CONTRIBUTING.md",
+        "README.md",
+        "pyproject.toml",
+        "requirements-mutation.lock",
+        "requirements-mutation.txt",
+    )
+    texts: dict[str, str] = {}
+    problems: list[str] = []
+    for relative in relative_paths:
+        try:
+            texts[relative] = (repository_root / relative).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(f"{relative}: could not verify mutation contract: {error}")
+    if len(texts) != len(relative_paths):
+        return problems
+
+    direct_lines = [
+        line.strip()
+        for line in texts["requirements-mutation.txt"].splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    expected_direct_lines = [
+        "-r requirements-dev.txt",
+        "mutmut==3.6.0",
+        "toml==0.10.2",
+    ]
+    if direct_lines != expected_direct_lines:
+        problems.append(
+            "requirements-mutation.txt: must extend requirements-dev.txt and pin "
+            "the reviewed mutmut and Python 3.10 toml versions"
+        )
+
+    lock_text = texts["requirements-mutation.lock"]
+    if (
+        "--generate-hashes" not in lock_text
+        or "--output-file=requirements-mutation.lock" not in lock_text
+        or re.search(r"(?m)^--(?:index-url|trusted-host)\b", lock_text)
+    ):
+        problems.append(
+            "requirements-mutation.lock: must be generated in portable hash mode"
+        )
+    for requirement in ("mutmut==3.6.0", "toml==0.10.2"):
+        entry = re.search(
+            rf"(?ms)^{re.escape(requirement)}\s+\\$(.*?)(?=^[A-Za-z0-9_.-]+==|\Z)",
+            lock_text,
+        )
+        if (
+            entry is None
+            or re.search(r"--hash=sha256:[0-9a-f]{64}", entry.group(0)) is None
+        ):
+            problems.append(
+                f"requirements-mutation.lock: missing hashed {requirement} entry"
+            )
+
+    workflow_path = repository_root / ".github" / "workflows" / "mutation-testing.yml"
+    try:
+        workflow = load_yaml(workflow_path)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        problems.append(
+            f".github/workflows/mutation-testing.yml: invalid workflow: {error}"
+        )
+        workflow = None
+    triggers = workflow.get("on") if isinstance(workflow, dict) else None
+    permissions = workflow.get("permissions") if isinstance(workflow, dict) else None
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    job = jobs.get("mutation-quality") if isinstance(jobs, dict) else None
+    steps = job.get("steps") if isinstance(job, dict) else None
+    if not isinstance(triggers, dict) or set(triggers) != {
+        "schedule",
+        "workflow_dispatch",
+    }:
+        problems.append(
+            ".github/workflows/mutation-testing.yml: use only scheduled and manual "
+            "trusted triggers"
+        )
+    if permissions != {"contents": "read"}:
+        problems.append(
+            ".github/workflows/mutation-testing.yml: permissions must be contents: read"
+        )
+    if (
+        not isinstance(job, dict)
+        or job.get("runs-on") != "ubuntu-latest"
+        or job.get("timeout-minutes") != "120"
+        or not isinstance(steps, list)
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: mutation-quality must use "
+            "bounded Ubuntu execution"
+        )
+        steps = []
+    run_steps = {
+        "\n".join(line.rstrip() for line in step["run"].strip().splitlines())
+        for step in steps
+        if isinstance(step, dict) and isinstance(step.get("run"), str)
+    }
+    required_runs = {
+        "python -m pip install --disable-pip-version-check --require-hashes "
+        "--requirement requirements-mutation.lock",
+        "mutmut run --max-children 4",
+        "mutmut export-cicd-stats\n"
+        "mutmut results --all > mutants/mutation-results.txt\n"
+        "python scripts/validate_mutation_results.py",
+    }
+    if not required_runs.issubset(run_steps):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: install the hashed lock, run "
+            "mutmut, and validate exported results"
+        )
+    cache_paths = [
+        step.get("with", {}).get("cache-dependency-path")
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("with"), dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/setup-python@")
+    ]
+    if cache_paths != ["requirements-mutation.lock"]:
+        problems.append(
+            ".github/workflows/mutation-testing.yml: Python cache must key on "
+            "requirements-mutation.lock"
+        )
+
+    config_text = texts["pyproject.toml"]
+    for fragment in (
+        'source_paths = ["scripts", "skills/repo-scaffold/scripts"]',
+        'pytest_add_cli_args_test_selection = ["tests"]',
+        '"requirements-mutation.lock"',
+        '"requirements-mutation.txt"',
+        "mutate_only_covered_lines = true",
+    ):
+        if fragment not in config_text:
+            problems.append(f"pyproject.toml: missing mutation setting {fragment!r}")
+
+    documentation_contract = {
+        "README.md": ("requirements-mutation.lock",),
+        "CONTRIBUTING.md": (
+            "requirements-mutation.lock",
+            "mutmut run --max-children 4",
+        ),
+    }
+    for relative, fragments in documentation_contract.items():
+        for fragment in fragments:
+            if fragment not in texts[relative]:
+                problems.append(
+                    f"{relative}: mutation guidance must include {fragment}"
+                )
+    for relative in (
+        "pyproject.toml",
+        "requirements-mutation.lock",
+        "requirements-mutation.txt",
+    ):
+        if (
+            re.search(
+                rf"(?m)^{re.escape(relative)}\s+export-ignore\s*$",
+                texts[".gitattributes"],
+            )
+            is None
+        ):
+            problems.append(f".gitattributes: {relative} must be export-ignore")
+    if "mutants/" not in {
+        line.strip()
+        for line in texts[".gitignore"].splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }:
+        problems.append(".gitignore: mutants/ must be ignored")
     return problems
 
 
@@ -1730,6 +2131,62 @@ def validate_release_archive(repository_root: Path) -> list[str]:
         return problems
 
 
+def validate_test_quality_contract(repository_root: Path) -> list[str]:
+    """Reject structurally weak or duplicated test cases."""
+    test_root = repository_root / "tests"
+    try:
+        paths = sorted(test_root.glob("test_*.py"))
+    except OSError as error:
+        return [f"test quality: could not inventory tests: {error}"]
+    if not paths:
+        return ["test quality: no test_*.py files found"]
+
+    problems: list[str] = []
+    bodies: dict[str, str] = {}
+    test_count = 0
+    weak_only = {"assertIsInstance", "assertIsNotNone"}
+    for path in paths:
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+        except (OSError, UnicodeError, SyntaxError) as error:
+            problems.append(f"{relative}: could not inspect test quality: {error}")
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not (
+                node.name.startswith("test_")
+            ):
+                continue
+            test_count += 1
+            location = f"{relative}:{node.lineno}:{node.name}"
+            assertions: list[str] = []
+            for child in ast.walk(node):
+                if isinstance(child, ast.Assert):
+                    assertions.append("assert")
+                elif (
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Attribute)
+                    and child.func.attr.startswith("assert")
+                ):
+                    assertions.append(child.func.attr)
+            if not assertions:
+                problems.append(f"{location}: test has no assertion")
+            elif set(assertions) <= weak_only:
+                problems.append(
+                    f"{location}: test only checks type or non-null presence"
+                )
+
+            body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
+            previous = bodies.get(body)
+            if previous is not None:
+                problems.append(f"{location}: duplicates test body at {previous}")
+            else:
+                bodies[body] = location
+    if test_count == 0:
+        problems.append("test quality: no test functions found")
+    return problems
+
+
 def validate_repository(repository_root: Path) -> list[str]:
     """Run every deterministic repository validation."""
     validators = (
@@ -1738,12 +2195,15 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_python_support_contract,
         validate_ci_toolchain_contract,
         validate_mirrored_dependency_metadata,
+        validate_development_dependency_contract,
+        validate_mutation_testing_contract,
         validate_plugin_manifest,
         validate_release_please,
         validate_release_attestation,
         validate_issue_templates,
         validate_dependabot,
         validate_markdown_links,
+        validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,
     )
@@ -1761,7 +2221,8 @@ def main() -> int:
             print(f"error: {problem}", file=sys.stderr)
         return 1
     print(
-        "Repository metadata, action pins, CI policies, links, templates, "
+        "Repository metadata, action pins, dependency locks, coverage policy, "
+        "CI policies, mutation testing, test quality, links, templates, "
         "attestations, and release archive are valid."
     )
     return 0

@@ -1,7 +1,9 @@
 .ruff_cache/
 .mypy_cache/
+mutants/
 .pytest_cache/
-.coverage*
+.coverage
+.coverage.*
 __pycache__/
 *.py[cod]
 
