@@ -14,6 +14,11 @@ on:
   # Required checks must also run against the synthetic merge-group commit.
   merge_group:
     types: [checks_requested]
+  # The rendered workflow uses this non-required run to detect a newly released
+  # stable runtime before the reviewed support policy is updated.
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,14 +31,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare_runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.runtime.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Replace this fail-closed step with a parser for the project's reviewed
+      # runtime-support policy file. Emit one compact matrix output line to
+      # GITHUB_OUTPUT; do not duplicate supported versions in this workflow.
+      - name: Load runtime support policy
+        id: runtime
+        run: |
+          echo "::error::REPO_SCAFFOLD_CI_NOT_CONFIGURED: load the reviewed runtime support policy"
+          exit 1
+
   test:
+    needs: prepare_runtime
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix:
-        # Versions the project supports — latest LTS first, optionally `latest` too.
-        version: ['lts/*']
+      matrix: ${{ fromJSON(needs.prepare_runtime.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -56,6 +79,22 @@ jobs:
       - name: Test
         run: |
           echo "::error::REPO_SCAFFOLD_CI_NOT_CONFIGURED: replace this step with the project's test command"
+          exit 1
+
+  latest-runtime-canary:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Replace this entire fail-closed step with latest-stable runtime setup,
+      # dependency installation, tests, and an undeclared-version drift check.
+      - name: Test the latest stable runtime
+        run: |
+          echo "::error::REPO_SCAFFOLD_CI_NOT_CONFIGURED: configure the latest stable runtime canary"
           exit 1
 
   # Aggregate test gate: require this instead of each matrix combo. It is green only

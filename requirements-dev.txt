@@ -1,5 +1,5 @@
-# Keep direct development dependencies reproducible and compatible with Python 3.10,
-# the minimum version supported by repo-scaffold.
+# Keep direct development dependencies reproducible and compatible with every
+# release declared in .github/python-support.json.
 mypy==2.3.0
 pytest==9.1.1
 PyYAML==6.0.3

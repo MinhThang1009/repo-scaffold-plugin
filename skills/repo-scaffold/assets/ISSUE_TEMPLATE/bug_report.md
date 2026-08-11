@@ -5,13 +5,18 @@ title: "[Bug]: "
 labels: bug
 ---
 
-**Describe the bug**
+## Describe the bug
 
-**Steps to reproduce**
+## Steps to reproduce
+
 1.
 
-**Expected vs actual behavior**
+## Expected vs actual behavior
 
-**Environment** (OS, version, browser if relevant)
+## Environment
 
-**Logs / screenshots** (if any)
+Include the OS, version, and browser when relevant.
+
+## Logs or screenshots
+
+Attach relevant evidence when available. Do not include secrets.

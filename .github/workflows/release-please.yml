@@ -42,6 +42,10 @@ jobs:
     name: Publish release assets
     needs: release_please
     if: ${{ needs.release_please.outputs.release_created == 'true' }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.release_please.outputs.tag_name }}

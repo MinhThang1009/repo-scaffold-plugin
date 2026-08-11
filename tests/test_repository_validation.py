@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -47,6 +48,292 @@ class SerializedFileValidationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "duplicate JSON member"):
                 validate_repository.load_json(path)
+
+
+class PythonSupportContractValidationTests(unittest.TestCase):
+    CONTRACT_FILES = (
+        ".github/python-support.json",
+        ".github/workflows/ci.yml",
+        "CONTRIBUTING.md",
+        "README.md",
+        "requirements-dev.txt",
+        "ruff.toml",
+        "scripts/python_support.py",
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/assets/workflows/ci.yml",
+    )
+
+    def copy_contract(self, root: Path) -> None:
+        for relative in self.CONTRACT_FILES:
+            source = PLUGIN_ROOT / relative
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+    def test_repository_python_support_contract_is_synchronized(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_python_support_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_hardcoded_workflow_version_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "${{ needs.prepare_ci.outputs.latest }}",
+                '"3.14"',
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_python_support_contract(root)
+
+            self.assertIn(
+                ".github/workflows/ci.yml: supported Python feature releases "
+                "must not be hardcoded",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/ci.yml: quality must use the policy's latest "
+                "release",
+                problems,
+            )
+
+    def test_ruff_target_must_match_the_policy_minimum(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "ruff.toml").write_text(
+                'target-version = "py311"\n', encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_python_support_contract(root)
+
+            self.assertIn(
+                "ruff.toml: target-version must match the minimum Python "
+                "policy release (py310)",
+                problems,
+            )
+
+
+class ActionReferenceValidationTests(unittest.TestCase):
+    def test_repository_action_references_are_immutable(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_action_references(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_mutable_action_reference_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            (workflow_root / "ci.yml").write_text(
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: actions/checkout@v7\n"
+                "      - uses: ./local-action\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_repository.validate_action_references(root),
+                [
+                    f"{Path('.github') / 'workflows' / 'ci.yml'}: external action or workflow "
+                    "must use a full commit SHA: actions/checkout@v7"
+                ],
+            )
+
+    def test_mismatched_action_repository_pins_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed = root / ".github" / "workflows"
+            asset = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            installed.mkdir(parents=True)
+            asset.mkdir(parents=True)
+            for path, sha in (
+                (installed / "ci.yml", "a" * 40),
+                (asset / "ci.yml", "b" * 40),
+            ):
+                path.write_text(
+                    "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+                    f"      - uses: actions/checkout@{sha}\n",
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_action_references(root)
+
+            self.assertEqual(len(problems), 1)
+            self.assertIn("workflow action pin drift: actions/checkout", problems[0])
+
+
+class CiToolchainContractValidationTests(unittest.TestCase):
+    CONTRACT_FILES = (
+        ".github/ci-toolchain.json",
+        ".github/workflows/ci.yml",
+        "CONTRIBUTING.md",
+        "README.md",
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/assets/ci-toolchain.json",
+        "skills/repo-scaffold/assets/workflows/documentation.yml",
+        "skills/repo-scaffold/scripts/ci_toolchain.py",
+    )
+
+    def copy_contract(self, root: Path) -> None:
+        for relative in self.CONTRACT_FILES:
+            source = PLUGIN_ROOT / relative
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+    def test_repository_ci_toolchain_contract_is_synchronized(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_ci_toolchain_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_hardcoded_documentation_python_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "workflows"
+                / "documentation.yml"
+            )
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "${{ needs.prepare_docs.outputs.documentation_python }}",
+                '"3.10"',
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertIn(
+                "skills/repo-scaffold/assets/workflows/documentation.yml: "
+                "documentation Python must not be hardcoded",
+                problems,
+            )
+            self.assertIn(
+                "skills/repo-scaffold/assets/workflows/documentation.yml: "
+                "docs-contract must consume the rolling policy runtime",
+                problems,
+            )
+
+    def test_hardcoded_standalone_tool_version_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "          SHELLCHECK_REPOSITORY:",
+                '          SHELLCHECK_VERSION: "0.11.0"\n'
+                "          SHELLCHECK_REPOSITORY:",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertIn(
+                ".github/workflows/ci.yml: standalone tool versions must not "
+                "be hardcoded",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/ci.yml: Install ShellCheck must consume "
+                "policy outputs",
+                problems,
+            )
+
+    def test_hardcoded_standalone_repository_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "${{ needs.prepare_ci.outputs.shellcheck_repository }}",
+                "koalaman/shellcheck",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertIn(
+                ".github/workflows/ci.yml: standalone tool metadata must come "
+                "from policy outputs, found 'koalaman/shellcheck'",
+                problems,
+            )
+
+    def test_installing_from_the_extraction_target_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                '"$extract_dir/$ACTIONLINT_EXECUTABLE_PATH"',
+                '"$ACTIONLINT_EXECUTABLE_PATH"',
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertIn(
+                ".github/workflows/ci.yml: Install actionlint must extract "
+                "before install",
+                problems,
+            )
+
+
+class MirroredDependencyMetadataTests(unittest.TestCase):
+    def test_repository_mirrored_metadata_is_synchronized(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_mirrored_dependency_metadata(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_pyyaml_pin_and_release_schema_drift_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            asset_root = root / "skills" / "repo-scaffold" / "assets"
+            asset_root.mkdir(parents=True)
+            (root / "requirements-dev.txt").write_text(
+                "PyYAML==6.0.3\n", encoding="utf-8"
+            )
+            (asset_root / "requirements-docs.txt").write_text(
+                "PyYAML==6.0.2\n", encoding="utf-8"
+            )
+            (root / "release-please-config.json").write_text(
+                '{"$schema":"https://example.test/v2/schema.json"}',
+                encoding="utf-8",
+            )
+            (asset_root / "release-please-config.json").write_text(
+                '{"$schema":"https://example.test/v1/schema.json"}',
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mirrored_dependency_metadata(root)
+
+            self.assertIn(
+                "PyYAML pin drift: requirements-dev.txt and the scaffold docs "
+                "requirements must match",
+                problems,
+            )
+            self.assertIn(
+                "Release Please schema drift: installed and scaffold configs "
+                "must match",
+                problems,
+            )
 
 
 class MarkdownLinkValidationTests(unittest.TestCase):
@@ -217,6 +504,128 @@ jobs:
             )
             self.assertIn(
                 "release version files must contain the same version", problems
+            )
+
+
+class ReleaseAttestationValidationTests(unittest.TestCase):
+    def write_valid_configuration(self, root: Path) -> None:
+        action_sha = "a" * 40
+        engine = {
+            "jobs": {
+                "build": {"permissions": {"contents": "read"}},
+                "attest": {
+                    "needs": "build",
+                    "runs-on": "ubuntu-latest",
+                    "timeout-minutes": 15,
+                    "permissions": {
+                        "contents": "read",
+                        "id-token": "write",
+                        "attestations": "write",
+                    },
+                    "steps": [
+                        {
+                            "name": "Receive release artifacts",
+                            "uses": f"actions/download-artifact@{action_sha}",
+                            "with": {
+                                "name": "release-assets-${{ inputs.commit_sha }}",
+                                "path": "dist/",
+                            },
+                        },
+                        {
+                            "name": "Validate downloaded artifacts",
+                            "shell": "bash",
+                            "run": validate_repository.ATTESTATION_VALIDATION_SCRIPT,
+                        },
+                        {
+                            "name": "Attest release artifacts",
+                            "uses": f"actions/attest@{action_sha}",
+                            "with": {"subject-path": "dist/**"},
+                        },
+                    ],
+                },
+                "publish": {
+                    "needs": ["build", "attest"],
+                    "permissions": {"contents": "write"},
+                },
+            }
+        }
+        caller_permissions = {
+            "contents": "write",
+            "id-token": "write",
+            "attestations": "write",
+        }
+        documents = {
+            ".github/workflows/release.yml": engine,
+            "skills/repo-scaffold/assets/workflows/release.yml": engine,
+            ".github/workflows/release-please.yml": {
+                "jobs": {"publish_release": {"permissions": caller_permissions}}
+            },
+            "skills/repo-scaffold/assets/workflows/release-please.yml": {
+                "jobs": {"publish_release": {"permissions": caller_permissions}}
+            },
+            "skills/repo-scaffold/assets/workflows/release-tag.yml": {
+                "jobs": {"release": {"permissions": caller_permissions}}
+            },
+        }
+        for relative, document in documents.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    def test_accepts_isolated_attestation_and_permission_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+
+            self.assertEqual(validate_repository.validate_release_attestation(root), [])
+
+    def test_rejects_privilege_and_publish_gate_regressions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            engine_path = root / ".github" / "workflows" / "release.yml"
+            engine = yaml.safe_load(engine_path.read_text(encoding="utf-8"))
+            engine["jobs"]["attest"]["permissions"].pop("id-token")
+            engine["jobs"]["attest"]["steps"].insert(
+                0,
+                {
+                    "name": "Unsafe checkout",
+                    "uses": "actions/checkout@" + "b" * 40,
+                },
+            )
+            engine["jobs"]["publish"]["needs"] = ["build"]
+            engine_path.write_text(
+                yaml.safe_dump(engine, sort_keys=False), encoding="utf-8"
+            )
+            caller_path = root / ".github" / "workflows" / "release-please.yml"
+            caller = yaml.safe_load(caller_path.read_text(encoding="utf-8"))
+            caller["jobs"]["publish_release"]["permissions"].pop("attestations")
+            caller_path.write_text(
+                yaml.safe_dump(caller, sort_keys=False), encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_release_attestation(root)
+
+            self.assertIn(
+                ".github/workflows/release.yml: attest permissions must be "
+                "contents: read, id-token: write, and attestations: write",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release.yml: attest must contain exactly "
+                "receive, validate, and attest steps",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release.yml: publish must depend on build and "
+                "attest",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release-please.yml: publish_release must pass "
+                "contents: write, id-token: write, and attestations: write to the "
+                "reusable release engine",
+                problems,
             )
 
 
