@@ -21,7 +21,9 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "codeql_preflight.py"
 )
-SPEC = importlib.util.spec_from_file_location("codeql_preflight", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "skills.repo-scaffold.scripts.codeql_preflight", SCRIPT_PATH
+)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load codeql_preflight.py")
 codeql_preflight = importlib.util.module_from_spec(SPEC)
@@ -30,7 +32,7 @@ SPEC.loader.exec_module(codeql_preflight)
 
 VALIDATOR_PATH = PLUGIN_ROOT / "scripts" / "validate_workflows.py"
 VALIDATOR_SPEC = importlib.util.spec_from_file_location(
-    "validate_workflows", VALIDATOR_PATH
+    "scripts.validate_workflows", VALIDATOR_PATH
 )
 if VALIDATOR_SPEC is None or VALIDATOR_SPEC.loader is None:
     raise RuntimeError("Could not load validate_workflows.py")

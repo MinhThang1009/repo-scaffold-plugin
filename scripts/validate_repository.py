@@ -1229,6 +1229,12 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "pyproject.toml",
         "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "tests/test_ci_toolchain.py",
+        "tests/test_codeql_preflight.py",
+        "tests/test_mutation_validation.py",
+        "tests/test_python_support.py",
+        "tests/test_repository_validation.py",
+        "tests/test_scaffold_validation.py",
     )
     texts: dict[str, str] = {}
     problems: list[str] = []
@@ -1388,6 +1394,50 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         problems.append(
             "pyproject.toml: pytest must collect only first-party tests from tests/"
         )
+
+    loader_contract = {
+        "tests/test_ci_toolchain.py": ("skills.repo-scaffold.scripts.ci_toolchain",),
+        "tests/test_codeql_preflight.py": (
+            "scripts.validate_workflows",
+            "skills.repo-scaffold.scripts.codeql_preflight",
+        ),
+        "tests/test_mutation_validation.py": ("scripts.validate_mutation_results",),
+        "tests/test_python_support.py": ("scripts.python_support",),
+        "tests/test_repository_validation.py": (
+            "scripts.validate_repository",
+            "scripts.validate_workflows",
+        ),
+        "tests/test_scaffold_validation.py": (
+            "skills.repo-scaffold.scripts.validate_scaffold",
+        ),
+    }
+    for relative, expected_names in loader_contract.items():
+        try:
+            tree = ast.parse(texts[relative], filename=relative)
+        except SyntaxError as error:
+            problems.append(
+                f"{relative}: could not verify mutation loader names: {error}"
+            )
+            continue
+        loader_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "spec_from_file_location"
+        ]
+        actual_names = [
+            node.args[0].value
+            for node in loader_calls
+            if node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ]
+        if sorted(actual_names) != sorted(expected_names):
+            problems.append(
+                f"{relative}: mutation loaders must use canonical module names "
+                f"{sorted(expected_names)!r}; found {sorted(actual_names)!r}"
+            )
 
     documentation_contract = {
         "README.md": ("requirements-mutation.lock",),

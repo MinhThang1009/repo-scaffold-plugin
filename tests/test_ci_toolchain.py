@@ -16,7 +16,9 @@ from unittest import mock
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "ci_toolchain.py"
-SPEC = importlib.util.spec_from_file_location("ci_toolchain", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "skills.repo-scaffold.scripts.ci_toolchain", SCRIPT_PATH
+)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load ci_toolchain.py")
 ci_toolchain = importlib.util.module_from_spec(SPEC)

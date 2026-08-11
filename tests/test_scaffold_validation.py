@@ -15,7 +15,9 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "validate_scaffold.py"
 )
-SPEC = importlib.util.spec_from_file_location("scaffold_validation", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "skills.repo-scaffold.scripts.validate_scaffold", SCRIPT_PATH
+)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load validate_scaffold.py")
 validate_scaffold = importlib.util.module_from_spec(SPEC)

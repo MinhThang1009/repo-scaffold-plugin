@@ -18,7 +18,9 @@ import yaml
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "validate_repository.py"
-SPEC = importlib.util.spec_from_file_location("validate_repository", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "scripts.validate_repository", SCRIPT_PATH
+)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load validate_repository.py")
 validate_repository = importlib.util.module_from_spec(SPEC)
@@ -27,7 +29,7 @@ SPEC.loader.exec_module(validate_repository)
 
 WORKFLOW_SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "validate_workflows.py"
 WORKFLOW_SPEC = importlib.util.spec_from_file_location(
-    "workflow_validation", WORKFLOW_SCRIPT_PATH
+    "scripts.validate_workflows", WORKFLOW_SCRIPT_PATH
 )
 if WORKFLOW_SPEC is None or WORKFLOW_SPEC.loader is None:
     raise RuntimeError("Could not load validate_workflows.py")
@@ -1195,6 +1197,12 @@ class MutationTestingContractTests(unittest.TestCase):
         "pyproject.toml",
         "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "tests/test_ci_toolchain.py",
+        "tests/test_codeql_preflight.py",
+        "tests/test_mutation_validation.py",
+        "tests/test_python_support.py",
+        "tests/test_repository_validation.py",
+        "tests/test_scaffold_validation.py",
     )
 
     def copy_contract(self, root: Path) -> None:
@@ -1374,6 +1382,50 @@ jobs:
             "pyproject.toml: missing mutation setting "
             "'mutate_only_covered_lines = false'",
             problems,
+        )
+
+    def test_mutation_loaders_must_use_canonical_module_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            test_path = root / "tests" / "test_python_support.py"
+            content = test_path.read_text(encoding="utf-8").replace(
+                '"scripts.python_support"',
+                '"python_support"',
+                1,
+            )
+            test_path.write_text(content, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertTrue(
+            any(
+                problem.startswith(
+                    "tests/test_python_support.py: mutation loaders must use "
+                    "canonical module names"
+                )
+                for problem in problems
+            )
+        )
+
+    def test_invalid_mutation_loader_source_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "tests" / "test_python_support.py").write_text(
+                "def broken(:\n", encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertTrue(
+            any(
+                problem.startswith(
+                    "tests/test_python_support.py: could not verify mutation "
+                    "loader names"
+                )
+                for problem in problems
+            )
         )
 
     def test_config_docs_exports_and_ignore_regressions_are_reported(self) -> None:
