@@ -1,6 +1,6 @@
 {
   "name": "repo-scaffold",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Scaffold a repository to production GitHub.com standard with community-health files, workflows, and repository configuration.",
   "author": {
     "name": "Minh Thang",
