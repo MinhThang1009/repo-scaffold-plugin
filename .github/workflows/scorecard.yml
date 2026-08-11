@@ -38,6 +38,7 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
+          file_mode: git
           publish_results: true
 
       - name: Upload Scorecard artifact

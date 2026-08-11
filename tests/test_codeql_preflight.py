@@ -2073,6 +2073,33 @@ class PlaceholderContractTests(unittest.TestCase):
         self.assertIn("group: release-please-${{ github.ref }}", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
 
+    def test_commitlint_excludes_merge_commits_for_every_event(self) -> None:
+        installed_path = PLUGIN_ROOT / ".github" / "workflows" / "commitlint.yml"
+        asset_path = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "commitlint.yml"
+        )
+
+        for path in (installed_path, asset_path):
+            workflow = path.read_text(encoding="utf-8")
+            with self.subTest(workflow=path.as_posix()):
+                self.assertIn(
+                    "const revListArgs = ['rev-list', '--reverse', '--no-merges'];",
+                    workflow,
+                )
+                self.assertNotIn(
+                    "EVENT_NAME === 'merge_group') revListArgs.push('--no-merges')",
+                    workflow,
+                )
+                self.assertIn(
+                    "if (process.env.EVENT_NAME === 'pull_request')",
+                    workflow,
+                )
+
     def test_link_workflows_narrowly_ignore_prospective_release_compare(self) -> None:
         installed_path = PLUGIN_ROOT / ".github" / "workflows" / "links.yml"
         asset_path = (
@@ -2237,7 +2264,7 @@ class PlaceholderContractTests(unittest.TestCase):
             ["actions", "{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"],
         )
 
-    def test_scorecard_workflows_are_pinned_and_publish_sarif(self) -> None:
+    def test_scorecard_workflows_use_git_mode_and_publish_sarif(self) -> None:
         installed_path = PLUGIN_ROOT / ".github" / "workflows" / "scorecard.yml"
         asset_path = (
             PLUGIN_ROOT
@@ -2280,6 +2307,7 @@ class PlaceholderContractTests(unittest.TestCase):
                     for step in job["steps"]
                     if step.get("uses", "").startswith("ossf/scorecard-action@")
                 )
+                self.assertEqual(scorecard_step["with"]["file_mode"], "git")
                 self.assertEqual(scorecard_step["with"]["publish_results"], "true")
                 self.assertEqual(scorecard_step["with"]["results_format"], "sarif")
 
