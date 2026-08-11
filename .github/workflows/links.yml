@@ -26,7 +26,100 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-tags: true
           persist-credentials: false
+
+      - name: Prepare Release Please comparison exception
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'release-please--branches--')
+        env:
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          root = Path.cwd().resolve()
+          manifest_path = root / ".release-please-manifest.json"
+          changelog_path = root / "CHANGELOG.md"
+          ignore_path = root / ".lycheeignore"
+
+          for path in (manifest_path, changelog_path):
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit(f"required regular file is missing: {path.name}")
+
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          version = manifest.get(".") if isinstance(manifest, dict) else None
+          semver = re.compile(
+              r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+              r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+              r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+          )
+          if not isinstance(version, str) or semver.fullmatch(version) is None:
+              raise SystemExit("root Release Please version is not valid SemVer")
+
+          repository = os.environ.get("REPOSITORY", "")
+          if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
+              raise SystemExit("GITHUB_REPOSITORY is not an owner/repository pair")
+
+          target_tag = f"v{version}"
+          heading = re.compile(
+              rf"^## \[{re.escape(version)}\]\("
+              rf"(?P<url>https://github\.com/{re.escape(repository)}/compare/"
+              rf"(?P<previous>v[0-9A-Za-z.+-]+)\.\.\.{re.escape(target_tag)})"
+              rf"\) \(\d{{4}}-\d{{2}}-\d{{2}}\)$",
+              re.MULTILINE,
+          )
+          matches = list(heading.finditer(changelog_path.read_text(encoding="utf-8")))
+          if len(matches) != 1:
+              raise SystemExit("expected exactly one prospective release heading")
+
+          comparison_url = matches[0].group("url")
+          previous_tag = matches[0].group("previous")
+          if semver.fullmatch(previous_tag.removeprefix("v")) is None:
+              raise SystemExit("comparison source tag is not valid SemVer")
+
+          def tag_exists(tag: str) -> bool:
+              result = subprocess.run(
+                  [
+                      "git",
+                      "-C",
+                      str(root),
+                      "rev-parse",
+                      "--verify",
+                      "--quiet",
+                      f"refs/tags/{tag}^{{commit}}",
+                  ],
+                  check=False,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+              return result.returncode == 0
+
+          if not tag_exists(previous_tag):
+              raise SystemExit(f"comparison source tag does not exist: {previous_tag}")
+          if tag_exists(target_tag):
+              raise SystemExit(f"prospective tag already exists: {target_tag}")
+          if ignore_path.is_symlink() or (ignore_path.exists() and not ignore_path.is_file()):
+              raise SystemExit(".lycheeignore must be a regular file when present")
+
+          existing = (
+              ignore_path.read_text(encoding="utf-8") if ignore_path.exists() else ""
+          )
+          entry = f"^{re.escape(comparison_url)}$"
+          if entry not in existing.splitlines():
+              prefix = "" if not existing or existing.endswith("\n") else "\n"
+              with ignore_path.open("a", encoding="utf-8", newline="\n") as ignore_file:
+                  ignore_file.write(f"{prefix}{entry}\n")
+          print(f"Ignoring prospective Release Please comparison for {target_tag}.")
+          PY
 
       # Source assets contain intentionally unresolved relative scaffold markers.
       - name: Check rendered and authoring links
