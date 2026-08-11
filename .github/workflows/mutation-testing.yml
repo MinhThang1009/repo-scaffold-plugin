@@ -1,0 +1,64 @@
+name: Mutation testing
+
+on:
+  schedule:
+    - cron: "41 5 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation-quality:
+    name: mutation-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load Python support policy
+        id: support
+        shell: bash
+        run: python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ steps.support.outputs.latest }}
+          cache: pip
+          cache-dependency-path: requirements-mutation.lock
+
+      - name: Install mutation-testing dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check --require-hashes
+          --requirement requirements-mutation.lock
+
+      - name: Verify dependency consistency
+        run: python -m pip check
+
+      - name: Run mutation testing
+        run: mutmut run --max-children 4
+
+      - name: Export mutation results
+        run: |
+          mutmut export-cicd-stats
+          mutmut results --all > mutants/mutation-results.txt
+          python scripts/validate_mutation_results.py
+
+      - name: Upload mutation results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-results
+          path: |
+            mutants/mutmut-cicd-stats.json
+            mutants/mutation-results.txt
+          if-no-files-found: warn
+          retention-days: 14

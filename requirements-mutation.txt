@@ -1,0 +1,6 @@
+# Mutation testing extends the cross-platform development toolchain. Keep this
+# separate because mutmut requires fork support and does not run natively on
+# Windows.
+-r requirements-dev.txt
+mutmut==3.6.0
+toml==0.10.2

@@ -14,8 +14,8 @@ other sensitive information in public logs.
 
 Use the first available private channel:
 
-1. If GitHub displays **Report a vulnerability** on this repository's Security
-   page, use GitHub Private Vulnerability Reporting.
+1. Use [GitHub Private Vulnerability Reporting][private-report] for this
+   repository.
 2. For a locally shared copy, contact the person or workspace that supplied the
    plugin through the same private channel used to share it.
 3. If neither channel is available, request a private contact method without
@@ -35,3 +35,5 @@ handling, and external integrations.
 Reports about GitHub, Codex, GitHub CLI, Python, PyYAML, or another dependency
 that do not arise from this plugin should be reported to the relevant upstream
 project.
+
+[private-report]: https://github.com/MinhThang1009/repo-scaffold-plugin/security/advisories/new

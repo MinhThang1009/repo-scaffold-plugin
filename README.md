@@ -40,7 +40,7 @@ Content follows GitHub's community-standards format and is pulled from canonical
 - [`gh`](https://cli.github.com/) (GitHub CLI), authenticated to GitHub.com (`gh auth status --active --hostname github.com`) — used for every GitHub API call and configuration step.
 - `git`.
 - `actionlint` and ShellCheck are required for local workflow validation. CI obtains their reviewed versions, release metadata, archive layout, and asset digests from the centralized [CI toolchain policy](.github/ci-toolchain.json).
-- Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with PyYAML, for deterministic scaffold validation and the fail-closed CodeQL default-setup preflight. The preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime. It also requires separate confirmation that no external or indirect process uploads CodeQL results; without either prerequisite, the plugin skips that mutation and reports the verification gap.
+- Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with the hash-locked development dependencies, for deterministic tests, branch coverage, scaffold validation, and the fail-closed CodeQL default-setup preflight. The preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime. It also requires separate confirmation that no external or indirect process uploads CodeQL results; without either prerequisite, the plugin skips that mutation and reports the verification gap.
 - Node.js with `npx` is required only to reproduce the markdownlint package pinned by the [CI toolchain policy](.github/ci-toolchain.json).
 - Remote automation supports GitHub.com only. GitHub Enterprise Server and GHE.com repositories receive host-independent local community files, but bundled workflows, GitHub.com badges, and remote configuration are skipped.
 - Without a remote, the plugin can generate host-independent local files. It defers workflows, badges, and GitHub configuration until a GitHub.com remote exists; it never creates that remote without confirmation.
@@ -98,6 +98,7 @@ codex plugin remove repo-scaffold@personal
 
 ```text
 repo-scaffold/
+├── .coveragerc
 ├── .release-please-manifest.json
 ├── .markdownlint-cli2.jsonc
 ├── .codex-plugin/
@@ -125,7 +126,10 @@ repo-scaffold/
 ├── README.md
 ├── LICENSE
 ├── release-please-config.json
+├── requirements-dev.lock
 ├── requirements-dev.txt
+├── requirements-mutation.lock
+├── requirements-mutation.txt
 ├── version.txt
 ├── scripts/
 │   ├── python_support.py
@@ -150,11 +154,13 @@ SKILL.md → Resources lists every generated file.
 
 ## 10. Development validation
 
-The plugin has no compilation step. Its validation tests require a CPython release from the [Python support policy](.github/python-support.json), PyYAML, and pytest. Run the repository checks from its root:
+The plugin has no compilation step. Its validation tests require a CPython release from the [Python support policy](.github/python-support.json) and the hash-locked development toolchain, including Coverage.py, PyYAML, and pytest. Run the repository checks from its root:
 
 ```powershell
-python -m pip install --requirement requirements-dev.txt
-python -m pytest -q
+python -m pip install --require-hashes --requirement requirements-dev.lock
+python -m coverage erase
+python -m coverage run -m pytest -q
+python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
 python -m mypy skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/python_support.py scripts/validate_repository.py scripts/validate_workflows.py tests
@@ -166,6 +172,8 @@ python scripts/validate_repository.py
 
 Workflow validation runs actionlint with ShellCheck enabled against both installed
 and templated workflows. Markdownlint covers every project-owned Markdown file.
+Coverage measures both first-party script trees with branch coverage and enforces
+the 100% floor in `.coveragerc` from the CI quality job.
 Repository validation checks the centered and numbered README contract, unresolved
 scaffold markers, Markdown issue and pull-request templates, relative links,
 JSON/YAML uniqueness and syntax, plugin metadata, issue forms, Dependabot
@@ -189,6 +197,12 @@ digests. Workflows and setup guidance consume that policy instead of embedding
 those values, and a non-required scheduled/manual canary reports npm, upstream
 release, or digest drift for review.
 Dependabot checks the pinned Python development tools and GitHub Actions weekly.
+`requirements-dev.txt` records reviewed direct pins; `requirements-dev.lock`
+resolves every transitive dependency and records PyPI SHA-256 hashes used by CI.
+Mutation testing extends that toolchain through the separate, hash-verified
+`requirements-mutation.lock`. Its monthly and manually dispatched workflow runs
+mutmut on Linux and rejects incomplete runs or surviving mutants. Native Windows
+is not supported by mutmut; contributors can use WSL for the same check.
 
 ## 11. Releases
 

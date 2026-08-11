@@ -1,6 +1,66 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.6.0/schemas/config.json",
   "release-type": "simple",
+  "pull-request-title-pattern": "chore${scope}: phát hành${component} ${version}",
+  "pull-request-header": ":robot: Release Please đã tạo PR phát hành tự động này.",
+  "pull-request-footer": "PR này được tạo tự động bằng [Release Please](https://github.com/googleapis/release-please). Xem [tài liệu](https://github.com/googleapis/release-please#release-please).",
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "section": "Tính năng"
+    },
+    {
+      "type": "feature",
+      "section": "Tính năng"
+    },
+    {
+      "type": "fix",
+      "section": "Sửa lỗi"
+    },
+    {
+      "type": "perf",
+      "section": "Cải thiện hiệu năng"
+    },
+    {
+      "type": "revert",
+      "section": "Hoàn tác"
+    },
+    {
+      "type": "docs",
+      "section": "Tài liệu",
+      "hidden": true
+    },
+    {
+      "type": "style",
+      "section": "Định dạng mã",
+      "hidden": true
+    },
+    {
+      "type": "chore",
+      "section": "Bảo trì khác",
+      "hidden": true
+    },
+    {
+      "type": "refactor",
+      "section": "Tái cấu trúc mã",
+      "hidden": true
+    },
+    {
+      "type": "test",
+      "section": "Kiểm thử",
+      "hidden": true
+    },
+    {
+      "type": "build",
+      "section": "Hệ thống xây dựng",
+      "hidden": true
+    },
+    {
+      "type": "ci",
+      "section": "Tích hợp liên tục",
+      "hidden": true
+    }
+  ],
   "draft": true,
   "force-tag-creation": true,
   "packages": {
