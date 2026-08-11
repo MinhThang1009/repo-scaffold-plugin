@@ -2073,6 +2073,113 @@ class PlaceholderContractTests(unittest.TestCase):
         self.assertIn("group: release-please-${{ github.ref }}", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
 
+    def test_link_workflows_narrowly_ignore_prospective_release_compare(self) -> None:
+        installed_path = PLUGIN_ROOT / ".github" / "workflows" / "links.yml"
+        asset_path = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "links.yml"
+        )
+
+        for path in (installed_path, asset_path):
+            document = codeql_preflight.yaml.load(
+                path.read_text(encoding="utf-8"),
+                Loader=codeql_preflight.UniqueKeyBaseLoader,
+            )
+            steps = document["jobs"]["links"]["steps"]
+            with self.subTest(workflow=path.as_posix()):
+                checkout = next(step for step in steps if step["name"] == "Checkout")
+                self.assertEqual(checkout["with"]["fetch-tags"], "true")
+                self.assertEqual(checkout["with"]["persist-credentials"], "false")
+
+                prepare = next(
+                    step
+                    for step in steps
+                    if step["name"] == "Prepare Release Please comparison exception"
+                )
+                condition = prepare["if"]
+                self.assertIn("github.event_name == 'pull_request'", condition)
+                self.assertIn(
+                    "github.event.pull_request.head.repo.full_name == github.repository",
+                    condition,
+                )
+                self.assertIn(
+                    "startsWith(github.head_ref, 'release-please--branches--')",
+                    condition,
+                )
+                self.assertEqual(
+                    prepare["env"]["REPOSITORY"], "${{ github.repository }}"
+                )
+                script = prepare["run"]
+                for required_guard in (
+                    ".release-please-manifest.json",
+                    "expected exactly one prospective release heading",
+                    "comparison source tag does not exist",
+                    "prospective tag already exists",
+                    "re.escape(comparison_url)",
+                    ".lycheeignore",
+                ):
+                    self.assertIn(required_guard, script)
+
+    def test_release_exception_ignores_only_the_exact_future_comparison(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github" / "workflows" / "links.yml"
+        document = codeql_preflight.yaml.load(
+            workflow_path.read_text(encoding="utf-8"),
+            Loader=codeql_preflight.UniqueKeyBaseLoader,
+        )
+        prepare = next(
+            step
+            for step in document["jobs"]["links"]["steps"]
+            if step["name"] == "Prepare Release Please comparison exception"
+        )
+        embedded_python = prepare["run"].split("python3 - <<'PY'\n", 1)[1]
+        embedded_python = embedded_python.rsplit("\nPY", 1)[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / ".release-please-manifest.json"
+            changelog_path = root / "CHANGELOG.md"
+            ignore_path = root / ".lycheeignore"
+            manifest_path.write_text('{".": "1.1.1"}\n', encoding="utf-8")
+            changelog_path.write_text("# Changelog\n", encoding="utf-8")
+            ignore_path.write_text(r"^https://example\.com$", encoding="utf-8")
+
+            git_commands = (
+                ["git", "init", "--quiet"],
+                ["git", "config", "user.name", "Repo Scaffold Tests"],
+                ["git", "config", "user.email", "tests@example.invalid"],
+                ["git", "add", ".release-please-manifest.json", "CHANGELOG.md"],
+                ["git", "commit", "--quiet", "-m", "test: seed release"],
+                ["git", "tag", "v1.1.1"],
+            )
+            for command in git_commands:
+                subprocess.run(command, cwd=root, check=True)
+
+            repository = "MinhThang1009/repo-scaffold-plugin"
+            comparison_url = f"https://github.com/{repository}/compare/v1.1.1...v1.2.0"
+            manifest_path.write_text('{".": "1.2.0"}\n', encoding="utf-8")
+            changelog_path.write_text(
+                f"# Changelog\n\n## [1.2.0]({comparison_url}) (2026-08-11)\n",
+                encoding="utf-8",
+            )
+
+            environment = {"REPOSITORY": repository}
+            with (
+                mock.patch.object(Path, "cwd", return_value=root),
+                mock.patch.dict(os.environ, environment, clear=False),
+            ):
+                exec(compile(embedded_python, "links.yml", "exec"), {})
+                exec(compile(embedded_python, "links.yml", "exec"), {})
+
+            expected_entry = f"^{re.escape(comparison_url)}$"
+            self.assertEqual(
+                ignore_path.read_text(encoding="utf-8").splitlines(),
+                [r"^https://example\.com$", expected_entry],
+            )
+
     def test_codeql_advanced_setup_is_pinned_and_repository_managed(self) -> None:
         installed_path = PLUGIN_ROOT / ".github" / "workflows" / "codeql.yml"
         asset_path = (
