@@ -236,6 +236,9 @@ class MarkdownSourceContractTests(unittest.TestCase):
             ignored = root / "node_modules" / "ignored.md"
             ignored.parent.mkdir()
             ignored.write_text("Ignored\n", encoding="utf-8")
+            generated = root / "mutants" / "generated.md"
+            generated.parent.mkdir()
+            generated.write_text("Generated\n", encoding="utf-8")
             linked = root / "linked.md"
             linked.write_text("Link stand-in\n", encoding="utf-8")
             original_is_symlink = Path.is_symlink
@@ -254,6 +257,7 @@ class MarkdownSourceContractTests(unittest.TestCase):
             )
             self.assertTrue(validate_scaffold.is_project_markdown(source, root))
             self.assertFalse(validate_scaffold.is_project_markdown(ignored, root))
+            self.assertFalse(validate_scaffold.is_project_markdown(generated, root))
 
     def test_reports_encoding_newline_marker_and_missing_link_problems(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

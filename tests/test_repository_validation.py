@@ -61,6 +61,9 @@ class SerializedFileValidationTests(unittest.TestCase):
             cached = root / ".pytest_cache" / "cached.json"
             cached.parent.mkdir()
             cached.write_text('{"cached": true}', encoding="utf-8")
+            generated = root / "mutants" / "generated.json"
+            generated.parent.mkdir()
+            generated.write_text('{"generated": true}', encoding="utf-8")
 
             self.assertEqual(
                 validate_repository.project_files(root, ("*.json", "source.*")),
@@ -404,7 +407,10 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                 "ci-success must keep the scheduled canary",
             )
             for expected in expected_fragments:
-                self.assertTrue(any(expected in item for item in problems), expected)
+                self.assertTrue(
+                    any(expected in item for item in problems),
+                    f"{expected}: {problems}",
+                )
 
 
 class ActionReferenceValidationTests(unittest.TestCase):
@@ -1310,6 +1316,22 @@ jobs:
             problems,
         )
 
+    def test_mutation_results_all_option_requires_a_boolean_value(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "mutmut results --all true > mutants/mutation-results.txt",
+                "mutmut results --all > mutants/mutation-results.txt",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertTrue(any("validate exported results" in item for item in problems))
+
     def test_config_docs_exports_and_ignore_regressions_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1325,6 +1347,10 @@ jobs:
             problems = validate_repository.validate_mutation_testing_contract(root)
 
         self.assertEqual(sum("missing mutation setting" in p for p in problems), 5)
+        self.assertIn(
+            "pyproject.toml: pytest must collect only first-party tests from tests/",
+            problems,
+        )
         self.assertEqual(sum("mutation guidance" in p for p in problems), 2)
         self.assertEqual(sum("must be export-ignore" in p for p in problems), 3)
         self.assertIn(".gitignore: mutants/ must be ignored", problems)

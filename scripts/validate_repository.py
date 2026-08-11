@@ -30,6 +30,7 @@ CACHE_DIRECTORIES = {
     "__pycache__",
     "build",
     "dist",
+    "mutants",
     "venv",
     ".venv",
 }
@@ -1323,7 +1324,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "--requirement requirements-mutation.lock",
         "mutmut run --max-children 4",
         "mutmut export-cicd-stats\n"
-        "mutmut results --all > mutants/mutation-results.txt\n"
+        "mutmut results --all true > mutants/mutation-results.txt\n"
         "python scripts/validate_mutation_results.py",
     }
     if not required_runs.issubset(run_steps):
@@ -1367,6 +1368,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     ):
         if fragment not in config_text:
             problems.append(f"pyproject.toml: missing mutation setting {fragment!r}")
+    if 'testpaths = ["tests"]' not in config_text:
+        problems.append(
+            "pyproject.toml: pytest must collect only first-party tests from tests/"
+        )
 
     documentation_contract = {
         "README.md": ("requirements-mutation.lock",),

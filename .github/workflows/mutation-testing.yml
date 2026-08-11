@@ -50,7 +50,7 @@ jobs:
         if: ${{ always() }}
         run: |
           mutmut export-cicd-stats
-          mutmut results --all > mutants/mutation-results.txt
+          mutmut results --all true > mutants/mutation-results.txt
           python scripts/validate_mutation_results.py
 
       - name: Upload mutation results

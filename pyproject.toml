@@ -31,3 +31,6 @@ also_copy = [
   "version.txt",
 ]
 mutate_only_covered_lines = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
