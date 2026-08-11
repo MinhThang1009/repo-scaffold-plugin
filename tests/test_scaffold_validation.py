@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import runpy
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -88,6 +92,114 @@ class ReadmeContractTests(unittest.TestCase):
             validate_scaffold.validate_readme_text(text),
         )
 
+    def test_rejects_missing_or_misplaced_centered_header(self) -> None:
+        missing_close = readme().replace("</div>", "")
+        self.assertEqual(
+            validate_scaffold.validate_readme_text(missing_close),
+            ['README.md: header must use one <div align="center"> block'],
+        )
+
+        late_close = readme().replace("</div>\n\n## Contents", "## Contents\n\n</div>")
+        self.assertIn(
+            "README.md: centered header must close before the first H2",
+            validate_scaffold.validate_readme_text(late_close),
+        )
+
+    def test_rejects_header_without_exactly_one_internal_h1_and_tagline(self) -> None:
+        no_h1 = readme().replace("# Example\n\n", "")
+        problems = validate_scaffold.validate_readme_text(no_h1)
+        self.assertIn(
+            "README.md: centered header must contain exactly one H1", problems
+        )
+
+        duplicate_h1 = readme().replace("# Example", "# Example\n\n# Duplicate")
+        self.assertIn(
+            "README.md: centered header must contain exactly one H1",
+            validate_scaffold.validate_readme_text(duplicate_h1),
+        )
+
+        outside_h1 = readme() + "\n# Outside\n"
+        self.assertIn(
+            "README.md: H1 must be inside the centered header",
+            validate_scaffold.validate_readme_text(outside_h1),
+        )
+
+        no_tagline = readme().replace("A real project tagline.\n\n", "")
+        self.assertIn(
+            "README.md: centered header must contain a nonempty tagline",
+            validate_scaffold.validate_readme_text(no_tagline),
+        )
+
+    def test_requires_numbered_sections_and_restricts_unnumbered_h2s(self) -> None:
+        header_only = readme(section_count=1).split("## Contents", maxsplit=1)[0]
+        self.assertIn(
+            "README.md: must contain numbered H2 sections",
+            validate_scaffold.validate_readme_text(header_only),
+        )
+
+        extra_h2 = readme(section_count=2).replace(
+            "## 2. Section 2", "## Extra\n\n## 2. Section 2"
+        )
+        self.assertIn(
+            "README.md: only one unnumbered H2 table of contents is allowed",
+            validate_scaffold.validate_readme_text(extra_h2),
+        )
+
+        late_toc = (
+            readme(section_count=2).replace(
+                "## Contents\n\n- [1. Section 1](#1-section-1)\n"
+                "- [2. Section 2](#2-section-2)\n\n",
+                "",
+            )
+            + "\n## Contents\n"
+        )
+        self.assertIn(
+            "README.md: only one unnumbered H2 table of contents is allowed",
+            validate_scaffold.validate_readme_text(late_toc),
+        )
+
+    def test_toc_requires_every_section_and_nested_subsection(self) -> None:
+        missing_section = readme(section_count=2).replace(
+            "- [2. Section 2](#2-section-2)\n", ""
+        )
+        self.assertIn(
+            "README.md: table of contents is missing #2-section-2",
+            validate_scaffold.validate_readme_text(missing_section),
+        )
+
+        subsection = readme(section_count=2).replace(
+            "## 1. Section 1", "## 1. Section 1\n\n### 1.1 Details"
+        )
+        self.assertIn(
+            "README.md: table of contents is missing #11-details",
+            validate_scaffold.validate_readme_text(subsection),
+        )
+
+        complete = subsection.replace(
+            "- [2. Section 2](#2-section-2)",
+            "  - [1.1 Details](#11-details)\n- [2. Section 2](#2-section-2)",
+        )
+        self.assertNotIn(
+            "README.md: table of contents is missing #11-details",
+            validate_scaffold.validate_readme_text(complete),
+        )
+
+    def test_markdown_code_and_anchor_helpers_preserve_visible_structure(self) -> None:
+        text = (
+            "visible\n```python\n# hidden\n```\n~~~sh\nhidden\n~~~\n`inline` visible\n"
+        )
+        without_fences = validate_scaffold.without_fenced_code(text)
+        self.assertEqual(without_fences.count("\n"), text.count("\n"))
+        self.assertNotIn("# hidden", without_fences)
+        self.assertIn("`inline` visible", without_fences)
+
+        without_code = validate_scaffold.without_markdown_code(text)
+        self.assertNotIn("inline", without_code)
+        self.assertTrue(without_code.endswith("         visible\n"))
+        self.assertEqual(
+            validate_scaffold.github_anchor(" 1. Héllo, World! "), "1-héllo-world"
+        )
+
 
 class MarkdownSourceContractTests(unittest.TestCase):
     def test_reports_unresolved_namespaced_marker(self) -> None:
@@ -114,6 +226,84 @@ class MarkdownSourceContractTests(unittest.TestCase):
                 ["README.md: relative link escapes repository"],
             )
 
+    def test_inventory_excludes_generated_directories_and_symbolic_markdown(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "README.md"
+            source.write_text("Source\n", encoding="utf-8")
+            ignored = root / "node_modules" / "ignored.md"
+            ignored.parent.mkdir()
+            ignored.write_text("Ignored\n", encoding="utf-8")
+            linked = root / "linked.md"
+            linked.write_text("Link stand-in\n", encoding="utf-8")
+            original_is_symlink = Path.is_symlink
+
+            def is_symlink(path: Path) -> bool:
+                return path == linked or original_is_symlink(path)
+
+            with mock.patch.object(validate_scaffold.Path, "is_symlink", is_symlink):
+                files = validate_scaffold.markdown_files(root)
+                problems = validate_scaffold.validate_markdown_sources(root)
+
+            self.assertEqual(files, [source])
+            self.assertEqual(
+                problems,
+                ["linked.md: symbolic-link Markdown is not dereferenced or validated"],
+            )
+            self.assertTrue(validate_scaffold.is_project_markdown(source, root))
+            self.assertFalse(validate_scaffold.is_project_markdown(ignored, root))
+
+    def test_reports_encoding_newline_marker_and_missing_link_problems(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "invalid.md").write_bytes(b"\xff")
+            (root / "README.md").write_text(
+                "{{REPO_SCAFFOLD_NAME}} [missing](docs/missing.md)",
+                encoding="utf-8",
+            )
+
+            problems = validate_scaffold.validate_markdown_sources(root)
+
+            self.assertTrue(
+                any("unreadable UTF-8 Markdown" in item for item in problems)
+            )
+            self.assertIn("README.md: must end with a newline", problems)
+            self.assertIn("README.md: contains an unresolved scaffold marker", problems)
+            self.assertIn(
+                "README.md: relative link is missing: docs/missing.md", problems
+            )
+
+    def test_marker_exclusions_and_nonlocal_links_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets = root / "assets"
+            docs = root / "docs"
+            assets.mkdir()
+            docs.mkdir()
+            (docs / "existing file.md").write_text("Existing\n", encoding="utf-8")
+            (assets / "template.md").write_text(
+                "{{REPO_SCAFFOLD_NAME}} [marker]({{REPO_SCAFFOLD_LINK}})\n",
+                encoding="utf-8",
+            )
+            (root / "README.md").write_text(
+                "[anchor](#local) [external](https://example.com) "
+                "[protocol](//example.com) "
+                '[existing](<docs/existing%20file.md> "title")\n'
+                "```md\n[ignored](missing.md)\n```\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_scaffold.validate_markdown_sources(
+                    root, marker_exclusions=[assets]
+                ),
+                [],
+            )
+            self.assertTrue(validate_scaffold.path_is_below(assets, root))
+            self.assertFalse(validate_scaffold.path_is_below(root, assets))
+
 
 class TemplateContractTests(unittest.TestCase):
     def test_issue_template_requires_complete_front_matter(self) -> None:
@@ -129,6 +319,45 @@ class TemplateContractTests(unittest.TestCase):
             problems = validate_scaffold.validate_markdown_issue_templates(root)
 
             self.assertIn("front matter must contain", problems[0])
+
+    def test_issue_templates_report_front_matter_value_and_body_errors(self) -> None:
+        cases = {
+            "missing.md": "No front matter\n",
+            "duplicate.md": "---\nname: First\nname: Second\nabout: About\n---\nBody\n",
+            "shape.md": "---\n- invalid\n---\nBody\n",
+            "value.md": "---\nname: [invalid]\nabout: About\n---\nBody\n",
+            "empty-name.md": "---\nname: ' '\nabout: About\n---\nBody\n",
+            "empty-body.md": "---\nname: Name\nabout: About\n---\n",
+            "valid.md": "---\nname: Name\nabout: About\ntitle: ''\nlabels: ''\nassignees: ''\n---\nBody\n",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            for name, content in cases.items():
+                (template_root / name).write_text(content, encoding="utf-8")
+
+            problems = validate_scaffold.validate_markdown_issue_templates(root)
+
+            self.assertTrue(
+                any("missing complete YAML front matter" in item for item in problems)
+            )
+            self.assertTrue(
+                any("invalid YAML front matter" in item for item in problems)
+            )
+            self.assertTrue(
+                any("front matter must contain" in item for item in problems)
+            )
+            self.assertTrue(
+                any("front matter values must be strings" in item for item in problems)
+            )
+            self.assertTrue(
+                any("name and about must be nonempty" in item for item in problems)
+            )
+            self.assertTrue(
+                any("template body must be nonempty" in item for item in problems)
+            )
+            self.assertFalse(any(item.startswith("valid.md") for item in problems))
 
     def test_pull_request_template_requires_checklist(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -147,10 +376,164 @@ class TemplateContractTests(unittest.TestCase):
                 ],
             )
 
+    def test_pull_request_template_discovery_checks_all_supported_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = [
+                root / "PULL_REQUEST_TEMPLATE.md",
+                root / "docs" / "PULL_REQUEST_TEMPLATE.md",
+                root / ".github" / "PULL_REQUEST_TEMPLATE.md",
+                root / ".github" / "PULL_REQUEST_TEMPLATE" / "focused.md",
+            ]
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("- [ ] Verify the change\n", encoding="utf-8")
+
+            self.assertEqual(
+                validate_scaffold.pull_request_templates(root), sorted(paths)
+            )
+            self.assertEqual(
+                validate_scaffold.validate_pull_request_templates(root), []
+            )
+
+            paths[0].write_text("", encoding="utf-8")
+            problems = validate_scaffold.validate_pull_request_templates(root)
+            self.assertIn(
+                "PULL_REQUEST_TEMPLATE.md: template must be nonempty", problems
+            )
+            self.assertIn(
+                "PULL_REQUEST_TEMPLATE.md: template must contain a checklist item",
+                problems,
+            )
+
     def test_bundled_markdown_assets_satisfy_the_contract(self) -> None:
         asset_root = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
 
         self.assertEqual(validate_scaffold.validate_template_assets(asset_root), [])
+
+    def test_template_assets_report_missing_header_and_invalid_pull_template(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "PULL_REQUEST_TEMPLATE.md").write_text(
+                "Describe the change.\n", encoding="utf-8"
+            )
+
+            problems = validate_scaffold.validate_template_assets(root)
+
+            self.assertTrue(
+                any("missing README header asset" in item for item in problems)
+            )
+            self.assertIn(
+                "PULL_REQUEST_TEMPLATE.md asset must contain a checklist item",
+                problems,
+            )
+
+            (root / "PULL_REQUEST_TEMPLATE.md").unlink()
+            self.assertEqual(
+                validate_scaffold.validate_template_assets(root),
+                [f"{root / 'README-header.md'}: missing README header asset"],
+            )
+
+    def test_readme_path_and_scaffold_aggregator_cover_optional_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(
+                validate_scaffold.validate_readme(root),
+                ["README.md: missing exact root README path"],
+            )
+            (root / "README.md").write_text(readme(section_count=1), encoding="utf-8")
+            template_root = root / "assets"
+            template_root.mkdir()
+
+            with (
+                mock.patch.object(
+                    validate_scaffold,
+                    "validate_markdown_sources",
+                    return_value=["source"],
+                ) as sources,
+                mock.patch.object(
+                    validate_scaffold, "validate_readme", return_value=["readme"]
+                ),
+                mock.patch.object(
+                    validate_scaffold,
+                    "validate_markdown_issue_templates",
+                    return_value=["issue"],
+                ),
+                mock.patch.object(
+                    validate_scaffold,
+                    "validate_pull_request_templates",
+                    return_value=["pull"],
+                ),
+                mock.patch.object(
+                    validate_scaffold,
+                    "validate_template_assets",
+                    return_value=["asset"],
+                ) as assets,
+            ):
+                problems = validate_scaffold.validate_scaffold(
+                    root, template_root=template_root
+                )
+
+            self.assertEqual(problems, ["source", "readme", "issue", "pull", "asset"])
+            sources.assert_called_once_with(
+                root, marker_exclusions=(template_root.parent,)
+            )
+            assets.assert_called_once_with(template_root)
+
+    def test_main_reports_problems_and_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / "assets"
+            template_root.mkdir()
+            args = validate_scaffold.argparse.Namespace(
+                repository_root=root,
+                template_root=template_root,
+            )
+            error_output = StringIO()
+            with (
+                mock.patch.object(validate_scaffold, "parse_args", return_value=args),
+                mock.patch.object(
+                    validate_scaffold, "validate_scaffold", return_value=["problem"]
+                ) as validator,
+                redirect_stderr(error_output),
+            ):
+                self.assertEqual(validate_scaffold.main(), 1)
+            self.assertIn("error: problem", error_output.getvalue())
+            validator.assert_called_once_with(
+                root.resolve(), template_root=template_root.resolve()
+            )
+
+            args = validate_scaffold.argparse.Namespace(
+                repository_root=root,
+                template_root=None,
+            )
+            output = StringIO()
+            with (
+                mock.patch.object(validate_scaffold, "parse_args", return_value=args),
+                mock.patch.object(
+                    validate_scaffold, "validate_scaffold", return_value=[]
+                ),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(validate_scaffold.main(), 0)
+            self.assertIn("satisfy the scaffold contract", output.getvalue())
+
+    def test_script_entrypoint_returns_main_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text(readme(section_count=1), encoding="utf-8")
+            argv = [str(SCRIPT_PATH), "--repository-root", str(root)]
+            output = StringIO()
+            with (
+                mock.patch.object(sys, "argv", argv),
+                redirect_stdout(output),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+
+            self.assertEqual(raised.exception.code, 0)
 
 
 if __name__ == "__main__":

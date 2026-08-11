@@ -15,6 +15,11 @@
 .gitattributes    export-ignore
 .gitignore        export-ignore
 .editorconfig     export-ignore
+.coveragerc       export-ignore
+pyproject.toml    export-ignore
+requirements-dev.lock export-ignore
 requirements-dev.txt export-ignore
+requirements-mutation.lock export-ignore
+requirements-mutation.txt export-ignore
 scripts           export-ignore
 tests             export-ignore

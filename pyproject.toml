@@ -1,0 +1,33 @@
+[tool.mutmut]
+source_paths = ["scripts", "skills/repo-scaffold/scripts"]
+pytest_add_cli_args_test_selection = ["tests"]
+pytest_add_cli_args = ["-p", "no:cacheprovider"]
+also_copy = [
+  ".codex-plugin",
+  ".github",
+  ".coveragerc",
+  ".editorconfig",
+  ".gitattributes",
+  ".gitignore",
+  ".markdownlint-cli2.jsonc",
+  ".release-please-manifest.json",
+  "CHANGELOG.md",
+  "CODE_OF_CONDUCT.md",
+  "CONTRIBUTING.md",
+  "GOVERNANCE.md",
+  "LICENSE",
+  "README.md",
+  "SECURITY.md",
+  "SUPPORT.md",
+  "release-please-config.json",
+  "requirements-dev.lock",
+  "requirements-dev.txt",
+  "requirements-mutation.lock",
+  "requirements-mutation.txt",
+  "ruff.toml",
+  "skills/repo-scaffold/SKILL.md",
+  "skills/repo-scaffold/assets",
+  "skills/repo-scaffold/references",
+  "version.txt",
+]
+mutate_only_covered_lines = true
