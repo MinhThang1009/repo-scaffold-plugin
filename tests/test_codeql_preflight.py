@@ -236,8 +236,10 @@ class WorkflowParserTests(unittest.TestCase):
         probe = r"""
 import runpy
 import sys
+import time
 
 module = runpy.run_path(sys.argv[1])
+started = time.perf_counter()
 if sys.argv[2] == "env":
     payload = "\n_=" + ('"" _=' * 128) + "!"
     module["CODEQL_CLI"].search(payload)
@@ -246,6 +248,9 @@ elif sys.argv[2] == "alias":
     module["_powershell_alias_definition"](payload)
 else:
     raise AssertionError(f"Unknown probe: {sys.argv[2]}")
+elapsed = time.perf_counter() - started
+if elapsed >= 1.0:
+    raise AssertionError(f"Regex probe took {elapsed:.3f} seconds")
 """
         environment = os.environ.copy()
         environment.pop("MUTANT_UNDER_TEST", None)
@@ -254,7 +259,9 @@ else:
             check=True,
             capture_output=True,
             env=environment,
-            timeout=2,
+            # Mutmut instruments the whole module, so its import may be slow even
+            # though the regex operation itself is bounded inside the child.
+            timeout=30,
         )
 
     def test_direct_codeql_regex_handles_adversarial_assignments(self) -> None:
