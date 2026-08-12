@@ -1219,7 +1219,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
 
 
 def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
-    """Validate the isolated, fail-closed mutation-testing configuration."""
+    """Validate the isolated, evidence-preserving mutation-testing configuration."""
     relative_paths = (
         ".gitattributes",
         ".github/workflows/mutation-testing.yml",
@@ -1229,6 +1229,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "pyproject.toml",
         "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "scripts/validate_mutation_results.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_mutation_validation.py",
@@ -1282,6 +1283,57 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         ):
             problems.append(
                 f"requirements-mutation.lock: missing hashed {requirement} entry"
+            )
+
+    validator_relative = "scripts/validate_mutation_results.py"
+    try:
+        validator_tree = ast.parse(
+            texts[validator_relative], filename=validator_relative
+        )
+    except SyntaxError as error:
+        problems.append(f"{validator_relative}: invalid Python source: {error}")
+    else:
+        assignments = {
+            node.targets[0].id: node.value
+            for node in validator_tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        }
+        threshold = assignments.get("MINIMUM_MUTATION_SCORE_BASIS_POINTS")
+        if not (
+            isinstance(threshold, ast.Constant)
+            and type(threshold.value) is int
+            and threshold.value == 7_880
+        ):
+            problems.append(
+                f"{validator_relative}: mutation score floor must remain 78.80%"
+            )
+        unsafe = assignments.get("UNSAFE_RESULT_FIELDS")
+        unsafe_values = (
+            tuple(
+                element.value
+                for element in unsafe.elts
+                if isinstance(element, ast.Constant) and isinstance(element.value, str)
+            )
+            if isinstance(unsafe, ast.Tuple)
+            else ()
+        )
+        expected_unsafe_values = (
+            "no_tests",
+            "skipped",
+            "suspicious",
+            "check_was_interrupted_by_user",
+            "segfault",
+        )
+        if (
+            not isinstance(unsafe, ast.Tuple)
+            or len(unsafe.elts) != len(expected_unsafe_values)
+            or unsafe_values != expected_unsafe_values
+        ):
+            problems.append(
+                f"{validator_relative}: incomplete result classes must fail and "
+                "timeout must remain a detected result"
             )
 
     workflow_path = repository_root / ".github" / "workflows" / "mutation-testing.yml"
@@ -1366,6 +1418,43 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: mutation diagnostics must "
             "export after failed runs"
         )
+    upload_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/upload-artifact@")
+    ]
+    required_artifact_paths = {
+        "mutants/mutmut-cicd-stats.json",
+        "mutants/mutation-results.txt",
+        "mutants/mutmut-stats.json",
+        "mutants/**/*.meta",
+        "mutants/**/*.py",
+    }
+    raw_artifact_settings = (
+        upload_steps[0].get("with") if len(upload_steps) == 1 else None
+    )
+    artifact_settings = (
+        raw_artifact_settings if isinstance(raw_artifact_settings, dict) else {}
+    )
+    artifact_path = artifact_settings.get("path")
+    artifact_paths = (
+        {line.strip() for line in artifact_path.splitlines() if line.strip()}
+        if isinstance(artifact_path, str)
+        else set()
+    )
+    if (
+        len(upload_steps) != 1
+        or upload_steps[0].get("if") != "${{ always() }}"
+        or artifact_settings.get("name") != "mutation-results"
+        or artifact_settings.get("retention-days") != "14"
+        or not required_artifact_paths.issubset(artifact_paths)
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: retain summaries, generated "
+            "mutants, and per-file metadata for diagnosis"
+        )
     cache_paths = [
         step.get("with", {}).get("cache-dependency-path")
         for step in steps
@@ -1442,9 +1531,11 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     documentation_contract = {
         "README.md": ("requirements-mutation.lock",),
         "CONTRIBUTING.md": (
+            "78.80% mutation-score floor",
             "requirements-mutation.lock",
             "mutmut run --max-children 4",
             "mutmut results --all true > mutants/mutation-results.txt",
+            "A timeout counts as detected",
         ),
     }
     for relative, fragments in documentation_contract.items():

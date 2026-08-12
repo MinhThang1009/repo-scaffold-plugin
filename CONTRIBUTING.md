@@ -125,9 +125,14 @@ default call-based selection instead of the optional Coverage.py line prepass,
 which keeps in-process trampoline association reliable without narrowing the
 mutation scope.
 
-The result validator fails on surviving, skipped, untested, suspicious, timed
-out, interrupted, or crashed mutants. Do not suppress a valid mutant merely to
-make the score pass; classify equivalent mutants during review.
+The result validator fails on skipped, untested, suspicious, interrupted, or
+crashed mutants and enforces a 78.80% mutation-score floor across killed,
+timed-out, and surviving mutants. A timeout counts as detected because the
+mutant made the bounded test process fail to terminate; it remains visible in
+the summary. Generated mutant source, per-file metadata, test-association data,
+and result summaries are retained for diagnosis. Do not suppress a valid mutant
+merely to make the score pass; classify equivalent mutants during review and
+raise the floor only from a completed, repeatable run.
 
 `validate_workflows.py` runs actionlint with ShellCheck enabled. The Markdown
 checks cover all project-owned `.md` files, README layout, unresolved scaffold

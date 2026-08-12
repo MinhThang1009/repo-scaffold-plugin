@@ -21,11 +21,11 @@ COUNT_FIELDS = (
     "segfault",
 )
 EXPECTED_FIELDS = {*COUNT_FIELDS, "total"}
+MINIMUM_MUTATION_SCORE_BASIS_POINTS = 7_880
 UNSAFE_RESULT_FIELDS = (
     "no_tests",
     "skipped",
     "suspicious",
-    "timeout",
     "check_was_interrupted_by_user",
     "segfault",
 )
@@ -77,7 +77,7 @@ def load_statistics(path: Path) -> dict[str, int]:
 
 
 def validate_statistics(statistics: dict[str, int]) -> list[str]:
-    """Reject incomplete, unsafe, or surviving mutation results."""
+    """Reject incomplete, unsafe, or below-threshold mutation results."""
     problems: list[str] = []
     total = statistics["total"]
     if total == 0:
@@ -92,9 +92,15 @@ def validate_statistics(statistics: dict[str, int]) -> list[str]:
             problems.append(
                 f"mutation run has {statistics[field]} result(s) classified as {field}"
             )
-    if statistics["survived"]:
+
+    detected = statistics["killed"] + statistics["timeout"]
+    testable = detected + statistics["survived"]
+    score_basis_points = detected * 10_000 // testable if testable else 0
+    if score_basis_points < MINIMUM_MUTATION_SCORE_BASIS_POINTS:
         problems.append(
-            f"mutation run has {statistics['survived']} surviving mutant(s)"
+            f"mutation score {score_basis_points / 100:.2f}% is below required "
+            f"{MINIMUM_MUTATION_SCORE_BASIS_POINTS / 100:.2f}% "
+            f"({detected} detected of {testable} testable mutants)"
         )
     return problems
 
@@ -124,9 +130,13 @@ def main(argv: list[str] | None = None) -> int:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         return 1
+    detected = statistics["killed"] + statistics["timeout"]
+    testable = detected + statistics["survived"]
+    score = detected * 100 / testable
     print(
         "Mutation testing is complete: "
-        f"{statistics['killed']}/{statistics['total']} mutants were killed."
+        f"{statistics['killed']}/{statistics['total']} mutants were killed, "
+        f"{statistics['timeout']} timed out; mutation score {score:.2f}%."
     )
     return 0
 

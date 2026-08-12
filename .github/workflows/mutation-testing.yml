@@ -63,5 +63,8 @@ jobs:
           path: |
             mutants/mutmut-cicd-stats.json
             mutants/mutation-results.txt
+            mutants/mutmut-stats.json
+            mutants/**/*.meta
+            mutants/**/*.py
           if-no-files-found: warn
           retention-days: 14

@@ -526,6 +526,83 @@ class TemplateContractTests(unittest.TestCase):
                 self.assertEqual(validate_scaffold.main(), 0)
             self.assertIn("satisfy the scaffold contract", output.getvalue())
 
+    def test_parse_args_preserves_defaults_options_and_help(self) -> None:
+        with mock.patch.object(sys, "argv", [str(SCRIPT_PATH)]):
+            defaults = validate_scaffold.parse_args()
+        self.assertEqual(defaults.repository_root, Path.cwd())
+        self.assertIsNone(defaults.template_root)
+
+        with tempfile.TemporaryDirectory() as directory:
+            repository_root = Path(directory) / "repository"
+            template_root = Path(directory) / "templates"
+            with mock.patch.object(
+                sys,
+                "argv",
+                [
+                    str(SCRIPT_PATH),
+                    "--repository-root",
+                    str(repository_root),
+                    "--template-root",
+                    str(template_root),
+                ],
+            ):
+                selected = validate_scaffold.parse_args()
+        self.assertEqual(selected.repository_root, repository_root)
+        self.assertEqual(selected.template_root, template_root)
+
+        output = StringIO()
+        with (
+            mock.patch.object(sys, "argv", [str(SCRIPT_PATH), "--help"]),
+            redirect_stdout(output),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            validate_scaffold.parse_args()
+        self.assertEqual(raised.exception.code, 0)
+        help_text = " ".join(output.getvalue().split())
+        self.assertIn(
+            "Validate rendered Markdown and GitHub template conventions.", help_text
+        )
+        self.assertIn(
+            "Rendered repository root (default: current directory)", help_text
+        )
+        self.assertIn(
+            "Optional internal repo-scaffold asset root allowed to contain markers",
+            help_text,
+        )
+
+    def test_parse_args_declares_the_exact_argument_contract(self) -> None:
+        parser = mock.Mock()
+        expected = object()
+        parser.parse_args.return_value = expected
+        with mock.patch.object(
+            validate_scaffold.argparse,
+            "ArgumentParser",
+            return_value=parser,
+        ) as parser_factory:
+            self.assertIs(validate_scaffold.parse_args(), expected)
+
+        parser_factory.assert_called_once_with(description=validate_scaffold.__doc__)
+        self.assertEqual(
+            parser.add_argument.call_args_list,
+            [
+                mock.call(
+                    "--repository-root",
+                    type=Path,
+                    default=Path.cwd(),
+                    help="Rendered repository root (default: current directory)",
+                ),
+                mock.call(
+                    "--template-root",
+                    type=Path,
+                    help=(
+                        "Optional internal repo-scaffold asset root allowed to "
+                        "contain markers"
+                    ),
+                ),
+            ],
+        )
+        parser.parse_args.assert_called_once_with()
+
     def test_script_entrypoint_returns_main_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

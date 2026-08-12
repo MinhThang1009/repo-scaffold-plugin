@@ -1197,6 +1197,7 @@ class MutationTestingContractTests(unittest.TestCase):
         "pyproject.toml",
         "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "scripts/validate_mutation_results.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_mutation_validation.py",
@@ -1326,6 +1327,79 @@ jobs:
             problems,
         )
 
+    def test_mutation_diagnostics_must_preserve_generated_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "            mutants/**/*.meta\n",
+                "",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: retain summaries, generated "
+            "mutants, and per-file metadata for diagnosis",
+            problems,
+        )
+
+    def test_mutation_score_policy_cannot_be_lowered_or_misclassify_timeout(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            validator_path = root / "scripts" / "validate_mutation_results.py"
+            validator = validator_path.read_text(encoding="utf-8")
+            validator = validator.replace(
+                "MINIMUM_MUTATION_SCORE_BASIS_POINTS = 7_880",
+                "MINIMUM_MUTATION_SCORE_BASIS_POINTS = 1",
+                1,
+            )
+            unsafe_start = validator.index("UNSAFE_RESULT_FIELDS")
+            validator = validator[:unsafe_start] + validator[unsafe_start:].replace(
+                '    "segfault",',
+                '    "segfault",\n    "timeout",',
+                1,
+            )
+            validator_path.write_text(validator, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            "scripts/validate_mutation_results.py: mutation score floor must remain "
+            "78.80%",
+            problems,
+        )
+        self.assertIn(
+            "scripts/validate_mutation_results.py: incomplete result classes must "
+            "fail and timeout must remain a detected result",
+            problems,
+        )
+
+    def test_invalid_mutation_validator_source_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "scripts" / "validate_mutation_results.py").write_text(
+                "def invalid(:\n", encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertTrue(
+            any(
+                problem.startswith(
+                    "scripts/validate_mutation_results.py: invalid Python source:"
+                )
+                for problem in problems
+            )
+        )
+
     def test_mutation_run_must_expose_the_tracked_source_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1447,7 +1521,7 @@ jobs:
             "pyproject.toml: pytest must collect only first-party tests from tests/",
             problems,
         )
-        self.assertEqual(sum("mutation guidance" in p for p in problems), 3)
+        self.assertEqual(sum("mutation guidance" in p for p in problems), 5)
         self.assertEqual(sum("must be export-ignore" in p for p in problems), 3)
         self.assertIn(".gitignore: mutants/ must be ignored", problems)
 
