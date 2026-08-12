@@ -1,63 +1,63 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.6.0/schemas/config.json",
   "release-type": "simple",
-  "pull-request-title-pattern": "chore${scope}: phát hành${component} ${version}",
-  "pull-request-header": ":robot: Release Please đã tạo PR phát hành tự động này.",
-  "pull-request-footer": "PR này được tạo tự động bằng [Release Please](https://github.com/googleapis/release-please). Xem [tài liệu](https://github.com/googleapis/release-please#release-please).",
+  "pull-request-title-pattern": "chore${scope}: release${component} ${version}",
+  "pull-request-header": ":robot: I have created a release *beep* *boop*",
+  "pull-request-footer": "This PR was generated with [Release Please](https://github.com/googleapis/release-please). See [documentation](https://github.com/googleapis/release-please#release-please).",
   "changelog-sections": [
     {
       "type": "feat",
-      "section": "Tính năng"
+      "section": "Features"
     },
     {
       "type": "feature",
-      "section": "Tính năng"
+      "section": "Features"
     },
     {
       "type": "fix",
-      "section": "Sửa lỗi"
+      "section": "Bug Fixes"
     },
     {
       "type": "perf",
-      "section": "Cải thiện hiệu năng"
+      "section": "Performance Improvements"
     },
     {
       "type": "revert",
-      "section": "Hoàn tác"
+      "section": "Reverts"
     },
     {
       "type": "docs",
-      "section": "Tài liệu",
+      "section": "Documentation",
       "hidden": true
     },
     {
       "type": "style",
-      "section": "Định dạng mã",
+      "section": "Styles",
       "hidden": true
     },
     {
       "type": "chore",
-      "section": "Bảo trì khác",
+      "section": "Miscellaneous Chores",
       "hidden": true
     },
     {
       "type": "refactor",
-      "section": "Tái cấu trúc mã",
+      "section": "Code Refactoring",
       "hidden": true
     },
     {
       "type": "test",
-      "section": "Kiểm thử",
+      "section": "Tests",
       "hidden": true
     },
     {
       "type": "build",
-      "section": "Hệ thống xây dựng",
+      "section": "Build System",
       "hidden": true
     },
     {
       "type": "ci",
-      "section": "Tích hợp liên tục",
+      "section": "Continuous Integration",
       "hidden": true
     }
   ],

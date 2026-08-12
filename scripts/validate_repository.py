@@ -41,28 +41,28 @@ SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
-RELEASE_PLEASE_VIETNAMESE_TEXT = {
-    "pull-request-title-pattern": "chore${scope}: phát hành${component} ${version}",
-    "pull-request-header": ":robot: Release Please đã tạo PR phát hành tự động này.",
+RELEASE_PLEASE_ENGLISH_TEXT = {
+    "pull-request-title-pattern": "chore${scope}: release${component} ${version}",
+    "pull-request-header": ":robot: I have created a release *beep* *boop*",
     "pull-request-footer": (
-        "PR này được tạo tự động bằng [Release Please]"
-        "(https://github.com/googleapis/release-please). Xem [tài liệu]"
+        "This PR was generated with [Release Please]"
+        "(https://github.com/googleapis/release-please). See [documentation]"
         "(https://github.com/googleapis/release-please#release-please)."
     ),
 }
-RELEASE_PLEASE_VIETNAMESE_CHANGELOG_SECTIONS = [
-    {"type": "feat", "section": "Tính năng"},
-    {"type": "feature", "section": "Tính năng"},
-    {"type": "fix", "section": "Sửa lỗi"},
-    {"type": "perf", "section": "Cải thiện hiệu năng"},
-    {"type": "revert", "section": "Hoàn tác"},
-    {"type": "docs", "section": "Tài liệu", "hidden": True},
-    {"type": "style", "section": "Định dạng mã", "hidden": True},
-    {"type": "chore", "section": "Bảo trì khác", "hidden": True},
-    {"type": "refactor", "section": "Tái cấu trúc mã", "hidden": True},
-    {"type": "test", "section": "Kiểm thử", "hidden": True},
-    {"type": "build", "section": "Hệ thống xây dựng", "hidden": True},
-    {"type": "ci", "section": "Tích hợp liên tục", "hidden": True},
+RELEASE_PLEASE_ENGLISH_CHANGELOG_SECTIONS = [
+    {"type": "feat", "section": "Features"},
+    {"type": "feature", "section": "Features"},
+    {"type": "fix", "section": "Bug Fixes"},
+    {"type": "perf", "section": "Performance Improvements"},
+    {"type": "revert", "section": "Reverts"},
+    {"type": "docs", "section": "Documentation", "hidden": True},
+    {"type": "style", "section": "Styles", "hidden": True},
+    {"type": "chore", "section": "Miscellaneous Chores", "hidden": True},
+    {"type": "refactor", "section": "Code Refactoring", "hidden": True},
+    {"type": "test", "section": "Tests", "hidden": True},
+    {"type": "build", "section": "Build System", "hidden": True},
+    {"type": "ci", "section": "Continuous Integration", "hidden": True},
 ]
 TEMPLATE_TOKEN = re.compile(r"(?:\{\{|\$\{\{)")
 ISSUE_FORM_ID = re.compile(r"^[0-9A-Za-z_-]+$")
@@ -1639,16 +1639,16 @@ def validate_release_please(repository_root: Path) -> list[str]:
         problems.append("release-please-config.json: draft must be true")
     if config.get("force-tag-creation") is not True:
         problems.append("release-please-config.json: force-tag-creation must be true")
-    for field, expected in RELEASE_PLEASE_VIETNAMESE_TEXT.items():
+    for field, expected in RELEASE_PLEASE_ENGLISH_TEXT.items():
         if config.get(field) != expected:
             problems.append(
                 f"release-please-config.json: {field} must use the approved "
-                "Vietnamese release text"
+                "English release text"
             )
-    if config.get("changelog-sections") != RELEASE_PLEASE_VIETNAMESE_CHANGELOG_SECTIONS:
+    if config.get("changelog-sections") != RELEASE_PLEASE_ENGLISH_CHANGELOG_SECTIONS:
         problems.append(
             "release-please-config.json: changelog-sections must preserve the "
-            "approved Vietnamese headings and default visibility"
+            "approved English headings and default visibility"
         )
     packages = config.get("packages")
     root_package = packages.get(".") if isinstance(packages, dict) else None

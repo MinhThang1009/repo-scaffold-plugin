@@ -32,6 +32,7 @@ Provides the `repo-scaffold` skill, which Codex activates when you ask to set up
 - Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue/PR templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
 - For a verified GitHub.com remote, adds deterministic documentation checks, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow with provenance attestations when the repository is eligible, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
+- Produces either English or Vietnamese project-facing content. An explicit request wins, followed by active project instructions and the established documentation convention; English is the default when no preference exists.
 
 Content follows GitHub's community-standards format and is pulled from canonical sources where possible (LICENSE, `.gitignore`, and Code of Conduct via the GitHub API), with project-specific content generated from the repository itself. External GitHub Actions are pinned to immutable commit SHAs and kept current by Dependabot; shipped workflows do not delegate execution to a mutable container tag.
 
@@ -54,10 +55,11 @@ Every new repository needs the same production boilerplate in the correct GitHub
 Install the plugin (see below), then, in any repository, ask Codex:
 
 - "scaffold this repo"
+- "scaffold this repo in English"
 - "set up the repo to production standard"
-- "dựng repo chuẩn github" / "tạo file chuẩn cho repo"
+- "dựng repo chuẩn GitHub bằng tiếng Việt"
 
-The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
+The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. It resolves one project language (`en` or `vi`) before generation and applies it consistently to documentation, templates, and release metadata. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
 
 ## 5. Support
 

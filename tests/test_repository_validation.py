@@ -2088,9 +2088,9 @@ jobs:
             json.dumps(
                 {
                     "release-type": "simple",
-                    **validate_repository.RELEASE_PLEASE_VIETNAMESE_TEXT,
+                    **validate_repository.RELEASE_PLEASE_ENGLISH_TEXT,
                     "changelog-sections": (
-                        validate_repository.RELEASE_PLEASE_VIETNAMESE_CHANGELOG_SECTIONS
+                        validate_repository.RELEASE_PLEASE_ENGLISH_CHANGELOG_SECTIONS
                     ),
                     "draft": True,
                     "force-tag-creation": True,
@@ -2121,26 +2121,26 @@ jobs:
 
             self.assertEqual(validate_repository.validate_release_please(root), [])
 
-    def test_rejects_release_metadata_that_is_not_fully_vietnamese(self) -> None:
+    def test_rejects_release_metadata_that_is_not_fully_english(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.write_valid_configuration(root)
             config_path = root / "release-please-config.json"
             config = json.loads(config_path.read_text(encoding="utf-8"))
-            config["pull-request-header"] = "Automated release PR"
-            config["changelog-sections"][0]["section"] = "Features"
+            config["pull-request-header"] = "PR phát hành tự động"
+            config["changelog-sections"][0]["section"] = "Tính năng"
             config_path.write_text(json.dumps(config), encoding="utf-8")
 
             problems = validate_repository.validate_release_please(root)
 
             self.assertIn(
                 "release-please-config.json: pull-request-header must use the "
-                "approved Vietnamese release text",
+                "approved English release text",
                 problems,
             )
             self.assertIn(
                 "release-please-config.json: changelog-sections must preserve the "
-                "approved Vietnamese headings and default visibility",
+                "approved English headings and default visibility",
                 problems,
             )
 
@@ -2199,6 +2199,28 @@ jobs:
         )
         self.assertIn("Before changing `pull-request-title-pattern`", skill)
         self.assertIn("update each existing release PR title", skill)
+
+    def test_skill_resolves_one_language_per_project(self) -> None:
+        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("one `SCAFFOLD_LANGUAGE`, either `en` or `vi`", skill)
+        self.assertIn("the user's explicit language request", skill)
+        self.assertIn("active project instructions", skill)
+        self.assertIn("then `en` as the", skill)
+        self.assertIn("Never leave an English/Vietnamese hybrid", skill)
+        self.assertIn(
+            "commit, pull-request, or release text created as part of an",
+            skill,
+        )
+        self.assertIn("chore${scope}: release${component} ${version}", setup)
+        self.assertIn("chore${scope}: phát hành${component} ${version}", setup)
+        self.assertIn("Performance Improvements", setup)
+        self.assertIn("Cải thiện hiệu năng", setup)
 
     def test_accepts_intentional_semver_build_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

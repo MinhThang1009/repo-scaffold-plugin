@@ -77,7 +77,9 @@ on a newer interpreter.
 ## Make a change
 
 1. Create a focused branch from the default branch.
-2. Follow the existing English documentation and code conventions.
+2. Use English for documentation, commit messages, issue and pull-request
+   metadata, release notes, and other community-facing content. Follow the
+   existing code conventions.
 3. Use Conventional Commit messages, for example
    `fix(preflight): bound shell parsing`.
 4. Add or update focused regression tests for behavior changes.
