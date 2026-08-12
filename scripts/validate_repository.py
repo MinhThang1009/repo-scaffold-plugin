@@ -1194,7 +1194,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     else:
         for relative in (".coveragerc", "requirements-dev.lock"):
             if not re.search(
-                rf"(?m)^{re.escape(relative)}\s+export-ignore\s*$", attributes
+                rf"(?m)^/?{re.escape(relative)}\s+export-ignore\s*$", attributes
             ):
                 problems.append(f".gitattributes: {relative} must be export-ignore")
 
@@ -1551,7 +1551,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     ):
         if (
             re.search(
-                rf"(?m)^{re.escape(relative)}\s+export-ignore\s*$",
+                rf"(?m)^/?{re.escape(relative)}\s+export-ignore\s*$",
                 texts[".gitattributes"],
             )
             is None
@@ -1796,8 +1796,30 @@ def validate_release_attestation(repository_root: Path) -> list[str]:
         publish = jobs.get("publish")
         if not isinstance(build, dict):
             problems.append(f"{relative}: build job is missing")
-        elif build.get("permissions") != {"contents": "read"}:
-            problems.append(f"{relative}: build permissions must be contents: read")
+        else:
+            if build.get("permissions") != {"contents": "read"}:
+                problems.append(f"{relative}: build permissions must be contents: read")
+            build_steps = build.get("steps")
+            archive_steps = (
+                [
+                    step
+                    for step in build_steps
+                    if isinstance(step, dict)
+                    and step.get("name") in {"Build artifact", "Build plugin archive"}
+                ]
+                if isinstance(build_steps, list)
+                else []
+            )
+            if (
+                len(archive_steps) != 1
+                or not isinstance(archive_steps[0].get("run"), str)
+                or "git archive" not in archive_steps[0]["run"]
+                or "--worktree-attributes" not in archive_steps[0]["run"]
+            ):
+                problems.append(
+                    f"{relative}: archive build must use git archive with "
+                    "--worktree-attributes"
+                )
 
         if not isinstance(attest, dict):
             problems.append(f"{relative}: attest job is missing")
@@ -2272,21 +2294,20 @@ def validate_release_archive(repository_root: Path) -> list[str]:
     git = resolve_path_executable("git", forbidden_root=source_root)
     if git is None:
         return ["release archive: git is unavailable outside the repository"]
+    archive_paths = (".codex-plugin", "skills", "README.md", "LICENSE")
     with tempfile.TemporaryDirectory(prefix="repo-scaffold-archive-") as directory:
         archive = Path(directory) / "plugin.zip"
         command = [
             git,
             "archive",
+            "--worktree-attributes",
             "--format=zip",
             "--prefix=repo-scaffold/",
             "--output",
             str(archive),
             "HEAD",
             "--",
-            ".codex-plugin",
-            "skills",
-            "README.md",
-            "LICENSE",
+            *archive_paths,
         ]
         try:
             result = subprocess.run(  # noqa: S603 - executable is resolved safely
@@ -2304,17 +2325,9 @@ def validate_release_archive(repository_root: Path) -> list[str]:
             return [f"release archive: {detail}"]
 
         problems: list[str] = []
-        expected = {
-            "repo-scaffold/.codex-plugin/plugin.json",
-            "repo-scaffold/README.md",
-            "repo-scaffold/LICENSE",
-            "repo-scaffold/skills/repo-scaffold/SKILL.md",
-        }
         try:
             with zipfile.ZipFile(archive) as bundle:
                 names = set(bundle.namelist())
-                for missing in sorted(expected - names):
-                    problems.append(f"release archive: missing {missing}")
                 for item in bundle.infolist():
                     path = PurePosixPath(item.filename)
                     if (
@@ -2333,6 +2346,52 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                         )
         except (OSError, zipfile.BadZipFile) as error:
             return [f"release archive: invalid ZIP: {error}"]
+
+        source_command = [
+            git,
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "-z",
+            "HEAD",
+            "--",
+            *archive_paths,
+        ]
+        try:
+            source_result = subprocess.run(  # noqa: S603 - executable is resolved safely
+                source_command,
+                cwd=source_root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return ["release archive: source enumeration timed out"]
+        if source_result.returncode != 0:
+            detail = source_result.stderr.strip() or "git ls-tree failed"
+            return [f"release archive: source enumeration failed: {detail}"]
+
+        expected = {
+            f"repo-scaffold/{relative}"
+            for relative in source_result.stdout.split("\0")
+            if relative
+        }
+        expected.update(
+            {
+                "repo-scaffold/.codex-plugin/plugin.json",
+                "repo-scaffold/README.md",
+                "repo-scaffold/LICENSE",
+                "repo-scaffold/skills/repo-scaffold/SKILL.md",
+                "repo-scaffold/skills/repo-scaffold/assets/.editorconfig",
+                "repo-scaffold/skills/repo-scaffold/assets/gitattributes.template",
+                "repo-scaffold/skills/repo-scaffold/scripts/ci_toolchain.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/codeql_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/validate_scaffold.py",
+            }
+        )
+        for missing in sorted(expected - names):
+            problems.append(f"release archive: missing {missing}")
         return problems
 
 

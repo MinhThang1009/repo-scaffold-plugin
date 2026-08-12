@@ -180,7 +180,8 @@ Repository validation checks the centered and numbered README contract, unresolv
 scaffold markers, Markdown issue and pull-request templates, relative links,
 JSON/YAML uniqueness and syntax, plugin metadata, issue forms, Dependabot
 configuration, release-attestation isolation and permission flow, and the exact
-release archive shape. The pinned action tags and
+release archive shape, including every runtime script referenced by the skill.
+The pinned action tags and
 release-please schema are external facts, so verify them against their upstream
 repositories during release audits.
 

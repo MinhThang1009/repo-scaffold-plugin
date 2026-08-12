@@ -1750,6 +1750,59 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                     )
                 )
 
+            source_outcome: mock.Mock | BaseException = (
+                validate_repository.subprocess.TimeoutExpired(["git", "ls-tree"], 60)
+            )
+
+            def archive_then_source(command: list[str], **_kwargs: object) -> mock.Mock:
+                if command[1] == "archive":
+                    archive = Path(command[command.index("--output") + 1])
+                    with validate_repository.zipfile.ZipFile(archive, "w") as bundle:
+                        bundle.writestr("repo-scaffold/.codex-plugin/plugin.json", "{}")
+                    return mock.Mock(returncode=0, stderr="", stdout="")
+                if isinstance(source_outcome, BaseException):
+                    raise source_outcome
+                return source_outcome
+
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess,
+                    "run",
+                    side_effect=archive_then_source,
+                ),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_release_archive(root),
+                    ["release archive: source enumeration timed out"],
+                )
+
+            for stderr, expected in (
+                (
+                    "enumeration failed\n",
+                    "release archive: source enumeration failed: enumeration failed",
+                ),
+                ("", "release archive: source enumeration failed: git ls-tree failed"),
+            ):
+                source_outcome = mock.Mock(returncode=1, stderr=stderr, stdout="")
+                with (
+                    mock.patch.object(
+                        validate_repository,
+                        "resolve_path_executable",
+                        return_value="git",
+                    ),
+                    mock.patch.object(
+                        validate_repository.subprocess,
+                        "run",
+                        side_effect=archive_then_source,
+                    ),
+                ):
+                    self.assertEqual(
+                        validate_repository.validate_release_archive(root), [expected]
+                    )
+
     def test_release_archive_inspects_required_unsafe_and_symbolic_members(
         self,
     ) -> None:
@@ -1757,6 +1810,12 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             root = Path(directory)
 
             def write_archive(command: list[str], **_kwargs: object) -> mock.Mock:
+                if command[1] == "ls-tree":
+                    return mock.Mock(
+                        returncode=0,
+                        stderr="",
+                        stdout="skills/repo-scaffold/assets/extra.txt\0",
+                    )
                 archive = Path(command[command.index("--output") + 1])
                 with validate_repository.zipfile.ZipFile(archive, "w") as bundle:
                     bundle.writestr("repo-scaffold/.codex-plugin/plugin.json", "{}")
@@ -1783,6 +1842,21 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             self.assertTrue(
                 any("missing repo-scaffold/LICENSE" in item for item in problems)
             )
+            self.assertIn(
+                "release archive: missing "
+                "repo-scaffold/skills/repo-scaffold/assets/extra.txt",
+                problems,
+            )
+            for script in (
+                "ci_toolchain.py",
+                "codeql_preflight.py",
+                "validate_scaffold.py",
+            ):
+                self.assertIn(
+                    "release archive: missing "
+                    f"repo-scaffold/skills/repo-scaffold/scripts/{script}",
+                    problems,
+                )
             self.assertTrue(
                 any("unsafe member '../escape'" in item for item in problems)
             )
@@ -2387,7 +2461,15 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
         action_sha = "a" * 40
         engine = {
             "jobs": {
-                "build": {"permissions": {"contents": "read"}},
+                "build": {
+                    "permissions": {"contents": "read"},
+                    "steps": [
+                        {
+                            "name": "Build artifact",
+                            "run": "git archive --worktree-attributes HEAD",
+                        }
+                    ],
+                },
                 "attest": {
                     "needs": "build",
                     "runs-on": "ubuntu-latest",
@@ -2578,6 +2660,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
 
             expected_fragments = (
                 "build permissions must be contents: read",
+                "archive build must use git archive with --worktree-attributes",
                 "attest must depend only on build",
                 "attest must run on ubuntu-latest",
                 "attest timeout must be 15 minutes",
