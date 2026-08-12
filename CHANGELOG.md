@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.1](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.3.0...v1.3.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* **ci:** isolate workflow write permissions ([#20](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/20)) ([42045a5](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/42045a567a38f54f000e9c827f5d4d51af5fe773))
+
 ## [1.3.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.2.2...v1.3.0) (2026-08-12)
 
 
