@@ -4,6 +4,14 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.2](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.2.1...v1.2.2) (2026-08-12)
+
+
+### Sửa lỗi
+
+* **mutation:** cô lập selector subprocess ([#15](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/15)) ([79a869c](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/79a869c57f7482996f114a0c5fdd6a5ef20f95ef))
+* **mutation:** hiệu chỉnh quality gate ([#17](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/17)) ([cc2ad49](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/cc2ad497b7cd660b7d8dcd255acc7cadbc7bc46d))
+
 ## [1.2.1](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.2.0...v1.2.1) (2026-08-11)
 
 
