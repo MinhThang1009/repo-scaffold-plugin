@@ -4,6 +4,18 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.2.2...v1.3.0) (2026-08-12)
+
+
+### Features
+
+* **scaffold:** support per-project English and Vietnamese ([c0fa94d](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/c0fa94d35180a147af20fd8930873d0661ae3295))
+
+
+### Bug Fixes
+
+* **release:** package the complete plugin ([#19](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/19)) ([6d81287](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/6d8128776c9d8d81b6142bf1baef6d2d57643cfd))
+
 ## [1.2.2](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.2.1...v1.2.2) (2026-08-12)
 
 
