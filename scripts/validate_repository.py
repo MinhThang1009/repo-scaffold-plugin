@@ -1918,6 +1918,81 @@ def validate_release_attestation(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]:
+    """Keep write permissions isolated to the jobs that require them."""
+    workflow_contracts = (
+        (
+            repository_root / ".github" / "workflows" / "release-please.yml",
+            {"contents": "read"},
+            "release_please",
+            None,
+        ),
+        (
+            repository_root
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "release-please.yml",
+            {"contents": "read"},
+            "release_please",
+            None,
+        ),
+        (
+            repository_root / ".github" / "workflows" / "codeql.yml",
+            {"actions": "read", "contents": "read", "packages": "read"},
+            "analyze",
+            {
+                "actions": "read",
+                "contents": "read",
+                "packages": "read",
+                "security-events": "write",
+            },
+        ),
+        (
+            repository_root
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "codeql.yml",
+            {"actions": "read", "contents": "read", "packages": "read"},
+            "analyze",
+            {
+                "actions": "read",
+                "contents": "read",
+                "packages": "read",
+                "security-events": "write",
+            },
+        ),
+    )
+    problems: list[str] = []
+    for path, workflow_permissions, job_name, job_permissions in workflow_contracts:
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            document = load_yaml(path)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: permission contract is unreadable: {error}")
+            continue
+        if not isinstance(document, dict):
+            problems.append(f"{relative}: root must be a mapping")
+            continue
+        if document.get("permissions") != workflow_permissions:
+            problems.append(f"{relative}: top-level permissions must be read-only")
+        jobs = document.get("jobs")
+        job = jobs.get(job_name) if isinstance(jobs, dict) else None
+        if not isinstance(job, dict):
+            problems.append(f"{relative}: {job_name} job is missing")
+        elif job.get("permissions") != job_permissions:
+            expectation = (
+                "inherit read-only permissions"
+                if job_permissions is None
+                else "isolate security-events: write"
+            )
+            problems.append(f"{relative}: {job_name} must {expectation}")
+    return problems
+
+
 def read_front_matter(path: Path) -> tuple[Any, str]:
     """Return parsed YAML front matter and the remaining Markdown body."""
     text = path.read_text(encoding="utf-8")
@@ -2464,6 +2539,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_plugin_manifest,
         validate_release_please,
         validate_release_attestation,
+        validate_privileged_workflow_permissions,
         validate_issue_templates,
         validate_dependabot,
         validate_markdown_links,
