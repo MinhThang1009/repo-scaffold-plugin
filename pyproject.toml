@@ -30,4 +30,7 @@ also_copy = [
   "skills/repo-scaffold/references",
   "version.txt",
 ]
-mutate_only_covered_lines = true
+mutate_only_covered_lines = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

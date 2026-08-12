@@ -14,7 +14,7 @@ from unittest import mock
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "python_support.py"
-SPEC = importlib.util.spec_from_file_location("python_support", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location("scripts.python_support", SCRIPT_PATH)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load python_support.py")
 python_support = importlib.util.module_from_spec(SPEC)

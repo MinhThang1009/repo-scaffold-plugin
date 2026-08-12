@@ -44,13 +44,15 @@ jobs:
         run: python -m pip check
 
       - name: Run mutation testing
+        env:
+          REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: ${{ github.workspace }}
         run: mutmut run --max-children 4
 
       - name: Export mutation results
         if: ${{ always() }}
         run: |
           mutmut export-cicd-stats
-          mutmut results --all > mutants/mutation-results.txt
+          mutmut results --all true > mutants/mutation-results.txt
           python scripts/validate_mutation_results.py
 
       - name: Upload mutation results
@@ -61,5 +63,8 @@ jobs:
           path: |
             mutants/mutmut-cicd-stats.json
             mutants/mutation-results.txt
+            mutants/mutmut-stats.json
+            mutants/**/*.meta
+            mutants/**/*.py
           if-no-files-found: warn
           retention-days: 14
