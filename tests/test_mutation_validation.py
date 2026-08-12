@@ -15,7 +15,9 @@ from unittest import mock
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "validate_mutation_results.py"
-SPEC = importlib.util.spec_from_file_location("validate_mutation_results", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "scripts.validate_mutation_results", SCRIPT_PATH
+)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load validate_mutation_results.py")
 validate_mutation_results = importlib.util.module_from_spec(SPEC)
@@ -49,14 +51,13 @@ class MutationStatisticsTests(unittest.TestCase):
 
         self.assertEqual(validate_mutation_results.validate_statistics(loaded), [])
 
-    def test_rejects_survivors_and_every_incomplete_result_class(self) -> None:
+    def test_rejects_every_incomplete_result_class(self) -> None:
         unsafe_fields = validate_mutation_results.UNSAFE_RESULT_FIELDS
-        for field in ("survived", *unsafe_fields):
+        for field in unsafe_fields:
             with self.subTest(field=field):
                 document = statistics(killed=2, **{field: 1})
                 problems = validate_mutation_results.validate_statistics(document)
-                expected = "surviving" if field == "survived" else field
-                self.assertTrue(any(expected in problem for problem in problems))
+                self.assertTrue(any(field in problem for problem in problems))
 
         self.assertIn(
             "mutation run generated no mutants",
@@ -68,6 +69,25 @@ class MutationStatisticsTests(unittest.TestCase):
             "mutation counters account for 3 results but total is 4",
             validate_mutation_results.validate_statistics(statistics(total=4)),
         )
+
+    def test_accepts_timeouts_as_detected_and_enforces_the_score_floor(self) -> None:
+        self.assertEqual(
+            validate_mutation_results.validate_statistics(
+                statistics(killed=2, timeout=1)
+            ),
+            [],
+        )
+        self.assertEqual(
+            validate_mutation_results.validate_statistics(
+                statistics(killed=79, survived=21, total=100)
+            ),
+            [],
+        )
+        problems = validate_mutation_results.validate_statistics(
+            statistics(killed=78, survived=22, total=100)
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("78.00% is below required 78.80%", problems[0])
 
     def test_loader_rejects_invalid_json_schema_counts_and_duplicates(self) -> None:
         invalid_documents = (
@@ -109,7 +129,7 @@ class MutationStatisticsTests(unittest.TestCase):
             )
             with redirect_stderr(errors):
                 self.assertEqual(validate_mutation_results.main([str(path)]), 1)
-            self.assertIn("surviving mutant", errors.getvalue())
+            self.assertIn("mutation score", errors.getvalue())
 
             errors = StringIO()
             path.write_text("{", encoding="utf-8")
@@ -129,6 +149,10 @@ class MutationStatisticsTests(unittest.TestCase):
             artifact = root / "mutants" / "mutmut-cicd-stats.json"
             artifact.parent.mkdir()
             artifact.write_text(json.dumps(statistics()), encoding="utf-8")
+            # Instrumented trampolines resolve Mutmut's configured source paths
+            # against the current directory before recording the function hit.
+            for source_path in ("scripts", "skills/repo-scaffold/scripts"):
+                (root / source_path).mkdir(parents=True)
             original_cwd = Path.cwd()
             try:
                 os.chdir(root)

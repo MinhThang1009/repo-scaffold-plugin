@@ -30,6 +30,7 @@ CACHE_DIRECTORIES = {
     "__pycache__",
     "build",
     "dist",
+    "mutants",
     "venv",
     ".venv",
 }
@@ -1218,7 +1219,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
 
 
 def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
-    """Validate the isolated, fail-closed mutation-testing configuration."""
+    """Validate the isolated, evidence-preserving mutation-testing configuration."""
     relative_paths = (
         ".gitattributes",
         ".github/workflows/mutation-testing.yml",
@@ -1228,6 +1229,13 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "pyproject.toml",
         "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "scripts/validate_mutation_results.py",
+        "tests/test_ci_toolchain.py",
+        "tests/test_codeql_preflight.py",
+        "tests/test_mutation_validation.py",
+        "tests/test_python_support.py",
+        "tests/test_repository_validation.py",
+        "tests/test_scaffold_validation.py",
     )
     texts: dict[str, str] = {}
     problems: list[str] = []
@@ -1277,6 +1285,57 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 f"requirements-mutation.lock: missing hashed {requirement} entry"
             )
 
+    validator_relative = "scripts/validate_mutation_results.py"
+    try:
+        validator_tree = ast.parse(
+            texts[validator_relative], filename=validator_relative
+        )
+    except SyntaxError as error:
+        problems.append(f"{validator_relative}: invalid Python source: {error}")
+    else:
+        assignments = {
+            node.targets[0].id: node.value
+            for node in validator_tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        }
+        threshold = assignments.get("MINIMUM_MUTATION_SCORE_BASIS_POINTS")
+        if not (
+            isinstance(threshold, ast.Constant)
+            and type(threshold.value) is int
+            and threshold.value == 7_880
+        ):
+            problems.append(
+                f"{validator_relative}: mutation score floor must remain 78.80%"
+            )
+        unsafe = assignments.get("UNSAFE_RESULT_FIELDS")
+        unsafe_values = (
+            tuple(
+                element.value
+                for element in unsafe.elts
+                if isinstance(element, ast.Constant) and isinstance(element.value, str)
+            )
+            if isinstance(unsafe, ast.Tuple)
+            else ()
+        )
+        expected_unsafe_values = (
+            "no_tests",
+            "skipped",
+            "suspicious",
+            "check_was_interrupted_by_user",
+            "segfault",
+        )
+        if (
+            not isinstance(unsafe, ast.Tuple)
+            or len(unsafe.elts) != len(expected_unsafe_values)
+            or unsafe_values != expected_unsafe_values
+        ):
+            problems.append(
+                f"{validator_relative}: incomplete result classes must fail and "
+                "timeout must remain a detected result"
+            )
+
     workflow_path = repository_root / ".github" / "workflows" / "mutation-testing.yml"
     try:
         workflow = load_yaml(workflow_path)
@@ -1323,13 +1382,29 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "--requirement requirements-mutation.lock",
         "mutmut run --max-children 4",
         "mutmut export-cicd-stats\n"
-        "mutmut results --all > mutants/mutation-results.txt\n"
+        "mutmut results --all true > mutants/mutation-results.txt\n"
         "python scripts/validate_mutation_results.py",
     }
     if not required_runs.issubset(run_steps):
         problems.append(
             ".github/workflows/mutation-testing.yml: install the hashed lock, run "
             "mutmut, and validate exported results"
+        )
+    mutation_run_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("run") == "mutmut run --max-children 4"
+    ]
+    expected_mutation_environment = {
+        "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
+    }
+    if (
+        len(mutation_run_steps) != 1
+        or mutation_run_steps[0].get("env") != expected_mutation_environment
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: mutation run must expose "
+            "the tracked source root for archive validation"
         )
     export_steps = [
         step
@@ -1342,6 +1417,43 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         problems.append(
             ".github/workflows/mutation-testing.yml: mutation diagnostics must "
             "export after failed runs"
+        )
+    upload_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/upload-artifact@")
+    ]
+    required_artifact_paths = {
+        "mutants/mutmut-cicd-stats.json",
+        "mutants/mutation-results.txt",
+        "mutants/mutmut-stats.json",
+        "mutants/**/*.meta",
+        "mutants/**/*.py",
+    }
+    raw_artifact_settings = (
+        upload_steps[0].get("with") if len(upload_steps) == 1 else None
+    )
+    artifact_settings = (
+        raw_artifact_settings if isinstance(raw_artifact_settings, dict) else {}
+    )
+    artifact_path = artifact_settings.get("path")
+    artifact_paths = (
+        {line.strip() for line in artifact_path.splitlines() if line.strip()}
+        if isinstance(artifact_path, str)
+        else set()
+    )
+    if (
+        len(upload_steps) != 1
+        or upload_steps[0].get("if") != "${{ always() }}"
+        or artifact_settings.get("name") != "mutation-results"
+        or artifact_settings.get("retention-days") != "14"
+        or not required_artifact_paths.issubset(artifact_paths)
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: retain summaries, generated "
+            "mutants, and per-file metadata for diagnosis"
         )
     cache_paths = [
         step.get("with", {}).get("cache-dependency-path")
@@ -1363,16 +1475,67 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         'pytest_add_cli_args_test_selection = ["tests"]',
         '"requirements-mutation.lock"',
         '"requirements-mutation.txt"',
-        "mutate_only_covered_lines = true",
+        "mutate_only_covered_lines = false",
     ):
         if fragment not in config_text:
             problems.append(f"pyproject.toml: missing mutation setting {fragment!r}")
+    if 'testpaths = ["tests"]' not in config_text:
+        problems.append(
+            "pyproject.toml: pytest must collect only first-party tests from tests/"
+        )
+
+    loader_contract = {
+        "tests/test_ci_toolchain.py": ("skills.repo-scaffold.scripts.ci_toolchain",),
+        "tests/test_codeql_preflight.py": (
+            "scripts.validate_workflows",
+            "skills.repo-scaffold.scripts.codeql_preflight",
+        ),
+        "tests/test_mutation_validation.py": ("scripts.validate_mutation_results",),
+        "tests/test_python_support.py": ("scripts.python_support",),
+        "tests/test_repository_validation.py": (
+            "scripts.validate_repository",
+            "scripts.validate_workflows",
+        ),
+        "tests/test_scaffold_validation.py": (
+            "skills.repo-scaffold.scripts.validate_scaffold",
+        ),
+    }
+    for relative, expected_names in loader_contract.items():
+        try:
+            tree = ast.parse(texts[relative], filename=relative)
+        except SyntaxError as error:
+            problems.append(
+                f"{relative}: could not verify mutation loader names: {error}"
+            )
+            continue
+        loader_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "spec_from_file_location"
+        ]
+        actual_names = [
+            node.args[0].value
+            for node in loader_calls
+            if node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ]
+        if sorted(actual_names) != sorted(expected_names):
+            problems.append(
+                f"{relative}: mutation loaders must use canonical module names "
+                f"{sorted(expected_names)!r}; found {sorted(actual_names)!r}"
+            )
 
     documentation_contract = {
         "README.md": ("requirements-mutation.lock",),
         "CONTRIBUTING.md": (
+            "78.80% mutation-score floor",
             "requirements-mutation.lock",
             "mutmut run --max-children 4",
+            "mutmut results --all true > mutants/mutation-results.txt",
+            "A timeout counts as detected",
         ),
     }
     for relative, fragments in documentation_contract.items():
@@ -2084,9 +2247,29 @@ def validate_scaffold_contract(repository_root: Path) -> list[str]:
     return [f"scaffold contract: {line}" for line in detail.splitlines()]
 
 
+def release_archive_source_root(repository_root: Path) -> Path:
+    """Use the tracked source worktree for a generated mutmut workspace."""
+    raw_source_root = os.environ.get("REPO_SCAFFOLD_MUTATION_SOURCE_ROOT")
+    if not raw_source_root:
+        return repository_root
+    try:
+        source_root = Path(raw_source_root).resolve(strict=True)
+        generated_root = repository_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return repository_root
+    if (
+        generated_root.parent == source_root
+        and generated_root.name == "mutants"
+        and (source_root / ".git").exists()
+    ):
+        return source_root
+    return repository_root
+
+
 def validate_release_archive(repository_root: Path) -> list[str]:
     """Build and inspect the exact archive shape used by the release workflow."""
-    git = resolve_path_executable("git", forbidden_root=repository_root)
+    source_root = release_archive_source_root(repository_root)
+    git = resolve_path_executable("git", forbidden_root=source_root)
     if git is None:
         return ["release archive: git is unavailable outside the repository"]
     with tempfile.TemporaryDirectory(prefix="repo-scaffold-archive-") as directory:
@@ -2108,7 +2291,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
         try:
             result = subprocess.run(  # noqa: S603 - executable is resolved safely
                 command,
-                cwd=repository_root,
+                cwd=source_root,
                 check=False,
                 capture_output=True,
                 text=True,

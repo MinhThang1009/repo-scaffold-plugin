@@ -24,6 +24,7 @@ SKIPPED_DIRECTORIES = {
     "__pycache__",
     "build",
     "dist",
+    "mutants",
     "node_modules",
     "vendor",
     "venv",

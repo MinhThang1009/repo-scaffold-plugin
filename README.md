@@ -201,8 +201,10 @@ Dependabot checks the pinned Python development tools and GitHub Actions weekly.
 resolves every transitive dependency and records PyPI SHA-256 hashes used by CI.
 Mutation testing extends that toolchain through the separate, hash-verified
 `requirements-mutation.lock`. Its monthly and manually dispatched workflow runs
-mutmut on Linux and rejects incomplete runs or surviving mutants. Native Windows
-is not supported by mutmut; contributors can use WSL for the same check.
+mutmut on Linux, rejects incomplete runs, enforces the evidence-backed mutation
+score floor documented in `CONTRIBUTING.md`, and retains generated mutants plus
+metadata for diagnosis. Native Windows is not supported by mutmut; contributors
+can use WSL for the same check.
 
 ## 11. Releases
 

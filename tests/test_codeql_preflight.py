@@ -21,7 +21,9 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "codeql_preflight.py"
 )
-SPEC = importlib.util.spec_from_file_location("codeql_preflight", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "skills.repo-scaffold.scripts.codeql_preflight", SCRIPT_PATH
+)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load codeql_preflight.py")
 codeql_preflight = importlib.util.module_from_spec(SPEC)
@@ -30,7 +32,7 @@ SPEC.loader.exec_module(codeql_preflight)
 
 VALIDATOR_PATH = PLUGIN_ROOT / "scripts" / "validate_workflows.py"
 VALIDATOR_SPEC = importlib.util.spec_from_file_location(
-    "validate_workflows", VALIDATOR_PATH
+    "scripts.validate_workflows", VALIDATOR_PATH
 )
 if VALIDATOR_SPEC is None or VALIDATOR_SPEC.loader is None:
     raise RuntimeError("Could not load validate_workflows.py")
@@ -236,8 +238,10 @@ class WorkflowParserTests(unittest.TestCase):
         probe = r"""
 import runpy
 import sys
+import time
 
 module = runpy.run_path(sys.argv[1])
+started = time.perf_counter()
 if sys.argv[2] == "env":
     payload = "\n_=" + ('"" _=' * 128) + "!"
     module["CODEQL_CLI"].search(payload)
@@ -246,6 +250,9 @@ elif sys.argv[2] == "alias":
     module["_powershell_alias_definition"](payload)
 else:
     raise AssertionError(f"Unknown probe: {sys.argv[2]}")
+elapsed = time.perf_counter() - started
+if elapsed >= 1.0:
+    raise AssertionError(f"Regex probe took {elapsed:.3f} seconds")
 """
         environment = os.environ.copy()
         environment.pop("MUTANT_UNDER_TEST", None)
@@ -254,7 +261,9 @@ else:
             check=True,
             capture_output=True,
             env=environment,
-            timeout=2,
+            # Mutmut instruments the whole module, so its import may be slow even
+            # though the regex operation itself is bounded inside the child.
+            timeout=30,
         )
 
     def test_direct_codeql_regex_handles_adversarial_assignments(self) -> None:
