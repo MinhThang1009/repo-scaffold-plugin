@@ -79,6 +79,15 @@ class MutationStatisticsTests(unittest.TestCase):
         )
         self.assertEqual(
             validate_mutation_results.validate_statistics(
+                statistics(killed=0, survived=1, timeout=2)
+            ),
+            [
+                "mutation score 66.66% is below required 78.80% "
+                "(2 detected of 3 testable mutants)"
+            ],
+        )
+        self.assertEqual(
+            validate_mutation_results.validate_statistics(
                 statistics(killed=79, survived=21, total=100)
             ),
             [],
@@ -88,6 +97,84 @@ class MutationStatisticsTests(unittest.TestCase):
         )
         self.assertEqual(len(problems), 1)
         self.assertIn("78.00% is below required 78.80%", problems[0])
+        self.assertEqual(
+            validate_mutation_results.validate_statistics(
+                statistics(killed=788, survived=212, total=1000)
+            ),
+            [],
+        )
+        self.assertEqual(
+            validate_mutation_results.validate_statistics(
+                statistics(killed=223, survived=60, total=283)
+            ),
+            [
+                "mutation score 78.79% is below required 78.80% "
+                "(223 detected of 283 testable mutants)"
+            ],
+        )
+
+    def test_loader_reports_the_exact_schema_failure(self) -> None:
+        with self.assertRaises(
+            validate_mutation_results.DuplicateJsonMember
+        ) as duplicate:
+            validate_mutation_results.unique_json_object(
+                [("killed", 1), ("killed", 2)]
+            )
+        self.assertEqual(
+            str(duplicate.exception),
+            "duplicate JSON member 'killed'",
+        )
+
+        cases = (
+            ("[]", "mutation statistics root must be a JSON object"),
+            (
+                "{}",
+                "mutation statistics fields differ: "
+                "missing=['check_was_interrupted_by_user', 'killed', 'no_tests', "
+                "'segfault', 'skipped', 'survived', 'suspicious', 'timeout', "
+                "'total'], unexpected=[]",
+            ),
+            (
+                json.dumps({**statistics(), "extra": 0}),
+                "mutation statistics fields differ: missing=[], "
+                "unexpected=['extra']",
+            ),
+            (
+                json.dumps(statistics(killed=True)),
+                "mutation statistic 'killed' must be a nonnegative integer",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "statistics.json"
+            for content, expected in cases:
+                with self.subTest(content=content):
+                    path.write_text(content, encoding="utf-8")
+                    with self.assertRaises(ValueError) as raised:
+                        validate_mutation_results.load_statistics(path)
+                    self.assertEqual(str(raised.exception), expected)
+
+    def test_loader_rejects_a_duplicate_in_an_otherwise_complete_document(
+        self,
+    ) -> None:
+        members = [f'"{key}": {value}' for key, value in statistics().items()]
+        members.append('"killed": 3')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "statistics.json"
+            path.write_text("{" + ",".join(members) + "}", encoding="utf-8")
+
+            with self.assertRaises(ValueError) as raised:
+                validate_mutation_results.load_statistics(path)
+
+        self.assertIn("duplicate JSON member 'killed'", str(raised.exception))
+
+    def test_loader_requests_utf8_explicitly(self) -> None:
+        path = mock.Mock(spec=Path)
+        path.read_text.return_value = json.dumps(statistics())
+
+        self.assertEqual(
+            validate_mutation_results.load_statistics(path), statistics()
+        )
+        path.read_text.assert_called_once_with(encoding="utf-8")
 
     def test_loader_rejects_invalid_json_schema_counts_and_duplicates(self) -> None:
         invalid_documents = (
@@ -121,7 +208,24 @@ class MutationStatisticsTests(unittest.TestCase):
             path.write_text(json.dumps(statistics()), encoding="utf-8")
             with redirect_stdout(output):
                 self.assertEqual(validate_mutation_results.main([str(path)]), 0)
-            self.assertIn("3/3 mutants were killed", output.getvalue())
+            self.assertEqual(
+                output.getvalue(),
+                "Mutation testing is complete: 3/3 mutants were killed, "
+                "0 timed out; mutation score 100.00%.\n",
+            )
+
+            output = StringIO()
+            path.write_text(
+                json.dumps(statistics(killed=79, survived=20, timeout=1, total=100)),
+                encoding="utf-8",
+            )
+            with redirect_stdout(output):
+                self.assertEqual(validate_mutation_results.main([str(path)]), 0)
+            self.assertEqual(
+                output.getvalue(),
+                "Mutation testing is complete: 79/100 mutants were killed, "
+                "1 timed out; mutation score 80.00%.\n",
+            )
 
             errors = StringIO()
             path.write_text(
@@ -168,3 +272,15 @@ class MutationStatisticsTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 0)
         self.assertIn("3/3 mutants were killed", output.getvalue())
+
+    def test_help_uses_the_module_contract_as_its_description(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            validate_mutation_results.parse_args(["--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn(
+            "Validate mutmut CI statistics without accepting incomplete mutation "
+            "runs.",
+            output.getvalue().replace("\n", " "),
+        )

@@ -611,7 +611,11 @@ class CiToolchainPolicyTests(unittest.TestCase):
                 self.assertEqual(
                     ci_toolchain.main(["--policy", str(path), "validate"]), 0
                 )
-            self.assertIn("1 npm tool(s)", validate_output.getvalue())
+            self.assertEqual(
+                validate_output.getvalue(),
+                "CI toolchain policy is valid: 1 npm tool(s), 1 standalone "
+                "tool(s)\n",
+            )
 
             output = StringIO()
             with redirect_stdout(output):
@@ -633,7 +637,10 @@ class CiToolchainPolicyTests(unittest.TestCase):
                     0,
                 )
             verify.assert_called_once()
-            self.assertIn("match the latest", output.getvalue())
+            self.assertEqual(
+                output.getvalue(),
+                "CI tool pins match the latest upstream releases.\n",
+            )
 
             with mock.patch.object(
                 ci_toolchain, "run_markdownlint", return_value=9
@@ -657,6 +664,35 @@ class CiToolchainPolicyTests(unittest.TestCase):
                     1,
                 )
             self.assertIn("error: could not read", error_output.getvalue())
+
+    def test_command_line_contract_has_exact_defaults_help_and_required_command(
+        self,
+    ) -> None:
+        arguments = ci_toolchain.parse_args(["validate"])
+        self.assertEqual(arguments.policy.as_posix(), ".github/ci-toolchain.json")
+        self.assertEqual(arguments.command, "validate")
+
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            ci_toolchain.parse_args(["--help"])
+        self.assertEqual(raised.exception.code, 0)
+        help_text = " ".join(output.getvalue().split())
+        for fragment in (
+            "Validate centralized CI tool pins, run them, and detect release drift.",
+            "Path to the CI toolchain policy",
+            "Validate the policy",
+            "Emit bootstrap runtime and reviewed tool outputs",
+            "Compare reviewed pins and digests with upstream releases",
+            "Run the policy-pinned markdownlint-cli2 package",
+        ):
+            self.assertIn(fragment, help_text)
+        self.assertNotIn("XX", help_text)
+
+        errors = StringIO()
+        with redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+            ci_toolchain.parse_args([])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("the following arguments are required: command", errors.getvalue())
 
     def test_script_entrypoint_returns_main_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -1418,7 +1418,56 @@ jobs:
 
         self.assertIn(
             ".github/workflows/mutation-testing.yml: mutation run must expose "
-            "the tracked source root for archive validation",
+            "the tracked source root and skip only for an exact cache hit",
+            problems,
+        )
+
+    def test_mutation_state_cache_is_exact_and_controls_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8")
+            workflow = (
+                workflow.replace(
+                    "          path: mutants/\n"
+                    "          key: >-\n"
+                    "            mutmut-v1-${{ runner.os }}-${{ runner.arch }}-python-"
+                    "${{ steps.python.outputs.python-version }}-${{ github.sha }}\n",
+                    "          path: mutants/*.meta\n"
+                    "          key: mutmut-shared\n"
+                    "          restore-keys: mutmut-\n",
+                    1,
+                )
+                .replace(
+                    "        if: ${{ steps.mutation-cache.outputs.cache-hit != 'true' }}\n",
+                    "",
+                    1,
+                )
+                .replace(
+                    "        id: python\n",
+                    "",
+                    1,
+                )
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: mutation state cache must "
+            "use an exact commit, runtime, OS, and architecture key without "
+            "cross-commit restore keys",
+            problems,
+        )
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: mutation run must expose "
+            "the tracked source root and skip only for an exact cache hit",
+            problems,
+        )
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: setup-python must expose the "
+            "resolved runtime version for the mutation cache key",
             problems,
         )
 
@@ -1453,9 +1502,71 @@ jobs:
             problems = validate_repository.validate_mutation_testing_contract(root)
 
         self.assertIn(
-            "pyproject.toml: missing mutation setting "
-            "'mutate_only_covered_lines = false'",
+            "pyproject.toml: mutation testing must include uncovered lines",
             problems,
+        )
+
+    def test_mutation_scope_covers_every_production_python_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            unscoped = root / "tools" / "unscoped.py"
+            unscoped.parent.mkdir()
+            unscoped.write_text("VALUE = 1\n", encoding="utf-8")
+            config_path = root / "pyproject.toml"
+            config = config_path.read_text(encoding="utf-8").replace(
+                'source_paths = ["scripts", "skills/repo-scaffold/scripts"]',
+                'source_paths = ["scripts"]\ndo_not_mutate = ["scripts/*.py"]',
+                1,
+            )
+            config = (
+                config.replace(
+                    'pytest_add_cli_args_test_selection = ["tests"]',
+                    'pytest_add_cli_args_test_selection = ["other-tests"]',
+                    1,
+                )
+                .replace(
+                    '  "requirements-mutation.lock",',
+                    "",
+                    1,
+                )
+                .replace(
+                    'testpaths = ["tests"]',
+                    'testpaths = ["other-tests"]',
+                    1,
+                )
+            )
+            config_path.write_text(config, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            "pyproject.toml: mutation source_paths must include both complete "
+            "production script trees",
+            problems,
+        )
+        self.assertIn(
+            "pyproject.toml: mutation setting 'do_not_mutate' must not exclude "
+            "production code",
+            problems,
+        )
+        self.assertTrue(
+            any(
+                "mutation source_paths omit production Python files" in p
+                for p in problems
+            )
+        )
+        self.assertTrue(
+            any("must collect first-party tests from tests/" in p for p in problems)
+        )
+        self.assertTrue(
+            any(
+                "workspace must copy both mutation requirement files" in p
+                for p in problems
+            )
+        )
+        self.assertTrue(
+            any("pytest must collect only first-party tests" in p for p in problems)
         )
 
     def test_mutation_loaders_must_use_canonical_module_names(self) -> None:
@@ -1516,14 +1627,31 @@ jobs:
 
             problems = validate_repository.validate_mutation_testing_contract(root)
 
-        self.assertEqual(sum("missing mutation setting" in p for p in problems), 5)
-        self.assertIn(
-            "pyproject.toml: pytest must collect only first-party tests from tests/",
-            problems,
+        self.assertTrue(
+            any("could not verify mutation settings" in p for p in problems)
         )
         self.assertEqual(sum("mutation guidance" in p for p in problems), 5)
         self.assertEqual(sum("must be export-ignore" in p for p in problems), 3)
         self.assertIn(".gitignore: mutants/ must be ignored", problems)
+
+    def test_nonmapping_mutation_configuration_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "pyproject.toml").write_text(
+                "[[tool.mutmut]]\n[[tool.pytest.ini_options]]\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertTrue(
+            any(
+                "could not verify mutation settings: mutation and pytest settings "
+                "must be TOML tables" in problem
+                for problem in problems
+            )
+        )
 
 
 class MarkdownLinkValidationTests(unittest.TestCase):
@@ -3199,6 +3327,43 @@ class WorkflowShellValidationTests(unittest.TestCase):
             self.assertIsNone(result)
             which.assert_not_called()
 
+    def test_executable_resolution_requires_existing_roots_and_defaults_empty_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing"
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch.object(validate_workflows.shutil, "which") as which,
+                self.assertRaises(FileNotFoundError),
+            ):
+                validate_workflows.resolve_path_executable(
+                    "actionlint", forbidden_root=missing
+                )
+            which.assert_not_called()
+
+    def test_executable_resolution_strips_only_path_entry_quotes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forbidden = root / "repository"
+            external = root / "external"
+            forbidden.mkdir()
+            external.mkdir()
+            tool = external / "actionlint"
+            tool.touch()
+            with (
+                mock.patch.dict(os.environ, {"PATH": f'"{external}"'}),
+                mock.patch.object(
+                    validate_workflows.shutil, "which", return_value=str(tool)
+                ) as which,
+            ):
+                result = validate_workflows.resolve_path_executable(
+                    "actionlint", forbidden_root=forbidden
+                )
+
+            self.assertEqual(result, str(tool.resolve()))
+            which.assert_called_once_with("actionlint", path=str(external))
+
     def test_executable_resolution_ignores_unresolvable_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3261,7 +3426,7 @@ class WorkflowShellValidationTests(unittest.TestCase):
             timeout=60,
         )
 
-        stderr = mock.Mock()
+        stderr = StringIO()
         with (
             mock.patch.object(
                 validate_workflows.subprocess,
@@ -3270,19 +3435,14 @@ class WorkflowShellValidationTests(unittest.TestCase):
                     ["actionlint"], 60
                 ),
             ),
-            mock.patch.object(validate_workflows.sys, "stderr", stderr),
+            redirect_stderr(stderr),
         ):
             timeout_result = validate_workflows.run_actionlint(
                 "actionlint", [workflow], working_directory=working_directory
             )
 
         self.assertEqual(timeout_result, 2)
-        self.assertTrue(
-            any(
-                "actionlint timed out" in call.args[0]
-                for call in stderr.write.call_args_list
-            )
-        )
+        self.assertEqual(stderr.getvalue(), "actionlint timed out.\n")
 
     def test_bash_block_is_normalized_to_binary_lf_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3340,6 +3500,29 @@ jobs:
                 with self.subTest(message=message):
                     with self.assertRaisesRegex(ValueError, message):
                         validate_workflows.workflow_shell_blocks(path)
+
+    def test_workflow_parser_reads_utf8_and_ignores_jobs_without_steps(self) -> None:
+        path = mock.Mock(spec=Path)
+        path.read_text.return_value = (
+            "jobs:\n  scalar: 7\n  empty:\n    runs-on: ubuntu-latest\n"
+        )
+
+        self.assertEqual(validate_workflows.workflow_shell_blocks(path), [])
+        path.read_text.assert_called_once_with(encoding="utf-8")
+
+    def test_workflow_parser_errors_are_exact(self) -> None:
+        cases = (
+            ("- workflow", "workflow root must be a mapping"),
+            ("name: CI", "workflow jobs must be a mapping"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for index, (content, expected) in enumerate(cases):
+                path = Path(directory) / f"exact-{index}.yml"
+                path.write_text(content, encoding="utf-8")
+                with self.subTest(expected=expected):
+                    with self.assertRaises(ValueError) as raised:
+                        validate_workflows.workflow_shell_blocks(path)
+                    self.assertEqual(str(raised.exception), expected)
 
     def test_workflow_parser_uses_defaults_lists_and_step_fallback_labels(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3484,24 +3667,23 @@ jobs:
             failure_result = validate_workflows.run_shellcheck("shellcheck", [path])
         self.assertEqual(failure_result, 3)
         self.assertEqual(failure_stderr.buffer.getvalue(), b"stdout\nstderr\n")
+        self.assertEqual(
+            [call.args for call in failure_stderr.write.call_args_list],
+            [("ci.yml (test: Test):",), ("\n",)],
+        )
 
     def test_shellcheck_rejects_workflows_without_shell_blocks(self) -> None:
-        stderr = mock.Mock()
+        stderr = StringIO()
         with (
             mock.patch.object(
                 validate_workflows, "workflow_shell_blocks", return_value=[]
             ),
-            mock.patch.object(validate_workflows.sys, "stderr", stderr),
+            redirect_stderr(stderr),
         ):
             result = validate_workflows.run_shellcheck("shellcheck", [Path("ci.yml")])
 
         self.assertEqual(result, 2)
-        self.assertTrue(
-            any(
-                "No shell run blocks" in call.args[0]
-                for call in stderr.write.call_args_list
-            )
-        )
+        self.assertEqual(stderr.getvalue(), "No shell run blocks were found.\n")
 
     def test_main_reports_missing_tools_or_workflow_groups(self) -> None:
         stderr = mock.Mock()
@@ -3519,6 +3701,58 @@ jobs:
                 "actionlint is required" in call.args[0]
                 for call in stderr.write.call_args_list
             )
+        )
+
+    def test_main_uses_exact_tool_names_roots_and_diagnostics(self) -> None:
+        repository_root = WORKFLOW_SCRIPT_PATH.resolve().parents[1]
+        resolver = mock.Mock(return_value=None)
+        stderr = StringIO()
+        with (
+            mock.patch.object(validate_workflows, "resolve_path_executable", resolver),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(validate_workflows.main(), 2)
+        resolver.assert_called_once_with("actionlint", forbidden_root=repository_root)
+        self.assertEqual(
+            stderr.getvalue(),
+            "actionlint is required on an absolute PATH entry outside the "
+            "repository.\n",
+        )
+
+        resolver = mock.Mock(side_effect=["actionlint", None])
+        stderr = StringIO()
+        with (
+            mock.patch.object(validate_workflows, "resolve_path_executable", resolver),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(validate_workflows.main(), 2)
+        self.assertEqual(
+            resolver.call_args_list,
+            [
+                mock.call("actionlint", forbidden_root=repository_root),
+                mock.call("shellcheck", forbidden_root=repository_root),
+            ],
+        )
+        self.assertEqual(
+            stderr.getvalue(),
+            "ShellCheck is required on an absolute PATH entry outside the "
+            "repository.\n",
+        )
+
+        stderr = StringIO()
+        with (
+            mock.patch.object(
+                validate_workflows,
+                "resolve_path_executable",
+                side_effect=["actionlint", "shellcheck"],
+            ),
+            mock.patch.object(validate_workflows.Path, "glob", return_value=[]),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(validate_workflows.main(), 2)
+        self.assertEqual(
+            stderr.getvalue(),
+            "Expected installed workflows and workflow assets.\n",
         )
 
         stderr = mock.Mock()

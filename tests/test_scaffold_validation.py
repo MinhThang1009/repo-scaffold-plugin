@@ -203,6 +203,37 @@ class ReadmeContractTests(unittest.TestCase):
         )
 
 
+    def test_markdown_code_helpers_preserve_exact_line_structure(self) -> None:
+        fenced = "before\n```md\nhidden\n```\nafter"
+        self.assertEqual(
+            validate_scaffold.without_fenced_code(fenced),
+            "before\n\n\n\nafter",
+        )
+        multiline_inline = "before `hidden\ncontinued` after\n"
+        self.assertEqual(
+            validate_scaffold.without_markdown_code(multiline_inline),
+            "before                    after\n",
+        )
+
+    def test_readme_validator_handles_header_and_toc_boundaries_exactly(self) -> None:
+        text = readme(section_count=2).replace(
+            "## 1. Section 1",
+            "## 1. Section 1\n\n### 1.1 First\n\n### 1.2 Second",
+        ).replace(
+            "- [2. Section 2](#2-section-2)",
+            "  - [1.1 First](#11-first)\n"
+            "  - [1.2 Second](#12-second)\n"
+            "- [2. Section 2](#2-section-2)",
+        )
+        self.assertEqual(validate_scaffold.validate_readme_text(text), [])
+
+        indented_markup = text.replace(
+            "A real project tagline.",
+            "   <!-- comment -->\n   <span>metadata</span>\n   A real project tagline.",
+        )
+        self.assertEqual(validate_scaffold.validate_readme_text(indented_markup), [])
+
+
 class MarkdownSourceContractTests(unittest.TestCase):
     def test_reports_unresolved_namespaced_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -311,7 +342,42 @@ class MarkdownSourceContractTests(unittest.TestCase):
             self.assertFalse(validate_scaffold.path_is_below(root, assets))
 
 
+    def test_markdown_links_process_every_file_and_destination_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            docs = root / "docs"
+            docs.mkdir()
+            (docs / "existing.md").write_text("Existing\n", encoding="utf-8")
+            (root / "first.md").write_text(
+                "[empty]() [anchor](#section) [external](mailto:test@example.com)\n",
+                encoding="utf-8",
+            )
+            (root / "second.md").write_text(
+                '[existing](<docs/existing.md> "a multi word title") '
+                "[protocol](//example.com/path) [missing](docs/missing.md)\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_scaffold.validate_markdown_sources(root),
+                ["second.md: relative link is missing: docs/missing.md"],
+            )
+
+
 class TemplateContractTests(unittest.TestCase):
+    def test_duplicate_yaml_key_reports_exact_context_and_key(self) -> None:
+        with self.assertRaises(
+            validate_scaffold.yaml.constructor.ConstructorError
+        ) as raised:
+            validate_scaffold.yaml.load(
+                "name: First\nname: Second\n",
+                Loader=validate_scaffold.UniqueKeyBaseLoader,
+            )
+
+        message = str(raised.exception)
+        self.assertIn("while constructing a mapping", message)
+        self.assertIn("found duplicate key 'name'", message)
+        self.assertNotIn("XX", message)
     def test_issue_template_requires_complete_front_matter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -524,7 +590,33 @@ class TemplateContractTests(unittest.TestCase):
                 redirect_stdout(output),
             ):
                 self.assertEqual(validate_scaffold.main(), 0)
-            self.assertIn("satisfy the scaffold contract", output.getvalue())
+            self.assertEqual(
+                output.getvalue(),
+                "Rendered Markdown and GitHub templates satisfy the scaffold "
+                "contract.\n",
+            )
+
+    def test_readme_uses_the_exact_root_path_and_utf8(self) -> None:
+        root = mock.MagicMock(spec=Path)
+        readme_path = mock.Mock(spec=Path)
+        root.__truediv__.return_value = readme_path
+        readme_path.is_file.return_value = True
+        readme_path.read_text.return_value = readme(section_count=1)
+
+        self.assertEqual(validate_scaffold.validate_readme(root), [])
+        root.__truediv__.assert_called_once_with("README.md")
+        readme_path.read_text.assert_called_once_with(encoding="utf-8")
+
+    def test_main_requires_existing_repository_root(self) -> None:
+        args = validate_scaffold.argparse.Namespace(
+            repository_root=Path("missing-repository-root"),
+            template_root=None,
+        )
+        with (
+            mock.patch.object(validate_scaffold, "parse_args", return_value=args),
+            self.assertRaises(FileNotFoundError),
+        ):
+            validate_scaffold.main()
 
     def test_parse_args_preserves_defaults_options_and_help(self) -> None:
         with mock.patch.object(sys, "argv", [str(SCRIPT_PATH)]):

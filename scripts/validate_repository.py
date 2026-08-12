@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
-import configparser
 import ast
+import configparser
+import importlib
 import json
 import os
 import re
@@ -20,6 +21,8 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import yaml
+
+tomllib = importlib.import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
 
 CACHE_DIRECTORIES = {
@@ -1401,10 +1404,12 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     if (
         len(mutation_run_steps) != 1
         or mutation_run_steps[0].get("env") != expected_mutation_environment
+        or mutation_run_steps[0].get("if")
+        != "${{ steps.mutation-cache.outputs.cache-hit != 'true' }}"
     ):
         problems.append(
             ".github/workflows/mutation-testing.yml: mutation run must expose "
-            "the tracked source root for archive validation"
+            "the tracked source root and skip only for an exact cache hit"
         )
     export_steps = [
         step
@@ -1468,20 +1473,112 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: Python cache must key on "
             "requirements-mutation.lock"
         )
+    mutation_cache_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/cache@")
+    ]
+    expected_mutation_cache = {
+        "path": "mutants/",
+        "key": (
+            "mutmut-v1-${{ runner.os }}-${{ runner.arch }}-python-"
+            "${{ steps.python.outputs.python-version }}-${{ github.sha }}"
+        ),
+    }
+    if (
+        len(mutation_cache_steps) != 1
+        or mutation_cache_steps[0].get("id") != "mutation-cache"
+        or mutation_cache_steps[0].get("with") != expected_mutation_cache
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: mutation state cache must "
+            "use an exact commit, runtime, OS, and architecture key without "
+            "cross-commit restore keys"
+        )
+    mutation_python_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/setup-python@")
+    ]
+    if (
+        len(mutation_python_steps) != 1
+        or mutation_python_steps[0].get("id") != "python"
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: setup-python must expose the "
+            "resolved runtime version for the mutation cache key"
+        )
 
     config_text = texts["pyproject.toml"]
-    for fragment in (
-        'source_paths = ["scripts", "skills/repo-scaffold/scripts"]',
-        'pytest_add_cli_args_test_selection = ["tests"]',
-        '"requirements-mutation.lock"',
-        '"requirements-mutation.txt"',
-        "mutate_only_covered_lines = false",
-    ):
-        if fragment not in config_text:
-            problems.append(f"pyproject.toml: missing mutation setting {fragment!r}")
-    if 'testpaths = ["tests"]' not in config_text:
+    expected_source_paths = ["scripts", "skills/repo-scaffold/scripts"]
+    try:
+        config = tomllib.loads(config_text)
+        mutation_config = config["tool"]["mutmut"]
+        pytest_config = config["tool"]["pytest"]["ini_options"]
+        if not isinstance(mutation_config, dict) or not isinstance(pytest_config, dict):
+            raise TypeError("mutation and pytest settings must be TOML tables")
+    except (tomllib.TOMLDecodeError, KeyError, TypeError) as error:
+        problems.append(f"pyproject.toml: could not verify mutation settings: {error}")
+    else:
+        if mutation_config.get("source_paths") != expected_source_paths:
+            problems.append(
+                "pyproject.toml: mutation source_paths must include both complete "
+                "production script trees"
+            )
+        if mutation_config.get("pytest_add_cli_args_test_selection") != ["tests"]:
+            problems.append(
+                "pyproject.toml: mutation testing must collect first-party tests "
+                "from tests/"
+            )
+        if mutation_config.get("mutate_only_covered_lines") is not False:
+            problems.append(
+                "pyproject.toml: mutation testing must include uncovered lines"
+            )
+        for restriction in (
+            "only_mutate",
+            "do_not_mutate",
+            "do_not_mutate_patterns",
+        ):
+            if mutation_config.get(restriction):
+                problems.append(
+                    f"pyproject.toml: mutation setting {restriction!r} must not "
+                    "exclude production code"
+                )
+        also_copy = mutation_config.get("also_copy")
+        if not isinstance(also_copy, list) or not {
+            "requirements-mutation.lock",
+            "requirements-mutation.txt",
+        }.issubset(also_copy):
+            problems.append(
+                "pyproject.toml: mutation workspace must copy both mutation "
+                "requirement files"
+            )
+        if pytest_config.get("testpaths") != ["tests"]:
+            problems.append(
+                "pyproject.toml: pytest must collect only first-party tests from tests/"
+            )
+
+    production_python_files = {
+        path.relative_to(repository_root).as_posix()
+        for path in repository_root.rglob("*.py")
+        if not set(path.relative_to(repository_root).parts) & CACHE_DIRECTORIES
+        and path.relative_to(repository_root).parts[0] != "tests"
+    }
+    scoped_python_files = {
+        path.relative_to(repository_root).as_posix()
+        for source_path in expected_source_paths
+        for path in (repository_root / source_path).rglob("*.py")
+        if not set(path.relative_to(repository_root).parts) & CACHE_DIRECTORIES
+    }
+    unscoped_python_files = sorted(production_python_files - scoped_python_files)
+    if unscoped_python_files:
         problems.append(
-            "pyproject.toml: pytest must collect only first-party tests from tests/"
+            "pyproject.toml: mutation source_paths omit production Python files: "
+            f"{unscoped_python_files!r}"
         )
 
     loader_contract = {
