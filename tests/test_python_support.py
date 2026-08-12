@@ -119,8 +119,7 @@ class PythonSupportPolicyTests(unittest.TestCase):
             ),
             (
                 {**policy_document(), "versions": ["3.10.1"]},
-                "versions must use stable CPython feature-release syntax such as "
-                "3.14",
+                "versions must use stable CPython feature-release syntax such as 3.14",
             ),
             (
                 {**policy_document(), "versions": ["3.10", "3.12"]},
@@ -311,7 +310,9 @@ class PythonSupportPolicyTests(unittest.TestCase):
         with redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
             python_support.parse_args([])
         self.assertEqual(raised.exception.code, 2)
-        self.assertIn("the following arguments are required: command", errors.getvalue())
+        self.assertIn(
+            "the following arguments are required: command", errors.getvalue()
+        )
 
     def test_main_covers_validate_and_runtime_operations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

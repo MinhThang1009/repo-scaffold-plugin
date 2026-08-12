@@ -1197,10 +1197,12 @@ class MutationTestingContractTests(unittest.TestCase):
         "pyproject.toml",
         "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "scripts/prepare_mutation_cache.py",
         "scripts/validate_mutation_results.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_mutation_validation.py",
+        "tests/test_mutation_cache.py",
         "tests/test_python_support.py",
         "tests/test_repository_validation.py",
         "tests/test_scaffold_validation.py",
@@ -1422,33 +1424,28 @@ jobs:
             problems,
         )
 
-    def test_mutation_state_cache_is_exact_and_controls_execution(self) -> None:
+    def test_mutation_state_cache_is_scoped_and_controls_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
             workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
             workflow = workflow_path.read_text(encoding="utf-8")
-            workflow = (
-                workflow.replace(
-                    "          path: mutants/\n"
-                    "          key: >-\n"
-                    "            mutmut-v1-${{ runner.os }}-${{ runner.arch }}-python-"
-                    "${{ steps.python.outputs.python-version }}-${{ github.sha }}\n",
-                    "          path: mutants/*.meta\n"
-                    "          key: mutmut-shared\n"
-                    "          restore-keys: mutmut-\n",
-                    1,
-                )
-                .replace(
-                    "        if: ${{ steps.mutation-cache.outputs.cache-hit != 'true' }}\n",
-                    "",
-                    1,
-                )
-                .replace(
-                    "        id: python\n",
-                    "",
-                    1,
-                )
+            workflow = workflow.replace(
+                "          path: mutants/\n"
+                "          key: >-\n"
+                "            mutmut-v2-${{ runner.os }}-${{ runner.arch }}-python-"
+                "${{ steps.python.outputs.python-version }}-${{ github.sha }}\n"
+                "          restore-keys: |\n"
+                "            mutmut-v2-${{ runner.os }}-${{ runner.arch }}-python-"
+                "${{ steps.python.outputs.python-version }}-\n",
+                "          path: mutants/*.meta\n"
+                "          key: mutmut-shared\n"
+                "          restore-keys: mutmut-\n",
+                1,
+            ).replace(
+                "        id: python\n",
+                "",
+                1,
             )
             workflow_path.write_text(workflow, encoding="utf-8")
 
@@ -1456,18 +1453,100 @@ jobs:
 
         self.assertIn(
             ".github/workflows/mutation-testing.yml: mutation state cache must "
-            "use an exact commit, runtime, OS, and architecture key without "
-            "cross-commit restore keys",
-            problems,
-        )
-        self.assertIn(
-            ".github/workflows/mutation-testing.yml: mutation run must expose "
-            "the tracked source root and skip only for an exact cache hit",
+            "use an exact commit key plus a runtime- and platform-scoped "
+            "incremental restore prefix",
             problems,
         )
         self.assertIn(
             ".github/workflows/mutation-testing.yml: setup-python must expose the "
             "resolved runtime version for the mutation cache key",
+            problems,
+        )
+
+    def test_incremental_cache_steps_are_conditioned_on_mutmut_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "        if: ${{ steps.mutation-cache.outputs.cache-hit != 'true' "
+                "&& steps.mutation-run.outcome == 'success' }}\n",
+                "        if: ${{ always() }}\n",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: incremental mutation state "
+            "must be prepared on cache miss and recorded only after mutmut succeeds",
+            problems,
+        )
+
+    def test_incremental_cache_cannot_reuse_survivors_or_timeouts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            preparer_path = root / "scripts" / "prepare_mutation_cache.py"
+            preparer = preparer_path.read_text(encoding="utf-8").replace(
+                "KILLED_EXIT_CODES = {1, 3}",
+                "KILLED_EXIT_CODES = {0, 1, 3, 36}",
+                1,
+            )
+            preparer_path.write_text(preparer, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            "scripts/prepare_mutation_cache.py: preserve only mutmut killed exit "
+            "codes and retain conservative prepare, record, and additive-test checks",
+            problems,
+        )
+
+    def test_invalid_incremental_cache_preparer_source_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "scripts" / "prepare_mutation_cache.py").write_text(
+                "def invalid(:\n", encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertTrue(
+            any(
+                problem.startswith(
+                    "scripts/prepare_mutation_cache.py: invalid Python source:"
+                )
+                for problem in problems
+            )
+        )
+
+    def test_manual_mutation_run_must_retain_the_clean_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "  workflow_dispatch:\n"
+                "    inputs:\n"
+                "      clean:\n"
+                "        description: Ignore incremental mutation state and run "
+                "every mutant\n"
+                "        required: false\n"
+                "        type: boolean\n"
+                "        default: false\n",
+                "  workflow_dispatch:\n",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: manual runs must expose the "
+            "clean full-run verification input",
             problems,
         )
 

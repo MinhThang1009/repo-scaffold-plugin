@@ -202,7 +202,6 @@ class ReadmeContractTests(unittest.TestCase):
             validate_scaffold.github_anchor(" 1. Héllo, World! "), "1-héllo-world"
         )
 
-
     def test_markdown_code_helpers_preserve_exact_line_structure(self) -> None:
         fenced = "before\n```md\nhidden\n```\nafter"
         self.assertEqual(
@@ -216,14 +215,18 @@ class ReadmeContractTests(unittest.TestCase):
         )
 
     def test_readme_validator_handles_header_and_toc_boundaries_exactly(self) -> None:
-        text = readme(section_count=2).replace(
-            "## 1. Section 1",
-            "## 1. Section 1\n\n### 1.1 First\n\n### 1.2 Second",
-        ).replace(
-            "- [2. Section 2](#2-section-2)",
-            "  - [1.1 First](#11-first)\n"
-            "  - [1.2 Second](#12-second)\n"
-            "- [2. Section 2](#2-section-2)",
+        text = (
+            readme(section_count=2)
+            .replace(
+                "## 1. Section 1",
+                "## 1. Section 1\n\n### 1.1 First\n\n### 1.2 Second",
+            )
+            .replace(
+                "- [2. Section 2](#2-section-2)",
+                "  - [1.1 First](#11-first)\n"
+                "  - [1.2 Second](#12-second)\n"
+                "- [2. Section 2](#2-section-2)",
+            )
         )
         self.assertEqual(validate_scaffold.validate_readme_text(text), [])
 
@@ -341,7 +344,6 @@ class MarkdownSourceContractTests(unittest.TestCase):
             self.assertTrue(validate_scaffold.path_is_below(assets, root))
             self.assertFalse(validate_scaffold.path_is_below(root, assets))
 
-
     def test_markdown_links_process_every_file_and_destination_kind(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -378,6 +380,7 @@ class TemplateContractTests(unittest.TestCase):
         self.assertIn("while constructing a mapping", message)
         self.assertIn("found duplicate key 'name'", message)
         self.assertNotIn("XX", message)
+
     def test_issue_template_requires_complete_front_matter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

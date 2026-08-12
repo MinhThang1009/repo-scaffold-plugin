@@ -1232,10 +1232,12 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "pyproject.toml",
         "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "scripts/prepare_mutation_cache.py",
         "scripts/validate_mutation_results.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_mutation_validation.py",
+        "tests/test_mutation_cache.py",
         "tests/test_python_support.py",
         "tests/test_repository_validation.py",
         "tests/test_scaffold_validation.py",
@@ -1360,6 +1362,22 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: use only scheduled and manual "
             "trusted triggers"
         )
+    dispatch = triggers.get("workflow_dispatch") if isinstance(triggers, dict) else None
+    expected_dispatch = {
+        "inputs": {
+            "clean": {
+                "description": "Ignore incremental mutation state and run every mutant",
+                "required": "false",
+                "type": "boolean",
+                "default": "false",
+            }
+        }
+    }
+    if dispatch != expected_dispatch:
+        problems.append(
+            ".github/workflows/mutation-testing.yml: manual runs must expose the "
+            "clean full-run verification input"
+        )
     if permissions != {"contents": "read"}:
         problems.append(
             ".github/workflows/mutation-testing.yml: permissions must be contents: read"
@@ -1383,7 +1401,9 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     required_runs = {
         "python -m pip install --disable-pip-version-check --require-hashes "
         "--requirement requirements-mutation.lock",
+        "python scripts/prepare_mutation_cache.py prepare",
         "mutmut run --max-children 4",
+        "python scripts/prepare_mutation_cache.py record",
         "mutmut export-cicd-stats\n"
         "mutmut results --all true > mutants/mutation-results.txt\n"
         "python scripts/validate_mutation_results.py",
@@ -1403,6 +1423,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     }
     if (
         len(mutation_run_steps) != 1
+        or mutation_run_steps[0].get("id") != "mutation-run"
         or mutation_run_steps[0].get("env") != expected_mutation_environment
         or mutation_run_steps[0].get("if")
         != "${{ steps.mutation-cache.outputs.cache-hit != 'true' }}"
@@ -1434,6 +1455,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "mutants/mutmut-cicd-stats.json",
         "mutants/mutation-results.txt",
         "mutants/mutmut-stats.json",
+        "mutants/mutation-cache-manifest.json",
         "mutants/**/*.meta",
         "mutants/**/*.py",
     }
@@ -1483,19 +1505,91 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     expected_mutation_cache = {
         "path": "mutants/",
         "key": (
-            "mutmut-v1-${{ runner.os }}-${{ runner.arch }}-python-"
+            "mutmut-v2-${{ runner.os }}-${{ runner.arch }}-python-"
             "${{ steps.python.outputs.python-version }}-${{ github.sha }}"
+        ),
+        "restore-keys": (
+            "mutmut-v2-${{ runner.os }}-${{ runner.arch }}-python-"
+            "${{ steps.python.outputs.python-version }}-\n"
         ),
     }
     if (
         len(mutation_cache_steps) != 1
         or mutation_cache_steps[0].get("id") != "mutation-cache"
+        or mutation_cache_steps[0].get("if") != "${{ !inputs.clean }}"
         or mutation_cache_steps[0].get("with") != expected_mutation_cache
     ):
         problems.append(
             ".github/workflows/mutation-testing.yml: mutation state cache must "
-            "use an exact commit, runtime, OS, and architecture key without "
-            "cross-commit restore keys"
+            "use an exact commit key plus a runtime- and platform-scoped "
+            "incremental restore prefix"
+        )
+
+    cache_preparer_relative = "scripts/prepare_mutation_cache.py"
+    try:
+        cache_preparer_tree = ast.parse(
+            texts[cache_preparer_relative], filename=cache_preparer_relative
+        )
+    except SyntaxError as error:
+        problems.append(f"{cache_preparer_relative}: invalid Python source: {error}")
+    else:
+        assignments = {
+            node.targets[0].id: node.value
+            for node in cache_preparer_tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        }
+        killed_codes = assignments.get("KILLED_EXIT_CODES")
+        killed_values = (
+            {
+                element.value
+                for element in killed_codes.elts
+                if isinstance(element, ast.Constant) and type(element.value) is int
+            }
+            if isinstance(killed_codes, ast.Set)
+            else set()
+        )
+        function_names = {
+            node.name
+            for node in cache_preparer_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        if killed_values != {1, 3} or not {
+            "prepare_cache",
+            "record_cache",
+            "_is_additive_test_change",
+        }.issubset(function_names):
+            problems.append(
+                f"{cache_preparer_relative}: preserve only mutmut killed exit codes "
+                "and retain conservative prepare, record, and additive-test checks"
+            )
+    prepare_cache_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py prepare"
+    ]
+    record_cache_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py record"
+    ]
+    incremental_condition = "${{ steps.mutation-cache.outputs.cache-hit != 'true' }}"
+    record_condition = (
+        "${{ steps.mutation-cache.outputs.cache-hit != 'true' && "
+        "steps.mutation-run.outcome == 'success' }}"
+    )
+    if (
+        len(prepare_cache_steps) != 1
+        or prepare_cache_steps[0].get("if") != incremental_condition
+        or len(record_cache_steps) != 1
+        or record_cache_steps[0].get("if") != record_condition
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: incremental mutation state "
+            "must be prepared on cache miss and recorded only after mutmut succeeds"
         )
     mutation_python_steps = [
         step
@@ -1588,6 +1682,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             "skills.repo-scaffold.scripts.codeql_preflight",
         ),
         "tests/test_mutation_validation.py": ("scripts.validate_mutation_results",),
+        "tests/test_mutation_cache.py": ("scripts.prepare_mutation_cache",),
         "tests/test_python_support.py": ("scripts.python_support",),
         "tests/test_repository_validation.py": (
             "scripts.validate_repository",

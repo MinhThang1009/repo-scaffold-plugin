@@ -117,9 +117,7 @@ class MutationStatisticsTests(unittest.TestCase):
         with self.assertRaises(
             validate_mutation_results.DuplicateJsonMember
         ) as duplicate:
-            validate_mutation_results.unique_json_object(
-                [("killed", 1), ("killed", 2)]
-            )
+            validate_mutation_results.unique_json_object([("killed", 1), ("killed", 2)])
         self.assertEqual(
             str(duplicate.exception),
             "duplicate JSON member 'killed'",
@@ -136,8 +134,7 @@ class MutationStatisticsTests(unittest.TestCase):
             ),
             (
                 json.dumps({**statistics(), "extra": 0}),
-                "mutation statistics fields differ: missing=[], "
-                "unexpected=['extra']",
+                "mutation statistics fields differ: missing=[], unexpected=['extra']",
             ),
             (
                 json.dumps(statistics(killed=True)),
@@ -171,9 +168,7 @@ class MutationStatisticsTests(unittest.TestCase):
         path = mock.Mock(spec=Path)
         path.read_text.return_value = json.dumps(statistics())
 
-        self.assertEqual(
-            validate_mutation_results.load_statistics(path), statistics()
-        )
+        self.assertEqual(validate_mutation_results.load_statistics(path), statistics())
         path.read_text.assert_called_once_with(encoding="utf-8")
 
     def test_loader_rejects_invalid_json_schema_counts_and_duplicates(self) -> None:
@@ -280,7 +275,6 @@ class MutationStatisticsTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 0)
         self.assertIn(
-            "Validate mutmut CI statistics without accepting incomplete mutation "
-            "runs.",
+            "Validate mutmut CI statistics without accepting incomplete mutation runs.",
             output.getvalue().replace("\n", " "),
         )

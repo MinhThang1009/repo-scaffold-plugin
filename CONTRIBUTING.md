@@ -72,7 +72,11 @@ Mutation testing uses a separate Linux/WSL-only lock. After changing
 `requirements-mutation.txt`, regenerate `requirements-mutation.lock` with the
 same reviewed `pip-tools` version and hash-mode options. Its unconditional
 `toml` pin preserves mutmut's Python 3.10 dependency when the lock is generated
-on a newer interpreter.
+on a newer interpreter. Trusted scheduled and manual runs reuse only previously
+killed mutants when the cache manifest proves production and support inputs are
+compatible; every survivor and timeout becomes pending again. Use the `clean`
+workflow-dispatch input before claiming a final mutation score so every mutant
+is independently rerun without cached results.
 
 ## Make a change
 

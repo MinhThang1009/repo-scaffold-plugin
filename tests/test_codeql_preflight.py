@@ -1679,9 +1679,7 @@ class BashParserHelperTests(unittest.TestCase):
         )
         with self.assertRaises(codeql_preflight.InspectionError) as raised:
             codeql_preflight._bash_unwrap_command(["env", "-S'unterminated"])
-        self.assertEqual(
-            str(raised.exception), "Shell env split-string is malformed."
-        )
+        self.assertEqual(str(raised.exception), "Shell env split-string is malformed.")
 
         words = ["--", "value"]
         self.assertTrue(codeql_preflight._bash_pop_option(words, set(), set()))
@@ -1731,14 +1729,10 @@ class BashParserHelperTests(unittest.TestCase):
         for option in options_with_argument:
             with self.subTest(option=option):
                 self.assertEqual(
-                    codeql_preflight._bash_xargs_command(
-                        [option, "value", "codeql"]
-                    ),
+                    codeql_preflight._bash_xargs_command([option, "value", "codeql"]),
                     ["codeql"],
                 )
-                self.assertEqual(
-                    codeql_preflight._bash_xargs_command([option]), []
-                )
+                self.assertEqual(codeql_preflight._bash_xargs_command([option]), [])
 
         options_without_argument = (
             "-0",
@@ -1776,9 +1770,7 @@ class BashParserHelperTests(unittest.TestCase):
         ):
             with self.subTest(attached=option):
                 self.assertEqual(
-                    codeql_preflight._bash_xargs_command(
-                        [f"{option}value", "codeql"]
-                    ),
+                    codeql_preflight._bash_xargs_command([f"{option}value", "codeql"]),
                     ["codeql"],
                 )
         for option in (
@@ -1794,9 +1786,7 @@ class BashParserHelperTests(unittest.TestCase):
         ):
             with self.subTest(attached=option):
                 self.assertEqual(
-                    codeql_preflight._bash_xargs_command(
-                        [f"{option}=value", "codeql"]
-                    ),
+                    codeql_preflight._bash_xargs_command([f"{option}=value", "codeql"]),
                     ["codeql"],
                 )
 

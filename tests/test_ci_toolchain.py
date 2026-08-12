@@ -613,8 +613,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
                 )
             self.assertEqual(
                 validate_output.getvalue(),
-                "CI toolchain policy is valid: 1 npm tool(s), 1 standalone "
-                "tool(s)\n",
+                "CI toolchain policy is valid: 1 npm tool(s), 1 standalone tool(s)\n",
             )
 
             output = StringIO()
@@ -692,7 +691,9 @@ class CiToolchainPolicyTests(unittest.TestCase):
         with redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
             ci_toolchain.parse_args([])
         self.assertEqual(raised.exception.code, 2)
-        self.assertIn("the following arguments are required: command", errors.getvalue())
+        self.assertIn(
+            "the following arguments are required: command", errors.getvalue()
+        )
 
     def test_script_entrypoint_returns_main_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

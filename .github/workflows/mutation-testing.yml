@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "41 5 1 * *"
   workflow_dispatch:
+    inputs:
+      clean:
+        description: Ignore incremental mutation state and run every mutant
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,17 +52,29 @@ jobs:
 
       - name: Restore mutation state
         id: mutation-cache
+        if: ${{ !inputs.clean }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: mutants/
           key: >-
-            mutmut-v1-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-${{ github.sha }}
+            mutmut-v2-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-${{ github.sha }}
+          restore-keys: |
+            mutmut-v2-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-
+
+      - name: Prepare incremental mutation state
+        if: ${{ steps.mutation-cache.outputs.cache-hit != 'true' }}
+        run: python scripts/prepare_mutation_cache.py prepare
 
       - name: Run mutation testing
+        id: mutation-run
         if: ${{ steps.mutation-cache.outputs.cache-hit != 'true' }}
         env:
           REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: ${{ github.workspace }}
         run: mutmut run --max-children 4
+
+      - name: Record mutation cache inputs
+        if: ${{ steps.mutation-cache.outputs.cache-hit != 'true' && steps.mutation-run.outcome == 'success' }}
+        run: python scripts/prepare_mutation_cache.py record
 
       - name: Export mutation results
         if: ${{ always() }}
@@ -74,6 +92,7 @@ jobs:
             mutants/mutmut-cicd-stats.json
             mutants/mutation-results.txt
             mutants/mutmut-stats.json
+            mutants/mutation-cache-manifest.json
             mutants/**/*.meta
             mutants/**/*.py
           if-no-files-found: warn
