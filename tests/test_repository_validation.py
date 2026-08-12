@@ -1876,6 +1876,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_plugin_manifest",
             "validate_release_please",
             "validate_release_attestation",
+            "validate_privileged_workflow_permissions",
             "validate_issue_templates",
             "validate_dependabot",
             "validate_markdown_links",
@@ -2453,6 +2454,63 @@ jobs:
 
             self.assertFalse(
                 any("plugin.json: invalid JSON" in item for item in problems)
+            )
+
+
+class PrivilegedWorkflowPermissionTests(unittest.TestCase):
+    def test_repository_and_templates_isolate_write_permissions(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_privileged_workflow_permissions(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_rejects_workflow_level_writes_and_missing_job_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            workflow_root.mkdir(parents=True)
+            asset_root.mkdir(parents=True)
+            release = {
+                "permissions": {"contents": "write"},
+                "jobs": {"release_please": {}},
+            }
+            codeql = {
+                "permissions": {
+                    "actions": "read",
+                    "contents": "read",
+                    "packages": "read",
+                    "security-events": "write",
+                },
+                "jobs": {"analyze": {}},
+            }
+            for path, document in (
+                (workflow_root / "release-please.yml", release),
+                (asset_root / "release-please.yml", release),
+                (workflow_root / "codeql.yml", codeql),
+                (asset_root / "codeql.yml", codeql),
+            ):
+                path.write_text(
+                    yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                )
+
+            problems = validate_repository.validate_privileged_workflow_permissions(
+                root
+            )
+
+            self.assertEqual(
+                sum(
+                    "top-level permissions must be read-only" in item
+                    for item in problems
+                ),
+                4,
+            )
+            self.assertEqual(
+                sum(
+                    "analyze must isolate security-events: write" in item
+                    for item in problems
+                ),
+                2,
             )
 
 

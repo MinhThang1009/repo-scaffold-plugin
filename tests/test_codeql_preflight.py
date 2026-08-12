@@ -3674,7 +3674,16 @@ class PlaceholderContractTests(unittest.TestCase):
                 self.assertEqual(document["permissions"]["actions"], "read")
                 self.assertEqual(document["permissions"]["contents"], "read")
                 self.assertEqual(document["permissions"]["packages"], "read")
-                self.assertEqual(document["permissions"]["security-events"], "write")
+                self.assertNotIn("security-events", document["permissions"])
+                self.assertEqual(
+                    document["jobs"]["analyze"]["permissions"],
+                    {
+                        "actions": "read",
+                        "contents": "read",
+                        "packages": "read",
+                        "security-events": "write",
+                    },
+                )
                 self.assertEqual(
                     set(document["on"]), {"push", "pull_request", "schedule"}
                 )
