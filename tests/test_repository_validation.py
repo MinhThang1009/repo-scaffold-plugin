@@ -2513,6 +2513,45 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
                 2,
             )
 
+    def test_reports_unreadable_scalar_and_missing_job_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            workflow_root.mkdir(parents=True)
+            asset_root.mkdir(parents=True)
+            (workflow_root / "release-please.yml").write_text(
+                "permissions: [\n", encoding="utf-8"
+            )
+            (asset_root / "release-please.yml").write_text("scalar\n", encoding="utf-8")
+            codeql = {
+                "permissions": {
+                    "actions": "read",
+                    "contents": "read",
+                    "packages": "read",
+                },
+                "jobs": {},
+            }
+            for path in (
+                workflow_root / "codeql.yml",
+                asset_root / "codeql.yml",
+            ):
+                path.write_text(
+                    yaml.safe_dump(codeql, sort_keys=False), encoding="utf-8"
+                )
+
+            problems = validate_repository.validate_privileged_workflow_permissions(
+                root
+            )
+
+            self.assertTrue(
+                any("permission contract is unreadable" in item for item in problems)
+            )
+            self.assertTrue(any("root must be a mapping" in item for item in problems))
+            self.assertEqual(
+                sum("analyze job is missing" in item for item in problems), 2
+            )
+
 
 class ReleaseAttestationValidationTests(unittest.TestCase):
     def write_valid_configuration(self, root: Path) -> None:
