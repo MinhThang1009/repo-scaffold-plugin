@@ -155,6 +155,7 @@ jobs:
 
           mkdir -p dist
           git archive \
+            --worktree-attributes \
             --format=zip \
             --prefix="repo-scaffold/" \
             --output "dist/repo-scaffold-plugin-${artifact_tag}.zip" \

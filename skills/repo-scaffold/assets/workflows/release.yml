@@ -155,7 +155,7 @@ jobs:
             artifact_tag="${artifact_tag:0:100}-${artifact_tag_hash:0:16}"
           fi
           mkdir -p dist
-          git archive --format=zip --output "dist/{{REPO_SCAFFOLD_ARTIFACT_BASENAME}}-${artifact_tag}.zip" HEAD
+          git archive --worktree-attributes --format=zip --output "dist/{{REPO_SCAFFOLD_ARTIFACT_BASENAME}}-${artifact_tag}.zip" HEAD
 
       - name: Validate release artifacts
         shell: bash
