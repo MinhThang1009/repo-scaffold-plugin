@@ -65,21 +65,23 @@ The skill activates automatically and walks through: survey → decisions → fi
 
 See [SUPPORT.md](SUPPORT.md) for usage help and the information to include in a report. For a local installation, contact the person or workspace that shared the plugin.
 
-Report vulnerabilities according to [SECURITY.md](SECURITY.md), never through a public issue. Community participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+Report vulnerabilities according to [SECURITY.md](SECURITY.md), never through a public issue. Community participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). See the [Privacy Policy](PRIVACY.md) and [Terms of Use](TERMS.md) before using or distributing the plugin.
 
 ## 6. Install
 
-Install it from your local Codex marketplace, then start a new Codex thread in the target repository:
+Public plugins are installed from the universal Plugin Directory shared by ChatGPT and Codex. This repository is not yet claiming a public-directory listing.
+
+For local development, first add this checkout to a personal marketplace as described in the [official plugin packaging guide](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list). If that marketplace is named `personal`, install the plugin and then start a new Codex thread in the target repository:
 
 ```powershell
 codex plugin add repo-scaffold@personal
 ```
 
-The default personal marketplace is `~/.agents/plugins/marketplace.json` and points to `~/plugins/repo-scaffold`.
+`personal` is a local marketplace name, not a global default. A personal marketplace catalog lives at `~/.agents/plugins/marketplace.json`; its plugin source path must point to this checkout.
 
 ## 7. Update
 
-After the marketplace source and plugin version have been updated, refresh the installed snapshot and start a new Codex thread:
+After the local marketplace source and plugin version have been updated, reinstall the plugin and start a new Codex thread:
 
 ```powershell
 codex plugin remove repo-scaffold@personal
@@ -125,6 +127,8 @@ repo-scaffold/
 ├── .editorconfig
 ├── .gitattributes
 ├── CHANGELOG.md
+├── PLUGIN_SUBMISSION.md
+├── PRIVACY.md
 ├── README.md
 ├── LICENSE
 ├── release-please-config.json
@@ -132,6 +136,7 @@ repo-scaffold/
 ├── requirements-dev.txt
 ├── requirements-mutation.lock
 ├── requirements-mutation.txt
+├── TERMS.md
 ├── version.txt
 ├── scripts/
 │   ├── python_support.py
@@ -165,7 +170,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/python_support.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -235,7 +240,7 @@ gh attestation verify repo-scaffold-plugin-vX.Y.Z.zip \
 
 ## 12. Maintainers and contributing
 
-This plugin is maintained by Minh Thang. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, required checks, and pull-request expectations. Project roles and decisions are described in [GOVERNANCE.md](GOVERNANCE.md).
+This plugin is maintained by Minh Thang. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, required checks, and pull-request expectations. Project roles and decisions are described in [GOVERNANCE.md](GOVERNANCE.md). The [submission dossier](PLUGIN_SUBMISSION.md) records the public-listing copy, test cases, and external publication prerequisites.
 
 When proposing a change, include the source you verified, the files affected, and the command or manual check used to validate the result.
 

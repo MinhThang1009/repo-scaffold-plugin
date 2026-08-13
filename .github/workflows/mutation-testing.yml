@@ -50,31 +50,50 @@ jobs:
       - name: Verify dependency consistency
         run: python -m pip check
 
-      - name: Restore mutation state
-        id: mutation-cache
+      - name: Restore verified clean mutation state
+        id: mutation-clean-cache
         if: ${{ !inputs.clean }}
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: mutants/
           key: >-
-            mutmut-v2-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-${{ github.sha }}
+            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-clean-${{ github.sha }}
+
+      - name: Restore incremental mutation state
+        id: mutation-cache
+        if: ${{ !inputs.clean && steps.mutation-clean-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: mutants/
+          key: >-
+            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            mutmut-v2-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-
+            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-
+            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-
 
       - name: Prepare incremental mutation state
-        if: ${{ steps.mutation-cache.outputs.cache-hit != 'true' }}
+        if: ${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' }}
         run: python scripts/prepare_mutation_cache.py prepare
 
       - name: Run mutation testing
         id: mutation-run
-        if: ${{ steps.mutation-cache.outputs.cache-hit != 'true' }}
+        if: ${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' }}
         env:
           REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: ${{ github.workspace }}
-        run: mutmut run --max-children 4
+        run: python scripts/run_mutation_testing.py --max-children 4
 
       - name: Record mutation cache inputs
-        if: ${{ steps.mutation-cache.outputs.cache-hit != 'true' && steps.mutation-run.outcome == 'success' }}
+        id: mutation-record
+        if: ${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' && steps.mutation-run.outcome == 'success' }}
         run: python scripts/prepare_mutation_cache.py record
+
+      - name: Save incremental mutation state
+        if: ${{ success() && !inputs.clean && steps.mutation-clean-cache.outputs.cache-hit != 'true' && steps.mutation-run.outcome == 'success' && steps.mutation-record.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: mutants/
+          key: >-
+            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Export mutation results
         if: ${{ always() }}
@@ -82,6 +101,14 @@ jobs:
           mutmut export-cicd-stats
           mutmut results --all true > mutants/mutation-results.txt
           python scripts/validate_mutation_results.py
+
+      - name: Save verified clean mutation state
+        if: ${{ success() && inputs.clean && steps.mutation-run.outcome == 'success' && steps.mutation-record.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: mutants/
+          key: >-
+            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-clean-${{ github.sha }}
 
       - name: Upload mutation results
         if: ${{ always() }}

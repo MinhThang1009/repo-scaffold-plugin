@@ -17,6 +17,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 MANIFEST_NAME = "mutation-cache-manifest.json"
+REUSABLE_SOURCES_NAME = ".incremental-sources.json"
 SOURCE_ROOTS = (PurePosixPath("scripts"), PurePosixPath("skills/repo-scaffold/scripts"))
 KILLED_EXIT_CODES = {1, 3}
 MAX_PROJECT_FILES = 10_000
@@ -37,6 +38,8 @@ IGNORED_DIRECTORIES = {
     "mutants",
     "venv",
 }
+IGNORED_FILE_NAMES = {".coverage"}
+IGNORED_FILE_PREFIXES = (".coverage.",)
 
 
 class DuplicateJsonMember(ValueError):
@@ -155,7 +158,11 @@ def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
     total_bytes = 0
     for path in sorted(repository_root.rglob("*")):
         relative = path.relative_to(repository_root)
-        if set(relative.parts) & IGNORED_DIRECTORIES:
+        if (
+            set(relative.parts) & IGNORED_DIRECTORIES
+            or relative.name in IGNORED_FILE_NAMES
+            or relative.name.startswith(IGNORED_FILE_PREFIXES)
+        ):
             continue
         if path.is_symlink():
             raise ValueError(
@@ -339,24 +346,9 @@ def _remove_source_state(mutation_root: Path, relative: str) -> None:
             raise ValueError(f"mutation source state is not a file: {relative!r}")
 
 
-def _is_additive_test_change(previous: str, current: str) -> bool:
-    """Return true when all previous lines remain in order without modification."""
-    previous_lines = iter(previous.splitlines(keepends=True))
-    expected = next(previous_lines, None)
-    for line in current.splitlines(keepends=True):
-        if expected is not None and line == expected:
-            expected = next(previous_lines, None)
-    return expected is None
-
-
 def _tests_are_compatible(previous: dict[str, str], current: dict[str, str]) -> bool:
-    for path, source in previous.items():
-        current_source = current.get(path)
-        if current_source is None or not _is_additive_test_change(
-            source, current_source
-        ):
-            return False
-    return True
+    """Reuse killed results only when the complete test suite is unchanged."""
+    return previous == current
 
 
 def _load_meta(path: Path) -> dict[str, Any]:
@@ -397,11 +389,8 @@ def _load_meta(path: Path) -> dict[str, Any]:
     return document
 
 
-def _prepare_source_state(
-    repository_root: Path, mutation_root: Path, relative: str
-) -> tuple[int, int]:
+def _prepare_source_state(mutation_root: Path, relative: str) -> tuple[int, int]:
     mutant_path, meta_path = _source_state_paths(mutation_root, relative)
-    source_path = repository_root.joinpath(*PurePosixPath(relative).parts)
     if not mutant_path.is_file() or mutant_path.is_symlink() or not meta_path.is_file():
         _remove_source_state(mutation_root, relative)
         raise ValueError("cached source state is incomplete")
@@ -417,10 +406,6 @@ def _prepare_source_state(
             reset += 1
             document.get("type_check_error_by_key", {}).pop(key, None)
     _write_json(meta_path, document)
-    newer = max(
-        source_path.stat().st_mtime_ns + 1_000_000_000, os.stat(mutant_path).st_mtime_ns
-    )
-    os.utime(mutant_path, ns=(newer, newer))
     return preserved, reset
 
 
@@ -449,24 +434,27 @@ def prepare_cache(repository_root: Path) -> PreparationResult:
         _clear_mutation_state(mutation_root)
         return PreparationResult(True, 0, 0, 0)
 
-    tests_changed = previous.test_sources != current.test_sources
     preserved = 0
     reset = 0
     invalidated = 0
+    reusable_sources: list[str] = []
     for relative in sorted(current.source_hashes):
         try:
-            kept, pending = _prepare_source_state(
-                repository_root, mutation_root, relative
-            )
+            kept, pending = _prepare_source_state(mutation_root, relative)
         except (OSError, ValueError):
             _remove_source_state(mutation_root, relative)
             invalidated += 1
         else:
             preserved += kept
             reset += pending
+            reusable_sources.append(relative)
 
-    if tests_changed or invalidated:
+    if invalidated:
         (mutation_root / "mutmut-stats.json").unlink()
+    _write_json(
+        mutation_root / REUSABLE_SOURCES_NAME,
+        {"schema_version": SCHEMA_VERSION, "sources": reusable_sources},
+    )
     manifest_path.unlink(missing_ok=True)
     return PreparationResult(False, preserved, reset, invalidated)
 
@@ -477,6 +465,7 @@ def record_cache(repository_root: Path) -> None:
     mutation_root = _mutation_root(repository_root)
     if not mutation_root.is_dir():
         raise ValueError("completed mutation state is required before recording")
+    (mutation_root / REUSABLE_SOURCES_NAME).unlink(missing_ok=True)
     snapshot = snapshot_project(repository_root)
     snapshot = ProjectSnapshot(
         source_hashes=snapshot.source_hashes,

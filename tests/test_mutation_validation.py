@@ -70,7 +70,7 @@ class MutationStatisticsTests(unittest.TestCase):
             validate_mutation_results.validate_statistics(statistics(total=4)),
         )
 
-    def test_accepts_timeouts_as_detected_and_enforces_the_score_floor(self) -> None:
+    def test_accepts_timeouts_as_detected_and_requires_no_survivors(self) -> None:
         self.assertEqual(
             validate_mutation_results.validate_statistics(
                 statistics(killed=2, timeout=1)
@@ -82,36 +82,21 @@ class MutationStatisticsTests(unittest.TestCase):
                 statistics(killed=0, survived=1, timeout=2)
             ),
             [
-                "mutation score 66.66% is below required 78.80% "
+                "mutation score 66.66% is below required 100.00% "
                 "(2 detected of 3 testable mutants)"
             ],
         )
         self.assertEqual(
             validate_mutation_results.validate_statistics(
-                statistics(killed=79, survived=21, total=100)
+                statistics(killed=100, survived=0, total=100)
             ),
             [],
         )
         problems = validate_mutation_results.validate_statistics(
-            statistics(killed=78, survived=22, total=100)
+            statistics(killed=99, survived=1, total=100)
         )
         self.assertEqual(len(problems), 1)
-        self.assertIn("78.00% is below required 78.80%", problems[0])
-        self.assertEqual(
-            validate_mutation_results.validate_statistics(
-                statistics(killed=788, survived=212, total=1000)
-            ),
-            [],
-        )
-        self.assertEqual(
-            validate_mutation_results.validate_statistics(
-                statistics(killed=223, survived=60, total=283)
-            ),
-            [
-                "mutation score 78.79% is below required 78.80% "
-                "(223 detected of 283 testable mutants)"
-            ],
-        )
+        self.assertIn("99.00% is below required 100.00%", problems[0])
 
     def test_loader_reports_the_exact_schema_failure(self) -> None:
         with self.assertRaises(
@@ -211,7 +196,7 @@ class MutationStatisticsTests(unittest.TestCase):
 
             output = StringIO()
             path.write_text(
-                json.dumps(statistics(killed=79, survived=20, timeout=1, total=100)),
+                json.dumps(statistics(killed=79, timeout=21, total=100)),
                 encoding="utf-8",
             )
             with redirect_stdout(output):
@@ -219,7 +204,7 @@ class MutationStatisticsTests(unittest.TestCase):
             self.assertEqual(
                 output.getvalue(),
                 "Mutation testing is complete: 79/100 mutants were killed, "
-                "1 timed out; mutation score 80.00%.\n",
+                "21 timed out; mutation score 100.00%.\n",
             )
 
             errors = StringIO()

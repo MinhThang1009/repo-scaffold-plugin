@@ -3823,7 +3823,7 @@ class PlaceholderContractTests(unittest.TestCase):
             / "workflows"
             / "codeql.yml"
         )
-        expected_sha = "f205ea1c3313d32999d8d6a48b4f6530d4437b38"
+        expected_sha = "5595ccaf912efad79be6eef63a5619ff05969be3"
 
         for path in (installed_path, asset_path):
             workflow = path.read_text(encoding="utf-8")
@@ -3893,7 +3893,7 @@ class PlaceholderContractTests(unittest.TestCase):
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             "ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc",
             "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-            "github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38",
+            "github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3",
         ]
 
         documents = {}
@@ -3905,7 +3905,7 @@ class PlaceholderContractTests(unittest.TestCase):
             documents[path] = document
             job = document["jobs"]["analysis"]
             with self.subTest(workflow=path.as_posix()):
-                self.assertEqual(document["permissions"], "read-all")
+                self.assertEqual(document["permissions"], {})
                 self.assertEqual(
                     set(document["on"]),
                     {"branch_protection_rule", "push", "schedule"},

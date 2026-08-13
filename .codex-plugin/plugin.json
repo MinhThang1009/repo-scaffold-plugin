@@ -6,6 +6,8 @@
     "name": "Minh Thang",
     "url": "https://github.com/MinhThang1009"
   },
+  "homepage": "https://github.com/MinhThang1009/repo-scaffold-plugin#readme",
+  "repository": "https://github.com/MinhThang1009/repo-scaffold-plugin",
   "license": "MIT",
   "keywords": [
     "scaffold",
@@ -23,12 +25,17 @@
     "longDescription": "Generates host-independent community-health files and, for verified GitHub.com remotes, GitHub Actions workflows, Dependabot setup, release automation, and repository configuration guidance.",
     "developerName": "Minh Thang",
     "category": "Productivity",
+    "websiteURL": "https://github.com/MinhThang1009/repo-scaffold-plugin",
+    "privacyPolicyURL": "https://github.com/MinhThang1009/repo-scaffold-plugin/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/MinhThang1009/repo-scaffold-plugin/blob/main/TERMS.md",
     "capabilities": [
       "Write",
       "GitHub"
     ],
     "defaultPrompt": [
-      "Scaffold this repo to production GitHub.com standard."
+      "Scaffold this repository to production GitHub.com standards in English.",
+      "Scaffold this repository with Vietnamese project documentation.",
+      "Update this repository's existing GitHub community files and workflows."
     ]
   }
 }

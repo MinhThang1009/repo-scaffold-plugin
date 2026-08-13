@@ -381,6 +381,17 @@ class TemplateContractTests(unittest.TestCase):
         self.assertIn("found duplicate key 'name'", message)
         self.assertNotIn("XX", message)
 
+    def test_unhashable_yaml_key_reports_a_controlled_constructor_error(self) -> None:
+        with self.assertRaises(
+            validate_scaffold.yaml.constructor.ConstructorError
+        ) as raised:
+            validate_scaffold.yaml.load(
+                "? [first, second]\n: value\n",
+                Loader=validate_scaffold.UniqueKeyBaseLoader,
+            )
+
+        self.assertIn("found an unhashable mapping key", str(raised.exception))
+
     def test_issue_template_requires_complete_front_matter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

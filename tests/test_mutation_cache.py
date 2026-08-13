@@ -100,9 +100,17 @@ class MutationCacheTests(unittest.TestCase):
                 },
             )
             self.assertEqual(meta["type_check_error_by_key"], {})
-            self.assertGreater(
-                (root / "mutants" / "scripts" / "alpha.py").stat().st_mtime_ns,
-                (root / "scripts" / "alpha.py").stat().st_mtime_ns,
+            marker = json.loads(
+                (
+                    root / "mutants" / prepare_mutation_cache.REUSABLE_SOURCES_NAME
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                marker,
+                {
+                    "schema_version": 1,
+                    "sources": ["scripts/alpha.py", "scripts/beta.py"],
+                },
             )
             self.assertTrue((root / "mutants" / "mutmut-stats.json").exists())
             self.assertFalse((root / "mutants" / "mutmut-cicd-stats.json").exists())
@@ -110,7 +118,7 @@ class MutationCacheTests(unittest.TestCase):
                 (root / "mutants" / "mutation-cache-manifest.json").exists()
             )
 
-    def test_additive_tests_keep_kills_and_refresh_test_mapping(self) -> None:
+    def test_existing_test_module_additions_force_a_full_reset(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.make_repository(root)
@@ -124,19 +132,10 @@ class MutationCacheTests(unittest.TestCase):
 
             result = prepare_mutation_cache.prepare_cache(root)
 
-            self.assertFalse(result.full_reset)
-            self.assertEqual(result.preserved_killed, 3)
-            self.assertFalse((root / "mutants" / "mutmut-stats.json").exists())
-            alpha_meta = json.loads(
-                (root / "mutants" / "scripts" / "alpha.py.meta").read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertIsNone(
-                alpha_meta["exit_code_by_key"]["scripts/alpha.py.survived"]
-            )
+            self.assertTrue(result.full_reset)
+            self.assertEqual(list((root / "mutants").iterdir()), [])
 
-    def test_new_test_file_is_compatible_with_cached_kills(self) -> None:
+    def test_new_test_file_forces_a_full_reset(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.make_repository(root)
@@ -147,9 +146,8 @@ class MutationCacheTests(unittest.TestCase):
 
             result = prepare_mutation_cache.prepare_cache(root)
 
-            self.assertFalse(result.full_reset)
-            self.assertEqual(result.preserved_killed, 3)
-            self.assertFalse((root / "mutants" / "mutmut-stats.json").exists())
+            self.assertTrue(result.full_reset)
+            self.assertEqual(list((root / "mutants").iterdir()), [])
 
     def test_destructive_test_or_support_change_forces_full_reset(self) -> None:
         mutations = (
@@ -252,7 +250,7 @@ class MutationCacheTests(unittest.TestCase):
             test_sources={"tests/test_alpha.py": "def test_alpha():\n    pass\n"},
             support_hashes={"README.md": "1" * 64},
         )
-        invalid_documents = (
+        invalid_documents: tuple[object, ...] = (
             [],
             {**prepare_mutation_cache.manifest_document(valid), "extra": 1},
             {
@@ -416,6 +414,11 @@ class MutationCacheTests(unittest.TestCase):
     def test_state_sanitizer_removes_directory_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            with self.assertRaisesRegex(ValueError, "state is missing"):
+                prepare_mutation_cache._sanitize_restored_state(
+                    root, {"scripts/missing.py": "0" * 64}
+                )
+
             linked = root / "linked"
             with (
                 mock.patch.object(
@@ -485,7 +488,7 @@ class MutationCacheTests(unittest.TestCase):
             mutants.mkdir()
             with self.assertRaisesRegex(ValueError, "source state is incomplete"):
                 prepare_mutation_cache._prepare_source_state(
-                    root, mutants, "scripts/alpha.py"
+                    mutants, "scripts/alpha.py"
                 )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -556,6 +559,24 @@ class MutationCacheTests(unittest.TestCase):
                 self.skipTest("symlink creation is unavailable")
             with self.assertRaisesRegex(ValueError, "symlink"):
                 prepare_mutation_cache.snapshot_project(root)
+
+    def test_snapshot_ignores_coverage_runtime_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            coverage_files = (root / ".coverage", root / ".coverage.worker-1")
+            for path in coverage_files:
+                path.write_bytes(b"runtime coverage data")
+
+            before = prepare_mutation_cache.snapshot_project(root)
+            for path in coverage_files:
+                path.write_bytes(b"changed runtime coverage data")
+            after = prepare_mutation_cache.snapshot_project(root)
+
+            self.assertEqual(before, after)
+            self.assertTrue(
+                all(path.name not in before.support_hashes for path in coverage_files)
+            )
 
     def test_main_and_entrypoint_report_operations_and_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

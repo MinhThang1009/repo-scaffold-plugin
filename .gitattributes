@@ -21,6 +21,7 @@
 /requirements-dev.txt export-ignore
 /requirements-mutation.lock export-ignore
 /requirements-mutation.txt export-ignore
+/PLUGIN_SUBMISSION.md export-ignore
 scripts/**        export-ignore
 tests/**          export-ignore
 

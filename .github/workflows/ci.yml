@@ -135,7 +135,10 @@ jobs:
           skills/repo-scaffold/scripts/codeql_preflight.py
           skills/repo-scaffold/scripts/ci_toolchain.py
           skills/repo-scaffold/scripts/validate_scaffold.py
+          scripts/prepare_mutation_cache.py
           scripts/python_support.py
+          scripts/run_mutation_testing.py
+          scripts/validate_mutation_results.py
           scripts/validate_repository.py
           scripts/validate_workflows.py
           tests
@@ -203,6 +206,37 @@ jobs:
       - name: Validate repository contracts
         run: python scripts/validate_repository.py
 
+  mutation-cache-integration:
+    name: mutation-cache-integration
+    needs: prepare_ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ needs.prepare_ci.outputs.latest }}
+          cache: pip
+          cache-dependency-path: requirements-mutation.lock
+
+      - name: Install mutation-testing dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check --require-hashes
+          --requirement requirements-mutation.lock
+
+      - name: Verify dependency consistency
+        run: python -m pip check
+
+      - name: Exercise real fork-based incremental reuse
+        env:
+          REPO_SCAFFOLD_MUTMUT_INTEGRATION: "1"
+        run: python -m pytest -q tests/test_mutation_runner_linux.py
+
   python-latest-canary:
     name: python-latest-canary
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -252,18 +286,20 @@ jobs:
 
   ci-success:
     name: ci-success
-    needs: [test, quality]
+    needs: [test, quality, mutation-cache-integration]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Verify required jobs passed
         env:
+          MUTATION_CACHE_INTEGRATION_RESULT: ${{ needs.mutation-cache-integration.result }}
           TEST_RESULT: ${{ needs.test.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
         run: |
-          if [ "$TEST_RESULT" != "success" ] || [ "$QUALITY_RESULT" != "success" ]; then
-            echo "test=$TEST_RESULT quality=$QUALITY_RESULT"
+          if [ "$TEST_RESULT" != "success" ] || [ "$QUALITY_RESULT" != "success" ] ||
+            [ "$MUTATION_CACHE_INTEGRATION_RESULT" != "success" ]; then
+            echo "test=$TEST_RESULT quality=$QUALITY_RESULT mutation-cache-integration=$MUTATION_CACHE_INTEGRATION_RESULT"
             exit 1
           fi
           echo "All required CI jobs passed."
