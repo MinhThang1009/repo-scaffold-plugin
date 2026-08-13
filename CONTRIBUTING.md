@@ -72,7 +72,13 @@ Mutation testing uses a separate Linux/WSL-only lock. After changing
 `requirements-mutation.txt`, regenerate `requirements-mutation.lock` with the
 same reviewed `pip-tools` version and hash-mode options. Its unconditional
 `toml` pin preserves mutmut's Python 3.10 dependency when the lock is generated
-on a newer interpreter.
+on a newer interpreter. Trusted scheduled and manual runs reuse previously
+killed mutants only when the cache manifest proves production, support, and the
+complete test suite are unchanged. Any test change forces a full run because a
+new module can introduce fixtures or import-time side effects that alter existing
+tests. Use the `clean` workflow-dispatch input before claiming a final mutation
+score so every mutant is independently rerun without cached results and the
+verified run seeds the next exact-commit cache.
 
 ## Make a change
 
@@ -99,7 +105,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/python_support.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -116,7 +122,7 @@ Windows:
 
 ```bash
 python -m pip install --require-hashes --requirement requirements-mutation.lock
-mutmut run --max-children 4
+python scripts/run_mutation_testing.py --max-children 4
 mutmut export-cicd-stats
 mutmut results --all true > mutants/mutation-results.txt
 python scripts/validate_mutation_results.py
@@ -128,7 +134,7 @@ which keeps in-process trampoline association reliable without narrowing the
 mutation scope.
 
 The result validator fails on skipped, untested, suspicious, interrupted, or
-crashed mutants and enforces a 78.80% mutation-score floor across killed,
+crashed mutants and enforces a 100.00% mutation-score floor across killed,
 timed-out, and surviving mutants. A timeout counts as detected because the
 mutant made the bounded test process fail to terminate; it remains visible in
 the summary. Generated mutant source, per-file metadata, test-association data,

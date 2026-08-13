@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
-import configparser
 import ast
+import configparser
+import importlib
 import json
 import os
 import re
@@ -20,6 +21,8 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import yaml
+
+tomllib = importlib.import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
 
 CACHE_DIRECTORIES = {
@@ -100,7 +103,16 @@ class UniqueKeyBaseLoader(yaml.BaseLoader):
         mapping: dict[Any, Any] = {}
         for key_node, value_node in node.value:
             key = self.construct_object(key_node, deep=deep)
-            if key in mapping:
+            try:
+                duplicate = key in mapping
+            except TypeError as error:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found an unhashable mapping key",
+                    key_node.start_mark,
+                ) from error
+            if duplicate:
                 raise yaml.constructor.ConstructorError(
                     "while constructing a mapping",
                     node.start_mark,
@@ -285,6 +297,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         prepare = jobs.get("prepare_ci")
         test = jobs.get("test")
         quality = jobs.get("quality")
+        mutation_integration = jobs.get("mutation-cache-integration")
         canary = jobs.get("python-latest-canary")
         ci_success = jobs.get("ci-success")
         expected_prepare_outputs = {
@@ -336,6 +349,50 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             problems.append(
                 ".github/workflows/ci.yml: quality must use the policy's latest release"
             )
+        mutation_integration_steps = (
+            mutation_integration.get("steps")
+            if isinstance(mutation_integration, dict)
+            else None
+        )
+        expected_mutation_install = (
+            "python -m pip install --disable-pip-version-check --require-hashes "
+            "--requirement requirements-mutation.lock"
+        )
+        mutation_integration_setup = isinstance(
+            mutation_integration_steps, list
+        ) and any(
+            isinstance(step, dict)
+            and isinstance(step.get("with"), dict)
+            and step["with"].get("python-version")
+            == "${{ needs.prepare_ci.outputs.latest }}"
+            and step["with"].get("cache-dependency-path")
+            == "requirements-mutation.lock"
+            for step in mutation_integration_steps
+        )
+        mutation_integration_install = isinstance(
+            mutation_integration_steps, list
+        ) and any(
+            isinstance(step, dict) and step.get("run") == expected_mutation_install
+            for step in mutation_integration_steps
+        )
+        mutation_integration_run = isinstance(mutation_integration_steps, list) and any(
+            isinstance(step, dict)
+            and step.get("env") == {"REPO_SCAFFOLD_MUTMUT_INTEGRATION": "1"}
+            and step.get("run")
+            == "python -m pytest -q tests/test_mutation_runner_linux.py"
+            for step in mutation_integration_steps
+        )
+        if (
+            not isinstance(mutation_integration, dict)
+            or mutation_integration.get("needs") != "prepare_ci"
+            or not mutation_integration_setup
+            or not mutation_integration_install
+            or not mutation_integration_run
+        ):
+            problems.append(
+                ".github/workflows/ci.yml: mutation cache integration must run "
+                "the real Linux mutmut fork path with the hashed mutation lock"
+            )
         canary_steps = canary.get("steps") if isinstance(canary, dict) else None
         canary_setup = isinstance(canary_steps, list) and any(
             isinstance(step, dict)
@@ -380,13 +437,34 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         ci_success_needs = (
             ci_success.get("needs") if isinstance(ci_success, dict) else None
         )
-        if not isinstance(ci_success_needs, list) or set(ci_success_needs) != {
-            "test",
-            "quality",
-        }:
+        ci_success_steps = (
+            ci_success.get("steps") if isinstance(ci_success, dict) else None
+        )
+        required_result_environment = {
+            "MUTATION_CACHE_INTEGRATION_RESULT": (
+                "${{ needs.mutation-cache-integration.result }}"
+            ),
+            "TEST_RESULT": "${{ needs.test.result }}",
+            "QUALITY_RESULT": "${{ needs.quality.result }}",
+        }
+        ci_success_checks_results = isinstance(ci_success_steps, list) and any(
+            isinstance(step, dict)
+            and step.get("env") == required_result_environment
+            and isinstance(step.get("run"), str)
+            and '"$MUTATION_CACHE_INTEGRATION_RESULT" != "success"' in step["run"]
+            and '"$TEST_RESULT" != "success"' in step["run"]
+            and '"$QUALITY_RESULT" != "success"' in step["run"]
+            for step in ci_success_steps
+        )
+        if (
+            not isinstance(ci_success_needs, list)
+            or set(ci_success_needs)
+            != {"test", "quality", "mutation-cache-integration"}
+            or not ci_success_checks_results
+        ):
             problems.append(
-                ".github/workflows/ci.yml: ci-success must keep the scheduled "
-                "canary outside the required gate"
+                ".github/workflows/ci.yml: ci-success must require tests, quality, "
+                "and mutation integration while keeping canaries outside the gate"
             )
 
     try:
@@ -462,7 +540,7 @@ def iter_uses_values(value: Any) -> Iterable[Any]:
 
 
 def validate_action_references(repository_root: Path) -> list[str]:
-    """Require immutable digests for every external workflow dependency."""
+    """Require least-privilege defaults and immutable workflow dependencies."""
     workflow_roots = (
         repository_root / ".github" / "workflows",
         repository_root / "skills" / "repo-scaffold" / "assets" / "workflows",
@@ -485,6 +563,20 @@ def validate_action_references(repository_root: Path) -> list[str]:
             document = load_yaml(path)
         except (OSError, UnicodeError, yaml.YAMLError):
             continue
+        if isinstance(document, dict):
+            if "permissions" not in document:
+                problems.append(
+                    f"{relative}: workflow must declare top-level permissions"
+                )
+            permissions = document.get("permissions")
+            if isinstance(permissions, str) and permissions in {
+                "read-all",
+                "write-all",
+            }:
+                problems.append(
+                    f"{relative}: workflow must use named least-privilege scopes "
+                    "instead of a broad permission preset"
+                )
         for reference in iter_uses_values(document):
             if not isinstance(reference, str) or not reference.strip():
                 problems.append(f"{relative}: uses must be a nonempty string")
@@ -1117,12 +1209,15 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
             ".github/workflows/ci.yml: every development install must use the "
             "hashed requirements-dev.lock"
         )
-    if len(cache_paths) != 3 or any(
-        path != "requirements-dev.lock" for path in cache_paths
-    ):
+    if sorted(path for path in cache_paths if isinstance(path, str)) != [
+        "requirements-dev.lock",
+        "requirements-dev.lock",
+        "requirements-dev.lock",
+        "requirements-mutation.lock",
+    ]:
         problems.append(
-            ".github/workflows/ci.yml: every Python cache must key on "
-            "requirements-dev.lock"
+            ".github/workflows/ci.yml: every Python cache must key on its "
+            "reviewed dependency lock"
         )
 
     quality = jobs.get("quality") if isinstance(jobs, dict) else None
@@ -1140,6 +1235,33 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     ):
         problems.append(
             ".github/workflows/ci.yml: quality must enforce the repository coverage gate"
+        )
+
+    mypy_steps = [
+        step
+        for step in quality_steps or []
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and "python -m mypy" in step["run"]
+    ]
+    required_mypy_paths = {
+        "skills/repo-scaffold/scripts/codeql_preflight.py",
+        "skills/repo-scaffold/scripts/ci_toolchain.py",
+        "skills/repo-scaffold/scripts/validate_scaffold.py",
+        "scripts/prepare_mutation_cache.py",
+        "scripts/python_support.py",
+        "scripts/run_mutation_testing.py",
+        "scripts/validate_mutation_results.py",
+        "scripts/validate_repository.py",
+        "scripts/validate_workflows.py",
+        "tests",
+    }
+    mypy_arguments = (
+        set(mypy_steps[0]["run"].split()) if len(mypy_steps) == 1 else set()
+    )
+    if not required_mypy_paths.issubset(mypy_arguments):
+        problems.append(
+            ".github/workflows/ci.yml: Mypy must check every production script and tests"
         )
 
     coverage_path = repository_root / ".coveragerc"
@@ -1229,10 +1351,15 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "pyproject.toml",
         "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "scripts/prepare_mutation_cache.py",
+        "scripts/run_mutation_testing.py",
         "scripts/validate_mutation_results.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_mutation_validation.py",
+        "tests/test_mutation_cache.py",
+        "tests/test_mutation_runner.py",
+        "tests/test_mutation_runner_linux.py",
         "tests/test_python_support.py",
         "tests/test_repository_validation.py",
         "tests/test_scaffold_validation.py",
@@ -1304,10 +1431,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         if not (
             isinstance(threshold, ast.Constant)
             and type(threshold.value) is int
-            and threshold.value == 7_880
+            and threshold.value == 10_000
         ):
             problems.append(
-                f"{validator_relative}: mutation score floor must remain 78.80%"
+                f"{validator_relative}: mutation score floor must remain 100.00%"
             )
         unsafe = assignments.get("UNSAFE_RESULT_FIELDS")
         unsafe_values = (
@@ -1357,6 +1484,22 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: use only scheduled and manual "
             "trusted triggers"
         )
+    dispatch = triggers.get("workflow_dispatch") if isinstance(triggers, dict) else None
+    expected_dispatch = {
+        "inputs": {
+            "clean": {
+                "description": "Ignore incremental mutation state and run every mutant",
+                "required": "false",
+                "type": "boolean",
+                "default": "false",
+            }
+        }
+    }
+    if dispatch != expected_dispatch:
+        problems.append(
+            ".github/workflows/mutation-testing.yml: manual runs must expose the "
+            "clean full-run verification input"
+        )
     if permissions != {"contents": "read"}:
         problems.append(
             ".github/workflows/mutation-testing.yml: permissions must be contents: read"
@@ -1380,7 +1523,9 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     required_runs = {
         "python -m pip install --disable-pip-version-check --require-hashes "
         "--requirement requirements-mutation.lock",
-        "mutmut run --max-children 4",
+        "python scripts/prepare_mutation_cache.py prepare",
+        "python scripts/run_mutation_testing.py --max-children 4",
+        "python scripts/prepare_mutation_cache.py record",
         "mutmut export-cicd-stats\n"
         "mutmut results --all true > mutants/mutation-results.txt\n"
         "python scripts/validate_mutation_results.py",
@@ -1393,18 +1538,24 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     mutation_run_steps = [
         step
         for step in steps
-        if isinstance(step, dict) and step.get("run") == "mutmut run --max-children 4"
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/run_mutation_testing.py --max-children 4"
     ]
     expected_mutation_environment = {
         "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
     }
+    mutation_required_condition = (
+        "${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' }}"
+    )
     if (
         len(mutation_run_steps) != 1
+        or mutation_run_steps[0].get("id") != "mutation-run"
         or mutation_run_steps[0].get("env") != expected_mutation_environment
+        or mutation_run_steps[0].get("if") != mutation_required_condition
     ):
         problems.append(
             ".github/workflows/mutation-testing.yml: mutation run must expose "
-            "the tracked source root for archive validation"
+            "the tracked source root and skip only for a verified clean cache hit"
         )
     export_steps = [
         step
@@ -1429,6 +1580,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "mutants/mutmut-cicd-stats.json",
         "mutants/mutation-results.txt",
         "mutants/mutmut-stats.json",
+        "mutants/mutation-cache-manifest.json",
         "mutants/**/*.meta",
         "mutants/**/*.py",
     }
@@ -1468,20 +1620,258 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: Python cache must key on "
             "requirements-mutation.lock"
         )
+    mutation_cache_restore_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/cache/restore@")
+    ]
+    mutation_cache_save_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/cache/save@")
+    ]
+    cache_platform_prefix = (
+        "mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-"
+        "${{ steps.python.outputs.python-version }}"
+    )
+    expected_clean_cache = {
+        "path": "mutants/",
+        "key": f"{cache_platform_prefix}-clean-${{{{ github.sha }}}}",
+    }
+    expected_incremental_cache_restore = {
+        "path": "mutants/",
+        "key": (
+            f"{cache_platform_prefix}-incremental-${{{{ github.sha }}}}-"
+            "${{ github.run_id }}-${{ github.run_attempt }}"
+        ),
+        "restore-keys": (
+            f"{cache_platform_prefix}-incremental-${{{{ github.sha }}}}-\n"
+            f"{cache_platform_prefix}-incremental-\n"
+        ),
+    }
+    clean_restore_condition = "${{ !inputs.clean }}"
+    incremental_restore_condition = (
+        "${{ !inputs.clean && steps.mutation-clean-cache.outputs.cache-hit != 'true' }}"
+    )
+    clean_save_condition = (
+        "${{ success() && inputs.clean && steps.mutation-run.outcome == 'success' "
+        "&& steps.mutation-record.outcome == 'success' }}"
+    )
+    incremental_save_condition = (
+        "${{ success() && !inputs.clean && "
+        "steps.mutation-clean-cache.outputs.cache-hit != 'true' && "
+        "steps.mutation-run.outcome == 'success' && "
+        "steps.mutation-record.outcome == 'success' }}"
+    )
+    expected_incremental_cache_save = {
+        "path": "mutants/",
+        "key": expected_incremental_cache_restore["key"],
+    }
+    if (
+        len(mutation_cache_restore_steps) != 2
+        or mutation_cache_restore_steps[0].get("id") != "mutation-clean-cache"
+        or mutation_cache_restore_steps[0].get("if") != clean_restore_condition
+        or mutation_cache_restore_steps[0].get("with") != expected_clean_cache
+        or mutation_cache_restore_steps[1].get("id") != "mutation-cache"
+        or mutation_cache_restore_steps[1].get("if") != incremental_restore_condition
+        or mutation_cache_restore_steps[1].get("with")
+        != expected_incremental_cache_restore
+        or len(mutation_cache_save_steps) != 2
+        or mutation_cache_save_steps[0].get("if") != incremental_save_condition
+        or mutation_cache_save_steps[0].get("with") != expected_incremental_cache_save
+        or mutation_cache_save_steps[1].get("if") != clean_save_condition
+        or mutation_cache_save_steps[1].get("with") != expected_clean_cache
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: mutation state cache must "
+            "restore and save progressive state under immutable per-run keys, "
+            "save verified clean results separately, and use runtime- and "
+            "platform-scoped v4 keys"
+        )
+
+    cache_preparer_relative = "scripts/prepare_mutation_cache.py"
+    try:
+        cache_preparer_tree = ast.parse(
+            texts[cache_preparer_relative], filename=cache_preparer_relative
+        )
+    except SyntaxError as error:
+        problems.append(f"{cache_preparer_relative}: invalid Python source: {error}")
+    else:
+        assignments = {
+            node.targets[0].id: node.value
+            for node in cache_preparer_tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        }
+        killed_codes = assignments.get("KILLED_EXIT_CODES")
+        killed_values = (
+            {
+                element.value
+                for element in killed_codes.elts
+                if isinstance(element, ast.Constant) and type(element.value) is int
+            }
+            if isinstance(killed_codes, ast.Set)
+            else set()
+        )
+        function_names = {
+            node.name
+            for node in cache_preparer_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        if killed_values != {1, 3} or not {
+            "prepare_cache",
+            "record_cache",
+            "_tests_are_compatible",
+        }.issubset(function_names):
+            problems.append(
+                f"{cache_preparer_relative}: preserve only mutmut killed exit codes "
+                "and retain conservative prepare, record, and unchanged-test checks"
+            )
+
+    runner_relative = "scripts/run_mutation_testing.py"
+    try:
+        runner_tree = ast.parse(texts[runner_relative], filename=runner_relative)
+    except SyntaxError as error:
+        problems.append(f"{runner_relative}: invalid Python source: {error}")
+    else:
+        runner_functions = {
+            node.name
+            for node in runner_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        if not {
+            "_create_or_reuse_mutants",
+            "load_reusable_sources",
+            "run_mutation_testing",
+        }.issubset(runner_functions):
+            problems.append(
+                f"{runner_relative}: must retain the reviewed mutmut generation hook"
+            )
+    prepare_cache_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py prepare"
+    ]
+    record_cache_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py record"
+    ]
+    record_condition = (
+        "${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' && "
+        "steps.mutation-run.outcome == 'success' }}"
+    )
+    if (
+        len(prepare_cache_steps) != 1
+        or prepare_cache_steps[0].get("if") != mutation_required_condition
+        or len(record_cache_steps) != 1
+        or record_cache_steps[0].get("id") != "mutation-record"
+        or record_cache_steps[0].get("if") != record_condition
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: incremental mutation state "
+            "must be prepared after every restore and recorded only after mutmut "
+            "succeeds"
+        )
+    if len(mutation_cache_save_steps) == 2 and len(export_steps) == 1:
+        incremental_save_index = steps.index(mutation_cache_save_steps[0])
+        export_index = steps.index(export_steps[0])
+        clean_save_index = steps.index(mutation_cache_save_steps[1])
+        if not incremental_save_index < export_index < clean_save_index:
+            problems.append(
+                ".github/workflows/mutation-testing.yml: save progressive mutation "
+                "state before applying the score gate and save clean state only "
+                "after the gate passes"
+            )
+    mutation_python_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/setup-python@")
+    ]
+    if (
+        len(mutation_python_steps) != 1
+        or mutation_python_steps[0].get("id") != "python"
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: setup-python must expose the "
+            "resolved runtime version for the mutation cache key"
+        )
 
     config_text = texts["pyproject.toml"]
-    for fragment in (
-        'source_paths = ["scripts", "skills/repo-scaffold/scripts"]',
-        'pytest_add_cli_args_test_selection = ["tests"]',
-        '"requirements-mutation.lock"',
-        '"requirements-mutation.txt"',
-        "mutate_only_covered_lines = false",
-    ):
-        if fragment not in config_text:
-            problems.append(f"pyproject.toml: missing mutation setting {fragment!r}")
-    if 'testpaths = ["tests"]' not in config_text:
+    expected_source_paths = ["scripts", "skills/repo-scaffold/scripts"]
+    try:
+        config = tomllib.loads(config_text)
+        mutation_config = config["tool"]["mutmut"]
+        pytest_config = config["tool"]["pytest"]["ini_options"]
+        if not isinstance(mutation_config, dict) or not isinstance(pytest_config, dict):
+            raise TypeError("mutation and pytest settings must be TOML tables")
+    except (tomllib.TOMLDecodeError, KeyError, TypeError) as error:
+        problems.append(f"pyproject.toml: could not verify mutation settings: {error}")
+    else:
+        if mutation_config.get("source_paths") != expected_source_paths:
+            problems.append(
+                "pyproject.toml: mutation source_paths must include both complete "
+                "production script trees"
+            )
+        if mutation_config.get("pytest_add_cli_args_test_selection") != ["tests"]:
+            problems.append(
+                "pyproject.toml: mutation testing must collect first-party tests "
+                "from tests/"
+            )
+        if mutation_config.get("mutate_only_covered_lines") is not False:
+            problems.append(
+                "pyproject.toml: mutation testing must include uncovered lines"
+            )
+        for restriction in (
+            "only_mutate",
+            "do_not_mutate",
+            "do_not_mutate_patterns",
+        ):
+            if mutation_config.get(restriction):
+                problems.append(
+                    f"pyproject.toml: mutation setting {restriction!r} must not "
+                    "exclude production code"
+                )
+        also_copy = mutation_config.get("also_copy")
+        if not isinstance(also_copy, list) or not {
+            "requirements-mutation.lock",
+            "requirements-mutation.txt",
+        }.issubset(also_copy):
+            problems.append(
+                "pyproject.toml: mutation workspace must copy both mutation "
+                "requirement files"
+            )
+        if pytest_config.get("testpaths") != ["tests"]:
+            problems.append(
+                "pyproject.toml: pytest must collect only first-party tests from tests/"
+            )
+
+    production_python_files = {
+        path.relative_to(repository_root).as_posix()
+        for path in repository_root.rglob("*.py")
+        if not set(path.relative_to(repository_root).parts) & CACHE_DIRECTORIES
+        and path.relative_to(repository_root).parts[0] != "tests"
+    }
+    scoped_python_files = {
+        path.relative_to(repository_root).as_posix()
+        for source_path in expected_source_paths
+        for path in (repository_root / source_path).rglob("*.py")
+        if not set(path.relative_to(repository_root).parts) & CACHE_DIRECTORIES
+    }
+    unscoped_python_files = sorted(production_python_files - scoped_python_files)
+    if unscoped_python_files:
         problems.append(
-            "pyproject.toml: pytest must collect only first-party tests from tests/"
+            "pyproject.toml: mutation source_paths omit production Python files: "
+            f"{unscoped_python_files!r}"
         )
 
     loader_contract = {
@@ -1491,6 +1881,8 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             "skills.repo-scaffold.scripts.codeql_preflight",
         ),
         "tests/test_mutation_validation.py": ("scripts.validate_mutation_results",),
+        "tests/test_mutation_cache.py": ("scripts.prepare_mutation_cache",),
+        "tests/test_mutation_runner.py": ("scripts.run_mutation_testing",),
         "tests/test_python_support.py": ("scripts.python_support",),
         "tests/test_repository_validation.py": (
             "scripts.validate_repository",
@@ -1531,9 +1923,9 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     documentation_contract = {
         "README.md": ("requirements-mutation.lock",),
         "CONTRIBUTING.md": (
-            "78.80% mutation-score floor",
+            "100.00% mutation-score floor",
             "requirements-mutation.lock",
-            "mutmut run --max-children 4",
+            "python scripts/run_mutation_testing.py --max-children 4",
             "mutmut results --all true > mutants/mutation-results.txt",
             "A timeout counts as detected",
         ),
@@ -1568,6 +1960,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
 
 def validate_plugin_manifest(repository_root: Path) -> list[str]:
     """Validate the installed plugin manifest and its referenced skill tree."""
+    repository_root = repository_root.resolve()
     path = repository_root / ".codex-plugin" / "plugin.json"
     problems: list[str] = []
     try:
@@ -1588,11 +1981,88 @@ def validate_plugin_manifest(repository_root: Path) -> list[str]:
     if isinstance(version, str) and not SEMVER.fullmatch(version):
         problems.append(".codex-plugin/plugin.json: version must be valid SemVer")
 
+    expected_repository = "https://github.com/MinhThang1009/repo-scaffold-plugin"
+    if document.get("repository") != expected_repository:
+        problems.append(
+            ".codex-plugin/plugin.json: repository must identify the canonical "
+            "GitHub source"
+        )
+    homepage = document.get("homepage")
+    if not isinstance(homepage, str) or not homepage.startswith(
+        f"{expected_repository}#"
+    ):
+        problems.append(
+            ".codex-plugin/plugin.json: homepage must link to repository documentation"
+        )
+    author = document.get("author")
+    if not isinstance(author, dict) or not all(
+        nonempty_string(author.get(field)) for field in ("name", "url")
+    ):
+        problems.append(
+            ".codex-plugin/plugin.json: author must include a nonempty name and URL"
+        )
+
+    interface = document.get("interface")
+    required_interface_strings = (
+        "displayName",
+        "shortDescription",
+        "longDescription",
+        "developerName",
+        "category",
+    )
+    if not isinstance(interface, dict) or not all(
+        nonempty_string(interface.get(field)) for field in required_interface_strings
+    ):
+        problems.append(
+            ".codex-plugin/plugin.json: interface must include complete "
+            "install-surface descriptions"
+        )
+    else:
+        if interface.get("websiteURL") != expected_repository:
+            problems.append(
+                ".codex-plugin/plugin.json: interface.websiteURL must identify "
+                "the canonical GitHub source"
+            )
+        expected_policy_urls = {
+            "privacyPolicyURL": f"{expected_repository}/blob/main/PRIVACY.md",
+            "termsOfServiceURL": f"{expected_repository}/blob/main/TERMS.md",
+        }
+        for field, expected_url in expected_policy_urls.items():
+            if interface.get(field) != expected_url:
+                problems.append(
+                    f".codex-plugin/plugin.json: interface.{field} must link to "
+                    "the canonical repository policy"
+                )
+        capabilities = interface.get("capabilities")
+        if (
+            not isinstance(capabilities, list)
+            or not capabilities
+            or any(not nonempty_string(value) for value in capabilities)
+        ):
+            problems.append(
+                ".codex-plugin/plugin.json: interface.capabilities must be a "
+                "nonempty string array"
+            )
+        prompts = interface.get("defaultPrompt")
+        if (
+            not isinstance(prompts, list)
+            or not 1 <= len(prompts) <= 3
+            or any(
+                not nonempty_string(prompt) or len(prompt) > 128 for prompt in prompts
+            )
+        ):
+            problems.append(
+                ".codex-plugin/plugin.json: interface.defaultPrompt must contain "
+                "one to three nonempty prompts of at most 128 characters"
+            )
+
     skills_value = document.get("skills")
     if isinstance(skills_value, str) and skills_value.strip():
+        if not skills_value.startswith("./"):
+            problems.append(".codex-plugin/plugin.json: skills path must start with ./")
         skills_path = (repository_root / skills_value).resolve()
         try:
-            skills_path.relative_to(repository_root.resolve())
+            skills_path.relative_to(repository_root)
         except ValueError:
             problems.append(
                 ".codex-plugin/plugin.json: skills must stay inside the repository"
@@ -1606,6 +2076,33 @@ def validate_plugin_manifest(repository_root: Path) -> list[str]:
                 problems.append(
                     ".codex-plugin/plugin.json: skills contains no SKILL.md"
                 )
+            else:
+                for skill_path in sorted(skills_path.rglob("SKILL.md")):
+                    relative = skill_path.relative_to(repository_root).as_posix()
+                    try:
+                        metadata, _body = read_front_matter(skill_path)
+                    except (OSError, UnicodeError, ValueError, yaml.YAMLError) as error:
+                        problems.append(f"{relative}: invalid skill metadata: {error}")
+                        continue
+                    description = (
+                        metadata.get("description")
+                        if isinstance(metadata, dict)
+                        else None
+                    )
+                    if (
+                        not isinstance(metadata, dict)
+                        or not nonempty_string(metadata.get("name"))
+                        or not nonempty_string(description)
+                    ):
+                        problems.append(
+                            f"{relative}: skill metadata must include nonempty name "
+                            "and description"
+                        )
+                    elif isinstance(description, str) and len(description) > 400:
+                        problems.append(
+                            f"{relative}: skill description must stay concise "
+                            "(400 characters or fewer)"
+                        )
     return problems
 
 

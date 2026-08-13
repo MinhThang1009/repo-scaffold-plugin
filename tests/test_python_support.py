@@ -94,6 +94,53 @@ class PythonSupportPolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(python_support.PolicyError, message):
                     python_support.parse_policy(document)
 
+    def test_policy_shape_errors_are_exact_and_actionable(self) -> None:
+        cases: tuple[tuple[object, str], ...] = (
+            ([], "policy root must be an object"),
+            (
+                {**policy_document(), "alpha": True, "zeta": True},
+                "unknown fields: alpha, zeta",
+            ),
+            (
+                {
+                    "schema-version": 1,
+                    "versions": ["3.12"],
+                    "full-coverage-os": ["ubuntu-latest"],
+                },
+                "missing fields: boundary-coverage-os, implementation",
+            ),
+            (
+                {**policy_document(), "schema-version": True},
+                "schema-version must be the integer 1",
+            ),
+            (
+                {**policy_document(), "implementation": "pypy"},
+                "implementation must be cpython",
+            ),
+            (
+                {**policy_document(), "versions": ["3.10.1"]},
+                "versions must use stable CPython feature-release syntax such as 3.14",
+            ),
+            (
+                {**policy_document(), "versions": ["3.10", "3.12"]},
+                "versions must be ordered, contiguous, and gap-free",
+            ),
+            (
+                {
+                    **policy_document(),
+                    "full-coverage-os": ["ubuntu-latest", "windows-latest"],
+                    "boundary-coverage-os": ["windows-latest", "ubuntu-latest"],
+                },
+                "full-coverage-os and boundary-coverage-os must not overlap: "
+                "ubuntu-latest, windows-latest",
+            ),
+        )
+        for document, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaises(python_support.PolicyError) as raised:
+                    python_support.parse_policy(document)
+                self.assertEqual(str(raised.exception), expected)
+
     def test_policy_rejects_invalid_string_lists(self) -> None:
         cases = [
             ("versions", [], "nonempty array"),
@@ -156,14 +203,29 @@ class PythonSupportPolicyTests(unittest.TestCase):
                     ):
                         python_support.load_policy(path)
 
+    def test_policy_loader_requests_utf8_explicitly(self) -> None:
+        path = mock.Mock(spec=Path)
+        path.read_text.return_value = json.dumps(policy_document())
+
+        self.assertEqual(
+            python_support.load_policy(path),
+            python_support.parse_policy(policy_document()),
+        )
+        path.read_text.assert_called_once_with(encoding="utf-8")
+
     def test_latest_canary_detects_a_new_stable_release(self) -> None:
         policy = python_support.parse_policy(policy_document())
 
         python_support.verify_latest_runtime(policy, "3.12")
         with self.assertRaisesRegex(
             python_support.PolicyError, "latest stable runtime is 3.13"
-        ):
+        ) as raised:
             python_support.verify_latest_runtime(policy, "3.13")
+        self.assertEqual(
+            str(raised.exception),
+            "latest stable runtime is 3.13, but policy ends at 3.12; verify "
+            "compatibility, then update .github/python-support.json",
+        )
 
     def test_latest_canary_rejects_invalid_runtime_syntax(self) -> None:
         policy = python_support.parse_policy(policy_document())
@@ -203,10 +265,54 @@ class PythonSupportPolicyTests(unittest.TestCase):
                 )
 
             self.assertEqual(result, 0)
-            matrix_line, latest_line = output.getvalue().splitlines()
-            self.assertTrue(matrix_line.startswith("matrix={"))
-            self.assertNotIn(" ", matrix_line)
-            self.assertEqual(latest_line, "latest=3.12")
+            self.assertEqual(
+                output.getvalue(),
+                'matrix={"include":[{"os":"ubuntu-latest","python-version":'
+                '"3.10"},{"os":"ubuntu-latest","python-version":"3.11"},'
+                '{"os":"ubuntu-latest","python-version":"3.12"},{"os":'
+                '"windows-latest","python-version":"3.10"},{"os":'
+                '"windows-latest","python-version":"3.12"}]}\nlatest=3.12\n',
+            )
+
+    def test_command_help_is_a_stable_user_facing_contract(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            python_support.parse_args(["--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        help_text = " ".join(output.getvalue().split())
+        for fragment in (
+            "Validate Python support policy and emit its deterministic CI matrix.",
+            "Path to the Python support policy",
+            "Validate the policy",
+            "Emit matrix and latest values for GITHUB_OUTPUT",
+            "Compare the running interpreter with the policy's latest release",
+        ):
+            self.assertIn(fragment, help_text)
+        self.assertNotIn("XX", help_text)
+
+        verify_help = StringIO()
+        with redirect_stdout(verify_help), self.assertRaises(SystemExit) as raised:
+            python_support.parse_args(["verify-latest-runtime", "--help"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn(
+            "Override the running major.minor version for deterministic tests",
+            " ".join(verify_help.getvalue().split()),
+        )
+        self.assertNotIn("XX", verify_help.getvalue())
+
+    def test_policy_path_defaults_and_a_subcommand_is_required(self) -> None:
+        self.assertEqual(
+            python_support.parse_args(["validate"]).policy.as_posix(),
+            ".github/python-support.json",
+        )
+        errors = StringIO()
+        with redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+            python_support.parse_args([])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn(
+            "the following arguments are required: command", errors.getvalue()
+        )
 
     def test_main_covers_validate_and_runtime_operations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

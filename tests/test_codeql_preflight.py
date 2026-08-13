@@ -1582,12 +1582,22 @@ class BashParserHelperTests(unittest.TestCase):
         self,
     ) -> None:
         cases = [
+            *(
+                ([prefix, "codeql", "database"], ["codeql", "database"])
+                for prefix in ("!", "if", "then", "until", "while", "do")
+            ),
+            (["UPPER=value", "lower_2=value", "codeql"], ["codeql"]),
             (["builtin", "codeql", "database"], ["codeql", "database"]),
             (["coproc", "codeql", "database"], ["codeql", "database"]),
             (["command", "-p", "codeql", "database"], ["codeql", "database"]),
             (["command", "-v", "codeql"], []),
+            (["command", "-V", "codeql"], []),
+            (["command", "--", "builtin", "codeql"], ["codeql"]),
             (["exec", "--", "codeql", "database"], ["codeql", "database"]),
             (["exec", "-c", "codeql", "database"], ["codeql", "database"]),
+            (["exec", "-cl", "codeql"], ["codeql"]),
+            (["exec", "-a", "argv0", "codeql"], ["codeql"]),
+            (["exec", "-", "codeql"], ["-", "codeql"]),
             (["exec", "-a"], []),
             (["exec", "-x", "codeql"], []),
             (["env"], []),
@@ -1599,22 +1609,52 @@ class BashParserHelperTests(unittest.TestCase):
                 ["env", "-Scodeql database", "create"],
                 ["codeql", "database", "create"],
             ),
+            (
+                ["env", "-S", "codeql database", "create"],
+                ["codeql", "database", "create"],
+            ),
+            (
+                ["env", "--split-string", "codeql database", "create"],
+                ["codeql", "database", "create"],
+            ),
+            (
+                ["env", "--split-string=codeql=database", "create"],
+                ["create"],
+            ),
+            (["env", "NAME=value", "codeql"], ["codeql"]),
             (["env", "--unset=NAME", "codeql", "database"], ["codeql", "database"]),
+            (["env", "--chdir=/tmp", "codeql"], ["codeql"]),
+            (["env", "--argv0=name", "codeql"], ["codeql"]),
+            (["env", "-u", "NAME", "codeql"], ["codeql"]),
+            (["env", "-C", "/tmp", "codeql"], ["codeql"]),
+            (["env", "--chdir", "/tmp", "codeql"], ["codeql"]),
+            (["env", "--argv0", "name", "codeql"], ["codeql"]),
             (["env", "--unset"], []),
             (["env", "--unknown", "codeql", "database"], ["codeql", "database"]),
             (["sudo", "--user=root", "codeql", "database"], ["codeql", "database"]),
+            (["sudo", "-u", "root", "codeql"], ["codeql"]),
+            (["sudo", "--user", "root", "codeql"], ["codeql"]),
+            (["sudo", "--", "codeql"], ["codeql"]),
             (["sudo", "-u"], []),
             (["timeout", "--signal=TERM", "5", "codeql"], ["codeql"]),
+            (["timeout", "--kill-after=1", "5", "codeql"], ["codeql"]),
+            (["timeout", "--signal", "TERM", "5", "codeql"], ["codeql"]),
             (["timeout", "-k", "1", "5", "codeql"], ["codeql"]),
             (["timeout", "-s"], []),
             (["timeout"], []),
             (["time", "--format=%E", "codeql"], ["codeql"]),
+            (["time", "--output=file", "codeql"], ["codeql"]),
+            (["time", "-f", "%E", "codeql"], ["codeql"]),
             (["nohup", "--", "codeql"], ["codeql"]),
             (["nohup", "--help"], []),
+            (["nohup", "--version"], []),
             (["nice", "-n"], []),
+            (["nice", "--adjustment", "5", "codeql"], ["codeql"]),
             (["nice", "-10", "codeql"], ["codeql"]),
             (["nice", "codeql"], ["codeql"]),
             (["stdbuf", "--output=L", "codeql"], ["codeql"]),
+            (["stdbuf", "--input", "0", "codeql"], ["codeql"]),
+            (["stdbuf", "--error=0", "codeql"], ["codeql"]),
             (["stdbuf", "-o", "L", "codeql"], ["codeql"]),
             (["stdbuf", "-o"], []),
         ]
@@ -1624,13 +1664,22 @@ class BashParserHelperTests(unittest.TestCase):
 
         with (
             mock.patch.object(codeql_preflight, "MAX_ENV_SPLIT_EXPANSIONS", 0),
-            self.assertRaisesRegex(codeql_preflight.InspectionError, "nesting"),
+            self.assertRaises(codeql_preflight.InspectionError) as raised,
         ):
             codeql_preflight._bash_unwrap_command(["env", "-Scodeql database"])
-        with self.assertRaisesRegex(codeql_preflight.InspectionError, "non-literal"):
+        self.assertEqual(
+            str(raised.exception),
+            "Shell env split-string nesting exceeds the safety limit.",
+        )
+        with self.assertRaises(codeql_preflight.InspectionError) as raised:
             codeql_preflight._bash_unwrap_command(["env", "-S$COMMAND"])
-        with self.assertRaisesRegex(codeql_preflight.InspectionError, "malformed"):
+        self.assertEqual(
+            str(raised.exception),
+            "Shell env split-string has a non-literal payload.",
+        )
+        with self.assertRaises(codeql_preflight.InspectionError) as raised:
             codeql_preflight._bash_unwrap_command(["env", "-S'unterminated"])
+        self.assertEqual(str(raised.exception), "Shell env split-string is malformed.")
 
         words = ["--", "value"]
         self.assertTrue(codeql_preflight._bash_pop_option(words, set(), set()))
@@ -1653,6 +1702,92 @@ class BashParserHelperTests(unittest.TestCase):
             with self.subTest(arguments=arguments):
                 self.assertEqual(
                     codeql_preflight._bash_xargs_command(arguments), expected
+                )
+
+        options_with_argument = (
+            "-a",
+            "--arg-file",
+            "-d",
+            "--delimiter",
+            "-E",
+            "--eof",
+            "-I",
+            "--replace",
+            "-J",
+            "-L",
+            "--max-lines",
+            "-n",
+            "--max-args",
+            "-P",
+            "--max-procs",
+            "--process-slot-var",
+            "-R",
+            "-s",
+            "-S",
+            "--max-chars",
+        )
+        for option in options_with_argument:
+            with self.subTest(option=option):
+                self.assertEqual(
+                    codeql_preflight._bash_xargs_command([option, "value", "codeql"]),
+                    ["codeql"],
+                )
+                self.assertEqual(codeql_preflight._bash_xargs_command([option]), [])
+
+        options_without_argument = (
+            "-0",
+            "--null",
+            "-o",
+            "--open-tty",
+            "-p",
+            "--interactive",
+            "-r",
+            "--no-run-if-empty",
+            "-t",
+            "--verbose",
+            "-x",
+            "--exit",
+        )
+        for option in options_without_argument:
+            with self.subTest(option=option):
+                self.assertEqual(
+                    codeql_preflight._bash_xargs_command([option, "codeql"]),
+                    ["codeql"],
+                )
+
+        for option in (
+            "-a",
+            "-d",
+            "-E",
+            "-I",
+            "-J",
+            "-L",
+            "-n",
+            "-P",
+            "-R",
+            "-s",
+            "-S",
+        ):
+            with self.subTest(attached=option):
+                self.assertEqual(
+                    codeql_preflight._bash_xargs_command([f"{option}value", "codeql"]),
+                    ["codeql"],
+                )
+        for option in (
+            "--arg-file",
+            "--delimiter",
+            "--eof",
+            "--replace",
+            "--max-lines",
+            "--max-args",
+            "--max-procs",
+            "--process-slot-var",
+            "--max-chars",
+        ):
+            with self.subTest(attached=option):
+                self.assertEqual(
+                    codeql_preflight._bash_xargs_command([f"{option}=value", "codeql"]),
+                    ["codeql"],
                 )
 
         shell_index_cases = [
@@ -2020,10 +2155,24 @@ class PowerShellParserHelperTests(unittest.TestCase):
 
         for text in (
             "scan",
+            "! scan",
+            "if scan",
+            "then scan",
+            "until scan",
+            "while scan",
+            "do scan",
+            "NAME=value scan",
+            "coproc scan",
             "time --verbose scan",
             "trap 'scan' EXIT",
+            "trap -- 'scan' EXIT",
             "eval 'scan'",
+            "eval echo '; scan'",
             "export -f scan; sh -c 'scan'",
+            "declare -fx scan; bash -c 'scan'",
+            "typeset -f scan; dash -c 'scan'",
+            "export -f scan; ksh -c 'scan'",
+            "export -f scan; zsh -c 'scan'",
         ):
             with self.subTest(text=text):
                 self.assertTrue(
@@ -2032,6 +2181,18 @@ class PowerShellParserHelperTests(unittest.TestCase):
         self.assertFalse(
             codeql_preflight._bash_function_is_invoked("echo scan", "scan")
         )
+        for text in (
+            "export -- scan; sh -c 'scan'",
+            "export -f other; sh -c 'scan'",
+            "trap '$HANDLER' EXIT",
+            "trap '`handler`' EXIT",
+            "eval '$BODY'",
+            "eval '`body`'",
+        ):
+            with self.subTest(inert=text):
+                self.assertFalse(
+                    codeql_preflight._bash_function_is_invoked(text, "scan")
+                )
         with self.assertRaisesRegex(codeql_preflight.InspectionError, "nesting"):
             codeql_preflight._bash_function_is_invoked(
                 "scan", "scan", codeql_preflight.MAX_DYNAMIC_EXECUTION_DEPTH + 1
@@ -3662,7 +3823,7 @@ class PlaceholderContractTests(unittest.TestCase):
             / "workflows"
             / "codeql.yml"
         )
-        expected_sha = "f205ea1c3313d32999d8d6a48b4f6530d4437b38"
+        expected_sha = "5595ccaf912efad79be6eef63a5619ff05969be3"
 
         for path in (installed_path, asset_path):
             workflow = path.read_text(encoding="utf-8")
@@ -3732,7 +3893,7 @@ class PlaceholderContractTests(unittest.TestCase):
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             "ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc",
             "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-            "github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38",
+            "github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3",
         ]
 
         documents = {}
@@ -3744,7 +3905,7 @@ class PlaceholderContractTests(unittest.TestCase):
             documents[path] = document
             job = document["jobs"]["analysis"]
             with self.subTest(workflow=path.as_posix()):
-                self.assertEqual(document["permissions"], "read-all")
+                self.assertEqual(document["permissions"], {})
                 self.assertEqual(
                     set(document["on"]),
                     {"branch_protection_rule", "push", "schedule"},
