@@ -1960,6 +1960,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
 
 def validate_plugin_manifest(repository_root: Path) -> list[str]:
     """Validate the installed plugin manifest and its referenced skill tree."""
+    repository_root = repository_root.resolve()
     path = repository_root / ".codex-plugin" / "plugin.json"
     problems: list[str] = []
     try:
@@ -2061,7 +2062,7 @@ def validate_plugin_manifest(repository_root: Path) -> list[str]:
             problems.append(".codex-plugin/plugin.json: skills path must start with ./")
         skills_path = (repository_root / skills_value).resolve()
         try:
-            skills_path.relative_to(repository_root.resolve())
+            skills_path.relative_to(repository_root)
         except ValueError:
             problems.append(
                 ".codex-plugin/plugin.json: skills must stay inside the repository"

@@ -11,9 +11,12 @@ portal selection are listed separately and must be verified at submission time.
 - Category: Productivity
 - Short description: Set up repositories to GitHub.com production standard.
 - Website: <https://github.com/MinhThang1009/repo-scaffold-plugin>
-- Support: <https://github.com/MinhThang1009/repo-scaffold-plugin/blob/main/SUPPORT.md>
-- Privacy policy: <https://github.com/MinhThang1009/repo-scaffold-plugin/blob/main/PRIVACY.md>
-- Terms of use: <https://github.com/MinhThang1009/repo-scaffold-plugin/blob/main/TERMS.md>
+- Support: [SUPPORT.md](SUPPORT.md)
+- Privacy policy: [PRIVACY.md](PRIVACY.md)
+- Terms of use: [TERMS.md](TERMS.md)
+
+Use the canonical default-branch URLs declared in the plugin manifest when
+copying these policies into the submission portal.
 
 Long description:
 

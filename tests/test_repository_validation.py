@@ -2539,6 +2539,29 @@ class PluginManifestValidationTests(unittest.TestCase):
 
             self.assertEqual(validate_repository.validate_plugin_manifest(root), [])
 
+    def test_manifest_canonicalizes_a_repository_alias_before_relativizing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            container = Path(directory)
+            root = container / "repository"
+            root.mkdir()
+            self.write_manifest(root, self.valid_manifest())
+            skill = root / "skills" / "repo-scaffold" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text(
+                "---\nname: repo-scaffold\n"
+                "description: Scaffold a repository.\n---\n\nInstructions.\n",
+                encoding="utf-8",
+            )
+            alias = container / "repository-alias"
+            try:
+                alias.symlink_to(root, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlinks are unavailable: {error}")
+
+            self.assertEqual(validate_repository.validate_plugin_manifest(alias), [])
+
     def test_manifest_rejects_incomplete_publishing_and_skill_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
