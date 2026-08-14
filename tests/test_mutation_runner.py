@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import runpy
 import sys
 import tempfile
@@ -97,7 +98,9 @@ class MutationRunnerTests(unittest.TestCase):
                 )
 
             self.assertEqual(Path.cwd(), previous_cwd)
-            self.assertEqual(implementation.cwd, root.resolve())
+            self.assertIsNotNone(implementation.cwd)
+            assert implementation.cwd is not None
+            self.assertTrue(os.path.samefile(implementation.cwd, root))
             self.assertEqual(implementation.arguments, ([], 4))
             self.assertTrue(implementation.results[0].unmodified)
             self.assertEqual(
@@ -184,7 +187,7 @@ class MutationRunnerTests(unittest.TestCase):
 
             with (
                 mock.patch.object(Path, "is_symlink", return_value=True),
-                self.assertRaisesRegex(ValueError, "unsafe or oversized"),
+                self.assertRaisesRegex(ValueError, "link or reparse point"),
             ):
                 run_mutation_testing.load_reusable_sources(root)
 
@@ -195,7 +198,7 @@ class MutationRunnerTests(unittest.TestCase):
                     Path,
                     "stat",
                     autospec=True,
-                    return_value=SimpleNamespace(st_size=1024 * 1024 + 1),
+                    return_value=SimpleNamespace(st_mode=0, st_size=1024 * 1024 + 1),
                 ),
                 self.assertRaisesRegex(ValueError, "unsafe or oversized"),
             ):
@@ -253,6 +256,42 @@ class MutationRunnerTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "requires mutmut"),
         ):
             run_mutation_testing.load_mutmut()
+
+    def test_marker_loader_rejects_linked_mutants_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                mock.patch.object(
+                    run_mutation_testing,
+                    "_is_link_or_reparse",
+                    side_effect=lambda path: path.name == "mutants",
+                ),
+                self.assertRaisesRegex(ValueError, "link or reparse point"),
+            ):
+                run_mutation_testing.load_reusable_sources(root)
+
+    def test_marker_path_must_remain_below_repository_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            with self.assertRaisesRegex(ValueError, "escapes repository"):
+                run_mutation_testing._assert_safe_marker_path(
+                    root, Path(directory) / "outside.json"
+                )
+
+    def test_runner_rejects_a_linked_repository_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                mock.patch.object(
+                    run_mutation_testing,
+                    "_is_link_or_reparse",
+                    side_effect=lambda path: path == root,
+                ),
+                self.assertRaisesRegex(ValueError, "repository root is a link"),
+            ):
+                run_mutation_testing.run_mutation_testing(
+                    root, max_children=1, mutmut_main=FakeMutmut()
+                )
 
     def test_incremental_reuse_requires_fork_process_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -160,8 +160,10 @@ class PythonSupportPolicyTests(unittest.TestCase):
         cases = [
             ("versions", ["3.10.1"], "feature-release syntax"),
             ("versions", ["2.7"], "feature-release syntax"),
-            ("full-coverage-os", ["ubuntu latest"], "invalid GitHub-hosted"),
-            ("boundary-coverage-os", ["-windows"], "invalid GitHub-hosted"),
+            ("full-coverage-os", ["ubuntu latest"], "unsupported GitHub-hosted"),
+            ("boundary-coverage-os", ["-windows"], "unsupported GitHub-hosted"),
+            ("full-coverage-os", ["self-hosted"], "unsupported GitHub-hosted"),
+            ("boundary-coverage-os", ["custom-runner"], "unsupported GitHub-hosted"),
         ]
 
         for field, value, message in cases:

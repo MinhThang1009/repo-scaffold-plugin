@@ -20,7 +20,7 @@ POLICY_FIELDS = {
     "boundary-coverage-os",
 }
 PYTHON_MINOR = re.compile(r"^3\.(0|[1-9]\d*)$")
-RUNNER_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+GITHUB_HOSTED_RUNNERS = frozenset({"ubuntu-latest", "windows-latest", "macos-latest"})
 
 
 class PolicyError(ValueError):
@@ -96,8 +96,12 @@ def parse_policy(document: Any) -> PythonSupportPolicy:
     full_coverage_os = require_string_list(document, "full-coverage-os")
     boundary_coverage_os = require_string_list(document, "boundary-coverage-os")
     for runner in (*full_coverage_os, *boundary_coverage_os):
-        if RUNNER_LABEL.fullmatch(runner) is None:
-            raise PolicyError(f"invalid GitHub-hosted runner label: {runner!r}")
+        if runner not in GITHUB_HOSTED_RUNNERS:
+            allowed = ", ".join(sorted(GITHUB_HOSTED_RUNNERS))
+            raise PolicyError(
+                f"unsupported GitHub-hosted runner label {runner!r}; "
+                f"allowed labels: {allowed}"
+            )
     overlap = sorted(set(full_coverage_os) & set(boundary_coverage_os))
     if overlap:
         raise PolicyError(

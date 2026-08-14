@@ -140,6 +140,8 @@ class CiToolchainPolicyTests(unittest.TestCase):
             ("tool", {"package": "tool"}, "missing fields"),
             ("tool", {**valid, "package": "bad package"}, "static npm name"),
             ("tool", {**valid, "version": "latest"}, "stable SemVer"),
+            ("tool", {**valid, "version": "1.2.3-rc.1"}, "stable SemVer"),
+            ("tool", {**valid, "version": "1.2.3+build"}, "stable SemVer"),
         ]
 
         for name, value, message in cases:
@@ -165,6 +167,8 @@ class CiToolchainPolicyTests(unittest.TestCase):
             ),
             ("tool", {**valid, "repository": "invalid"}, "owner/repository"),
             ("tool", {**valid, "version": "latest"}, "stable SemVer"),
+            ("tool", {**valid, "version": "1.2.3-rc.1"}, "stable SemVer"),
+            ("tool", {**valid, "version": "1.2.3+build"}, "stable SemVer"),
             ("tool", {**valid, "tag-template": "release"}, "tag-template"),
             ("tool", {**valid, "tag-template": "../{version}"}, "tag-template"),
             ("tool", {**valid, "archive-format": "zip"}, "archive-format"),

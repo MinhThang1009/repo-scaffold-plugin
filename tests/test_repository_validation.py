@@ -74,6 +74,43 @@ class SerializedFileValidationTests(unittest.TestCase):
             self.assertTrue(validate_repository.is_project_path(source, root))
             self.assertFalse(validate_repository.is_project_path(cached, root))
             self.assertTrue(validate_repository.nonempty_string(" value "))
+
+    def test_project_files_do_not_traverse_reparse_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.json"
+            source.write_text('{"valid": true}', encoding="utf-8")
+            linked = root / "linked"
+            linked.mkdir()
+            (linked / "outside.json").write_text('{"outside": true}', encoding="utf-8")
+
+            with mock.patch.object(
+                validate_repository,
+                "is_link_or_reparse",
+                side_effect=lambda path: path == linked,
+            ):
+                files = validate_repository.project_files(root, ("*.json",))
+
+            self.assertEqual(files, [source])
+
+    def test_project_file_link_helpers_fail_closed(self) -> None:
+        missing = Path("missing-project-entry")
+        self.assertFalse(validate_repository.is_link_or_reparse(missing))
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            self.assertTrue(validate_repository.is_link_or_reparse(missing))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            linked = root / "linked.json"
+            linked.write_text("{}", encoding="utf-8")
+            with mock.patch.object(
+                validate_repository,
+                "is_link_or_reparse",
+                side_effect=lambda path: path == linked,
+            ):
+                self.assertEqual(
+                    validate_repository.project_files(root, ("*.json",)), []
+                )
             self.assertFalse(validate_repository.nonempty_string(" "))
             self.assertFalse(validate_repository.nonempty_string(7))
             with mock.patch.dict(
@@ -262,6 +299,24 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                 "release",
                 problems,
             )
+
+    def test_test_job_runner_must_come_from_the_reviewed_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "runs-on: ${{ matrix.os }}", "runs-on: self-hosted", 1
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_python_support_contract(root)
+
+        self.assertIn(
+            ".github/workflows/ci.yml: test matrix must come from prepare_ci "
+            "and runs-on must use matrix.os",
+            problems,
+        )
 
     def test_ruff_target_must_match_the_policy_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -891,10 +946,10 @@ class MirroredDependencyMetadataTests(unittest.TestCase):
             asset_root = root / "skills" / "repo-scaffold" / "assets"
             asset_root.mkdir(parents=True)
             (root / "requirements-dev.txt").write_text(
-                "PyYAML==6.0.3\n", encoding="utf-8"
+                "markdown-it-py==4.2.0\nPyYAML==6.0.3\n", encoding="utf-8"
             )
             (asset_root / "requirements-docs.txt").write_text(
-                "PyYAML==6.0.2\n", encoding="utf-8"
+                "markdown-it-py==4.1.0\nPyYAML==6.0.2\n", encoding="utf-8"
             )
             (root / "release-please-config.json").write_text(
                 '{"$schema":"https://example.test/v2/schema.json"}',
@@ -913,6 +968,11 @@ class MirroredDependencyMetadataTests(unittest.TestCase):
                 problems,
             )
             self.assertIn(
+                "markdown-it-py pin drift: requirements-dev.txt and the scaffold "
+                "docs requirements must match",
+                problems,
+            )
+            self.assertIn(
                 "Release Please schema drift: installed and scaffold configs "
                 "must match",
                 problems,
@@ -925,7 +985,8 @@ class MirroredDependencyMetadataTests(unittest.TestCase):
             asset_root.mkdir(parents=True)
             (root / "requirements-dev.txt").write_bytes(b"\xff")
             (asset_root / "requirements-docs.txt").write_text(
-                "PyYAML==1.0\nPyYAML==2.0\n", encoding="utf-8"
+                "markdown-it-py==1.0\nmarkdown-it-py==2.0\nPyYAML==1.0\nPyYAML==2.0\n",
+                encoding="utf-8",
             )
             (root / "release-please-config.json").write_text("[]", encoding="utf-8")
             (asset_root / "release-please-config.json").write_text(
@@ -938,6 +999,12 @@ class MirroredDependencyMetadataTests(unittest.TestCase):
                 any("could not verify PyYAML pin" in item for item in problems)
             )
             self.assertTrue(any("exactly one PyYAML pin" in item for item in problems))
+            self.assertTrue(
+                any("could not verify markdown-it-py pin" in item for item in problems)
+            )
+            self.assertTrue(
+                any("exactly one markdown-it-py pin" in item for item in problems)
+            )
             self.assertTrue(
                 any("$schema must be a nonempty string" in item for item in problems)
             )
@@ -1913,6 +1980,58 @@ class MarkdownLinkValidationTests(unittest.TestCase):
 
             self.assertEqual(validate_repository.validate_markdown_links(root), [])
 
+    def test_balanced_escaped_angle_and_reference_destinations_are_supported(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            docs = root / "docs"
+            docs.mkdir()
+            (docs / "a(b).md").write_text("Target\n", encoding="utf-8")
+            (docs / "a b.md").write_text("Target\n", encoding="utf-8")
+            (docs / "a&b.md").write_text("Target\n", encoding="utf-8")
+            (root / "README.md").write_text(
+                "[balanced](docs/a(b).md)\n"
+                r"[escaped](docs/a\(b\).md)"
+                "\n"
+                "[angle](<docs/a b.md>)\n"
+                "[entity](docs/a&amp;b.md)\n"
+                "[reference]: <docs/a b.md>\n"
+                "[multiline-reference]:\n  <docs/a b.md>\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(validate_repository.validate_markdown_links(root), [])
+
+    def test_nested_labels_footnotes_and_multiline_links_are_parsed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text(
+                "[outer [inner]](docs/nested-missing.md)\n"
+                "[multiline](\n  docs/multiline-missing.md\n  'title'\n)\n"
+                "[^1]: This is footnote text, not a link destination.\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_repository.validate_markdown_links(root),
+                [
+                    "README.md: relative link is missing: docs/nested-missing.md",
+                    "README.md: relative link is missing: docs/multiline-missing.md",
+                ],
+            )
+
+        self.assertEqual(
+            validate_repository.markdown_link_destinations(r"[x](<docs/a\>b.md>)"),
+            ["docs/a%3Eb.md"],
+        )
+        self.assertEqual(
+            validate_repository.inline_markdown_link_payloads(
+                "[outer [inner](docs/inner.md)](docs/outer.md)"
+            ),
+            ["docs/inner.md"],
+        )
+
     def test_markdown_helpers_remove_code_and_parse_titled_destinations(self) -> None:
         text = (
             "visible `inline`\n"
@@ -1923,13 +2042,133 @@ class MarkdownLinkValidationTests(unittest.TestCase):
         self.assertIn("visible ", visible)
         self.assertNotIn("missing.md", visible)
         self.assertEqual(
-            validate_repository.link_destination(' <docs/file.md> "title" '),
-            "docs/file.md",
+            validate_repository.inline_markdown_link_payloads(
+                '[angle](<docs/file.md> "title")'
+            ),
+            ["docs/file.md"],
+        )
+
+        hidden = (
+            "    [indented](missing.md)\n\n"
+            "# Heading\n\t[indented-after-heading](missing.md)\n\n"
+            "<pre>\n[raw-html](missing.md)\n</pre>\n"
+            "<?processing\n[opaque-html](missing.md)\n?>\n"
+            "````\n[fenced](missing.md)\n```\n[still-fenced](missing.md)\n"
+        )
+        self.assertNotIn("missing.md", validate_repository.without_fenced_code(hidden))
+        self.assertEqual(
+            validate_repository._without_inline_code("unclosed `code"),
+            "unclosed `code",
+        )
+        escaped_code = r"\`[visible](missing.md)\`"
+        self.assertEqual(
+            validate_repository._without_inline_code(escaped_code), escaped_code
         )
         self.assertEqual(
-            validate_repository.link_destination("docs/file.md 'title'"),
-            "docs/file.md",
+            validate_repository._without_inline_code(r"\\`code`"),
+            "\\\\      ",
         )
+        self.assertEqual(validate_repository._without_inline_code("``a`b``"), "       ")
+        self.assertEqual(
+            validate_repository._without_inline_code(
+                "before `hidden\ncontinued` after\n"
+            ),
+            "before        \n           after\n",
+        )
+        self.assertEqual(
+            validate_repository._without_inline_code('<span title="`"> `code`'),
+            '<span title="`">       ',
+        )
+        self.assertEqual(
+            validate_repository._without_root_indented_code(
+                "- item\n    continuation\nplain\n"
+            ),
+            "- item\n    continuation\nplain\n",
+        )
+        visible_html = "<div>\n[visible](docs/example.md)\n"
+        self.assertEqual(
+            validate_repository._without_markdown_block_code(visible_html),
+            visible_html,
+        )
+
+    def test_markdown_link_validator_reports_invalid_paths_without_crashing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text(
+                "[invalid](docs/%00.md)\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                validate_repository.validate_markdown_links(root),
+                ["README.md: relative link has an invalid path: docs/%00.md"],
+            )
+
+            original_resolve = Path.resolve
+
+            def resolve(path: Path, strict: bool = False) -> Path:
+                if path.name == "resolve-error.md":
+                    raise OSError("invalid path")
+                return original_resolve(path, strict=strict)
+
+            (root / "README.md").write_text(
+                "[invalid](docs/resolve-error.md)\n", encoding="utf-8"
+            )
+            with mock.patch.object(Path, "resolve", autospec=True, side_effect=resolve):
+                self.assertEqual(
+                    validate_repository.validate_markdown_links(root),
+                    [
+                        "README.md: relative link has an invalid path: "
+                        "docs/resolve-error.md"
+                    ],
+                )
+
+            original_exists = Path.exists
+
+            def exists(path: Path) -> bool:
+                if path.name == "error.md":
+                    raise OSError("invalid path")
+                return original_exists(path)
+
+            (root / "README.md").write_text(
+                "[invalid](docs/error.md)\n", encoding="utf-8"
+            )
+            with mock.patch.object(Path, "exists", autospec=True, side_effect=exists):
+                self.assertEqual(
+                    validate_repository.validate_markdown_links(root),
+                    ["README.md: relative link has an invalid path: docs/error.md"],
+                )
+
+            (root / "README.md").write_text(
+                "> paragraph\r\t[missing](docs/missing.md)\n", encoding="utf-8"
+            )
+            self.assertEqual(
+                validate_repository.validate_markdown_links(root),
+                ["README.md: relative link is missing: docs/missing.md"],
+            )
+        self.assertEqual(
+            validate_repository.inline_markdown_link_payloads(
+                "[bad-angle](<broken>\n[bad-line](broken\n[bad-end](broken"
+            ),
+            [],
+        )
+
+    def test_commonmark_parser_handles_nested_containers_and_references(self) -> None:
+        module = validate_repository
+        cases = {
+            "0.\r\t0.\t\t[]()": [],
+            "-\r\t<?\n[]()?>": [""],
+            "- <x>\r\t[]()": [],
+            "- j\n    ```[]()": [],
+            "><?\n[]()": [""],
+            "[x][ref]\n\n[ref]: docs/reference.md": ["docs/reference.md"],
+            "[unused]: docs/unused.md": ["docs/unused.md"],
+        }
+        for source, expected in cases.items():
+            self.assertEqual(
+                module.markdown_link_destinations(source), expected, source
+            )
 
     def test_markdown_links_report_unreadable_and_escaping_references(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2462,6 +2701,11 @@ class PluginManifestValidationTests(unittest.TestCase):
                 validate_repository.validate_plugin_manifest(root),
                 [".codex-plugin/plugin.json: root must be an object"],
             )
+
+    def test_semver_rejects_empty_and_leading_zero_identifiers(self) -> None:
+        for version in ("1.2.3-..", "1.2.3-01", "1.2.3+.."):
+            with self.subTest(version=version):
+                self.assertIsNone(validate_repository.SEMVER.fullmatch(version))
 
     def test_manifest_rejects_metadata_and_skill_directory_regressions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

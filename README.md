@@ -100,6 +100,9 @@ codex plugin remove repo-scaffold@personal
 
 ## 9. Structure
 
+Key implementation and release files are shown below. Community policy and
+template files are omitted for brevity.
+
 ```text
 repo-scaffold/
 ├── .coveragerc
@@ -112,6 +115,7 @@ repo-scaffold/
 │   ├── ci-toolchain.json
 │   ├── dependabot.yml
 │   ├── labeler.yml
+│   ├── python-support.json
 │   ├── release.yml
 │   └── workflows/
 │       ├── ci.yml
@@ -120,6 +124,7 @@ repo-scaffold/
 │       ├── dependency-review.yml
 │       ├── labeler.yml
 │       ├── links.yml
+│       ├── mutation-testing.yml
 │       ├── release-please.yml
 │       ├── release.yml
 │       ├── scorecard.yml
@@ -139,7 +144,10 @@ repo-scaffold/
 ├── TERMS.md
 ├── version.txt
 ├── scripts/
+│   ├── prepare_mutation_cache.py
 │   ├── python_support.py
+│   ├── run_mutation_testing.py
+│   ├── validate_mutation_results.py
 │   ├── validate_repository.py
 │   └── validate_workflows.py
 └── skills/
@@ -161,7 +169,7 @@ SKILL.md → Resources lists every generated file.
 
 ## 10. Development validation
 
-The plugin has no compilation step. Its validation tests require a CPython release from the [Python support policy](.github/python-support.json) and the hash-locked development toolchain, including Coverage.py, PyYAML, and pytest. Run the repository checks from its root:
+The plugin has no compilation step. Its validation tests require a CPython release from the [Python support policy](.github/python-support.json) and the hash-locked development toolchain, including Coverage.py, markdown-it-py for CommonMark parsing, PyYAML, and pytest. Run the repository checks from its root:
 
 ```powershell
 python -m pip install --require-hashes --requirement requirements-dev.lock
@@ -177,8 +185,9 @@ python scripts/validate_workflows.py
 python scripts/validate_repository.py
 ```
 
-Workflow validation runs actionlint with ShellCheck enabled against both installed
-and templated workflows. Markdownlint covers every project-owned Markdown file.
+Workflow validation runs actionlint and then runs the reviewed ShellCheck binary
+separately against extracted Bash blocks from installed and templated workflows.
+Markdownlint covers every project-owned Markdown file.
 Coverage measures both first-party script trees with branch coverage and enforces
 the 100% floor in `.coveragerc` from the CI quality job.
 Repository validation checks the centered and numbered README contract, unresolved
