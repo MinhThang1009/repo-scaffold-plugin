@@ -59,6 +59,7 @@ class MutationCacheTests(unittest.TestCase):
                 f"{relative}.timeout": 36,
                 f"{relative}.pending": None,
             },
+            "hash_by_function_name": {"x_alpha": "0123456789ab"},
             "type_check_error_by_key": {f"{relative}.survived": "stale"},
             "durations_by_key": {},
             "estimated_durations_by_key": {},
@@ -422,6 +423,14 @@ class MutationCacheTests(unittest.TestCase):
                         "exit_code_by_key": {},
                         "durations_by_key": [],
                         "estimated_durations_by_key": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "exit_code_by_key": {},
+                        "durations_by_key": {},
+                        "estimated_durations_by_key": {},
+                        "hash_by_function_name": {"x_alpha": "invalid"},
                     }
                 ),
                 json.dumps(

@@ -34,6 +34,19 @@ class FakeMutmut:
         self.cwd: Path | None = None
         self.arguments: tuple[list[str], int] | None = None
         self.FileMutationResult = SimpleNamespace
+        self.SourceFileMutationData = self.FakeSourceFileMutationData
+
+    class FakeSourceFileMutationData:
+        def __init__(self, *, path: Path) -> None:
+            self.path = path
+            self.hash_by_function_name: dict[str, str] = {}
+
+        def load(self) -> None:
+            self.hash_by_function_name = {"x_alpha": "0123456789ab"}
+
+    @staticmethod
+    def get_mutant_name(filename: Path, function: str) -> str:
+        return f"{filename.with_suffix('').as_posix().replace('/', '.')}.{function}"
 
     def create_mutants_for_file(
         self, filename: Path, output_path: Path
@@ -90,6 +103,10 @@ class MutationRunnerTests(unittest.TestCase):
             self.assertTrue(os.path.samefile(implementation.cwd, root))
             self.assertEqual(implementation.arguments, ([], 4))
             self.assertTrue(implementation.results[0].unmodified)
+            self.assertEqual(
+                implementation.results[0].current_hashes,
+                {"scripts.alpha.x_alpha": "0123456789ab"},
+            )
             self.assertFalse(implementation.results[1].unmodified)
             self.assertEqual(
                 implementation.original_calls,
