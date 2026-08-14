@@ -255,7 +255,7 @@ class PythonSupportContractValidationTests(unittest.TestCase):
         "CONTRIBUTING.md",
         "pyproject.toml",
         "README.md",
-        "requirements-dev.txt",
+        "requirements-dev.in",
         "ruff.toml",
         "scripts/python_support.py",
         "skills/repo-scaffold/SKILL.md",
@@ -387,7 +387,7 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             (root / "CONTRIBUTING.md").write_text(
                 "Python 3.10 through 3.14\n", encoding="utf-8"
             )
-            (root / "requirements-dev.txt").write_text(
+            (root / "requirements-dev.in").write_text(
                 ".github/python-support.json\nPython 3.10 or newer\n",
                 encoding="utf-8",
             )
@@ -945,7 +945,7 @@ class MirroredDependencyMetadataTests(unittest.TestCase):
             root = Path(directory)
             asset_root = root / "skills" / "repo-scaffold" / "assets"
             asset_root.mkdir(parents=True)
-            (root / "requirements-dev.txt").write_text(
+            (root / "requirements-dev.in").write_text(
                 "markdown-it-py==4.2.0\nPyYAML==6.0.3\n", encoding="utf-8"
             )
             (asset_root / "requirements-docs.txt").write_text(
@@ -963,12 +963,12 @@ class MirroredDependencyMetadataTests(unittest.TestCase):
             problems = validate_repository.validate_mirrored_dependency_metadata(root)
 
             self.assertIn(
-                "PyYAML pin drift: requirements-dev.txt and the scaffold docs "
+                "PyYAML pin drift: requirements-dev.in and the scaffold docs "
                 "requirements must match",
                 problems,
             )
             self.assertIn(
-                "markdown-it-py pin drift: requirements-dev.txt and the scaffold "
+                "markdown-it-py pin drift: requirements-dev.in and the scaffold "
                 "docs requirements must match",
                 problems,
             )
@@ -983,7 +983,7 @@ class MirroredDependencyMetadataTests(unittest.TestCase):
             root = Path(directory)
             asset_root = root / "skills" / "repo-scaffold" / "assets"
             asset_root.mkdir(parents=True)
-            (root / "requirements-dev.txt").write_bytes(b"\xff")
+            (root / "requirements-dev.in").write_bytes(b"\xff")
             (asset_root / "requirements-docs.txt").write_text(
                 "markdown-it-py==1.0\nmarkdown-it-py==2.0\nPyYAML==1.0\nPyYAML==2.0\n",
                 encoding="utf-8",
@@ -1021,8 +1021,8 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         ".github/workflows/ci.yml",
         "CONTRIBUTING.md",
         "README.md",
-        "requirements-dev.lock",
         "requirements-dev.txt",
+        "requirements-dev.in",
     )
 
     def copy_contract(self, root: Path) -> None:
@@ -1042,7 +1042,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
-            lock_path = root / "requirements-dev.lock"
+            lock_path = root / "requirements-dev.txt"
             lock_text = lock_path.read_text(encoding="utf-8").replace(
                 "coverage==7.15.4 \\", "coverage==0.0.0 \\", 1
             )
@@ -1053,8 +1053,8 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             )
 
             self.assertIn(
-                "requirements-dev.lock: coverage pin 0.0.0 does not match "
-                "requirements-dev.txt pin 7.15.4",
+                "requirements-dev.txt: coverage pin 0.0.0 does not match "
+                "requirements-dev.in pin 7.15.4",
                 problems,
             )
 
@@ -1062,7 +1062,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
-            lock_path = root / "requirements-dev.lock"
+            lock_path = root / "requirements-dev.txt"
             lock_text = lock_path.read_text(encoding="utf-8")
             start = lock_text.index("types-pyyaml==")
             end = lock_text.index("typing-extensions==", start)
@@ -1081,7 +1081,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             )
 
             self.assertIn(
-                "requirements-dev.lock: types-pyyaml==6.0.12.20260724 must have "
+                "requirements-dev.txt: types-pyyaml==6.0.12.20260724 must have "
                 "a SHA-256 hash",
                 problems,
             )
@@ -1102,7 +1102,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
 
             self.assertIn(
                 ".github/workflows/ci.yml: every development install must use "
-                "the hashed requirements-dev.lock",
+                "the hashed requirements-dev.txt",
                 problems,
             )
 
@@ -1170,26 +1170,24 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             self.assertTrue(
                 validate_repository.validate_development_dependency_contract(root)[
                     0
-                ].startswith("requirements-dev.txt: could not verify direct pins")
+                ].startswith("requirements-dev.in: could not verify direct pins")
             )
-            (root / "requirements-dev.txt").write_text(
-                "pytest==1.0\n", encoding="utf-8"
-            )
+            (root / "requirements-dev.in").write_text("pytest==1.0\n", encoding="utf-8")
             self.assertTrue(
                 validate_repository.validate_development_dependency_contract(root)[
                     0
-                ].startswith("requirements-dev.lock: could not verify hashed lock")
+                ].startswith("requirements-dev.txt: could not verify hashed lock")
             )
 
     def test_invalid_direct_and_lock_shapes_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
-            (root / "requirements-dev.txt").write_text(
+            (root / "requirements-dev.in").write_text(
                 "# comment\ninvalid requirement\nPy_Test==1.0\npy-test==2.0\nmissing==3.0\n",
                 encoding="utf-8",
             )
-            (root / "requirements-dev.lock").write_text(
+            (root / "requirements-dev.txt").write_text(
                 "# generated without required flag\n"
                 "--index-url https://example.test/simple\n"
                 f"py-test==9.0 \\\n    --hash=sha256:{'a' * 64}\n"
@@ -1212,7 +1210,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(
-                    "generator header must record hash mode" in item
+                    "generator header must record the hashed" in item
                     for item in problems
                 )
             )
@@ -1228,7 +1226,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
-            direct_path = root / "requirements-dev.txt"
+            direct_path = root / "requirements-dev.in"
             direct_text = direct_path.read_text(encoding="utf-8")
             direct_path.write_text(
                 direct_text.replace("exceptiongroup==1.3.1\n", "").replace(
@@ -1242,12 +1240,12 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             )
 
             self.assertIn(
-                "requirements-dev.txt: the cross-version lock requires "
+                "requirements-dev.in: the cross-version lock requires "
                 "exceptiongroup==1.3.1",
                 problems,
             )
             self.assertIn(
-                "requirements-dev.txt: the cross-version lock requires tomli==2.4.1",
+                "requirements-dev.in: the cross-version lock requires tomli==2.4.1",
                 problems,
             )
 
@@ -1257,7 +1255,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
-            (root / "requirements-dev.lock").write_text(
+            (root / "requirements-dev.txt").write_text(
                 "# --generate-hashes\n", encoding="utf-8"
             )
             (root / ".github" / "workflows" / "ci.yml").write_text(
@@ -1341,8 +1339,8 @@ class MutationTestingContractTests(unittest.TestCase):
         "CONTRIBUTING.md",
         "README.md",
         "pyproject.toml",
-        "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "requirements-mutation.in",
         "scripts/prepare_mutation_cache.py",
         "scripts/run_mutation_testing.py",
         "scripts/validate_mutation_results.py",
@@ -1385,10 +1383,10 @@ class MutationTestingContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
-            (root / "requirements-mutation.txt").write_text(
+            (root / "requirements-mutation.in").write_text(
                 "mutmut>=3\n", encoding="utf-8"
             )
-            lock_path = root / "requirements-mutation.lock"
+            lock_path = root / "requirements-mutation.txt"
             lock_text = lock_path.read_text(encoding="utf-8")
             mutmut_start = lock_text.index("mutmut==3.7.0")
             mutmut_end = lock_text.index("mypy==", mutmut_start)
@@ -1411,7 +1409,7 @@ class MutationTestingContractTests(unittest.TestCase):
 
             problems = validate_repository.validate_mutation_testing_contract(root)
 
-        self.assertTrue(any("must extend requirements-dev.txt" in p for p in problems))
+        self.assertTrue(any("must extend requirements-dev.in" in p for p in problems))
         self.assertTrue(any("portable hash mode" in p for p in problems))
         self.assertTrue(any("hashed mutmut==3.7.0" in p for p in problems))
         self.assertTrue(any("hashed toml==0.10.2" in p for p in problems))
@@ -1827,7 +1825,7 @@ jobs:
                     1,
                 )
                 .replace(
-                    '  "requirements-mutation.lock",',
+                    '  "requirements-mutation.txt",',
                     "",
                     1,
                 )
@@ -1921,7 +1919,7 @@ jobs:
             (root / "pyproject.toml").write_text("[tool.mutmut]\n", encoding="utf-8")
             (root / "README.md").write_text("mutmut\n", encoding="utf-8")
             (root / "CONTRIBUTING.md").write_text(
-                "requirements-mutation.lock\n", encoding="utf-8"
+                "requirements-mutation.txt\n", encoding="utf-8"
             )
             (root / ".gitattributes").write_text("", encoding="utf-8")
             (root / ".gitignore").write_text("# empty\n", encoding="utf-8")
@@ -3826,6 +3824,9 @@ body:
 
 
 class DependabotValidationTests(unittest.TestCase):
+    def test_repository_dependabot_configuration_is_valid(self) -> None:
+        self.assertEqual(validate_repository.validate_dependabot(PLUGIN_ROOT), [])
+
     def test_dependabot_rejects_invalid_yaml_root_and_update_contracts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3844,7 +3845,10 @@ class DependabotValidationTests(unittest.TestCase):
                 "  - package-ecosystem: pip\n"
                 "    directory: /\n"
                 "    schedule:\n"
-                "      interval: sometimes\n",
+                "      interval: sometimes\n"
+                "  - package-ecosystem: pip\n"
+                "    schedule:\n"
+                "      interval: weekly\n",
                 encoding="utf-8",
             )
 
@@ -3855,9 +3859,10 @@ class DependabotValidationTests(unittest.TestCase):
                 "version must be 2",
                 "updates[0] must be a mapping",
                 "updates[1].package-ecosystem is required",
-                "updates[1].directory is required",
+                "updates[1].directory must be nonempty",
                 "updates[1].schedule is required",
                 "updates[2].schedule.interval is invalid",
+                "updates[3].directory or directories is required",
             )
             for expected in expected_fragments:
                 self.assertTrue(any(expected in item for item in problems), expected)
@@ -3878,6 +3883,103 @@ class DependabotValidationTests(unittest.TestCase):
             self.assertTrue(
                 any("updates must be a nonempty list" in item for item in problems)
             )
+
+    def test_dependabot_rejects_invalid_directories_and_unsynchronized_actions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed = root / ".github" / "dependabot.yml"
+            asset = root / "skills" / "repo-scaffold" / "assets" / "dependabot.yml"
+            installed.parent.mkdir(parents=True)
+            asset.parent.mkdir(parents=True)
+            installed.write_text(
+                "version: 2\n"
+                "updates:\n"
+                "  - package-ecosystem: github-actions\n"
+                "    directories: ['/', '/']\n"
+                "    schedule:\n"
+                "      interval: weekly\n",
+                encoding="utf-8",
+            )
+            asset.write_text(
+                "version: 2\n"
+                "updates:\n"
+                "  - package-ecosystem: github-actions\n"
+                "    directory: /\n"
+                "    directories: ['/templates']\n"
+                "    schedule:\n"
+                "      interval: weekly\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_dependabot(root)
+
+            self.assertTrue(any("nonempty unique list" in item for item in problems))
+            self.assertTrue(any("not both" in item for item in problems))
+            self.assertTrue(
+                any("must synchronize installed workflows" in item for item in problems)
+            )
+
+    def test_dependabot_rejects_unsynchronized_python_and_incomplete_template(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed = root / ".github" / "dependabot.yml"
+            asset = root / "skills" / "repo-scaffold" / "assets" / "dependabot.yml"
+            installed.parent.mkdir(parents=True)
+            asset.parent.mkdir(parents=True)
+            installed.write_text(
+                "version: 2\n"
+                "updates:\n"
+                "  - package-ecosystem: pip\n"
+                "    directory: /\n"
+                "    schedule:\n"
+                "      interval: weekly\n"
+                "  - package-ecosystem: github-actions\n"
+                "    directories: ['/', '/skills/repo-scaffold/assets/workflows']\n"
+                "    schedule:\n"
+                "      interval: weekly\n"
+                "    groups:\n"
+                "      synchronized-actions:\n"
+                "        group-by: dependency-name\n",
+                encoding="utf-8",
+            )
+            asset.write_text(
+                "version: 2\n"
+                "updates:\n"
+                "  - package-ecosystem: github-actions\n"
+                "    directory: /templates\n"
+                "    schedule:\n"
+                "      interval: weekly\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_dependabot(root)
+
+            self.assertTrue(
+                any("must synchronize root locks" in item for item in problems)
+            )
+            self.assertTrue(any("fixed root pip updater" in item for item in problems))
+            self.assertTrue(
+                any("fixed root GitHub Actions updater" in item for item in problems)
+            )
+
+    def test_dependabot_rendering_contract_keeps_mandatory_documentation_pip(
+        self,
+    ) -> None:
+        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+
+        for document in (skill, setup):
+            self.assertIn("requirements-docs.txt", document)
+            self.assertIn("fixed root `pip`", document)
+            self.assertIn("Do not emit a duplicate root `pip` block", document)
 
 
 class WorkflowShellValidationTests(unittest.TestCase):

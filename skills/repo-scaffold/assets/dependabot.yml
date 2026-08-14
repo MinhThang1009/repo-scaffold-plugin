@@ -1,5 +1,14 @@
 version: 2
 updates:
+  # requirements-docs.txt is always installed at the rendered repository root.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    versioning-strategy: "increase-if-necessary"
+    commit-message:
+      prefix: "chore(deps)"
+
   # {{REPO_SCAFFOLD_DEPENDABOT_PACKAGE_UPDATES}}
   - package-ecosystem: "github-actions"
     directory: "/"

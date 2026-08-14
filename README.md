@@ -137,9 +137,9 @@ repo-scaffold/
 ├── README.md
 ├── LICENSE
 ├── release-please-config.json
-├── requirements-dev.lock
+├── requirements-dev.in
 ├── requirements-dev.txt
-├── requirements-mutation.lock
+├── requirements-mutation.in
 ├── requirements-mutation.txt
 ├── TERMS.md
 ├── version.txt
@@ -172,7 +172,7 @@ SKILL.md → Resources lists every generated file.
 The plugin has no compilation step. Its validation tests require a CPython release from the [Python support policy](.github/python-support.json) and the hash-locked development toolchain, including Coverage.py, markdown-it-py for CommonMark parsing, PyYAML, and pytest. Run the repository checks from its root:
 
 ```powershell
-python -m pip install --require-hashes --requirement requirements-dev.lock
+python -m pip install --require-hashes --requirement requirements-dev.txt
 python -m coverage erase
 python -m coverage run -m pytest -q
 python -m coverage report
@@ -213,11 +213,20 @@ the markdownlint npm pin, and reviewed standalone-tool release metadata and
 digests. Workflows and setup guidance consume that policy instead of embedding
 those values, and a non-required scheduled/manual canary reports npm, upstream
 release, or digest drift for review.
-Dependabot checks the pinned Python development tools and GitHub Actions weekly.
-`requirements-dev.txt` records reviewed direct pins; `requirements-dev.lock`
+Dependabot checks the pinned Python development tools, mirrored scaffold
+documentation dependencies, and GitHub Actions weekly.
+`requirements-dev.in` records reviewed direct pins; `requirements-dev.txt`
 resolves every transitive dependency and records PyPI SHA-256 hashes used by CI.
+The conventional `.in` to `.txt` pairing lets Dependabot run `pip-compile` and
+update both files in one PR. GitHub Action updates are grouped by dependency
+across installed workflows and scaffold templates so their immutable SHAs stay
+synchronized. Python updates are likewise grouped by dependency across the
+root toolchain and `skills/repo-scaffold/assets/requirements-docs.txt`; security
+updates for the two mirrored documentation packages are grouped explicitly.
 Mutation testing extends that toolchain through the separate, hash-verified
-`requirements-mutation.lock`. Its monthly and manually dispatched workflow runs
+`requirements-mutation.txt`. Changes to the reviewed mutmut version still
+require manual compatibility updates for the runner, validator, and tests. Its
+monthly and manually dispatched workflow runs
 mutmut on Linux, rejects incomplete runs, enforces the evidence-backed mutation
 score floor documented in `CONTRIBUTING.md`, and retains generated mutants plus
 metadata for diagnosis. Native Windows is not supported by mutmut; contributors
