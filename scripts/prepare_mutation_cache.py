@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -153,33 +154,104 @@ def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def _is_link_or_reparse(path: Path) -> bool:
+    """Return whether an existing path is a link-like filesystem boundary."""
+    if path.is_symlink():
+        return True
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+def _assert_safe_cache_path(mutation_root: Path, path: Path) -> None:
+    """Reject a cache path with a symlink or reparse point in any component."""
+    boundary = Path(os.path.abspath(mutation_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError as error:
+        raise ValueError(f"mutation cache path escapes mutants: {path}") from error
+    current = boundary
+    for part in (None, *relative.parts):
+        if part is not None:
+            current /= part
+        if _is_link_or_reparse(current):
+            raise ValueError(
+                f"mutation cache path contains a link or reparse point: {current}"
+            )
+        if not current.exists():
+            break
+
+
+def _assert_safe_project_path(repository_root: Path, path: Path) -> None:
+    """Reject project paths that cross a symlink or Windows reparse point."""
+    boundary = Path(os.path.abspath(repository_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError as error:
+        raise ValueError(
+            f"project inventory path escapes repository: {path}"
+        ) from error
+    current = boundary
+    for part in (None, *relative.parts):
+        if part is not None:
+            current /= part
+        if _is_link_or_reparse(current):
+            raise ValueError(
+                "project inventory contains a symlink or reparse point: "
+                f"{current.relative_to(boundary).as_posix() or '.'!r}"
+            )
+        if not current.exists():
+            break
+
+
 def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
+    repository_root = Path(os.path.abspath(repository_root))
+    _assert_safe_project_path(repository_root, repository_root)
     files: list[tuple[str, Path]] = []
     total_bytes = 0
-    for path in sorted(repository_root.rglob("*")):
-        relative = path.relative_to(repository_root)
-        if (
-            set(relative.parts) & IGNORED_DIRECTORIES
-            or relative.name in IGNORED_FILE_NAMES
-            or relative.name.startswith(IGNORED_FILE_PREFIXES)
-        ):
-            continue
-        if path.is_symlink():
-            raise ValueError(
-                f"project inventory contains symlink {relative.as_posix()!r}"
-            )
-        if not path.is_file():
-            continue
-        size = path.stat().st_size
-        if size > MAX_FILE_BYTES:
-            raise ValueError(
-                f"project file {relative.as_posix()!r} exceeds the size limit"
-            )
-        total_bytes += size
-        if len(files) >= MAX_PROJECT_FILES or total_bytes > MAX_TOTAL_BYTES:
-            raise ValueError("project inventory exceeds the cache preparation limits")
-        files.append((relative.as_posix(), path))
-    return files
+    for directory, child_directories, filenames in os.walk(
+        repository_root, topdown=True, followlinks=False
+    ):
+        current = Path(directory)
+        _assert_safe_project_path(repository_root, current)
+        safe_children: list[str] = []
+        for name in sorted(child_directories):
+            child = current / name
+            relative = child.relative_to(repository_root)
+            if set(relative.parts) & IGNORED_DIRECTORIES:
+                continue
+            _assert_safe_project_path(repository_root, child)
+            safe_children.append(name)
+        child_directories[:] = safe_children
+
+        for name in sorted(filenames):
+            path = current / name
+            relative = path.relative_to(repository_root)
+            if relative.name in IGNORED_FILE_NAMES or relative.name.startswith(
+                IGNORED_FILE_PREFIXES
+            ):
+                continue
+            _assert_safe_project_path(repository_root, path)
+            if not path.is_file():
+                continue
+            size = path.stat().st_size
+            if size > MAX_FILE_BYTES:
+                raise ValueError(
+                    f"project file {relative.as_posix()!r} exceeds the size limit"
+                )
+            total_bytes += size
+            if len(files) >= MAX_PROJECT_FILES or total_bytes > MAX_TOTAL_BYTES:
+                raise ValueError(
+                    "project inventory exceeds the cache preparation limits"
+                )
+            files.append((relative.as_posix(), path))
+    return sorted(files)
 
 
 def snapshot_project(repository_root: Path) -> ProjectSnapshot:
@@ -254,29 +326,36 @@ def load_manifest(path: Path) -> ProjectSnapshot:
     )
 
 
-def _write_json(path: Path, document: dict[str, Any]) -> None:
+def _write_json(path: Path, document: dict[str, Any], *, mutation_root: Path) -> None:
+    _assert_safe_cache_path(mutation_root, path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_safe_cache_path(mutation_root, path)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    _assert_safe_cache_path(mutation_root, temporary)
     temporary.write_text(
         json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    _assert_safe_cache_path(mutation_root, path)
+    _assert_safe_cache_path(mutation_root, temporary)
     os.replace(temporary, path)
 
 
 def _mutation_root(repository_root: Path) -> Path:
-    root = repository_root.resolve()
+    root = Path(os.path.abspath(repository_root))
     if not root.is_dir():
         raise ValueError(f"repository root is not a directory: {root}")
+    _assert_safe_project_path(root, root)
     mutation_root = root / "mutants"
-    if mutation_root.is_symlink():
-        raise ValueError("mutants must not be a symlink")
+    _assert_safe_cache_path(root, mutation_root)
     return mutation_root
 
 
 def _clear_mutation_state(mutation_root: Path) -> None:
+    _assert_safe_cache_path(mutation_root, mutation_root)
     mutation_root.mkdir(parents=True, exist_ok=True)
+    _assert_safe_cache_path(mutation_root, mutation_root)
     for child in mutation_root.iterdir():
-        if child.is_symlink() or child.is_file():
+        if _is_link_or_reparse(child) or child.is_file():
             child.unlink()
         elif child.is_dir():
             shutil.rmtree(child)
@@ -291,7 +370,8 @@ def _collect_state_hashes(
     total_bytes = 0
     for relative in sorted(_expected_state_paths(source_hashes)):
         path = mutation_root.joinpath(*PurePosixPath(relative).parts)
-        if path.is_symlink() or not path.is_file():
+        _assert_safe_cache_path(mutation_root, path)
+        if not path.is_file():
             raise ValueError(f"completed mutation state is missing {relative!r}")
         content = path.read_bytes()
         total_bytes += len(content)
@@ -305,7 +385,8 @@ def _sanitize_restored_state(mutation_root: Path, state_hashes: dict[str, str]) 
     allowed = set(state_hashes) | {MANIFEST_NAME}
     for relative, expected_digest in state_hashes.items():
         path = mutation_root.joinpath(*PurePosixPath(relative).parts)
-        if path.is_symlink() or not path.is_file():
+        _assert_safe_cache_path(mutation_root, path)
+        if not path.is_file():
             raise ValueError(f"restored mutation state is missing {relative!r}")
         content = path.read_bytes()
         if len(content) > MAX_META_BYTES or _sha256(content) != expected_digest:
@@ -319,12 +400,13 @@ def _sanitize_restored_state(mutation_root: Path, state_hashes: dict[str, str]) 
         current = Path(directory)
         for name in filenames:
             path = current / name
+            _assert_safe_cache_path(mutation_root, path)
             relative = path.relative_to(mutation_root).as_posix()
             if relative not in allowed:
                 path.unlink()
         for name in child_directories:
             path = current / name
-            if path.is_symlink():
+            if _is_link_or_reparse(path):
                 path.unlink()
             elif not any(path.iterdir()):
                 path.rmdir()
@@ -335,7 +417,10 @@ def _source_state_paths(mutation_root: Path, relative: str) -> tuple[Path, Path]
     if not any(_is_within(path, root) for root in SOURCE_ROOTS):
         raise ValueError(f"source cache path is outside configured roots: {relative!r}")
     mutant = mutation_root.joinpath(*path.parts)
-    return mutant, Path(f"{mutant}.meta")
+    meta = Path(f"{mutant}.meta")
+    _assert_safe_cache_path(mutation_root, mutant)
+    _assert_safe_cache_path(mutation_root, meta)
+    return mutant, meta
 
 
 def _remove_source_state(mutation_root: Path, relative: str) -> None:
@@ -352,7 +437,7 @@ def _tests_are_compatible(previous: dict[str, str], current: dict[str, str]) -> 
 
 
 def _load_meta(path: Path) -> dict[str, Any]:
-    if path.is_symlink() or path.stat().st_size > MAX_META_BYTES:
+    if _is_link_or_reparse(path) or path.stat().st_size > MAX_META_BYTES:
         raise ValueError("mutation metadata is unsafe or oversized")
     try:
         document = json.loads(
@@ -405,15 +490,16 @@ def _prepare_source_state(mutation_root: Path, relative: str) -> tuple[int, int]
             exit_codes[key] = None
             reset += 1
             document.get("type_check_error_by_key", {}).pop(key, None)
-    _write_json(meta_path, document)
+    _write_json(meta_path, document, mutation_root=mutation_root)
     return preserved, reset
 
 
 def prepare_cache(repository_root: Path) -> PreparationResult:
     """Preserve proven kills and reset every result that needs another test run."""
-    repository_root = repository_root.resolve()
+    repository_root = Path(os.path.abspath(repository_root))
     mutation_root = _mutation_root(repository_root)
     manifest_path = mutation_root / MANIFEST_NAME
+    _assert_safe_cache_path(mutation_root, manifest_path)
     current = snapshot_project(repository_root)
     try:
         previous = load_manifest(manifest_path)
@@ -450,22 +536,28 @@ def prepare_cache(repository_root: Path) -> PreparationResult:
             reusable_sources.append(relative)
 
     if invalidated:
-        (mutation_root / "mutmut-stats.json").unlink()
+        stats_path = mutation_root / "mutmut-stats.json"
+        _assert_safe_cache_path(mutation_root, stats_path)
+        stats_path.unlink()
     _write_json(
         mutation_root / REUSABLE_SOURCES_NAME,
         {"schema_version": SCHEMA_VERSION, "sources": reusable_sources},
+        mutation_root=mutation_root,
     )
+    _assert_safe_cache_path(mutation_root, manifest_path)
     manifest_path.unlink(missing_ok=True)
     return PreparationResult(False, preserved, reset, invalidated)
 
 
 def record_cache(repository_root: Path) -> None:
     """Record the repository inputs for a completed mutation run."""
-    repository_root = repository_root.resolve()
+    repository_root = Path(os.path.abspath(repository_root))
     mutation_root = _mutation_root(repository_root)
     if not mutation_root.is_dir():
         raise ValueError("completed mutation state is required before recording")
-    (mutation_root / REUSABLE_SOURCES_NAME).unlink(missing_ok=True)
+    reusable_path = mutation_root / REUSABLE_SOURCES_NAME
+    _assert_safe_cache_path(mutation_root, reusable_path)
+    reusable_path.unlink(missing_ok=True)
     snapshot = snapshot_project(repository_root)
     snapshot = ProjectSnapshot(
         source_hashes=snapshot.source_hashes,
@@ -476,6 +568,7 @@ def record_cache(repository_root: Path) -> None:
     _write_json(
         mutation_root / MANIFEST_NAME,
         manifest_document(snapshot),
+        mutation_root=mutation_root,
     )
 
 

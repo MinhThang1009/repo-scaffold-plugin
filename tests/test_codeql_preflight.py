@@ -3140,6 +3140,22 @@ class GitHubClientTests(unittest.TestCase):
             ):
                 client.raw("repos/octo/repo")
 
+    def test_api_output_rejects_invalid_utf8(self) -> None:
+        def write_invalid_utf8(*_args: object, **kwargs: object) -> mock.Mock:
+            cast(BinaryIO, kwargs["stdout"]).write(b"\xff")
+            return mock.Mock(returncode=0)
+
+        client = cast(GitHubClientProtocol, self.client())
+        with (
+            mock.patch.object(
+                codeql_preflight.subprocess,
+                "run",
+                side_effect=write_invalid_utf8,
+            ),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "valid UTF-8"),
+        ):
+            client.raw("repos/octo/repo")
+
 
 class InputValidationTests(unittest.TestCase):
     def test_rejects_repository_path_components(self) -> None:

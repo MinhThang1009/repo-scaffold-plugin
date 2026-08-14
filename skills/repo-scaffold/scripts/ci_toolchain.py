@@ -39,10 +39,7 @@ TOOL_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 NPM_PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PYTHON_FEATURE = re.compile(r"^3\.(0|[1-9]\d*)$")
-SEMVER = re.compile(
-    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
-)
+STABLE_SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 MAX_RESPONSE_BYTES = 1_000_000
 MARKDOWNLINT_GLOBS = ("**/*.md",)
@@ -131,7 +128,7 @@ def parse_npm_tool(name: str, value: Any) -> NpmToolPin:
     version = value["version"]
     if not isinstance(package, str) or NPM_PACKAGE.fullmatch(package) is None:
         raise ToolchainError(f"npm-tools.{name}.package must be a static npm name")
-    if not isinstance(version, str) or SEMVER.fullmatch(version) is None:
+    if not isinstance(version, str) or STABLE_SEMVER.fullmatch(version) is None:
         raise ToolchainError(
             f"npm-tools.{name}.version must be a stable SemVer release"
         )
@@ -166,7 +163,7 @@ def parse_tool(name: str, value: Any) -> ToolPin:
         raise ToolchainError(
             f"standalone-tools.{name}.repository must be an owner/repository name"
         )
-    if not isinstance(version, str) or SEMVER.fullmatch(version) is None:
+    if not isinstance(version, str) or STABLE_SEMVER.fullmatch(version) is None:
         raise ToolchainError(
             f"standalone-tools.{name}.version must be a stable SemVer release"
         )
