@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 
-MUTMUT_VERSION = "3.6.0"
+MUTMUT_VERSION = "3.7.0"
 SCHEMA_VERSION = 1
 REUSABLE_SOURCES_NAME = ".incremental-sources.json"
 MAX_REUSABLE_SOURCES = 10_000
@@ -92,7 +92,15 @@ def _create_or_reuse_mutants(filename: Path, output_path: Path) -> Any:
     """Keep prepared metadata intact instead of letting mutmut reset every result."""
     if filename.as_posix() in _REUSABLE_SOURCES:
         print(filename)
-        return _MUTMUT_MAIN.FileMutationResult(unmodified=True)
+        mutation_data = _MUTMUT_MAIN.SourceFileMutationData(path=filename)
+        mutation_data.load()
+        current_hashes = {
+            _MUTMUT_MAIN.get_mutant_name(filename, function): digest
+            for function, digest in mutation_data.hash_by_function_name.items()
+        }
+        return _MUTMUT_MAIN.FileMutationResult(
+            unmodified=True, current_hashes=current_hashes
+        )
     if _ORIGINAL_CREATE_MUTANTS is None:
         raise RuntimeError("mutmut generation hook was not initialized")
     return _ORIGINAL_CREATE_MUTANTS(filename, output_path)

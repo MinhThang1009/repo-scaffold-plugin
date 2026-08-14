@@ -365,7 +365,7 @@ def _load_meta(path: Path) -> dict[str, Any]:
         "durations_by_key",
         "estimated_durations_by_key",
     }
-    allowed = required | {"type_check_error_by_key"}
+    allowed = required | {"hash_by_function_name", "type_check_error_by_key"}
     if (
         not isinstance(document, dict)
         or not required.issubset(document)
@@ -383,6 +383,14 @@ def _load_meta(path: Path) -> dict[str, Any]:
             raise ValueError(
                 f"mutation metadata field {metadata_field!r} must be an object"
             )
+    function_hashes = document.get("hash_by_function_name", {})
+    if not isinstance(function_hashes, dict) or any(
+        not isinstance(key, str)
+        or not isinstance(value, str)
+        or re.fullmatch(r"[0-9a-f]{12}", value) is None
+        for key, value in function_hashes.items()
+    ):
+        raise ValueError("mutation function-hash metadata must be a valid object")
     type_errors = document.get("type_check_error_by_key", {})
     if not isinstance(type_errors, dict):
         raise ValueError("mutation type-check metadata must be an object")

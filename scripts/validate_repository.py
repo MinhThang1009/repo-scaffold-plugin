@@ -1381,7 +1381,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     ]
     expected_direct_lines = [
         "-r requirements-dev.txt",
-        "mutmut==3.6.0",
+        "mutmut==3.7.0",
         "toml==0.10.2",
     ]
     if direct_lines != expected_direct_lines:
@@ -1399,7 +1399,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         problems.append(
             "requirements-mutation.lock: must be generated in portable hash mode"
         )
-    for requirement in ("mutmut==3.6.0", "toml==0.10.2"):
+    for requirement in ("mutmut==3.7.0", "toml==0.10.2"):
         entry = re.search(
             rf"(?ms)^{re.escape(requirement)}\s+\\$(.*?)(?=^[A-Za-z0-9_.-]+==|\Z)",
             lock_text,
