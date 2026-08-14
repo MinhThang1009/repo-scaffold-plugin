@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import stat
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -12,6 +14,10 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import yaml
+from markdown_it import MarkdownIt
+from markdown_it.rules_inline.backticks import backtick as parse_backtick
+from markdown_it.rules_inline.state_inline import StateInline
+from markdown_it.token import Token
 
 
 SKIPPED_DIRECTORIES = {
@@ -33,8 +39,8 @@ SCAFFOLD_MARKER = re.compile(r"\{\{REPO_SCAFFOLD_[A-Z0-9_]+\}\}")
 HEADING = re.compile(r"(?m)^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 NUMBERED_SECTION = re.compile(r"^(\d+)\.\s+\S")
 NUMBERED_SUBSECTION = re.compile(r"^(\d+)\.(\d+)\s+\S")
-MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)\n]+)\)")
-MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\([^)\n]+\)")
+COMMONMARK = MarkdownIt("commonmark")
+HTML_IMAGE = re.compile(r"<img(?:[ \t\r\n]|/?>)", re.IGNORECASE)
 CENTERED_DIV = re.compile(r'<div\s+align=["\']center["\']\s*>', re.IGNORECASE)
 LONG_README_SECTION_COUNT = 8
 
@@ -74,47 +80,188 @@ def is_project_markdown(path: Path, repository_root: Path) -> bool:
     return not any(part in SKIPPED_DIRECTORIES for part in relative.parts)
 
 
+def is_link_or_reparse(path: Path) -> bool:
+    """Return whether an existing path is a symlink or Windows reparse point."""
+    if path.is_symlink():
+        return True
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+def path_has_link_or_reparse(path: Path, repository_root: Path) -> bool:
+    """Return whether a repository-relative path crosses a link-like boundary."""
+    boundary = Path(os.path.abspath(repository_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError:
+        return True
+    current = boundary
+    for part in (None, *relative.parts):
+        if part is not None:
+            current /= part
+        if is_link_or_reparse(current):
+            return True
+        if not os.path.lexists(current):
+            break
+    return False
+
+
+def markdown_inventory(repository_root: Path) -> tuple[list[Path], list[Path]]:
+    """Return Markdown files and rejected linked paths without traversing links."""
+    repository_root = Path(os.path.abspath(repository_root))
+    files: list[Path] = []
+    rejected: list[Path] = []
+    if path_has_link_or_reparse(repository_root, repository_root):
+        return files, [repository_root]
+    for directory, child_directories, filenames in os.walk(
+        repository_root, topdown=True, followlinks=False
+    ):
+        current = Path(directory)
+        safe_children: list[str] = []
+        for name in sorted(child_directories):
+            child = current / name
+            relative = child.relative_to(repository_root)
+            if set(relative.parts) & SKIPPED_DIRECTORIES:
+                continue
+            if is_link_or_reparse(child):
+                rejected.append(child)
+            else:
+                safe_children.append(name)
+        child_directories[:] = safe_children
+        for name in sorted(filenames):
+            if not name.lower().endswith(".md"):
+                continue
+            path = current / name
+            if is_link_or_reparse(path):
+                rejected.append(path)
+            elif path.is_file():
+                files.append(path)
+    return sorted(files), sorted(rejected)
+
+
 def markdown_files(repository_root: Path) -> list[Path]:
     """Return project-owned Markdown files under the repository root."""
-    return sorted(
-        path
-        for path in repository_root.rglob("*.md")
-        if not path.is_symlink()
-        and path.is_file()
-        and is_project_markdown(path, repository_root)
-    )
+    files, _rejected = markdown_inventory(repository_root)
+    return files
+
+
+def read_markdown(
+    path: Path, *, label: str, repository_root: Path | None = None
+) -> tuple[str | None, str | None]:
+    """Read project Markdown without dereferencing symbolic links."""
+    if path.is_symlink():
+        return None, f"{label}: symbolic-link Markdown is not dereferenced or validated"
+    if (
+        path_has_link_or_reparse(path, repository_root)
+        if repository_root is not None
+        else is_link_or_reparse(path)
+    ):
+        return (
+            None,
+            f"{label}: linked or reparse-point Markdown is not dereferenced or validated",
+        )
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except (OSError, UnicodeError) as error:
+        return None, f"{label}: unreadable UTF-8 Markdown: {error}"
+
+
+OPAQUE_HTML_BLOCK = re.compile(
+    r"(?is)^\s*(?:<!--|<\?|<![A-Z]|<!\[CDATA\[|"
+    r"<(?:pre|script|style|textarea)(?:[ \t>]|$))"
+)
+
+
+def _source_line_offsets(text: str) -> list[int]:
+    """Return source offsets for CommonMark's zero-based line maps."""
+    return [
+        0,
+        *(match.end() for match in re.finditer(r"\r\n|\r|\n", text)),
+        len(text),
+    ]
+
+
+def _blank_commonmark_blocks(text: str, token_types: frozenset[str]) -> str:
+    """Blank selected CommonMark block tokens while preserving source layout."""
+    output = list(text)
+    offsets = _source_line_offsets(text)
+    for token in COMMONMARK.parse(text):
+        if token.type not in token_types or token.map is None:
+            continue
+        if token.type == "html_block" and not OPAQUE_HTML_BLOCK.match(token.content):
+            continue
+        start_line, end_line = token.map
+        start = offsets[start_line]
+        end = offsets[end_line]
+        for position in range(start, end):
+            if output[position] not in "\r\n":
+                output[position] = " "
+    return "".join(output)
 
 
 def without_fenced_code(text: str) -> str:
-    """Blank fenced code while preserving line and character positions."""
-    output: list[str] = []
-    fence: str | None = None
-    for line in text.splitlines(keepends=True):
-        match = re.match(r"^[ \t]{0,3}(`{3,}|~{3,})", line)
-        if match and fence is None:
-            fence = match.group(1)[0]
-            output.append("\n" if line.endswith("\n") else "")
+    """Blank CommonMark fenced code blocks."""
+    return _blank_commonmark_blocks(text, frozenset({"fence"}))
+
+
+def _without_root_indented_code(text: str) -> str:
+    """Blank CommonMark indented code blocks."""
+    return _blank_commonmark_blocks(text, frozenset({"code_block"}))
+
+
+def _without_markdown_block_code(text: str) -> str:
+    """Blank CommonMark block constructs whose contents are not Markdown."""
+    return _blank_commonmark_blocks(
+        text, frozenset({"code_block", "fence", "html_block"})
+    )
+
+
+CODE_SPANS_ENV_KEY = "repo_scaffold_code_spans"
+
+
+def _record_code_span(state: StateInline, silent: bool) -> bool:
+    """Record source offsets whenever markdown-it parses a code span."""
+    opening = state.pos
+    token_count = len(state.tokens)
+    matched = parse_backtick(state, silent)
+    if len(state.tokens) > token_count:
+        state.env.setdefault(CODE_SPANS_ENV_KEY, []).append((opening, state.pos))
+    return matched
+
+
+CODE_SPAN_COMMONMARK = MarkdownIt("commonmark")
+CODE_SPAN_COMMONMARK.inline.ruler.at("backticks", _record_code_span)
+
+
+def _without_inline_code(text: str) -> str:
+    """Blank code spans confirmed by the CommonMark parser."""
+    output = list(text)
+    offsets = _source_line_offsets(text)
+    for token in COMMONMARK.parse(text):
+        if token.type != "inline" or token.map is None:
             continue
-        if match and fence == match.group(1)[0]:
-            fence = None
-            output.append("\n" if line.endswith("\n") else "")
-            continue
-        if fence is None:
-            output.append(line)
-        else:
-            output.append("\n" if line.endswith("\n") else "")
+        start_line, end_line = token.map
+        block_start = offsets[start_line]
+        block_end = offsets[end_line]
+        environment: dict[str, Any] = {}
+        CODE_SPAN_COMMONMARK.parseInline(text[block_start:block_end], environment)
+        spans: list[tuple[int, int]] = environment.get(CODE_SPANS_ENV_KEY, [])
+        for opening, closing in spans:
+            for position in range(block_start + opening, block_start + closing):
+                if output[position] not in "\r\n":
+                    output[position] = " "
     return "".join(output)
 
 
 def without_markdown_code(text: str) -> str:
-    """Blank fenced and inline code before structural Markdown parsing."""
-    visible = without_fenced_code(text)
-    return re.sub(
-        r"(`+)(.+?)\1",
-        lambda match: " " * len(match.group(0)),
-        visible,
-        flags=re.DOTALL,
-    )
+    """Blank all CommonMark code and opaque HTML constructs."""
+    return _without_inline_code(_without_markdown_block_code(text))
 
 
 def github_anchor(heading: str) -> str:
@@ -127,62 +274,132 @@ def github_anchor(heading: str) -> str:
 def path_is_below(path: Path, parent: Path) -> bool:
     """Return whether path is located at or below parent."""
     try:
-        path.resolve().relative_to(parent.resolve())
+        Path(os.path.abspath(path)).relative_to(Path(os.path.abspath(parent)))
     except ValueError:
         return False
     return True
+
+
+def _parse_commonmark(text: str) -> tuple[list[Token], dict[str, Any]]:
+    """Parse Markdown with the CommonMark reference implementation port."""
+    environment: dict[str, Any] = {}
+    return COMMONMARK.parse(text, environment), environment
+
+
+def _walk_markdown_tokens(tokens: Iterable[Token]) -> Iterable[Token]:
+    """Yield block and nested inline tokens in source order."""
+    for token in tokens:
+        yield token
+        if token.children:
+            yield from _walk_markdown_tokens(token.children)
+
+
+def _links_from_tokens(tokens: Iterable[Token]) -> list[tuple[bool, str]]:
+    """Return normalized non-autolink destinations from parsed tokens."""
+    links: list[tuple[bool, str]] = []
+    for token in _walk_markdown_tokens(tokens):
+        if token.type == "image":
+            links.append((True, str(token.attrGet("src") or "")))
+        elif token.type == "link_open" and token.markup != "autolink":
+            links.append((False, str(token.attrGet("href") or "")))
+    return links
+
+
+def inline_markdown_links(text: str) -> list[tuple[bool, str]]:
+    """Return CommonMark inline links and images as normalized destinations."""
+    tokens, _environment = _parse_commonmark(text)
+    return _links_from_tokens(tokens)
+
+
+def inline_markdown_link_payloads(text: str) -> list[str]:
+    """Return normalized destinations for CommonMark inline links and images."""
+    return [destination for _is_image, destination in inline_markdown_links(text)]
+
+
+def markdown_link_destinations(text: str) -> list[str]:
+    """Return unique inline and reference-definition CommonMark destinations."""
+    tokens, environment = _parse_commonmark(text)
+    destinations = [
+        destination for _is_image, destination in _links_from_tokens(tokens)
+    ]
+    references: dict[str, dict[str, str]] = environment.get("references", {})
+    destinations.extend(reference["href"] for reference in references.values())
+    return list(dict.fromkeys(destinations))
 
 
 def validate_markdown_sources(
     repository_root: Path, *, marker_exclusions: Iterable[Path] = ()
 ) -> list[str]:
     """Validate encoding, final newlines, markers, and relative links."""
-    exclusions = tuple(path.resolve() for path in marker_exclusions)
+    exclusions = tuple(Path(os.path.abspath(path)) for path in marker_exclusions)
     problems: list[str] = []
-    resolved_root = repository_root.resolve()
-    for path in sorted(repository_root.rglob("*.md")):
-        if path.is_symlink() and is_project_markdown(path, repository_root):
-            relative = path.relative_to(repository_root).as_posix()
+    repository_root = Path(os.path.abspath(repository_root))
+    files, rejected = markdown_inventory(repository_root)
+    for path in rejected:
+        relative = path.relative_to(repository_root).as_posix() or "."
+        if path.is_symlink() and path.suffix.lower() == ".md":
             problems.append(
                 f"{relative}: symbolic-link Markdown is not dereferenced or validated"
             )
-    for path in markdown_files(repository_root):
+        else:
+            problems.append(
+                f"{relative}: linked or reparse-point path is not dereferenced or validated"
+            )
+    if repository_root in rejected:
+        return problems
+    resolved_root = repository_root.resolve()
+    for path in files:
         relative = path.relative_to(repository_root).as_posix()
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            problems.append(f"{relative}: unreadable UTF-8 Markdown: {error}")
+        text, problem = read_markdown(
+            path, label=relative, repository_root=repository_root
+        )
+        if problem is not None:
+            problems.append(problem)
             continue
+        assert text is not None
         if not text.endswith("\n"):
             problems.append(f"{relative}: must end with a newline")
         excluded = any(path_is_below(path, prefix) for prefix in exclusions)
         if not excluded and SCAFFOLD_MARKER.search(text):
             problems.append(f"{relative}: contains an unresolved scaffold marker")
 
-        for destination in MARKDOWN_LINK.findall(without_markdown_code(text)):
-            destination = destination.strip().split(maxsplit=1)[0].strip("<>")
+        for destination in markdown_link_destinations(text):
+            decoded_destination = unquote(destination)
             if (
                 not destination
                 or destination.startswith("#")
-                or SCAFFOLD_MARKER.search(destination)
+                or SCAFFOLD_MARKER.search(decoded_destination)
                 or urlsplit(destination).scheme
                 or destination.startswith("//")
             ):
                 continue
-            target = (path.parent / unquote(urlsplit(destination).path)).resolve()
+            try:
+                target = (path.parent / unquote(urlsplit(destination).path)).resolve()
+            except (OSError, RuntimeError, ValueError):
+                problems.append(
+                    f"{relative}: relative link has an invalid path: {destination}"
+                )
+                continue
             try:
                 target.relative_to(resolved_root)
             except ValueError:
                 problems.append(f"{relative}: relative link escapes repository")
                 continue
-            if not target.exists():
+            try:
+                target_exists = target.exists()
+            except (OSError, ValueError):
+                problems.append(
+                    f"{relative}: relative link has an invalid path: {destination}"
+                )
+                continue
+            if not target_exists:
                 problems.append(f"{relative}: relative link is missing: {destination}")
     return problems
 
 
 def validate_readme_text(text: str, *, label: str = "README.md") -> list[str]:
     """Validate the centered header and numbered README outline contract."""
-    visible = without_fenced_code(text)
+    visible = without_markdown_code(text)
     problems: list[str] = []
 
     openings = list(CENTERED_DIV.finditer(visible))
@@ -215,7 +432,9 @@ def validate_readme_text(text: str, *, label: str = "README.md") -> list[str]:
     header_end = closing_position + len("</div>")
     pre_sections = visible[: first_h2.start()] if first_h2 else visible
     outside_header = pre_sections[: opening.start()] + pre_sections[header_end:]
-    if MARKDOWN_IMAGE.search(outside_header):
+    if any(
+        is_image for is_image, _payload in inline_markdown_links(outside_header)
+    ) or HTML_IMAGE.search(outside_header):
         problems.append(
             f"{label}: header badges/images must be inside the centered div"
         )
@@ -298,9 +517,21 @@ def validate_readme_text(text: str, *, label: str = "README.md") -> list[str]:
 def validate_readme(repository_root: Path) -> list[str]:
     """Validate the exact root README path."""
     path = repository_root / "README.md"
+    if path.is_symlink():
+        return ["README.md: symbolic-link Markdown is not dereferenced or validated"]
+    if path_has_link_or_reparse(path, repository_root):
+        return [
+            "README.md: linked or reparse-point Markdown is not dereferenced or validated"
+        ]
     if not path.is_file():
         return ["README.md: missing exact root README path"]
-    return validate_readme_text(path.read_text(encoding="utf-8"))
+    text, problem = read_markdown(
+        path, label="README.md", repository_root=repository_root
+    )
+    if problem is not None:
+        return [problem]
+    assert text is not None
+    return validate_readme_text(text)
 
 
 def validate_markdown_issue_templates(
@@ -311,9 +542,20 @@ def validate_markdown_issue_templates(
         repository_root / ".github" / "ISSUE_TEMPLATE"
     )
     problems: list[str] = []
+    if path_has_link_or_reparse(template_root, repository_root):
+        relative = template_root.relative_to(repository_root).as_posix()
+        return [
+            f"{relative}: linked or reparse-point path is not dereferenced or validated"
+        ]
     for path in sorted(template_root.glob("*.md")):
         relative = path.relative_to(repository_root).as_posix()
-        text = path.read_text(encoding="utf-8")
+        text, problem = read_markdown(
+            path, label=relative, repository_root=repository_root
+        )
+        if problem is not None:
+            problems.append(problem)
+            continue
+        assert text is not None
         match = re.match(r"\A---\r?\n(.*?)\r?\n---\r?\n(.*)\Z", text, re.DOTALL)
         if match is None:
             problems.append(f"{relative}: missing complete YAML front matter")
@@ -350,10 +592,14 @@ def pull_request_templates(repository_root: Path) -> list[Path]:
         repository_root / "docs" / "PULL_REQUEST_TEMPLATE.md",
         repository_root / ".github" / "PULL_REQUEST_TEMPLATE.md",
     }
-    candidates.update(
-        (repository_root / ".github" / "PULL_REQUEST_TEMPLATE").glob("*.md")
+    template_directory = repository_root / ".github" / "PULL_REQUEST_TEMPLATE"
+    if not path_has_link_or_reparse(template_directory, repository_root):
+        candidates.update(template_directory.glob("*.md"))
+    return sorted(
+        path
+        for path in candidates
+        if path_has_link_or_reparse(path, repository_root) or path.is_file()
     )
-    return sorted(path for path in candidates if path.is_file())
 
 
 def validate_pull_request_templates(repository_root: Path) -> list[str]:
@@ -361,7 +607,13 @@ def validate_pull_request_templates(repository_root: Path) -> list[str]:
     problems: list[str] = []
     for path in pull_request_templates(repository_root):
         relative = path.relative_to(repository_root).as_posix()
-        text = path.read_text(encoding="utf-8")
+        text, problem = read_markdown(
+            path, label=relative, repository_root=repository_root
+        )
+        if problem is not None:
+            problems.append(problem)
+            continue
+        assert text is not None
         if not text.strip():
             problems.append(f"{relative}: template must be nonempty")
         if not re.search(r"(?m)^\s*[-*+]\s+\[ \]\s+\S", text):
@@ -373,25 +625,51 @@ def validate_template_assets(template_root: Path) -> list[str]:
     """Validate Markdown-specific contracts in the plugin's source assets."""
     problems: list[str] = []
     header_path = template_root / "README-header.md"
-    if not header_path.is_file():
+    if path_has_link_or_reparse(header_path, template_root):
+        problems.append(
+            "README-header.md asset: linked or reparse-point Markdown is not "
+            "dereferenced or validated"
+        )
+    elif not header_path.is_file():
         problems.append(f"{header_path}: missing README header asset")
     else:
-        header = header_path.read_text(encoding="utf-8")
-        synthetic = header + "\n## 1. Overview\n"
-        problems.extend(validate_readme_text(synthetic, label="README-header.md asset"))
+        header, problem = read_markdown(
+            header_path,
+            label="README-header.md asset",
+            repository_root=template_root,
+        )
+        if problem is not None:
+            problems.append(problem)
+        else:
+            assert header is not None
+            synthetic = header + "\n## 1. Overview\n"
+            problems.extend(
+                validate_readme_text(synthetic, label="README-header.md asset")
+            )
     problems.extend(
         validate_markdown_issue_templates(
             template_root, template_directory=template_root / "ISSUE_TEMPLATE"
         )
     )
     pull_template = template_root / "PULL_REQUEST_TEMPLATE.md"
-    if pull_template.is_file():
-        text = pull_template.read_text(encoding="utf-8")
-        if not re.search(r"(?m)^\s*[-*+]\s+\[ \]\s+\S", text):
+    if path_has_link_or_reparse(pull_template, template_root):
+        problems.append(
+            "PULL_REQUEST_TEMPLATE.md asset: linked or reparse-point Markdown is "
+            "not dereferenced or validated"
+        )
+    elif pull_template.is_file():
+        text, problem = read_markdown(
+            pull_template,
+            label="PULL_REQUEST_TEMPLATE.md asset",
+            repository_root=template_root,
+        )
+        if problem is not None:
+            problems.append(problem)
+        elif not re.search(r"(?m)^\s*[-*+]\s+\[ \]\s+\S", text or ""):
             problems.append(
                 "PULL_REQUEST_TEMPLATE.md asset must contain a checklist item"
             )
-    return problems
+    return list(dict.fromkeys(problems))
 
 
 def validate_scaffold(
@@ -405,7 +683,7 @@ def validate_scaffold(
     problems.extend(validate_pull_request_templates(repository_root))
     if template_root is not None:
         problems.extend(validate_template_assets(template_root))
-    return problems
+    return list(dict.fromkeys(problems))
 
 
 def parse_args() -> argparse.Namespace:
@@ -428,10 +706,19 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Validate the selected repository and report every problem."""
     args = parse_args()
-    root = args.repository_root.resolve(strict=True)
+    root = Path(os.path.abspath(args.repository_root))
+    if not root.exists():
+        raise FileNotFoundError(root)
+    if not root.is_dir():
+        raise ValueError(f"repository root is not a directory: {root}")
     template_root = (
-        args.template_root.resolve(strict=True) if args.template_root else None
+        Path(os.path.abspath(args.template_root)) if args.template_root else None
     )
+    if template_root is not None:
+        if not template_root.exists():
+            raise FileNotFoundError(template_root)
+        if not template_root.is_dir():
+            raise ValueError(f"template root is not a directory: {template_root}")
     problems = validate_scaffold(root, template_root=template_root)
     if problems:
         for problem in problems:

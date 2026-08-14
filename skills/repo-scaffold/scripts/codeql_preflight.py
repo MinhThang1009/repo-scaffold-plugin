@@ -255,7 +255,10 @@ class GitHubClient:
                 f"GitHub API {label} exceeds the {limit}-byte safety cap."
             )
         stream.seek(0)
-        return stream.read().decode("utf-8", errors="replace"), size
+        try:
+            return stream.read().decode("utf-8"), size
+        except UnicodeDecodeError as exc:
+            raise InspectionError(f"GitHub API {label} is not valid UTF-8.") from exc
 
     def _run(self, endpoint: str, *, raw: bool = False) -> str:
         if self.request_count >= MAX_GH_REQUESTS:

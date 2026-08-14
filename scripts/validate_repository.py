@@ -21,6 +21,10 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import yaml
+from markdown_it import MarkdownIt
+from markdown_it.rules_inline.backticks import backtick as parse_backtick
+from markdown_it.rules_inline.state_inline import StateInline
+from markdown_it.token import Token
 
 tomllib = importlib.import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
@@ -38,11 +42,12 @@ CACHE_DIRECTORIES = {
     ".venv",
 }
 COVERAGE_FAIL_UNDER = 100
-MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)\n]+)\)")
-MARKDOWN_REFERENCE = re.compile(r"(?m)^\s{0,3}\[[^\]]+\]:\s*(\S+)")
+COMMONMARK = MarkdownIt("commonmark")
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+    r"(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
 RELEASE_PLEASE_ENGLISH_TEXT = {
     "pull-request-title-pattern": "chore${scope}: release${component} ${version}",
@@ -151,15 +156,39 @@ def is_project_path(path: Path, repository_root: Path) -> bool:
     return not any(part in CACHE_DIRECTORIES for part in relative.parts)
 
 
+def is_link_or_reparse(path: Path) -> bool:
+    """Return whether an existing path is a symlink or Windows reparse point."""
+    if path.is_symlink():
+        return True
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
 def project_files(repository_root: Path, patterns: Iterable[str]) -> list[Path]:
     """Return matching first-party files, excluding known local artifacts."""
+    repository_root = Path(os.path.abspath(repository_root))
+    requested_patterns = tuple(patterns)
     files: set[Path] = set()
-    for pattern in patterns:
-        files.update(
-            path
-            for path in repository_root.rglob(pattern)
-            if path.is_file() and is_project_path(path, repository_root)
+    for directory, child_directories, filenames in os.walk(
+        repository_root, topdown=True, followlinks=False
+    ):
+        current = Path(directory)
+        child_directories[:] = sorted(
+            name
+            for name in child_directories
+            if name not in CACHE_DIRECTORIES and not is_link_or_reparse(current / name)
         )
+        for name in sorted(filenames):
+            path = current / name
+            if is_link_or_reparse(path) or not path.is_file():
+                continue
+            if any(path.match(pattern) for pattern in requested_patterns):
+                files.add(path)
     return sorted(files)
 
 
@@ -327,11 +356,13 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         if (
             not isinstance(test, dict)
             or test.get("needs") != "prepare_ci"
+            or test.get("runs-on") != "${{ matrix.os }}"
             or not isinstance(test.get("strategy"), dict)
             or test["strategy"].get("matrix") != expected_matrix
         ):
             problems.append(
-                ".github/workflows/ci.yml: test matrix must come from prepare_ci"
+                ".github/workflows/ci.yml: test matrix must come from prepare_ci "
+                "and runs-on must use matrix.os"
             )
         quality_steps = quality.get("steps") if isinstance(quality, dict) else None
         if (
@@ -1034,27 +1065,29 @@ def validate_mirrored_dependency_metadata(repository_root: Path) -> list[str]:
         / "assets"
         / "requirements-docs.txt",
     )
-    requirement_pins: list[str | None] = []
-    for path in requirement_paths:
-        relative = path.relative_to(repository_root).as_posix()
-        try:
-            matches = re.findall(
-                r"(?im)^PyYAML==([^\s#]+)\s*$", path.read_text(encoding="utf-8")
+    for package in ("PyYAML", "markdown-it-py"):
+        requirement_pins: list[str | None] = []
+        for path in requirement_paths:
+            relative = path.relative_to(repository_root).as_posix()
+            try:
+                matches = re.findall(
+                    rf"(?im)^{re.escape(package)}==([^\s#]+)\s*$",
+                    path.read_text(encoding="utf-8"),
+                )
+            except (OSError, UnicodeError) as error:
+                problems.append(f"{relative}: could not verify {package} pin: {error}")
+                requirement_pins.append(None)
+                continue
+            if len(matches) != 1:
+                problems.append(f"{relative}: must contain exactly one {package} pin")
+                requirement_pins.append(None)
+            else:
+                requirement_pins.append(matches[0])
+        if None not in requirement_pins and len(set(requirement_pins)) != 1:
+            problems.append(
+                f"{package} pin drift: requirements-dev.txt and the scaffold "
+                "docs requirements must match"
             )
-        except (OSError, UnicodeError) as error:
-            problems.append(f"{relative}: could not verify PyYAML pin: {error}")
-            requirement_pins.append(None)
-            continue
-        if len(matches) != 1:
-            problems.append(f"{relative}: must contain exactly one PyYAML pin")
-            requirement_pins.append(None)
-        else:
-            requirement_pins.append(matches[0])
-    if None not in requirement_pins and len(set(requirement_pins)) != 1:
-        problems.append(
-            "PyYAML pin drift: requirements-dev.txt and the scaffold docs "
-            "requirements must match"
-        )
 
     release_config_paths = (
         repository_root / "release-please-config.json",
@@ -2743,60 +2776,182 @@ def validate_dependabot(repository_root: Path) -> list[str]:
     return problems
 
 
-def without_fenced_code(text: str) -> str:
-    """Remove fenced and inline code before extracting Markdown links."""
-    kept: list[str] = []
-    fence: str | None = None
-    for line in text.splitlines():
-        stripped = line.lstrip()
-        marker = stripped[:3]
-        if marker in {"```", "~~~"}:
-            fence = None if fence == marker else marker if fence is None else fence
+OPAQUE_HTML_BLOCK = re.compile(
+    r"(?is)^\s*(?:<!--|<\?|<![A-Z]|<!\[CDATA\[|"
+    r"<(?:pre|script|style|textarea)(?:[ \t>]|$))"
+)
+
+
+def _source_line_offsets(text: str) -> list[int]:
+    """Return source offsets for CommonMark's zero-based line maps."""
+    return [
+        0,
+        *(match.end() for match in re.finditer(r"\r\n|\r|\n", text)),
+        len(text),
+    ]
+
+
+def _blank_commonmark_blocks(text: str, token_types: frozenset[str]) -> str:
+    """Blank selected CommonMark block tokens while preserving source layout."""
+    output = list(text)
+    offsets = _source_line_offsets(text)
+    for token in COMMONMARK.parse(text):
+        if token.type not in token_types or token.map is None:
             continue
-        if fence is None:
-            kept.append(re.sub(r"`[^`\n]*`", "", line))
-    return "\n".join(kept)
+        if token.type == "html_block" and not OPAQUE_HTML_BLOCK.match(token.content):
+            continue
+        start_line, end_line = token.map
+        start = offsets[start_line]
+        end = offsets[end_line]
+        for position in range(start, end):
+            if output[position] not in "\r\n":
+                output[position] = " "
+    return "".join(output)
 
 
-def link_destination(raw: str) -> str:
-    """Extract a destination from a Markdown inline-link payload."""
-    value = raw.strip()
-    if value.startswith("<") and ">" in value:
-        return value[1 : value.index(">")]
-    return value.split(maxsplit=1)[0]
+def _without_root_indented_code(text: str) -> str:
+    """Blank CommonMark indented code blocks."""
+    return _blank_commonmark_blocks(text, frozenset({"code_block"}))
+
+
+def _without_markdown_block_code(text: str) -> str:
+    """Blank CommonMark block constructs whose contents are not Markdown."""
+    return _blank_commonmark_blocks(
+        text, frozenset({"code_block", "fence", "html_block"})
+    )
+
+
+CODE_SPANS_ENV_KEY = "repo_scaffold_code_spans"
+
+
+def _record_code_span(state: StateInline, silent: bool) -> bool:
+    """Record source offsets whenever markdown-it parses a code span."""
+    opening = state.pos
+    token_count = len(state.tokens)
+    matched = parse_backtick(state, silent)
+    if len(state.tokens) > token_count:
+        state.env.setdefault(CODE_SPANS_ENV_KEY, []).append((opening, state.pos))
+    return matched
+
+
+CODE_SPAN_COMMONMARK = MarkdownIt("commonmark")
+CODE_SPAN_COMMONMARK.inline.ruler.at("backticks", _record_code_span)
+
+
+def _without_inline_code(text: str) -> str:
+    """Blank code spans confirmed by the CommonMark parser."""
+    output = list(text)
+    offsets = _source_line_offsets(text)
+    for token in COMMONMARK.parse(text):
+        if token.type != "inline" or token.map is None:
+            continue
+        start_line, end_line = token.map
+        block_start = offsets[start_line]
+        block_end = offsets[end_line]
+        environment: dict[str, Any] = {}
+        CODE_SPAN_COMMONMARK.parseInline(text[block_start:block_end], environment)
+        spans: list[tuple[int, int]] = environment.get(CODE_SPANS_ENV_KEY, [])
+        for opening, closing in spans:
+            for position in range(block_start + opening, block_start + closing):
+                if output[position] not in "\r\n":
+                    output[position] = " "
+    return "".join(output)
+
+
+def without_fenced_code(text: str) -> str:
+    """Blank all CommonMark code and opaque HTML constructs."""
+    return _without_inline_code(_without_markdown_block_code(text))
+
+
+def _parse_commonmark(text: str) -> tuple[list[Token], dict[str, Any]]:
+    """Parse Markdown with the CommonMark reference implementation port."""
+    environment: dict[str, Any] = {}
+    return COMMONMARK.parse(text, environment), environment
+
+
+def _walk_markdown_tokens(tokens: Iterable[Token]) -> Iterable[Token]:
+    """Yield block and nested inline tokens in source order."""
+    for token in tokens:
+        yield token
+        if token.children:
+            yield from _walk_markdown_tokens(token.children)
+
+
+def _links_from_tokens(tokens: Iterable[Token]) -> list[tuple[bool, str]]:
+    """Return normalized non-autolink destinations from parsed tokens."""
+    links: list[tuple[bool, str]] = []
+    for token in _walk_markdown_tokens(tokens):
+        if token.type == "image":
+            links.append((True, str(token.attrGet("src") or "")))
+        elif token.type == "link_open" and token.markup != "autolink":
+            links.append((False, str(token.attrGet("href") or "")))
+    return links
+
+
+def inline_markdown_links(text: str) -> list[tuple[bool, str]]:
+    """Return CommonMark inline links and images as normalized destinations."""
+    tokens, _environment = _parse_commonmark(text)
+    return _links_from_tokens(tokens)
+
+
+def inline_markdown_link_payloads(text: str) -> list[str]:
+    """Return normalized destinations for CommonMark inline links and images."""
+    return [destination for _is_image, destination in inline_markdown_links(text)]
+
+
+def markdown_link_destinations(text: str) -> list[str]:
+    """Return unique inline and reference-definition CommonMark destinations."""
+    tokens, environment = _parse_commonmark(text)
+    destinations = [
+        destination for _is_image, destination in _links_from_tokens(tokens)
+    ]
+    references: dict[str, dict[str, str]] = environment.get("references", {})
+    destinations.extend(reference["href"] for reference in references.values())
+    return list(dict.fromkeys(destinations))
 
 
 def validate_markdown_links(repository_root: Path) -> list[str]:
     """Validate that first-party relative Markdown links stay inside and exist."""
     problems: list[str] = []
+    resolved_root = repository_root.resolve()
     for path in project_files(repository_root, ("*.md",)):
         relative = path.relative_to(repository_root)
         try:
-            text = without_fenced_code(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             problems.append(f"{relative}: could not read Markdown: {error}")
             continue
-        destinations = [
-            *(link_destination(match) for match in MARKDOWN_LINK.findall(text)),
-            *(link_destination(match) for match in MARKDOWN_REFERENCE.findall(text)),
-        ]
-        for destination in destinations:
+        for destination in markdown_link_destinations(text):
+            decoded_destination = unquote(destination)
             if (
                 not destination
                 or destination.startswith(("#", "/", "//"))
-                or TEMPLATE_TOKEN.search(destination)
+                or TEMPLATE_TOKEN.search(decoded_destination)
                 or urlsplit(destination).scheme
             ):
                 continue
             parsed = urlsplit(destination)
             decoded_path = unquote(parsed.path)
-            target = (path.parent / decoded_path).resolve()
             try:
-                target.relative_to(repository_root.resolve())
+                target = (path.parent / decoded_path).resolve()
+            except (OSError, RuntimeError, ValueError):
+                problems.append(
+                    f"{relative}: relative link has an invalid path: {destination}"
+                )
+                continue
+            try:
+                target.relative_to(resolved_root)
             except ValueError:
                 problems.append(f"{relative}: link escapes repository: {destination}")
                 continue
-            if not target.exists():
+            try:
+                target_exists = target.exists()
+            except (OSError, ValueError):
+                problems.append(
+                    f"{relative}: relative link has an invalid path: {destination}"
+                )
+                continue
+            if not target_exists:
                 problems.append(f"{relative}: relative link is missing: {destination}")
     return problems
 

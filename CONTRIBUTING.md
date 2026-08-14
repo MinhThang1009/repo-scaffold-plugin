@@ -33,6 +33,7 @@ The plugin has no build step. Development checks require:
 
 - A CPython release declared in [`.github/python-support.json`](.github/python-support.json)
 - Coverage.py
+- markdown-it-py, for CommonMark-compliant Markdown validation
 - PyYAML
 - pytest
 - mutmut, on Linux or Windows through WSL
@@ -41,8 +42,8 @@ The plugin has no build step. Development checks require:
 - Node.js with `npx` for markdownlint
 - actionlint
 - ShellCheck
-- The reviewed `pip-tools` version recorded in `requirements-dev.lock`, only
-  when regenerating a lock
+- `pip-tools`, only when regenerating a lock; record the version used in the
+  pull request verification
 
 CI pins for markdownlint and standalone downloaded tools, plus the rolling
 documentation bootstrap and minimum bundled-tooling Python runtimes, are
@@ -60,9 +61,10 @@ python -m pip install --require-hashes --requirement requirements-dev.lock
 ```
 
 When changing a direct pin in `requirements-dev.txt`, regenerate
-`requirements-dev.lock` with the reviewed `pip-tools` version and exact command
-recorded in the lockfile header. Inspect the complete transitive diff and verify
-the lock against every operating-system and Python target in
+`requirements-dev.lock` with the exact command recorded in the lockfile header
+and record `pip-compile --version` in the pull request verification. Inspect the
+complete transitive diff and verify the lock against every operating-system and
+Python target in
 `.github/python-support.json` before committing it.
 The unconditional `exceptiongroup` and `tomli` pins keep the single lock
 installable on the minimum supported Python even when it is regenerated on a
@@ -70,7 +72,8 @@ newer interpreter.
 
 Mutation testing uses a separate Linux/WSL-only lock. After changing
 `requirements-mutation.txt`, regenerate `requirements-mutation.lock` with the
-same reviewed `pip-tools` version and hash-mode options. Its unconditional
+same procedure: record `pip-compile --version` and preserve the lockfile
+header's hash-mode options. Its unconditional
 `toml` pin preserves mutmut's Python 3.10 dependency when the lock is generated
 on a newer interpreter. Trusted scheduled and manual runs reuse previously
 killed mutants only when the cache manifest proves production, support, and the
@@ -142,10 +145,11 @@ and result summaries are retained for diagnosis. Do not suppress a valid mutant
 merely to make the score pass; classify equivalent mutants during review and
 raise the floor only from a completed, repeatable run.
 
-`validate_workflows.py` runs actionlint with ShellCheck enabled. The Markdown
-checks cover all project-owned `.md` files, README layout, unresolved scaffold
-markers, relative links, and Markdown issue/PR templates. When a change adds
-PowerShell blocks, also run PSScriptAnalyzer against each block.
+`validate_workflows.py` runs actionlint, then runs the reviewed ShellCheck binary
+separately against extracted Bash blocks. The Markdown checks cover all
+project-owned `.md` files, README layout, unresolved scaffold markers, relative
+links, and Markdown issue/PR templates. When a change adds PowerShell blocks,
+also run PSScriptAnalyzer against each block.
 
 ## Open a pull request
 
