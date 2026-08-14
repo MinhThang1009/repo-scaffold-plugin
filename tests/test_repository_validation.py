@@ -2105,6 +2105,25 @@ class MarkdownLinkValidationTests(unittest.TestCase):
                 ["README.md: relative link has an invalid path: docs/%00.md"],
             )
 
+            original_resolve = Path.resolve
+
+            def resolve(path: Path, strict: bool = False) -> Path:
+                if path.name == "resolve-error.md":
+                    raise OSError("invalid path")
+                return original_resolve(path, strict=strict)
+
+            (root / "README.md").write_text(
+                "[invalid](docs/resolve-error.md)\n", encoding="utf-8"
+            )
+            with mock.patch.object(Path, "resolve", autospec=True, side_effect=resolve):
+                self.assertEqual(
+                    validate_repository.validate_markdown_links(root),
+                    [
+                        "README.md: relative link has an invalid path: "
+                        "docs/resolve-error.md"
+                    ],
+                )
+
             original_exists = Path.exists
 
             def exists(path: Path) -> bool:

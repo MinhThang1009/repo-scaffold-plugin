@@ -2932,6 +2932,11 @@ def validate_markdown_links(repository_root: Path) -> list[str]:
                 continue
             parsed = urlsplit(destination)
             decoded_path = unquote(parsed.path)
+            if "\x00" in decoded_path:
+                problems.append(
+                    f"{relative}: relative link has an invalid path: {destination}"
+                )
+                continue
             try:
                 target = (path.parent / decoded_path).resolve()
             except (OSError, RuntimeError, ValueError):

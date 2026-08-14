@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import runpy
 import sys
 import tempfile
@@ -84,7 +85,9 @@ class MutationRunnerTests(unittest.TestCase):
                 )
 
             self.assertEqual(Path.cwd(), previous_cwd)
-            self.assertEqual(implementation.cwd, root.resolve())
+            self.assertIsNotNone(implementation.cwd)
+            assert implementation.cwd is not None
+            self.assertTrue(os.path.samefile(implementation.cwd, root))
             self.assertEqual(implementation.arguments, ([], 4))
             self.assertTrue(implementation.results[0].unmodified)
             self.assertFalse(implementation.results[1].unmodified)

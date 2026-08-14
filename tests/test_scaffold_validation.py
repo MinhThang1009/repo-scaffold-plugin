@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import runpy
 import sys
 import tempfile
@@ -367,6 +368,25 @@ class MarkdownSourceContractTests(unittest.TestCase):
                 validate_scaffold.validate_markdown_sources(root),
                 ["README.md: relative link has an invalid path: docs/%00.md"],
             )
+
+            original_resolve = Path.resolve
+
+            def resolve(path: Path, strict: bool = False) -> Path:
+                if path.name == "resolve-error.md":
+                    raise OSError("invalid path")
+                return original_resolve(path, strict=strict)
+
+            (root / "README.md").write_text(
+                "[invalid](docs/resolve-error.md)\n", encoding="utf-8"
+            )
+            with mock.patch.object(Path, "resolve", autospec=True, side_effect=resolve):
+                self.assertEqual(
+                    validate_scaffold.validate_markdown_sources(root),
+                    [
+                        "README.md: relative link has an invalid path: "
+                        "docs/resolve-error.md"
+                    ],
+                )
 
             original_exists = Path.exists
 
@@ -980,7 +1000,8 @@ class TemplateContractTests(unittest.TestCase):
                 self.assertEqual(validate_scaffold.main(), 1)
             self.assertIn("error: problem", error_output.getvalue())
             validator.assert_called_once_with(
-                root.resolve(), template_root=template_root.resolve()
+                Path(os.path.abspath(root)),
+                template_root=Path(os.path.abspath(template_root)),
             )
 
             args = validate_scaffold.argparse.Namespace(

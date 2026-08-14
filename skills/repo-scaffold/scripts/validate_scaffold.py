@@ -373,8 +373,14 @@ def validate_markdown_sources(
                 or destination.startswith("//")
             ):
                 continue
+            decoded_path = unquote(urlsplit(destination).path)
+            if "\x00" in decoded_path:
+                problems.append(
+                    f"{relative}: relative link has an invalid path: {destination}"
+                )
+                continue
             try:
-                target = (path.parent / unquote(urlsplit(destination).path)).resolve()
+                target = (path.parent / decoded_path).resolve()
             except (OSError, RuntimeError, ValueError):
                 problems.append(
                     f"{relative}: relative link has an invalid path: {destination}"
