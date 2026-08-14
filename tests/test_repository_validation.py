@@ -1390,7 +1390,7 @@ class MutationTestingContractTests(unittest.TestCase):
             )
             lock_path = root / "requirements-mutation.lock"
             lock_text = lock_path.read_text(encoding="utf-8")
-            mutmut_start = lock_text.index("mutmut==3.6.0")
+            mutmut_start = lock_text.index("mutmut==3.7.0")
             mutmut_end = lock_text.index("mypy==", mutmut_start)
             mutmut_block = "\n".join(
                 line
@@ -1413,7 +1413,7 @@ class MutationTestingContractTests(unittest.TestCase):
 
         self.assertTrue(any("must extend requirements-dev.txt" in p for p in problems))
         self.assertTrue(any("portable hash mode" in p for p in problems))
-        self.assertTrue(any("hashed mutmut==3.6.0" in p for p in problems))
+        self.assertTrue(any("hashed mutmut==3.7.0" in p for p in problems))
         self.assertTrue(any("hashed toml==0.10.2" in p for p in problems))
 
     def test_invalid_and_unsafe_workflows_are_reported(self) -> None:
