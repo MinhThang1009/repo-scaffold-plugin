@@ -9,6 +9,7 @@ import importlib.metadata
 import json
 import multiprocessing
 import os
+import stat
 import sys
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -56,12 +57,48 @@ def _validate_source_path(value: str) -> str:
     return value
 
 
+def _is_link_or_reparse(path: Path) -> bool:
+    """Return whether an existing path is a link-like filesystem boundary."""
+    if path.is_symlink():
+        return True
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+def _assert_safe_marker_path(repository_root: Path, marker: Path) -> None:
+    """Reject a marker with a link or reparse point in any path component."""
+    boundary = Path(os.path.abspath(repository_root))
+    candidate = Path(os.path.abspath(marker))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError as error:
+        raise ValueError(
+            f"incremental mutation marker escapes repository: {marker}"
+        ) from error
+    current = boundary
+    for part in relative.parts:
+        current /= part
+        if _is_link_or_reparse(current):
+            raise ValueError(
+                "incremental mutation marker contains a link or reparse point: "
+                f"{current}"
+            )
+        if not current.exists():
+            break
+
+
 def load_reusable_sources(repository_root: Path) -> frozenset[str]:
     """Load the short-lived source allowlist emitted by cache preparation."""
     marker = repository_root / "mutants" / REUSABLE_SOURCES_NAME
+    _assert_safe_marker_path(repository_root, marker)
     if not marker.exists():
         return frozenset()
-    if marker.is_symlink() or marker.stat().st_size > 1024 * 1024:
+    if marker.stat().st_size > 1024 * 1024:
         raise ValueError("incremental mutation source marker is unsafe or oversized")
     try:
         document = json.loads(
@@ -114,9 +151,11 @@ def run_mutation_testing(
     """Run mutmut with generation skipped only for validated cached sources."""
     global _MUTMUT_MAIN, _ORIGINAL_CREATE_MUTANTS, _REUSABLE_SOURCES
 
-    root = repository_root.resolve()
+    root = Path(os.path.abspath(repository_root))
     if not root.is_dir():
         raise ValueError(f"repository root is not a directory: {root}")
+    if _is_link_or_reparse(root):
+        raise ValueError(f"repository root is a link or reparse point: {root}")
     marker = root / "mutants" / REUSABLE_SOURCES_NAME
     reusable_sources = load_reusable_sources(root)
     implementation = mutmut_main if mutmut_main is not None else load_mutmut()
@@ -137,6 +176,7 @@ def run_mutation_testing(
         _MUTMUT_MAIN = None
         _ORIGINAL_CREATE_MUTANTS = None
         _REUSABLE_SOURCES = frozenset()
+        _assert_safe_marker_path(root, marker)
         marker.unlink(missing_ok=True)
 
 

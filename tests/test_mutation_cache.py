@@ -324,6 +324,59 @@ class MutationCacheTests(unittest.TestCase):
             ):
                 prepare_mutation_cache._project_files(root)
 
+    def test_project_inventory_rejects_reparse_point_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            linked = root / "linked"
+            linked.mkdir()
+            (linked / "outside.txt").write_text("outside", encoding="utf-8")
+
+            with (
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_is_link_or_reparse",
+                    side_effect=lambda path: path == linked,
+                ),
+                self.assertRaisesRegex(ValueError, "symlink or reparse point"),
+            ):
+                prepare_mutation_cache._project_files(root)
+
+    def test_mutation_root_rejects_a_linked_repository_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_is_link_or_reparse",
+                    side_effect=lambda path: path == root,
+                ),
+                self.assertRaisesRegex(ValueError, "symlink or reparse point"),
+            ):
+                prepare_mutation_cache._mutation_root(root)
+
+    def test_project_inventory_path_boundaries_and_special_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root.parent / "outside.txt"
+            with self.assertRaisesRegex(ValueError, "escapes repository"):
+                prepare_mutation_cache._assert_safe_project_path(root, outside)
+
+            prepare_mutation_cache._assert_safe_project_path(
+                root, root / "missing" / "file.txt"
+            )
+            source = root / "source.txt"
+            source.write_text("source", encoding="utf-8")
+            original_is_file = Path.is_file
+            with mock.patch.object(
+                Path,
+                "is_file",
+                autospec=True,
+                side_effect=lambda path: (
+                    False if path == source else original_is_file(path)
+                ),
+            ):
+                self.assertEqual(prepare_mutation_cache._project_files(root), [])
+
             with (
                 mock.patch.object(prepare_mutation_cache, "MAX_FILE_BYTES", 0),
                 self.assertRaisesRegex(ValueError, "file .* exceeds"),
@@ -450,9 +503,19 @@ class MutationCacheTests(unittest.TestCase):
                     autospec=True,
                     side_effect=lambda path: path.name == "mutants",
                 ),
-                self.assertRaisesRegex(ValueError, "must not be a symlink"),
+                self.assertRaisesRegex(ValueError, "link or reparse point"),
             ):
                 prepare_mutation_cache._mutation_root(root)
+
+            with (
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_is_link_or_reparse",
+                    side_effect=lambda path: path.name == "scripts",
+                ),
+                self.assertRaisesRegex(ValueError, "link or reparse point"),
+            ):
+                prepare_mutation_cache._source_state_paths(mutants, "scripts/alpha.py")
 
             source_state = mutants / "scripts" / "alpha.py"
             source_state.mkdir(parents=True)
@@ -477,8 +540,24 @@ class MutationCacheTests(unittest.TestCase):
         child.is_file.return_value = False
         child.is_dir.return_value = False
         mutation_root.iterdir.return_value = [child]
-        with self.assertRaisesRegex(ValueError, "unsupported mutation cache entry"):
+        with (
+            mock.patch.object(prepare_mutation_cache, "_assert_safe_cache_path"),
+            mock.patch.object(
+                prepare_mutation_cache,
+                "_is_link_or_reparse",
+                return_value=False,
+            ),
+            self.assertRaisesRegex(ValueError, "unsupported mutation cache entry"),
+        ):
             prepare_mutation_cache._clear_mutation_state(mutation_root)
+
+    def test_cache_path_must_remain_below_mutants_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            boundary = Path(directory) / "mutants"
+            with self.assertRaisesRegex(ValueError, "escapes mutants"):
+                prepare_mutation_cache._assert_safe_cache_path(
+                    boundary, Path(directory) / "outside.json"
+                )
 
     def test_incomplete_or_racing_source_state_is_invalidated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
