@@ -3839,7 +3839,7 @@ class PlaceholderContractTests(unittest.TestCase):
             / "workflows"
             / "codeql.yml"
         )
-        expected_sha = "5595ccaf912efad79be6eef63a5619ff05969be3"
+        codeql_shas = {}
 
         for path in (installed_path, asset_path):
             workflow = path.read_text(encoding="utf-8")
@@ -3869,14 +3869,14 @@ class PlaceholderContractTests(unittest.TestCase):
                     workflow,
                 )
                 self.assertEqual(
-                    codeql_uses,
-                    [
-                        ("init", expected_sha),
-                        ("autobuild", expected_sha),
-                        ("analyze", expected_sha),
-                    ],
+                    [action for action, _sha in codeql_uses],
+                    ["init", "autobuild", "analyze"],
                 )
+                self.assertEqual(len({sha for _action, sha in codeql_uses}), 1)
+                codeql_shas[path] = codeql_uses[0][1]
                 self.assertIn("if: contains(fromJSON(", workflow)
+
+        self.assertEqual(codeql_shas[installed_path], codeql_shas[asset_path])
 
         installed = codeql_preflight.yaml.load(
             installed_path.read_text(encoding="utf-8"),
@@ -3905,14 +3905,15 @@ class PlaceholderContractTests(unittest.TestCase):
             / "workflows"
             / "scorecard.yml"
         )
-        expected_uses = [
-            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-            "ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc",
-            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-            "github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3",
+        expected_actions = [
+            "actions/checkout",
+            "ossf/scorecard-action",
+            "actions/upload-artifact",
+            "github/codeql-action/upload-sarif",
         ]
 
         documents = {}
+        uses_by_path = {}
         for path in (installed_path, asset_path):
             document = codeql_preflight.yaml.load(
                 path.read_text(encoding="utf-8"),
@@ -3929,9 +3930,16 @@ class PlaceholderContractTests(unittest.TestCase):
                 self.assertEqual(job["permissions"]["contents"], "read")
                 self.assertEqual(job["permissions"]["id-token"], "write")
                 self.assertEqual(job["permissions"]["security-events"], "write")
+                action_uses = [step["uses"] for step in job["steps"] if "uses" in step]
+                uses_by_path[path] = action_uses
+                parsed_uses = [
+                    re.fullmatch(r"([^@]+)@([0-9a-f]{40})", uses)
+                    for uses in action_uses
+                ]
+                self.assertTrue(all(match is not None for match in parsed_uses))
                 self.assertEqual(
-                    [step["uses"] for step in job["steps"] if "uses" in step],
-                    expected_uses,
+                    [match.group(1) for match in parsed_uses if match is not None],
+                    expected_actions,
                 )
                 scorecard_step = next(
                     step
@@ -3941,6 +3949,21 @@ class PlaceholderContractTests(unittest.TestCase):
                 self.assertEqual(scorecard_step["with"]["file_mode"], "git")
                 self.assertEqual(scorecard_step["with"]["publish_results"], "true")
                 self.assertEqual(scorecard_step["with"]["results_format"], "sarif")
+
+        self.assertEqual(uses_by_path[installed_path], uses_by_path[asset_path])
+        codeql_workflow = (
+            PLUGIN_ROOT / ".github" / "workflows" / "codeql.yml"
+        ).read_text(encoding="utf-8")
+        codeql_sha = re.search(
+            r"github/codeql-action/init@([0-9a-f]{40})",
+            codeql_workflow,
+        )
+        self.assertIsNotNone(codeql_sha)
+        assert codeql_sha is not None
+        self.assertEqual(
+            uses_by_path[installed_path][-1],
+            f"github/codeql-action/upload-sarif@{codeql_sha.group(1)}",
+        )
 
         self.assertEqual(documents[installed_path]["on"]["push"]["branches"], ["main"])
         self.assertEqual(
