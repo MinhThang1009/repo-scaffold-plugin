@@ -1156,11 +1156,11 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
             )
         direct_pins[name] = match.group(2)
 
-    for name, version in {"exceptiongroup": "1.3.1", "tomli": "2.4.1"}.items():
-        if direct_pins.get(name) != version:
+    for name in ("colorama", "exceptiongroup", "tomli"):
+        if name not in direct_pins:
             problems.append(
-                "requirements-dev.in: the cross-version lock requires "
-                f"{name}=={version}"
+                "requirements-dev.in: the cross-platform lock requires a direct "
+                f"{name} pin"
             )
 
     entry_pattern = re.compile(r"(?m)^([A-Za-z0-9_.-]+)==([^\s;\\]+)\s+\\$")
@@ -1419,15 +1419,23 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         for line in texts["requirements-mutation.in"].splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
-    expected_direct_lines = [
-        "-r requirements-dev.in",
-        "mutmut==3.7.0",
-        "toml==0.10.2",
-    ]
-    if direct_lines != expected_direct_lines:
+    mutation_direct_pins: dict[str, str] = {}
+    direct_shape_valid = bool(direct_lines) and direct_lines[0] == (
+        "-r requirements-dev.in"
+    )
+    for line in direct_lines[1:] if direct_shape_valid else direct_lines:
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;\\]+)", line)
+        if match is None:
+            direct_shape_valid = False
+            continue
+        name = normalize_package_name(match.group(1))
+        if name in mutation_direct_pins:
+            direct_shape_valid = False
+        mutation_direct_pins[name] = match.group(2)
+    if not direct_shape_valid or set(mutation_direct_pins) != {"mutmut", "toml"}:
         problems.append(
-            "requirements-mutation.in: must extend requirements-dev.in and pin "
-            "the reviewed mutmut and Python 3.10 toml versions"
+            "requirements-mutation.in: must extend requirements-dev.in and use "
+            "exact pins for only mutmut and the Python 3.10 toml dependency"
         )
 
     lock_text = texts["requirements-mutation.txt"]
@@ -1441,9 +1449,9 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         problems.append(
             "requirements-mutation.txt: must be generated in portable hash mode"
         )
-    for requirement in ("mutmut==3.7.0", "toml==0.10.2"):
+    for package in ("mutmut", "toml"):
         entry = re.search(
-            rf"(?ms)^{re.escape(requirement)}\s+\\$(.*?)(?=^[A-Za-z0-9_.-]+==|\Z)",
+            rf"(?ms)^{package}==([^\s;\\]+)\s+\\$(.*?)(?=^[A-Za-z0-9_.-]+==|\Z)",
             lock_text,
         )
         if (
@@ -1451,7 +1459,15 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             or re.search(r"--hash=sha256:[0-9a-f]{64}", entry.group(0)) is None
         ):
             problems.append(
-                f"requirements-mutation.txt: missing hashed {requirement} entry"
+                f"requirements-mutation.txt: missing hashed {package} entry"
+            )
+        elif (
+            package in mutation_direct_pins
+            and entry.group(1) != mutation_direct_pins[package]
+        ):
+            problems.append(
+                f"requirements-mutation.txt: {package} pin {entry.group(1)} does not "
+                f"match requirements-mutation.in pin {mutation_direct_pins[package]}"
             )
 
     validator_relative = "scripts/validate_mutation_results.py"
@@ -2863,17 +2879,20 @@ def validate_dependabot(repository_root: Path) -> list[str]:
                 "/",
                 "/skills/repo-scaffold/assets/workflows",
             ]
-            synchronized = (
-                action_updates[0]
-                .get("groups", {})
-                .get("synchronized-actions", {})
-                .get("group-by")
+            action_groups = (
+                action_updates[0].get("groups", {})
                 if len(action_updates) == 1
                 and isinstance(action_updates[0].get("groups"), dict)
-                and isinstance(
-                    action_updates[0].get("groups", {}).get("synchronized-actions"),
-                    dict,
-                )
+                else {}
+            )
+            synchronized = (
+                action_groups.get("synchronized-actions")
+                if isinstance(action_groups.get("synchronized-actions"), dict)
+                else None
+            )
+            synchronized_security = (
+                action_groups.get("synchronized-actions-security")
+                if isinstance(action_groups.get("synchronized-actions-security"), dict)
                 else None
             )
             if (
@@ -2881,11 +2900,20 @@ def validate_dependabot(repository_root: Path) -> list[str]:
                 or action_updates[0].get("directories") != expected_directories
                 or action_updates[0].get("schedule") != {"interval": "weekly"}
                 or commit_prefix(action_updates[0]) != "chore(deps)"
-                or synchronized != "dependency-name"
+                or synchronized
+                != {
+                    "applies-to": "version-updates",
+                    "patterns": ["*"],
+                }
+                or synchronized_security
+                != {
+                    "applies-to": "security-updates",
+                    "patterns": ["*"],
+                }
             ):
                 problems.append(
-                    f"{relative}: GitHub Actions updates must synchronize installed "
-                    "workflows and scaffold templates by dependency name"
+                    f"{relative}: GitHub Actions updates must group every installed "
+                    "workflow and scaffold-template action into one pull request"
                 )
         else:
             marker_count = source.splitlines().count(template_marker)
@@ -2902,6 +2930,17 @@ def validate_dependabot(repository_root: Path) -> list[str]:
             ]
             pip_update = pip_updates[0] if len(pip_updates) == 1 else {}
             action_update = action_updates[0] if len(action_updates) == 1 else {}
+            action_groups = action_update.get("groups")
+            synchronized = (
+                action_groups.get("synchronized-actions")
+                if isinstance(action_groups, dict)
+                else None
+            )
+            synchronized_security = (
+                action_groups.get("synchronized-actions-security")
+                if isinstance(action_groups, dict)
+                else None
+            )
             if (
                 marker_count != 1
                 or len(pip_updates) != 1
@@ -2919,10 +2958,20 @@ def validate_dependabot(repository_root: Path) -> list[str]:
                 or action_update.get("directory") != "/"
                 or action_update.get("schedule") != {"interval": "weekly"}
                 or commit_prefix(action_update) != "chore(deps)"
+                or synchronized
+                != {
+                    "applies-to": "version-updates",
+                    "patterns": ["*"],
+                }
+                or synchronized_security
+                != {
+                    "applies-to": "security-updates",
+                    "patterns": ["*"],
+                }
             ):
                 problems.append(
                     f"{relative}: template must preserve the fixed root GitHub "
-                    "Actions updater"
+                    "Actions updater and its all-actions version group"
                 )
     return problems
 

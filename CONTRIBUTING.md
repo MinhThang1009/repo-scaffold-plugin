@@ -71,18 +71,21 @@ hash-locked output for ordinary dependency updates. The same review and
 verification requirements still apply to its generated diff. Updates shared
 with `skills/repo-scaffold/assets/requirements-docs.txt` are grouped across both
 locations so the bundled scaffold cannot drift from the repository toolchain.
-The unconditional `exceptiongroup` and `tomli` pins keep the single lock
-installable on the minimum supported Python even when it is regenerated on a
-newer interpreter.
+The unconditional `colorama`, `exceptiongroup`, and `tomli` pins keep the
+single lock installable across the supported operating systems and Python
+releases even when Dependabot regenerates it on Linux with a newer interpreter.
+Keep every platform-conditional package needed by the support matrix explicit
+in `requirements-dev.in` because `pip-compile` resolves for its host platform.
 
 Mutation testing uses a separate Linux/WSL-only lock. After changing
 `requirements-mutation.in`, regenerate `requirements-mutation.txt` with the
 same procedure: record `pip-compile --version` and preserve the lockfile
 header's hash-mode options. Its unconditional
 `toml` pin preserves mutmut's Python 3.10 dependency when the lock is generated
-on a newer interpreter. A mutmut update also requires a manual review of the
-runner's internal API integration and synchronized validator/tests; regenerating
-the lock alone is intentionally insufficient. Trusted scheduled and manual runs
+on a newer interpreter. A mutmut update must pass the runner's internal API
+integration and behavioral tests; validators derive the reviewed version from
+the direct input instead of duplicating it. Regenerating the lock alone remains
+insufficient. Trusted scheduled and manual runs
 reuse previously killed mutants only when the cache manifest proves production,
 support, and the complete test suite are unchanged. Any test change forces a
 full run because a new module can introduce fixtures or import-time side effects
