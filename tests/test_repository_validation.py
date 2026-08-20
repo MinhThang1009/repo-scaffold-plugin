@@ -2583,6 +2583,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_release_please",
             "validate_release_attestation",
             "validate_privileged_workflow_permissions",
+            "validate_required_check_concurrency",
             "validate_issue_templates",
             "validate_dependabot",
             "validate_markdown_links",
@@ -3394,6 +3395,45 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
             self.assertTrue(any("root must be a mapping" in item for item in problems))
             self.assertEqual(
                 sum("analyze job is missing" in item for item in problems), 2
+            )
+
+
+class RequiredCheckConcurrencyTests(unittest.TestCase):
+    def test_required_check_workflows_serialize_without_cancellation(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_required_check_concurrency(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_invalid_and_cancelling_concurrency_contracts_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            workflow_root.mkdir(parents=True)
+            asset_root.mkdir(parents=True)
+            (workflow_root / "ci.yml").write_text("concurrency: [\n", encoding="utf-8")
+            (workflow_root / "dependency-review.yml").write_text(
+                "scalar\n", encoding="utf-8"
+            )
+            (asset_root / "ci.yml").write_text(
+                "concurrency:\n"
+                "  group: required-${{ github.ref }}\n"
+                "  cancel-in-progress: true\n",
+                encoding="utf-8",
+            )
+            (asset_root / "dependency-review.yml").write_text(
+                "concurrency:\n  cancel-in-progress: false\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_required_check_concurrency(root)
+
+            self.assertTrue(any("contract is unreadable" in item for item in problems))
+            self.assertTrue(any("root must be a mapping" in item for item in problems))
+            self.assertEqual(
+                sum("must serialize" in item for item in problems),
+                2,
             )
 
 

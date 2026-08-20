@@ -2548,6 +2548,48 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
     return problems
 
 
+def validate_required_check_concurrency(repository_root: Path) -> list[str]:
+    """Prevent cancelled duplicate runs from poisoning required check contexts."""
+    paths = (
+        repository_root / ".github" / "workflows" / "ci.yml",
+        repository_root / ".github" / "workflows" / "dependency-review.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "ci.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "dependency-review.yml",
+    )
+    problems: list[str] = []
+    for path in paths:
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            document = load_yaml(path)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: concurrency contract is unreadable: {error}")
+            continue
+        if not isinstance(document, dict):
+            problems.append(f"{relative}: root must be a mapping")
+            continue
+        concurrency = document.get("concurrency")
+        if (
+            not isinstance(concurrency, dict)
+            or not nonempty_string(concurrency.get("group"))
+            or concurrency.get("cancel-in-progress") != "false"
+        ):
+            problems.append(
+                f"{relative}: required-check runs must serialize with "
+                "cancel-in-progress: false"
+            )
+    return problems
+
+
 def read_front_matter(path: Path) -> tuple[Any, str]:
     """Return parsed YAML front matter and the remaining Markdown body."""
     text = path.read_text(encoding="utf-8")
@@ -3397,6 +3439,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_release_please,
         validate_release_attestation,
         validate_privileged_workflow_permissions,
+        validate_required_check_concurrency,
         validate_issue_templates,
         validate_dependabot,
         validate_markdown_links,
