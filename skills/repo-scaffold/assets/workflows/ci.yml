@@ -23,12 +23,13 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref (saves CI minutes); the latest push wins.
+# Serialize duplicate runs on the same ref. Required checks must finish instead
+# of leaving a cancelled check on a head that is later reused by automation.
 concurrency:
   # Concurrency groups are repository-wide; include the workflow name so an
   # unrelated workflow using the same ref cannot cancel this CI run.
   group: ${{ github.workflow }}-ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   prepare_runtime:
