@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import runpy
 import shutil
 import sys
@@ -1032,6 +1033,17 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
 
+    @staticmethod
+    def direct_version(root: Path, package: str) -> str:
+        direct_text = (root / "requirements-dev.in").read_text(encoding="utf-8")
+        match = re.search(
+            rf"(?mi)^{re.escape(package)}==([^\s;\\]+)$",
+            direct_text,
+        )
+        if match is None:
+            raise AssertionError(f"missing test fixture pin for {package}")
+        return match.group(1)
+
     def test_repository_dependency_and_coverage_contract_is_valid(self) -> None:
         self.assertEqual(
             validate_repository.validate_development_dependency_contract(PLUGIN_ROOT),
@@ -1042,9 +1054,10 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
+            coverage_version = self.direct_version(root, "coverage")
             lock_path = root / "requirements-dev.txt"
             lock_text = lock_path.read_text(encoding="utf-8").replace(
-                "coverage==7.15.4 \\", "coverage==0.0.0 \\", 1
+                f"coverage=={coverage_version} \\", "coverage==0.0.0 \\", 1
             )
             lock_path.write_text(lock_text, encoding="utf-8")
 
@@ -1054,14 +1067,45 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
 
             self.assertIn(
                 "requirements-dev.txt: coverage pin 0.0.0 does not match "
-                "requirements-dev.in pin 7.15.4",
+                f"requirements-dev.in pin {coverage_version}",
                 problems,
+            )
+
+    def test_automated_dependency_versions_are_not_hardcoded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            current_version = self.direct_version(root, "coverage")
+            replacement_version = "999.0.0"
+            direct_path = root / "requirements-dev.in"
+            lock_path = root / "requirements-dev.txt"
+            direct_path.write_text(
+                direct_path.read_text(encoding="utf-8").replace(
+                    f"coverage=={current_version}",
+                    f"coverage=={replacement_version}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            lock_path.write_text(
+                lock_path.read_text(encoding="utf-8").replace(
+                    f"coverage=={current_version} \\",
+                    f"coverage=={replacement_version} \\",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_repository.validate_development_dependency_contract(root),
+                [],
             )
 
     def test_lock_entry_without_hash_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
+            types_pyyaml_version = self.direct_version(root, "types-PyYAML")
             lock_path = root / "requirements-dev.txt"
             lock_text = lock_path.read_text(encoding="utf-8")
             start = lock_text.index("types-pyyaml==")
@@ -1081,7 +1125,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             )
 
             self.assertIn(
-                "requirements-dev.txt: types-pyyaml==6.0.12.20260724 must have "
+                f"requirements-dev.txt: types-pyyaml=={types_pyyaml_version} must have "
                 "a SHA-256 hash",
                 problems,
             )
@@ -1222,16 +1266,20 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             )
             self.assertTrue(any("pin 9.0 does not match" in item for item in problems))
 
-    def test_cross_version_compatibility_pins_are_required(self) -> None:
+    def test_cross_platform_compatibility_pins_are_required(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
             direct_path = root / "requirements-dev.in"
             direct_text = direct_path.read_text(encoding="utf-8")
+            for package in ("colorama", "exceptiongroup", "tomli"):
+                direct_text = re.sub(
+                    rf"(?mi)^{package}==[^\r\n]+\r?\n?",
+                    "",
+                    direct_text,
+                )
             direct_path.write_text(
-                direct_text.replace("exceptiongroup==1.3.1\n", "").replace(
-                    "tomli==2.4.1", "tomli==0.0.0"
-                ),
+                direct_text,
                 encoding="utf-8",
             )
 
@@ -1239,15 +1287,12 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 root
             )
 
-            self.assertIn(
-                "requirements-dev.in: the cross-version lock requires "
-                "exceptiongroup==1.3.1",
-                problems,
-            )
-            self.assertIn(
-                "requirements-dev.in: the cross-version lock requires tomli==2.4.1",
-                problems,
-            )
+            for package in ("colorama", "exceptiongroup", "tomli"):
+                self.assertIn(
+                    "requirements-dev.in: the cross-platform lock requires a direct "
+                    f"{package} pin",
+                    problems,
+                )
 
     def test_empty_lock_and_invalid_workflow_coverage_docs_and_exports_are_reported(
         self,
@@ -1388,14 +1433,14 @@ class MutationTestingContractTests(unittest.TestCase):
             )
             lock_path = root / "requirements-mutation.txt"
             lock_text = lock_path.read_text(encoding="utf-8")
-            mutmut_start = lock_text.index("mutmut==3.7.0")
+            mutmut_start = lock_text.index("mutmut==")
             mutmut_end = lock_text.index("mypy==", mutmut_start)
             mutmut_block = "\n".join(
                 line
                 for line in lock_text[mutmut_start:mutmut_end].splitlines()
                 if "--hash=sha256:" not in line
             )
-            toml_start = lock_text.index("toml==0.10.2")
+            toml_start = lock_text.index("toml==")
             toml_end = lock_text.index("types-pyyaml==", toml_start)
             lock_path.write_text(
                 "--index-url https://example.test/simple\n"
@@ -1411,8 +1456,70 @@ class MutationTestingContractTests(unittest.TestCase):
 
         self.assertTrue(any("must extend requirements-dev.in" in p for p in problems))
         self.assertTrue(any("portable hash mode" in p for p in problems))
-        self.assertTrue(any("hashed mutmut==3.7.0" in p for p in problems))
-        self.assertTrue(any("hashed toml==0.10.2" in p for p in problems))
+        self.assertTrue(any("missing hashed mutmut entry" in p for p in problems))
+        self.assertTrue(any("missing hashed toml entry" in p for p in problems))
+
+    def test_mutation_dependency_versions_are_not_hardcoded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            direct_path = root / "requirements-mutation.in"
+            lock_path = root / "requirements-mutation.txt"
+            direct_text = direct_path.read_text(encoding="utf-8")
+            match = re.search(r"(?m)^mutmut==([^\s;\\]+)$", direct_text)
+            self.assertIsNotNone(match)
+            assert match is not None
+            current_version = match.group(1)
+            replacement_version = "999.0.0"
+            direct_path.write_text(
+                direct_text.replace(
+                    f"mutmut=={current_version}",
+                    f"mutmut=={replacement_version}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            lock_path.write_text(
+                lock_path.read_text(encoding="utf-8").replace(
+                    f"mutmut=={current_version} \\",
+                    f"mutmut=={replacement_version} \\",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_repository.validate_mutation_testing_contract(root),
+                [],
+            )
+
+    def test_duplicate_mutation_pin_and_lock_mismatch_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            direct_path = root / "requirements-mutation.in"
+            direct_text = direct_path.read_text(encoding="utf-8")
+            match = re.search(r"(?m)^mutmut==([^\s;\\]+)$", direct_text)
+            self.assertIsNotNone(match)
+            assert match is not None
+            current_version = match.group(1)
+            direct_path.write_text(
+                direct_text + "mutmut==999.0.0\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+            self.assertTrue(
+                any("use exact pins for only mutmut" in problem for problem in problems)
+            )
+            self.assertTrue(
+                any(
+                    f"mutmut pin {current_version} does not match "
+                    "requirements-mutation.in pin 999.0.0" in problem
+                    for problem in problems
+                )
+            )
 
     def test_invalid_and_unsafe_workflows_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3918,7 +4025,7 @@ class DependabotValidationTests(unittest.TestCase):
             self.assertTrue(any("nonempty unique list" in item for item in problems))
             self.assertTrue(any("not both" in item for item in problems))
             self.assertTrue(
-                any("must synchronize installed workflows" in item for item in problems)
+                any("must group every installed workflow" in item for item in problems)
             )
 
     def test_dependabot_rejects_unsynchronized_python_and_incomplete_template(
@@ -3965,6 +4072,9 @@ class DependabotValidationTests(unittest.TestCase):
             self.assertTrue(
                 any("fixed root GitHub Actions updater" in item for item in problems)
             )
+            self.assertTrue(
+                any("must group every installed workflow" in item for item in problems)
+            )
 
     def test_dependabot_rendering_contract_keeps_mandatory_documentation_pip(
         self,
@@ -3980,6 +4090,7 @@ class DependabotValidationTests(unittest.TestCase):
             self.assertIn("requirements-docs.txt", document)
             self.assertIn("fixed root `pip`", document)
             self.assertIn("Do not emit a duplicate root `pip` block", document)
+            self.assertIn('patterns: ["*"]', document)
 
 
 class WorkflowShellValidationTests(unittest.TestCase):

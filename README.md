@@ -218,14 +218,18 @@ documentation dependencies, and GitHub Actions weekly.
 `requirements-dev.in` records reviewed direct pins; `requirements-dev.txt`
 resolves every transitive dependency and records PyPI SHA-256 hashes used by CI.
 The conventional `.in` to `.txt` pairing lets Dependabot run `pip-compile` and
-update both files in one PR. GitHub Action updates are grouped by dependency
-across installed workflows and scaffold templates so their immutable SHAs stay
-synchronized. Python updates are likewise grouped by dependency across the
-root toolchain and `skills/repo-scaffold/assets/requirements-docs.txt`; security
-updates for the two mirrored documentation packages are grouped explicitly.
+update both files in one PR. Platform-conditional packages required by the
+supported matrix are pinned directly so a lock regenerated on Linux remains
+installable with hashes on Windows. All GitHub Action updates share one PR
+across installed workflows and scaffold templates, preventing sub-actions from
+the same release from drifting to different immutable SHAs. Python updates are
+grouped by dependency across the root toolchain and
+`skills/repo-scaffold/assets/requirements-docs.txt`; security updates for the
+two mirrored documentation packages are grouped explicitly.
 Mutation testing extends that toolchain through the separate, hash-verified
-`requirements-mutation.txt`. Changes to the reviewed mutmut version still
-require manual compatibility updates for the runner, validator, and tests. Its
+`requirements-mutation.txt`. Mutmut versions are not duplicated in validators
+or tests; a compatible Dependabot bump passes the runner integration tests,
+while an incompatible internal API change fails those behavioral checks. Its
 monthly and manually dispatched workflow runs
 mutmut on Linux, rejects incomplete runs, enforces the evidence-backed mutation
 score floor documented in `CONTRIBUTING.md`, and retains generated mutants plus

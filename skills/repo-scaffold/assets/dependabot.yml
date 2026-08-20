@@ -14,5 +14,15 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      synchronized-actions:
+        # Keep every sub-action from one release in the same update PR.
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+      synchronized-actions-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
     commit-message:
       prefix: "chore(deps)"
