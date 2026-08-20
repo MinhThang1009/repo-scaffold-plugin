@@ -40,12 +40,12 @@ jobs:
         with:
           python-version: ${{ steps.support.outputs.latest }}
           cache: pip
-          cache-dependency-path: requirements-mutation.lock
+          cache-dependency-path: requirements-mutation.txt
 
       - name: Install mutation-testing dependencies
         run: >-
           python -m pip install --disable-pip-version-check --require-hashes
-          --requirement requirements-mutation.lock
+          --requirement requirements-mutation.txt
 
       - name: Verify dependency consistency
         run: python -m pip check

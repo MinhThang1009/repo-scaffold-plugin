@@ -281,7 +281,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
 
     problems: list[str] = []
     policy_reference = ".github/python-support.json"
-    for relative in ("README.md", "CONTRIBUTING.md", "requirements-dev.txt"):
+    for relative in ("README.md", "CONTRIBUTING.md", "requirements-dev.in"):
         path = repository_root / relative
         try:
             text = path.read_text(encoding="utf-8")
@@ -387,7 +387,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         )
         expected_mutation_install = (
             "python -m pip install --disable-pip-version-check --require-hashes "
-            "--requirement requirements-mutation.lock"
+            "--requirement requirements-mutation.txt"
         )
         mutation_integration_setup = isinstance(
             mutation_integration_steps, list
@@ -396,8 +396,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             and isinstance(step.get("with"), dict)
             and step["with"].get("python-version")
             == "${{ needs.prepare_ci.outputs.latest }}"
-            and step["with"].get("cache-dependency-path")
-            == "requirements-mutation.lock"
+            and step["with"].get("cache-dependency-path") == "requirements-mutation.txt"
             for step in mutation_integration_steps
         )
         mutation_integration_install = isinstance(
@@ -442,7 +441,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             isinstance(step, dict)
             and step.get("run")
             == "python -m pip install --disable-pip-version-check "
-            "--require-hashes --requirement requirements-dev.lock"
+            "--require-hashes --requirement requirements-dev.txt"
             for step in canary_steps
         )
         canary_tests = isinstance(canary_steps, list) and any(
@@ -1058,7 +1057,7 @@ def validate_mirrored_dependency_metadata(repository_root: Path) -> list[str]:
     """Keep intentionally mirrored dependency metadata synchronized."""
     problems: list[str] = []
     requirement_paths = (
-        repository_root / "requirements-dev.txt",
+        repository_root / "requirements-dev.in",
         repository_root
         / "skills"
         / "repo-scaffold"
@@ -1085,7 +1084,7 @@ def validate_mirrored_dependency_metadata(repository_root: Path) -> list[str]:
                 requirement_pins.append(matches[0])
         if None not in requirement_pins and len(set(requirement_pins)) != 1:
             problems.append(
-                f"{package} pin drift: requirements-dev.txt and the scaffold "
+                f"{package} pin drift: requirements-dev.in and the scaffold "
                 "docs requirements must match"
             )
 
@@ -1127,16 +1126,16 @@ def normalize_package_name(name: str) -> str:
 def validate_development_dependency_contract(repository_root: Path) -> list[str]:
     """Validate the hashed development lock and its CI coverage consumers."""
     problems: list[str] = []
-    direct_path = repository_root / "requirements-dev.txt"
-    lock_path = repository_root / "requirements-dev.lock"
+    direct_path = repository_root / "requirements-dev.in"
+    lock_path = repository_root / "requirements-dev.txt"
     try:
         direct_text = direct_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        return [f"requirements-dev.txt: could not verify direct pins: {error}"]
+        return [f"requirements-dev.in: could not verify direct pins: {error}"]
     try:
         lock_text = lock_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        return [f"requirements-dev.lock: could not verify hashed lock: {error}"]
+        return [f"requirements-dev.txt: could not verify hashed lock: {error}"]
 
     direct_pins: dict[str, str] = {}
     for line_number, raw_line in enumerate(direct_text.splitlines(), start=1):
@@ -1146,21 +1145,21 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;\\]+)", line)
         if match is None:
             problems.append(
-                "requirements-dev.txt:"
+                "requirements-dev.in:"
                 f"{line_number}: direct dependencies must use exact name==version pins"
             )
             continue
         name = normalize_package_name(match.group(1))
         if name in direct_pins:
             problems.append(
-                f"requirements-dev.txt:{line_number}: duplicate direct pin for {name}"
+                f"requirements-dev.in:{line_number}: duplicate direct pin for {name}"
             )
         direct_pins[name] = match.group(2)
 
     for name, version in {"exceptiongroup": "1.3.1", "tomli": "2.4.1"}.items():
         if direct_pins.get(name) != version:
             problems.append(
-                "requirements-dev.txt: the cross-version lock requires "
+                "requirements-dev.in: the cross-version lock requires "
                 f"{name}=={version}"
             )
 
@@ -1177,28 +1176,36 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         hashes = re.findall(r"--hash=sha256:([0-9a-f]{64})(?:\s*\\)?", block)
         if not hashes:
             problems.append(
-                f"requirements-dev.lock: {name}=={version} must have a SHA-256 hash"
+                f"requirements-dev.txt: {name}=={version} must have a SHA-256 hash"
             )
         if name in lock_pins:
-            problems.append(f"requirements-dev.lock: duplicate locked package {name}")
+            problems.append(f"requirements-dev.txt: duplicate locked package {name}")
         lock_pins[name] = version
 
     if not matches:
-        problems.append("requirements-dev.lock: no locked package entries found")
-    if "--generate-hashes" not in lock_text:
-        problems.append("requirements-dev.lock: generator header must record hash mode")
+        problems.append("requirements-dev.txt: no locked package entries found")
+    lock_header = "\n".join(lock_text.splitlines()[:10])
+    if (
+        "--generate-hashes" not in lock_header
+        or "--output-file=requirements-dev.txt" not in lock_header
+        or "requirements-dev.in" not in lock_header
+    ):
+        problems.append(
+            "requirements-dev.txt: generator header must record the hashed "
+            "requirements-dev.in to requirements-dev.txt compile command"
+        )
     if re.search(r"(?m)^--(?:index-url|trusted-host)\b", lock_text):
         problems.append(
-            "requirements-dev.lock: repository-specific index settings are forbidden"
+            "requirements-dev.txt: repository-specific index settings are forbidden"
         )
     for name, version in direct_pins.items():
         locked_version = lock_pins.get(name)
         if locked_version is None:
-            problems.append(f"requirements-dev.lock: direct package {name} is missing")
+            problems.append(f"requirements-dev.txt: direct package {name} is missing")
         elif locked_version != version:
             problems.append(
-                f"requirements-dev.lock: {name} pin {locked_version} does not match "
-                f"requirements-dev.txt pin {version}"
+                f"requirements-dev.txt: {name} pin {locked_version} does not match "
+                f"requirements-dev.in pin {version}"
             )
 
     workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
@@ -1235,18 +1242,18 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
                     cache_paths.append(step_with.get("cache-dependency-path"))
     expected_install = (
         "python -m pip install --disable-pip-version-check --require-hashes "
-        "--requirement requirements-dev.lock"
+        "--requirement requirements-dev.txt"
     )
     if len(install_runs) != 3 or any(run != expected_install for run in install_runs):
         problems.append(
             ".github/workflows/ci.yml: every development install must use the "
-            "hashed requirements-dev.lock"
+            "hashed requirements-dev.txt"
         )
     if sorted(path for path in cache_paths if isinstance(path, str)) != [
-        "requirements-dev.lock",
-        "requirements-dev.lock",
-        "requirements-dev.lock",
-        "requirements-mutation.lock",
+        "requirements-dev.txt",
+        "requirements-dev.txt",
+        "requirements-dev.txt",
+        "requirements-mutation.txt",
     ]:
         problems.append(
             ".github/workflows/ci.yml: every Python cache must key on its "
@@ -1332,7 +1339,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
             )
             continue
         for required in (
-            "requirements-dev.lock",
+            "requirements-dev.txt",
             "python -m coverage run -m pytest -q",
             "python -m coverage report",
         ):
@@ -1347,7 +1354,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     except (OSError, UnicodeError) as error:
         problems.append(f".gitattributes: could not verify export exclusions: {error}")
     else:
-        for relative in (".coveragerc", "requirements-dev.lock"):
+        for relative in (".coveragerc", "requirements-dev.txt"):
             if not re.search(
                 rf"(?m)^/?{re.escape(relative)}\s+export-ignore\s*$", attributes
             ):
@@ -1382,8 +1389,8 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "CONTRIBUTING.md",
         "README.md",
         "pyproject.toml",
-        "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "requirements-mutation.in",
         "scripts/prepare_mutation_cache.py",
         "scripts/run_mutation_testing.py",
         "scripts/validate_mutation_results.py",
@@ -1409,28 +1416,30 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
 
     direct_lines = [
         line.strip()
-        for line in texts["requirements-mutation.txt"].splitlines()
+        for line in texts["requirements-mutation.in"].splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
     expected_direct_lines = [
-        "-r requirements-dev.txt",
+        "-r requirements-dev.in",
         "mutmut==3.7.0",
         "toml==0.10.2",
     ]
     if direct_lines != expected_direct_lines:
         problems.append(
-            "requirements-mutation.txt: must extend requirements-dev.txt and pin "
+            "requirements-mutation.in: must extend requirements-dev.in and pin "
             "the reviewed mutmut and Python 3.10 toml versions"
         )
 
-    lock_text = texts["requirements-mutation.lock"]
+    lock_text = texts["requirements-mutation.txt"]
+    lock_header = "\n".join(lock_text.splitlines()[:10])
     if (
-        "--generate-hashes" not in lock_text
-        or "--output-file=requirements-mutation.lock" not in lock_text
+        "--generate-hashes" not in lock_header
+        or "--output-file=requirements-mutation.txt" not in lock_header
+        or "requirements-mutation.in" not in lock_header
         or re.search(r"(?m)^--(?:index-url|trusted-host)\b", lock_text)
     ):
         problems.append(
-            "requirements-mutation.lock: must be generated in portable hash mode"
+            "requirements-mutation.txt: must be generated in portable hash mode"
         )
     for requirement in ("mutmut==3.7.0", "toml==0.10.2"):
         entry = re.search(
@@ -1442,7 +1451,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             or re.search(r"--hash=sha256:[0-9a-f]{64}", entry.group(0)) is None
         ):
             problems.append(
-                f"requirements-mutation.lock: missing hashed {requirement} entry"
+                f"requirements-mutation.txt: missing hashed {requirement} entry"
             )
 
     validator_relative = "scripts/validate_mutation_results.py"
@@ -1555,7 +1564,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     }
     required_runs = {
         "python -m pip install --disable-pip-version-check --require-hashes "
-        "--requirement requirements-mutation.lock",
+        "--requirement requirements-mutation.txt",
         "python scripts/prepare_mutation_cache.py prepare",
         "python scripts/run_mutation_testing.py --max-children 4",
         "python scripts/prepare_mutation_cache.py record",
@@ -1648,10 +1657,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         and isinstance(step.get("uses"), str)
         and step["uses"].startswith("actions/setup-python@")
     ]
-    if cache_paths != ["requirements-mutation.lock"]:
+    if cache_paths != ["requirements-mutation.txt"]:
         problems.append(
             ".github/workflows/mutation-testing.yml: Python cache must key on "
-            "requirements-mutation.lock"
+            "requirements-mutation.txt"
         )
     mutation_cache_restore_steps = [
         step
@@ -1876,8 +1885,8 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 )
         also_copy = mutation_config.get("also_copy")
         if not isinstance(also_copy, list) or not {
-            "requirements-mutation.lock",
             "requirements-mutation.txt",
+            "requirements-mutation.in",
         }.issubset(also_copy):
             problems.append(
                 "pyproject.toml: mutation workspace must copy both mutation "
@@ -1954,10 +1963,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             )
 
     documentation_contract = {
-        "README.md": ("requirements-mutation.lock",),
+        "README.md": ("requirements-mutation.txt",),
         "CONTRIBUTING.md": (
             "100.00% mutation-score floor",
-            "requirements-mutation.lock",
+            "requirements-mutation.txt",
             "python scripts/run_mutation_testing.py --max-children 4",
             "mutmut results --all true > mutants/mutation-results.txt",
             "A timeout counts as detected",
@@ -1971,8 +1980,8 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 )
     for relative in (
         "pyproject.toml",
-        "requirements-mutation.lock",
         "requirements-mutation.txt",
+        "requirements-mutation.in",
     ):
         if (
             re.search(
@@ -2730,7 +2739,15 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
 
 def validate_dependabot(repository_root: Path) -> list[str]:
     """Validate installed and templated Dependabot configuration."""
+
+    def commit_prefix(update: dict[Any, Any]) -> Any:
+        commit_message = update.get("commit-message")
+        return (
+            commit_message.get("prefix") if isinstance(commit_message, dict) else None
+        )
+
     problems: list[str] = []
+    template_marker = "  # {{REPO_SCAFFOLD_DEPENDABOT_PACKAGE_UPDATES}}"
     paths = (
         repository_root / ".github" / "dependabot.yml",
         repository_root / "skills" / "repo-scaffold" / "assets" / "dependabot.yml",
@@ -2746,6 +2763,7 @@ def validate_dependabot(repository_root: Path) -> list[str]:
     for path in paths:
         relative = path.relative_to(repository_root)
         try:
+            source = path.read_text(encoding="utf-8")
             document = load_yaml(path)
         except (OSError, UnicodeError, yaml.YAMLError) as error:
             problems.append(f"{relative}: invalid Dependabot YAML: {error}")
@@ -2763,15 +2781,148 @@ def validate_dependabot(repository_root: Path) -> list[str]:
             if not isinstance(update, dict):
                 problems.append(f"{relative}: updates[{index}] must be a mapping")
                 continue
-            for field in ("package-ecosystem", "directory"):
-                if not nonempty_string(update.get(field)):
-                    problems.append(f"{relative}: updates[{index}].{field} is required")
+            if not nonempty_string(update.get("package-ecosystem")):
+                problems.append(
+                    f"{relative}: updates[{index}].package-ecosystem is required"
+                )
+            directory = update.get("directory")
+            directories = update.get("directories")
+            if directory is not None and directories is not None:
+                problems.append(
+                    f"{relative}: updates[{index}] must use either directory or "
+                    "directories, not both"
+                )
+            elif directory is not None:
+                if not nonempty_string(directory):
+                    problems.append(
+                        f"{relative}: updates[{index}].directory must be nonempty"
+                    )
+            elif directories is not None:
+                if (
+                    not isinstance(directories, list)
+                    or not directories
+                    or any(not nonempty_string(item) for item in directories)
+                    or len(directories) != len(set(directories))
+                ):
+                    problems.append(
+                        f"{relative}: updates[{index}].directories must be a "
+                        "nonempty unique list of paths"
+                    )
+            else:
+                problems.append(
+                    f"{relative}: updates[{index}].directory or directories is required"
+                )
             schedule = update.get("schedule")
             if not isinstance(schedule, dict):
                 problems.append(f"{relative}: updates[{index}].schedule is required")
             elif schedule.get("interval") not in allowed_intervals:
                 problems.append(
                     f"{relative}: updates[{index}].schedule.interval is invalid"
+                )
+        if relative.as_posix() == ".github/dependabot.yml":
+            pip_updates = [
+                update
+                for update in updates
+                if isinstance(update, dict) and update.get("package-ecosystem") == "pip"
+            ]
+            expected_pip_directories = [
+                "/",
+                "/skills/repo-scaffold/assets",
+            ]
+            pip_groups = (
+                pip_updates[0].get("groups", {})
+                if len(pip_updates) == 1
+                and isinstance(pip_updates[0].get("groups"), dict)
+                else {}
+            )
+            version_group = pip_groups.get("synchronized-python", {})
+            security_group = pip_groups.get("synchronized-python-security", {})
+            if (
+                len(pip_updates) != 1
+                or pip_updates[0].get("directories") != expected_pip_directories
+                or pip_updates[0].get("schedule") != {"interval": "weekly"}
+                or pip_updates[0].get("versioning-strategy") != "increase-if-necessary"
+                or commit_prefix(pip_updates[0]) != "chore(deps)"
+                or not isinstance(version_group, dict)
+                or version_group.get("group-by") != "dependency-name"
+                or not isinstance(security_group, dict)
+                or security_group.get("applies-to") != "security-updates"
+                or security_group.get("patterns") != ["markdown-it-py", "PyYAML"]
+            ):
+                problems.append(
+                    f"{relative}: Python updates must synchronize root locks and "
+                    "mirrored scaffold documentation dependencies"
+                )
+            action_updates = [
+                update
+                for update in updates
+                if isinstance(update, dict)
+                and update.get("package-ecosystem") == "github-actions"
+            ]
+            expected_directories = [
+                "/",
+                "/skills/repo-scaffold/assets/workflows",
+            ]
+            synchronized = (
+                action_updates[0]
+                .get("groups", {})
+                .get("synchronized-actions", {})
+                .get("group-by")
+                if len(action_updates) == 1
+                and isinstance(action_updates[0].get("groups"), dict)
+                and isinstance(
+                    action_updates[0].get("groups", {}).get("synchronized-actions"),
+                    dict,
+                )
+                else None
+            )
+            if (
+                len(action_updates) != 1
+                or action_updates[0].get("directories") != expected_directories
+                or action_updates[0].get("schedule") != {"interval": "weekly"}
+                or commit_prefix(action_updates[0]) != "chore(deps)"
+                or synchronized != "dependency-name"
+            ):
+                problems.append(
+                    f"{relative}: GitHub Actions updates must synchronize installed "
+                    "workflows and scaffold templates by dependency name"
+                )
+        else:
+            marker_count = source.splitlines().count(template_marker)
+            pip_updates = [
+                update
+                for update in updates
+                if isinstance(update, dict) and update.get("package-ecosystem") == "pip"
+            ]
+            action_updates = [
+                update
+                for update in updates
+                if isinstance(update, dict)
+                and update.get("package-ecosystem") == "github-actions"
+            ]
+            pip_update = pip_updates[0] if len(pip_updates) == 1 else {}
+            action_update = action_updates[0] if len(action_updates) == 1 else {}
+            if (
+                marker_count != 1
+                or len(pip_updates) != 1
+                or pip_update.get("directory") != "/"
+                or pip_update.get("schedule") != {"interval": "weekly"}
+                or pip_update.get("versioning-strategy") != "increase-if-necessary"
+                or commit_prefix(pip_update) != "chore(deps)"
+            ):
+                problems.append(
+                    f"{relative}: template must preserve one package-update marker "
+                    "and the fixed root pip updater for requirements-docs.txt"
+                )
+            if (
+                len(action_updates) != 1
+                or action_update.get("directory") != "/"
+                or action_update.get("schedule") != {"interval": "weekly"}
+                or commit_prefix(action_update) != "chore(deps)"
+            ):
+                problems.append(
+                    f"{relative}: template must preserve the fixed root GitHub "
+                    "Actions updater"
                 )
     return problems
 

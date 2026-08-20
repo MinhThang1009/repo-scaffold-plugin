@@ -1,16 +1,33 @@
 version: 2
 updates:
   - package-ecosystem: "pip"
-    directory: "/"
+    # Keep root locks and mirrored scaffold documentation pins synchronized.
+    directories:
+      - "/"
+      - "/skills/repo-scaffold/assets"
     schedule:
       interval: "weekly"
     versioning-strategy: "increase-if-necessary"
+    groups:
+      synchronized-python:
+        group-by: "dependency-name"
+      synchronized-python-security:
+        applies-to: "security-updates"
+        patterns:
+          - "markdown-it-py"
+          - "PyYAML"
     commit-message:
       prefix: "chore(deps)"
 
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # Keep installed workflows and scaffold templates on the same immutable SHAs.
+    directories:
+      - "/"
+      - "/skills/repo-scaffold/assets/workflows"
     schedule:
       interval: "weekly"
+    groups:
+      synchronized-actions:
+        group-by: "dependency-name"
     commit-message:
       prefix: "chore(deps)"

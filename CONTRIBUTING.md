@@ -57,31 +57,38 @@ Install the fully resolved, hash-verified development toolchain from the
 repository root:
 
 ```powershell
-python -m pip install --require-hashes --requirement requirements-dev.lock
+python -m pip install --require-hashes --requirement requirements-dev.txt
 ```
 
-When changing a direct pin in `requirements-dev.txt`, regenerate
-`requirements-dev.lock` with the exact command recorded in the lockfile header
+When changing a direct pin in `requirements-dev.in`, regenerate
+`requirements-dev.txt` with the exact command recorded in the lockfile header
 and record `pip-compile --version` in the pull request verification. Inspect the
 complete transitive diff and verify the lock against every operating-system and
 Python target in
 `.github/python-support.json` before committing it.
+Dependabot uses this conventional `.in` to `.txt` pair to regenerate the
+hash-locked output for ordinary dependency updates. The same review and
+verification requirements still apply to its generated diff. Updates shared
+with `skills/repo-scaffold/assets/requirements-docs.txt` are grouped across both
+locations so the bundled scaffold cannot drift from the repository toolchain.
 The unconditional `exceptiongroup` and `tomli` pins keep the single lock
 installable on the minimum supported Python even when it is regenerated on a
 newer interpreter.
 
 Mutation testing uses a separate Linux/WSL-only lock. After changing
-`requirements-mutation.txt`, regenerate `requirements-mutation.lock` with the
+`requirements-mutation.in`, regenerate `requirements-mutation.txt` with the
 same procedure: record `pip-compile --version` and preserve the lockfile
 header's hash-mode options. Its unconditional
 `toml` pin preserves mutmut's Python 3.10 dependency when the lock is generated
-on a newer interpreter. Trusted scheduled and manual runs reuse previously
-killed mutants only when the cache manifest proves production, support, and the
-complete test suite are unchanged. Any test change forces a full run because a
-new module can introduce fixtures or import-time side effects that alter existing
-tests. Use the `clean` workflow-dispatch input before claiming a final mutation
-score so every mutant is independently rerun without cached results and the
-verified run seeds the next exact-commit cache.
+on a newer interpreter. A mutmut update also requires a manual review of the
+runner's internal API integration and synchronized validator/tests; regenerating
+the lock alone is intentionally insufficient. Trusted scheduled and manual runs
+reuse previously killed mutants only when the cache manifest proves production,
+support, and the complete test suite are unchanged. Any test change forces a
+full run because a new module can introduce fixtures or import-time side effects
+that alter existing tests. Use the `clean` workflow-dispatch input before
+claiming a final mutation score so every mutant is independently rerun without
+cached results and the verified run seeds the next exact-commit cache.
 
 ## Make a change
 
@@ -124,7 +131,7 @@ requires operating-system `fork` support, so run it on Linux or in WSL on
 Windows:
 
 ```bash
-python -m pip install --require-hashes --requirement requirements-mutation.lock
+python -m pip install --require-hashes --requirement requirements-mutation.txt
 python scripts/run_mutation_testing.py --max-children 4
 mutmut export-cicd-stats
 mutmut results --all true > mutants/mutation-results.txt

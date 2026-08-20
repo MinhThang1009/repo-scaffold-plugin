@@ -17,9 +17,9 @@
 /.editorconfig    export-ignore
 /.coveragerc      export-ignore
 /pyproject.toml   export-ignore
-/requirements-dev.lock export-ignore
+/requirements-dev.in export-ignore
 /requirements-dev.txt export-ignore
-/requirements-mutation.lock export-ignore
+/requirements-mutation.in export-ignore
 /requirements-mutation.txt export-ignore
 /PLUGIN_SUBMISSION.md export-ignore
 scripts/**        export-ignore

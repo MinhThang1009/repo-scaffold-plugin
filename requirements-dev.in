@@ -1,0 +1,12 @@
+# Direct inputs for requirements-dev.txt. Keep them compatible with every
+# release declared in .github/python-support.json and regenerate the hashed lock
+# after changing any pin.
+coverage==7.15.4
+exceptiongroup==1.3.1
+markdown-it-py==4.2.0
+mypy==2.3.0
+pytest==9.1.1
+PyYAML==6.0.3
+ruff==0.16.2
+tomli==2.4.1
+types-PyYAML==6.0.12.20260724
