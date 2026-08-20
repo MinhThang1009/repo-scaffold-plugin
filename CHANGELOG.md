@@ -4,6 +4,15 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.5](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.3.4...v1.3.5) (2026-08-20)
+
+
+### Bug Fixes
+
+* **ci:** preserve required check results ([#41](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/41)) ([5b046d8](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/5b046d82c0e29f873d33d690f00b2ac9c3dfa155))
+* **deps:** decouple action pin tests ([#39](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/39)) ([d22f87c](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/d22f87cbdf9449cf5163d8af91c096791474421d))
+* **deps:** harden automated updates ([#37](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/37)) ([3fc4f65](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/3fc4f65999bc9bf6ebd7de45ef425b50a7242dd9))
+
 ## [1.3.4](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.3.3...v1.3.4) (2026-08-20)
 
 
