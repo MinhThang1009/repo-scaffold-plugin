@@ -1285,6 +1285,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         and "python -m mypy" in step["run"]
     ]
     required_mypy_paths = {
+        "skills/repo-scaffold/scripts/check_community_health.py",
         "skills/repo-scaffold/scripts/codeql_preflight.py",
         "skills/repo-scaffold/scripts/ci_toolchain.py",
         "skills/repo-scaffold/scripts/validate_scaffold.py",
@@ -2552,6 +2553,7 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
     """Prevent cancelled duplicate runs from poisoning required check contexts."""
     paths = (
         repository_root / ".github" / "workflows" / "ci.yml",
+        repository_root / ".github" / "workflows" / "commitlint.yml",
         repository_root / ".github" / "workflows" / "dependency-review.yml",
         repository_root
         / "skills"
@@ -2564,7 +2566,19 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
         / "repo-scaffold"
         / "assets"
         / "workflows"
+        / "commitlint.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
         / "dependency-review.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "documentation.yml",
     )
     problems: list[str] = []
     for path in paths:
@@ -3203,6 +3217,156 @@ def validate_markdown_links(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_community_health_tracking_contract(repository_root: Path) -> list[str]:
+    """Require the installed and scaffolded upstream reminder mechanism."""
+    problems: list[str] = []
+    installed_registry = repository_root / ".github" / "community-health-trackers.json"
+    asset_registry = (
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "community-health-trackers.json"
+    )
+    script = (
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "scripts"
+        / "check_community_health.py"
+    )
+    installed_workflow = (
+        repository_root / ".github" / "workflows" / "community-health.yml"
+    )
+    asset_workflow = (
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "community-health.yml"
+    )
+    if not script.is_file():
+        problems.append(
+            "community-health tracking: check_community_health.py is missing"
+        )
+    registries: list[object] = []
+    for path in (installed_registry, asset_registry):
+        try:
+            registries.append(load_json(path))
+        except (OSError, UnicodeError, ValueError) as error:
+            problems.append(
+                f"{path.relative_to(repository_root).as_posix()}: "
+                f"could not verify tracker registry: {error}"
+            )
+    expected_identifiers = {
+        "readme",
+        "license",
+        "code_of_conduct",
+        "contributing",
+        "security",
+        "support",
+        "governance",
+        "funding",
+        "issue_templates",
+        "pull_request_template",
+        "discussion_templates",
+        "codeowners",
+        "citation",
+    }
+    if len(registries) == 2:
+        if registries[0] != registries[1]:
+            problems.append(
+                "community-health tracker registry must match its scaffold asset"
+            )
+        document = registries[0]
+        raw_files = document.get("files") if isinstance(document, dict) else None
+        identifiers = {
+            entry.get("id")
+            for entry in raw_files or []
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+        }
+        if (
+            not isinstance(document, dict)
+            or document.get("schema-version") != 1
+            or not isinstance(raw_files, list)
+            or identifiers != expected_identifiers
+        ):
+            problems.append(
+                "community-health tracker registry must inventory every supported surface"
+            )
+
+    workflows: list[tuple[Path, dict[Any, Any], str]] = []
+    for path in (installed_workflow, asset_workflow):
+        try:
+            workflow = load_yaml(path)
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(
+                f"{path.relative_to(repository_root).as_posix()}: "
+                f"could not verify upstream reminder workflow: {error}"
+            )
+            continue
+        if not isinstance(workflow, dict):
+            problems.append(
+                f"{path.relative_to(repository_root).as_posix()}: workflow must be a mapping"
+            )
+            continue
+        workflows.append((path, workflow, text))
+    if len(workflows) == 2:
+        installed_text = workflows[0][2].replace(
+            "skills/repo-scaffold/scripts/check_community_health.py",
+            "scripts/check_community_health.py",
+        )
+        if installed_text != workflows[1][2]:
+            problems.append(
+                "community-health workflow must match its scaffold asset except for the checker path"
+            )
+    for path, workflow, text in workflows:
+        relative = path.relative_to(repository_root).as_posix()
+        triggers = workflow.get("on")
+        permissions = workflow.get("permissions")
+        concurrency = workflow.get("concurrency")
+        jobs = workflow.get("jobs")
+        job = jobs.get("upstream-drift") if isinstance(jobs, dict) else None
+        if not isinstance(triggers, dict) or set(triggers) != {
+            "schedule",
+            "workflow_dispatch",
+        }:
+            problems.append(
+                f"{relative}: upstream reminders must use only schedule and workflow_dispatch"
+            )
+        if permissions != {"contents": "read", "issues": "write"}:
+            problems.append(
+                f"{relative}: permissions must be contents: read and issues: write"
+            )
+        if (
+            not isinstance(concurrency, dict)
+            or concurrency.get("cancel-in-progress") != "false"
+        ):
+            problems.append(f"{relative}: concurrent reminder runs must not cancel")
+        if (
+            not isinstance(job, dict)
+            or job.get("name") != "community-health-upstream"
+            or job.get("timeout-minutes") != "10"
+        ):
+            problems.append(f"{relative}: upstream-drift job contract is invalid")
+        expected_script = (
+            "scripts/check_community_health.py"
+            if path == asset_workflow
+            else "skills/repo-scaffold/scripts/check_community_health.py"
+        )
+        if (
+            expected_script not in text
+            or "repo-scaffold-community-health-drift" not in text
+            or "--body-file" not in text
+        ):
+            problems.append(
+                f"{relative}: workflow must run the checker and reconcile one marker issue"
+            )
+    return problems
+
+
 def validate_scaffold_contract(repository_root: Path) -> list[str]:
     """Run the distributable rendered-document contract against this plugin."""
     script = (
@@ -3443,6 +3607,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_issue_templates,
         validate_dependabot,
         validate_markdown_links,
+        validate_community_health_tracking_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,
@@ -3462,8 +3627,8 @@ def main() -> int:
         return 1
     print(
         "Repository metadata, action pins, dependency locks, coverage policy, "
-        "CI policies, mutation testing, test quality, links, templates, "
-        "attestations, and release archive are valid."
+        "CI policies, mutation testing, test quality, links, community-health "
+        "tracking, templates, attestations, and release archive are valid."
     )
     return 0
 

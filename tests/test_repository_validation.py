@@ -2587,6 +2587,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_issue_templates",
             "validate_dependabot",
             "validate_markdown_links",
+            "validate_community_health_tracking_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
             "validate_release_archive",
@@ -3416,6 +3417,12 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
             (workflow_root / "dependency-review.yml").write_text(
                 "scalar\n", encoding="utf-8"
             )
+            (workflow_root / "commitlint.yml").write_text(
+                "concurrency:\n"
+                "  group: required-${{ github.ref }}\n"
+                "  cancel-in-progress: true\n",
+                encoding="utf-8",
+            )
             (asset_root / "ci.yml").write_text(
                 "concurrency:\n"
                 "  group: required-${{ github.ref }}\n"
@@ -3426,6 +3433,18 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
                 "concurrency:\n  cancel-in-progress: false\n",
                 encoding="utf-8",
             )
+            (asset_root / "commitlint.yml").write_text(
+                "concurrency:\n"
+                "  group: required-${{ github.ref }}\n"
+                "  cancel-in-progress: false\n",
+                encoding="utf-8",
+            )
+            (asset_root / "documentation.yml").write_text(
+                "concurrency:\n"
+                "  group: required-${{ github.ref }}\n"
+                "  cancel-in-progress: true\n",
+                encoding="utf-8",
+            )
 
             problems = validate_repository.validate_required_check_concurrency(root)
 
@@ -3433,7 +3452,7 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
             self.assertTrue(any("root must be a mapping" in item for item in problems))
             self.assertEqual(
                 sum("must serialize" in item for item in problems),
-                2,
+                4,
             )
 
 
@@ -4711,6 +4730,126 @@ jobs:
             runpy.run_path(str(WORKFLOW_SCRIPT_PATH), run_name="__main__")
 
         self.assertEqual(raised.exception.code, 2)
+
+
+class CommunityHealthTrackingValidationTests(unittest.TestCase):
+    def copy_contract(self, root: Path) -> None:
+        relative_paths = (
+            ".github/community-health-trackers.json",
+            ".github/workflows/community-health.yml",
+            "skills/repo-scaffold/assets/community-health-trackers.json",
+            "skills/repo-scaffold/assets/workflows/community-health.yml",
+            "skills/repo-scaffold/scripts/check_community_health.py",
+        )
+        for relative in relative_paths:
+            source = PLUGIN_ROOT / relative
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+
+    def test_current_community_health_tracking_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_community_health_tracking_contract(
+                PLUGIN_ROOT
+            ),
+            [],
+        )
+
+    def test_missing_tracking_contract_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            problems = validate_repository.validate_community_health_tracking_contract(
+                Path(directory)
+            )
+        self.assertEqual(len(problems), 5)
+        self.assertTrue(
+            any("check_community_health.py" in problem for problem in problems)
+        )
+        self.assertTrue(any("registry" in problem for problem in problems))
+        self.assertTrue(any("workflow" in problem for problem in problems))
+
+    def test_registry_drift_and_incomplete_inventory_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github" / "community-health-trackers.json"
+            installed.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 2,
+                        "files": [None, {"id": 3}, {"id": "readme"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+        self.assertTrue(any("must match" in problem for problem in problems))
+        self.assertTrue(
+            any("every supported surface" in problem for problem in problems)
+        )
+
+    def test_nonmapping_registry_and_workflow_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            for relative in (
+                ".github/community-health-trackers.json",
+                "skills/repo-scaffold/assets/community-health-trackers.json",
+            ):
+                (root / relative).write_text("[]\n", encoding="utf-8")
+            (root / ".github/workflows/community-health.yml").write_text(
+                "- workflow\n", encoding="utf-8"
+            )
+            (
+                root / "skills/repo-scaffold/assets/workflows/community-health.yml"
+            ).write_text("name: first\nname: duplicate\n", encoding="utf-8")
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any("every supported surface" in problem for problem in problems)
+        )
+        self.assertTrue(
+            any("workflow must be a mapping" in problem for problem in problems)
+        )
+        self.assertTrue(
+            any("could not verify upstream" in problem for problem in problems)
+        )
+
+    def test_workflow_contract_regressions_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/community-health.yml"
+            workflow = validate_repository.load_yaml(installed)
+            workflow["on"] = {"push": ""}
+            workflow["permissions"] = {"contents": "write"}
+            workflow["concurrency"] = {"cancel-in-progress": "true"}
+            workflow["jobs"] = {"upstream-drift": {"name": "wrong"}}
+            installed.write_text(
+                yaml.safe_dump(workflow, sort_keys=False)
+                .replace(
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                    "missing.py",
+                )
+                .replace("repo-scaffold-community-health-drift", "missing-marker")
+                .replace("--body-file", "--body"),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+        expected = (
+            "must match its scaffold asset",
+            "use only schedule",
+            "permissions must be",
+            "must not cancel",
+            "job contract is invalid",
+            "reconcile one marker issue",
+        )
+        for fragment in expected:
+            self.assertTrue(any(fragment in problem for problem in problems), fragment)
 
 
 if __name__ == "__main__":

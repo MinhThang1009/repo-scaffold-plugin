@@ -30,11 +30,16 @@ A Codex plugin that scaffolds a new repository to production GitHub.com standard
 Provides the `repo-scaffold` skill, which Codex activates when you ask to set up a new repository's standard files. It:
 
 - Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue/PR templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
-- For a verified GitHub.com remote, adds deterministic documentation checks, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow with provenance attestations when the repository is eligible, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
+- For a verified GitHub.com remote, adds deterministic documentation checks, weekly community-health upstream reminders, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow with provenance attestations when the repository is eligible, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
 - Produces either English or Vietnamese project-facing content. An explicit request wins, followed by active project instructions and the established documentation convention; English is the default when no preference exists.
 
-Content follows GitHub's community-standards format and is pulled from canonical sources where possible (LICENSE, `.gitignore`, and Code of Conduct via the GitHub API), with project-specific content generated from the repository itself. External GitHub Actions are pinned to immutable commit SHAs and kept current by Dependabot; shipped workflows do not delegate execution to a mutable container tag.
+Content follows GitHub's community-standards format and is pulled from canonical
+sources where possible (LICENSE and `.gitignore` through the GitHub API, and the
+Code of Conduct from the official Contributor Covenant repository), with
+project-specific content generated from the repository itself. External GitHub
+Actions are pinned to immutable commit SHAs and kept current by Dependabot;
+shipped workflows do not delegate execution to a mutable container tag.
 
 ## 2. Requirements
 
@@ -154,6 +159,7 @@ repo-scaffold/
     └── repo-scaffold/
         ├── SKILL.md
         ├── scripts/
+        │   ├── check_community_health.py # versioned upstream drift checker
         │   ├── ci_toolchain.py      # centralized CI bootstrap/tool pin policy
         │   ├── codeql_preflight.py  # fail-closed CodeQL/reusable-workflow inspection
         │   └── validate_scaffold.py # rendered Markdown and template contract
@@ -161,7 +167,7 @@ repo-scaffold/
         │   ├── readme.md          # README structure guidance
         │   └── github-setup.md    # exact gh configuration commands
         └── assets/                # community-health files + config files (labeler, release configs)
-            └── workflows/         # ci, docs, links, release engine/dispatcher, release-please, CodeQL,
+            └── workflows/         # ci, docs, community-health, links, release engine/dispatcher, release-please, CodeQL,
                                    # Scorecard, dependency-review, auto-merge, commitlint, stale, labeler
 ```
 
@@ -178,7 +184,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
