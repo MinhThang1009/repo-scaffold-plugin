@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.3.5...v1.4.0) (2026-08-21)
+
+
+### Features
+
+* track community health upstreams ([#45](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/45)) ([4c6382d](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/4c6382d47505747f604d5e45a6fa8c0bd51f3aa1))
+
 ## [1.3.5](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.3.4...v1.3.5) (2026-08-20)
 
 
