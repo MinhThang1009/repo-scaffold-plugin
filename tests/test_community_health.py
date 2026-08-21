@@ -472,9 +472,23 @@ class AuditAndCliTests(unittest.TestCase):
             "errors": ["offline\nretry"],
         }
         markdown = community_health.markdown_report(report)
-        self.assertIn("repo-scaffold-community-health-drift", markdown)
-        self.assertIn("line\\|one line two", markdown)
-        self.assertIn("offline retry", markdown)
+        self.assertEqual(
+            markdown,
+            "<!-- repo-scaffold-community-health-drift -->\n"
+            "# Community-health upstream report\n\n"
+            "- Repository: `owner/repository`\n"
+            "- Checked: `now`\n"
+            "- Overall status: **indeterminate**\n"
+            "- GitHub Community Profile: **indeterminate**\n\n"
+            "| Surface | Local path(s) | Upstream tracking | Status | Details |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| Policy | _absent_ | not versioned | absent | line\\|one line two |\n\n"
+            "## Indeterminate checks\n\n"
+            "- offline retry\n\n"
+            "Project-authored policies without a versioned canonical upstream are "
+            "inventoried as `not versioned`; they are not falsely treated as "
+            "outdated.\n",
+        )
 
     def test_write_text_and_parse_args(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -523,11 +537,14 @@ class AuditAndCliTests(unittest.TestCase):
                 }
                 json_output = root / f"{status}.json"
                 markdown_output = root / f"{status}.md"
+                stdout = StringIO()
                 with (
                     self.subTest(status=status),
-                    mock.patch.object(community_health, "audit", return_value=report),
+                    mock.patch.object(
+                        community_health, "audit", return_value=report
+                    ) as audit,
                     mock.patch.dict(os.environ, {"GH_TOKEN": "token"}, clear=True),
-                    mock.patch.object(community_health.sys, "stdout", StringIO()),
+                    mock.patch.object(community_health.sys, "stdout", stdout),
                 ):
                     result = community_health.main(
                         [
@@ -544,8 +561,26 @@ class AuditAndCliTests(unittest.TestCase):
                         ]
                     )
                 self.assertEqual(result, expected)
-                self.assertTrue(json_output.is_file())
-                self.assertTrue(markdown_output.is_file())
+                self.assertEqual(
+                    json_output.read_text(encoding="utf-8"),
+                    json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                )
+                self.assertEqual(
+                    markdown_output.read_text(encoding="utf-8"),
+                    community_health.markdown_report(report),
+                )
+                self.assertEqual(
+                    stdout.getvalue(), f"Community-health upstream status: {status}\n"
+                )
+                audit.assert_called_once()
+                audit_root, audit_entries, audit_repository, audit_client, checked = (
+                    audit.call_args.args
+                )
+                self.assertEqual(audit_root, root.resolve())
+                self.assertEqual(audit_entries, community_health.load_registry(registry))
+                self.assertEqual(audit_repository, "owner/repository")
+                self.assertEqual(audit_client.token, "token")
+                self.assertRegex(checked, r"^\d{4}-\d{2}-\d{2}T")
 
     def test_main_reports_audit_errors(self) -> None:
         stderr = StringIO()

@@ -613,6 +613,37 @@ class ActionReferenceValidationTests(unittest.TestCase):
             self.assertFalse(any("invalid.yml" in item for item in problems))
 
 
+class ActionPinSyncContractTests(unittest.TestCase):
+    def test_repository_has_a_pr_only_template_action_synchronizer(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_action_pin_sync_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_script_and_invalid_workflow_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / ".github" / "workflows" / "action-pin-sync.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("jobs: {}\n", encoding="utf-8")
+
+            problems = validate_repository.validate_action_pin_sync_contract(root)
+
+        self.assertTrue(any("script is unreadable" in problem for problem in problems))
+        self.assertTrue(
+            any("allowlisted GitHub API" in problem for problem in problems)
+        )
+        self.assertTrue(
+            any("must run weekly and manually" in problem for problem in problems)
+        )
+        self.assertTrue(
+            any("only contents and pull-requests" in problem for problem in problems)
+        )
+        self.assertTrue(
+            any("synchronizer job contract" in problem for problem in problems)
+        )
+
+
 class CiToolchainContractValidationTests(unittest.TestCase):
     CONTRACT_FILES = (
         ".github/ci-toolchain.json",
@@ -1674,8 +1705,8 @@ jobs:
 
         self.assertIn(
             ".github/workflows/mutation-testing.yml: mutation run must expose "
-            "the tracked source root, use a bounded resumable step, and skip only "
-            "for a verified clean cache hit",
+            "the tracked source root, heartbeat, bounded resumable step, and skip "
+            "only for a verified clean cache hit",
             problems,
         )
 
@@ -1683,6 +1714,12 @@ jobs:
         replacements = (
             ("        continue-on-error: true\n", "        continue-on-error: false\n"),
             ("        timeout-minutes: 150\n", "        timeout-minutes: 0\n"),
+            ("            while sleep 60; do\n", "            while sleep 600; do\n"),
+            (
+                '          trap \'kill "$heartbeat_pid" 2>/dev/null || true; '
+                'wait "$heartbeat_pid" 2>/dev/null || true\' EXIT\n',
+                "          trap 'kill \"$heartbeat_pid\" 2>/dev/null || true' EXIT\n",
+            ),
         )
         for original, replacement in replacements:
             with self.subTest(replacement=replacement.strip()):
@@ -1705,10 +1742,28 @@ jobs:
 
                 self.assertIn(
                     ".github/workflows/mutation-testing.yml: mutation run must "
-                    "expose the tracked source root, use a bounded resumable step, "
-                    "and skip only for a verified clean cache hit",
+                    "expose the tracked source root, heartbeat, bounded resumable "
+                    "step, and skip only for a verified clean cache hit",
                     problems,
                 )
+
+    def test_mutation_concurrency_must_preserve_active_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "  cancel-in-progress: false\n", "  cancel-in-progress: true\n", 1
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: concurrent mutation runs "
+            "must preserve active resumable progress",
+            problems,
+        )
 
     def test_mutation_state_cache_is_scoped_and_controls_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2702,6 +2757,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_release_please",
             "validate_release_attestation",
             "validate_privileged_workflow_permissions",
+            "validate_action_pin_sync_contract",
             "validate_required_check_concurrency",
             "validate_issue_templates",
             "validate_dependabot",
@@ -4203,7 +4259,10 @@ class DependabotValidationTests(unittest.TestCase):
             self.assertTrue(any("nonempty unique list" in item for item in problems))
             self.assertTrue(any("not both" in item for item in problems))
             self.assertTrue(
-                any("must group every installed workflow" in item for item in problems)
+                any(
+                    "must group every installed workflow action" in item
+                    for item in problems
+                )
             )
 
     def test_dependabot_rejects_unsynchronized_python_and_incomplete_template(
@@ -4251,7 +4310,10 @@ class DependabotValidationTests(unittest.TestCase):
                 any("fixed root GitHub Actions updater" in item for item in problems)
             )
             self.assertTrue(
-                any("must group every installed workflow" in item for item in problems)
+                any(
+                    "must group every installed workflow action" in item
+                    for item in problems
+                )
             )
 
     def test_dependabot_rendering_contract_keeps_mandatory_documentation_pip(
@@ -4348,7 +4410,7 @@ class WorkflowShellValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             forbidden = root / "repository"
-            external = root / "external"
+            external = root / "XexternalX"
             forbidden.mkdir()
             external.mkdir()
             tool = external / "actionlint"
@@ -4594,6 +4656,7 @@ jobs:
             result = validate_workflows.run_shellcheck("shellcheck", [path])
 
             self.assertEqual(result, 0)
+            extract_blocks.assert_called_once_with(path)
             subprocess_run.assert_called_once_with(
                 [
                     "shellcheck",
@@ -4793,6 +4856,15 @@ jobs:
         )
 
     def test_main_propagates_validators_and_checks_copied_assets(self) -> None:
+        repository_root = WORKFLOW_SCRIPT_PATH.resolve().parents[1]
+        installed_workflows = sorted(
+            (repository_root / ".github" / "workflows").glob("*.yml")
+        )
+        asset_workflows = sorted(
+            (
+                repository_root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            ).glob("*.yml")
+        )
         with (
             mock.patch.object(
                 validate_workflows,
@@ -4804,7 +4876,11 @@ jobs:
             ) as actionlint,
         ):
             self.assertEqual(validate_workflows.main(), 4)
-            self.assertEqual(actionlint.call_count, 1)
+            actionlint.assert_called_once_with(
+                "actionlint",
+                installed_workflows,
+                working_directory=repository_root,
+            )
 
         with (
             mock.patch.object(
@@ -4813,9 +4889,14 @@ jobs:
                 side_effect=["actionlint", "shellcheck"],
             ),
             mock.patch.object(validate_workflows, "run_actionlint", return_value=0),
-            mock.patch.object(validate_workflows, "run_shellcheck", return_value=5),
+            mock.patch.object(
+                validate_workflows, "run_shellcheck", return_value=5
+            ) as shellcheck,
         ):
             self.assertEqual(validate_workflows.main(), 5)
+            shellcheck.assert_called_once_with(
+                "shellcheck", [*installed_workflows, *asset_workflows]
+            )
 
         with (
             mock.patch.object(
@@ -4831,13 +4912,60 @@ jobs:
             self.assertEqual(validate_workflows.main(), 6)
 
         self.assertEqual(actionlint.call_count, 2)
+        self.assertEqual(
+            actionlint.call_args_list[0],
+            mock.call(
+                "actionlint",
+                installed_workflows,
+                working_directory=repository_root,
+            ),
+        )
+        self.assertEqual(actionlint.call_args_list[1].args[0], "actionlint")
         copied_files = actionlint.call_args_list[1].args[1]
         copied_root = actionlint.call_args_list[1].kwargs["working_directory"]
         self.assertTrue(copied_files)
-        self.assertTrue(all(path.parent.name == "workflows" for path in copied_files))
+        self.assertTrue(copied_root.name.startswith("repo-scaffold-actionlint-"))
+        self.assertTrue(
+            all(
+                path.parent.name == "workflows" and path.parent.parent.name == ".github"
+                for path in copied_files
+            )
+        )
         self.assertTrue(
             all(str(path).startswith(str(copied_root)) for path in copied_files)
         )
+
+    def test_main_requires_both_installed_and_asset_workflow_groups(self) -> None:
+        repository_root = WORKFLOW_SCRIPT_PATH.resolve().parents[1]
+        installed = repository_root / ".github" / "workflows" / "ci.yml"
+        asset = (
+            repository_root
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "ci.yml"
+        )
+        for glob_results in ([installed], [asset]):
+            with (
+                self.subTest(glob_results=glob_results),
+                mock.patch.object(
+                    validate_workflows,
+                    "resolve_path_executable",
+                    side_effect=["actionlint", "shellcheck"],
+                ),
+                mock.patch.object(
+                    validate_workflows.Path,
+                    "glob",
+                    side_effect=[glob_results, []]
+                    if glob_results == [installed]
+                    else [[], glob_results],
+                ),
+                mock.patch.object(validate_workflows, "run_actionlint") as actionlint,
+                redirect_stderr(StringIO()),
+            ):
+                self.assertEqual(validate_workflows.main(), 2)
+            actionlint.assert_not_called()
 
     def test_script_entrypoint_returns_main_status(self) -> None:
         stderr = mock.Mock()

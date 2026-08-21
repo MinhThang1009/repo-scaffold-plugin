@@ -38,8 +38,10 @@ Content follows GitHub's community-standards format and is pulled from canonical
 sources where possible (LICENSE and `.gitignore` through the GitHub API, and the
 Code of Conduct from the official Contributor Covenant repository), with
 project-specific content generated from the repository itself. External GitHub
-Actions are pinned to immutable commit SHAs and kept current by Dependabot;
-shipped workflows do not delegate execution to a mutable container tag.
+Actions are pinned to immutable commit SHAs. Dependabot keeps installed
+workflows current; a weekly PR-only synchronizer mirrors reviewed releases to
+scaffold workflow assets. Shipped workflows do not delegate execution to a
+mutable container tag.
 
 ## 2. Requirements
 
@@ -184,7 +186,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -220,15 +222,16 @@ digests. Workflows and setup guidance consume that policy instead of embedding
 those values, and a non-required scheduled/manual canary reports npm, upstream
 release, or digest drift for review.
 Dependabot checks the pinned Python development tools, mirrored scaffold
-documentation dependencies, and GitHub Actions weekly.
+documentation dependencies, and installed GitHub Actions weekly.
 `requirements-dev.in` records reviewed direct pins; `requirements-dev.txt`
 resolves every transitive dependency and records PyPI SHA-256 hashes used by CI.
 The conventional `.in` to `.txt` pairing lets Dependabot run `pip-compile` and
 update both files in one PR. Platform-conditional packages required by the
 supported matrix are pinned directly so a lock regenerated on Linux remains
-installable with hashes on Windows. All GitHub Action updates share one PR
-across installed workflows and scaffold templates, preventing sub-actions from
-the same release from drifting to different immutable SHAs. Python updates are
+installable with hashes on Windows. Dependabot groups installed GitHub Action
+updates into one PR. A weekly PR-only synchronizer updates scaffold workflow
+assets in lockstep, preventing sub-actions from the same release from drifting
+to different immutable SHAs. Python updates are
 grouped by dependency across the root toolchain and
 `skills/repo-scaffold/assets/requirements-docs.txt`; security updates for the
 two mirrored documentation packages are grouped explicitly.

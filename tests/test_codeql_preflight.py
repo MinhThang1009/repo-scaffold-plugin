@@ -3875,6 +3875,12 @@ class PlaceholderContractTests(unittest.TestCase):
                 self.assertEqual(len({sha for _action, sha in codeql_uses}), 1)
                 codeql_shas[path] = codeql_uses[0][1]
                 self.assertIn("if: contains(fromJSON(", workflow)
+                init_step = next(
+                    step
+                    for step in document["jobs"]["analyze"]["steps"]
+                    if step.get("uses", "").startswith("github/codeql-action/init@")
+                )
+                self.assertEqual(init_step["with"]["dependency-caching"], "true")
 
         self.assertEqual(codeql_shas[installed_path], codeql_shas[asset_path])
 

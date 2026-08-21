@@ -1,0 +1,41 @@
+name: Synchronize action pins
+
+on:
+  schedule:
+    - cron: "11 5 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  synchronize:
+    name: synchronize-action-pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Synchronize release pins
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/sync_action_pins.py --write
+
+      - name: Create synchronization pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ github.token }}
+          branch: chore/synchronize-action-pins
+          delete-branch: true
+          commit-message: "chore(ci): synchronize action pins"
+          title: "chore(ci): synchronize action pins"
+          body: |
+            Synchronizes immutable GitHub Action pins in repository workflows and scaffold assets to their latest stable upstream releases.

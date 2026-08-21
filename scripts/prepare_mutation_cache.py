@@ -24,7 +24,9 @@ KILLED_EXIT_CODES = {1, 3}
 MAX_PROJECT_FILES = 10_000
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
-MAX_META_BYTES = 64 * 1024 * 1024
+# The repository validator generates a large instrumented source file. Keep the
+# bound above its observed artifact size while still rejecting oversized cache input.
+MAX_META_BYTES = 128 * 1024 * 1024
 MAX_STATE_BYTES = 256 * 1024 * 1024
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 IGNORED_DIRECTORIES = {

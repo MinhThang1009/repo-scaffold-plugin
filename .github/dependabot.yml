@@ -20,10 +20,9 @@ updates:
       prefix: "chore(deps)"
 
   - package-ecosystem: "github-actions"
-    # Keep installed workflows and scaffold templates on the same immutable SHAs.
-    directories:
-      - "/"
-      - "/skills/repo-scaffold/assets/workflows"
+    # GitHub Actions Dependabot scans only .github/workflows at repository root.
+    # template assets are synchronized by action-pin-sync.yml.
+    directory: "/"
     schedule:
       interval: "weekly"
     groups:

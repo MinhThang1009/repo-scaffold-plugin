@@ -173,6 +173,19 @@ class PythonSupportPolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(python_support.PolicyError, message):
                     python_support.parse_policy(document)
 
+    def test_policy_reports_the_exact_allowed_runner_labels(self) -> None:
+        document = policy_document()
+        document["full-coverage-os"] = ["self-hosted"]
+
+        with self.assertRaises(python_support.PolicyError) as raised:
+            python_support.parse_policy(document)
+
+        self.assertEqual(
+            str(raised.exception),
+            "unsupported GitHub-hosted runner label 'self-hosted'; allowed labels: "
+            "macos-latest, ubuntu-latest, windows-latest",
+        )
+
     def test_duplicate_json_members_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "policy.json"

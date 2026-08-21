@@ -22,7 +22,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   mutation-quality:
@@ -143,7 +143,19 @@ jobs:
         timeout-minutes: 150
         env:
           REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: ${{ github.workspace }}
-        run: python scripts/run_mutation_testing.py --max-children 4
+        shell: bash
+        run: |
+          heartbeat() {
+            while sleep 60; do
+              printf '::notice::mutation testing is still running at %s UTC\n' \
+                "$(date --utc +%FT%TZ)"
+            done
+          }
+          heartbeat &
+          heartbeat_pid=$!
+          trap 'kill "$heartbeat_pid" 2>/dev/null || true; wait "$heartbeat_pid" 2>/dev/null || true' EXIT
+          printf '::notice::mutation testing started\n'
+          python scripts/run_mutation_testing.py --max-children 4
 
       - name: Record mutation cache inputs
         id: mutation-record

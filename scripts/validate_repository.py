@@ -1532,6 +1532,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         workflow = None
     triggers = workflow.get("on") if isinstance(workflow, dict) else None
     permissions = workflow.get("permissions") if isinstance(workflow, dict) else None
+    concurrency = workflow.get("concurrency") if isinstance(workflow, dict) else None
     jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
     job = jobs.get("mutation-quality") if isinstance(jobs, dict) else None
     steps = job.get("steps") if isinstance(job, dict) else None
@@ -1573,6 +1574,15 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             "read and contents: read"
         )
     if (
+        not isinstance(concurrency, dict)
+        or concurrency.get("group") != "${{ github.workflow }}-${{ github.ref }}"
+        or concurrency.get("cancel-in-progress") != "false"
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: concurrent mutation runs "
+            "must preserve active resumable progress"
+        )
+    if (
         not isinstance(job, dict)
         or job.get("runs-on") != "ubuntu-latest"
         or job.get("timeout-minutes") != "180"
@@ -1592,7 +1602,6 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "python -m pip install --disable-pip-version-check --require-hashes "
         "--requirement requirements-mutation.txt",
         "python scripts/prepare_mutation_cache.py prepare",
-        "python scripts/run_mutation_testing.py --max-children 4",
         "python scripts/prepare_mutation_cache.py record",
         "mutmut export-cicd-stats\n"
         "mutmut results --all true > mutants/mutation-results.txt\n"
@@ -1693,8 +1702,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     mutation_run_steps = [
         step
         for step in steps
-        if isinstance(step, dict)
-        and step.get("run") == "python scripts/run_mutation_testing.py --max-children 4"
+        if isinstance(step, dict) and step.get("name") == "Run mutation testing"
     ]
     expected_mutation_environment = {
         "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
@@ -1702,18 +1710,37 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     mutation_required_condition = (
         "${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' }}"
     )
+    required_heartbeat_fragments = (
+        "heartbeat() {",
+        "while sleep 60; do",
+        "::notice::mutation testing is still running at %s UTC\\n",
+        "$(date --utc +%FT%TZ)",
+        "heartbeat &",
+        "heartbeat_pid=$!",
+        'trap \'kill "$heartbeat_pid" 2>/dev/null || true; wait "$heartbeat_pid" 2>/dev/null || true\' EXIT',
+        "::notice::mutation testing started\\n",
+        "python scripts/run_mutation_testing.py --max-children 4",
+    )
+    mutation_run = mutation_run_steps[0] if len(mutation_run_steps) == 1 else {}
+    mutation_run_script = mutation_run.get("run")
     if (
         len(mutation_run_steps) != 1
-        or mutation_run_steps[0].get("id") != "mutation-run"
-        or mutation_run_steps[0].get("env") != expected_mutation_environment
-        or mutation_run_steps[0].get("if") != mutation_required_condition
-        or mutation_run_steps[0].get("continue-on-error") != "true"
-        or mutation_run_steps[0].get("timeout-minutes") != "150"
+        or mutation_run.get("id") != "mutation-run"
+        or mutation_run.get("env") != expected_mutation_environment
+        or mutation_run.get("if") != mutation_required_condition
+        or mutation_run.get("continue-on-error") != "true"
+        or mutation_run.get("timeout-minutes") != "150"
+        or mutation_run.get("shell") != "bash"
+        or not isinstance(mutation_run_script, str)
+        or any(
+            fragment not in mutation_run_script
+            for fragment in required_heartbeat_fragments
+        )
     ):
         problems.append(
             ".github/workflows/mutation-testing.yml: mutation run must expose "
-            "the tracked source root, use a bounded resumable step, and skip only "
-            "for a verified clean cache hit"
+            "the tracked source root, heartbeat, bounded resumable step, and skip "
+            "only for a verified clean cache hit"
         )
     export_steps = [
         step
@@ -2653,6 +2680,111 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
     return problems
 
 
+def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
+    """Require the trusted PR-only synchronizer for scaffold action assets."""
+    script = repository_root / "scripts" / "sync_action_pins.py"
+    workflow_path = repository_root / ".github" / "workflows" / "action-pin-sync.yml"
+    relative = workflow_path.relative_to(repository_root).as_posix()
+    problems: list[str] = []
+    try:
+        script_text = script.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"action-pin sync: script is unreadable: {error}")
+        script_text = ""
+    required_script_fragments = (
+        "ALLOWED_ACTION_REPOSITORIES",
+        "GitHubReleaseClient",
+        "releases/latest",
+        "git/ref/tags",
+        "synchronize_action_pins",
+        "workflow action is not in the synchronization allowlist",
+    )
+    if any(fragment not in script_text for fragment in required_script_fragments):
+        problems.append(
+            "action-pin sync: script must resolve stable releases through the "
+            "allowlisted GitHub API"
+        )
+    try:
+        workflow = load_yaml(workflow_path)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        problems.append(f"{relative}: synchronizer workflow is unreadable: {error}")
+        return problems
+    if not isinstance(workflow, dict):
+        return [*problems, f"{relative}: synchronizer workflow must be a mapping"]
+    if workflow.get("on") != {
+        "schedule": [{"cron": "11 5 * * 2"}],
+        "workflow_dispatch": "",
+    }:
+        problems.append(f"{relative}: synchronizer must run weekly and manually")
+    if workflow.get("permissions") != {"contents": "write", "pull-requests": "write"}:
+        problems.append(
+            f"{relative}: synchronizer must use only contents and pull-requests write"
+        )
+    concurrency = workflow.get("concurrency")
+    if (
+        not isinstance(concurrency, dict)
+        or concurrency.get("group") != "${{ github.workflow }}-${{ github.ref }}"
+        or concurrency.get("cancel-in-progress") != "false"
+    ):
+        problems.append(
+            f"{relative}: synchronizer concurrency must preserve active runs"
+        )
+    jobs = workflow.get("jobs")
+    job = jobs.get("synchronize") if isinstance(jobs, dict) else None
+    steps = job.get("steps") if isinstance(job, dict) else None
+    if (
+        not isinstance(job, dict)
+        or job.get("name") != "synchronize-action-pins"
+        or job.get("runs-on") != "ubuntu-latest"
+        or job.get("timeout-minutes") != "15"
+        or not isinstance(steps, list)
+    ):
+        problems.append(f"{relative}: synchronizer job contract is invalid")
+        return problems
+    sync_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("name") == "Synchronize release pins"
+    ]
+    sync_step = sync_steps[0] if len(sync_steps) == 1 else {}
+    if (
+        len(sync_steps) != 1
+        or sync_step.get("env") != {"GITHUB_TOKEN": "${{ github.token }}"}
+        or sync_step.get("run") != "python scripts/sync_action_pins.py --write"
+    ):
+        problems.append(
+            f"{relative}: synchronizer must update pins only through the reviewed script"
+        )
+    pr_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("name") == "Create synchronization pull request"
+    ]
+    pr_step = pr_steps[0] if len(pr_steps) == 1 else {}
+    pr_reference = pr_step.get("uses")
+    expected_pr_inputs = {
+        "token": "${{ github.token }}",
+        "branch": "chore/synchronize-action-pins",
+        "delete-branch": "true",
+        "commit-message": "chore(ci): synchronize action pins",
+        "title": "chore(ci): synchronize action pins",
+        "body": (
+            "Synchronizes immutable GitHub Action pins in repository workflows and "
+            "scaffold assets to their latest stable upstream releases.\n"
+        ),
+    }
+    if (
+        len(pr_steps) != 1
+        or not isinstance(pr_reference, str)
+        or re.fullmatch(r"peter-evans/create-pull-request@[0-9a-f]{40}", pr_reference)
+        is None
+        or pr_step.get("with") != expected_pr_inputs
+    ):
+        problems.append(f"{relative}: synchronizer must create a reviewed pull request")
+    return problems
+
+
 def validate_required_check_concurrency(repository_root: Path) -> list[str]:
     """Prevent cancelled duplicate runs from poisoning required check contexts."""
     paths = (
@@ -3035,10 +3167,6 @@ def validate_dependabot(repository_root: Path) -> list[str]:
                 if isinstance(update, dict)
                 and update.get("package-ecosystem") == "github-actions"
             ]
-            expected_directories = [
-                "/",
-                "/skills/repo-scaffold/assets/workflows",
-            ]
             action_groups = (
                 action_updates[0].get("groups", {})
                 if len(action_updates) == 1
@@ -3057,7 +3185,7 @@ def validate_dependabot(repository_root: Path) -> list[str]:
             )
             if (
                 len(action_updates) != 1
-                or action_updates[0].get("directories") != expected_directories
+                or action_updates[0].get("directory") != "/"
                 or action_updates[0].get("schedule") != {"interval": "weekly"}
                 or commit_prefix(action_updates[0]) != "chore(deps)"
                 or synchronized
@@ -3073,7 +3201,7 @@ def validate_dependabot(repository_root: Path) -> list[str]:
             ):
                 problems.append(
                     f"{relative}: GitHub Actions updates must group every installed "
-                    "workflow and scaffold-template action into one pull request"
+                    "workflow action into one pull request"
                 )
         else:
             marker_count = source.splitlines().count(template_marker)
@@ -3707,6 +3835,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_release_please,
         validate_release_attestation,
         validate_privileged_workflow_permissions,
+        validate_action_pin_sync_contract,
         validate_required_check_concurrency,
         validate_issue_templates,
         validate_dependabot,
