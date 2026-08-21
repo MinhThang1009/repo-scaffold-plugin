@@ -132,6 +132,7 @@ jobs:
       - name: Type check
         run: >-
           python -m mypy
+          skills/repo-scaffold/scripts/check_community_health.py
           skills/repo-scaffold/scripts/codeql_preflight.py
           skills/repo-scaffold/scripts/ci_toolchain.py
           skills/repo-scaffold/scripts/validate_scaffold.py

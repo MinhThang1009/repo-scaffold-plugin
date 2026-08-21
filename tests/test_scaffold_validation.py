@@ -693,6 +693,114 @@ class MarkdownSourceContractTests(unittest.TestCase):
             )
 
 
+class CodeOfConductContractTests(unittest.TestCase):
+    def test_missing_and_custom_policies_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(validate_scaffold.validate_code_of_conduct(root), [])
+
+            (root / "CODE_OF_CONDUCT.md").write_text(
+                "# Community Rules\n\nFollow the project rules.\n", encoding="utf-8"
+            )
+            self.assertEqual(validate_scaffold.validate_code_of_conduct(root), [])
+
+    def test_current_contributor_covenant_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CODE_OF_CONDUCT.md").write_text(
+                "# Contributor Covenant\n\n"
+                "This Code of Conduct is adapted from the Contributor Covenant, "
+                "version 3.0, permanently available at "
+                "https://www.contributor-covenant.org/version/3/0/.\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(validate_scaffold.validate_code_of_conduct(root), [])
+
+    def test_obsolete_and_unfinished_contributor_covenant_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CODE_OF_CONDUCT.md").write_text(
+                "# Contributor Covenant\n\n"
+                "[INSERT CONTACT METHOD]\n\n"
+                "[NOTE: customize enforcement]\n\n"
+                "This Code of Conduct is adapted from the Contributor Covenant, "
+                "version 2.0, available at "
+                "https://www.contributor-covenant.org/version/2/0/.\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_scaffold.validate_code_of_conduct(root)
+
+            self.assertIn(
+                "CODE_OF_CONDUCT.md: contains an unresolved reporting placeholder",
+                problems,
+            )
+            self.assertIn(
+                "CODE_OF_CONDUCT.md: contains an unresolved Contributor Covenant note",
+                problems,
+            )
+            self.assertIn(
+                "CODE_OF_CONDUCT.md: Contributor Covenant must be version 3.0 or newer",
+                problems,
+            )
+
+    def test_attribution_version_and_url_must_agree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CODE_OF_CONDUCT.md").write_text(
+                "# Contributor Covenant\n\n"
+                "Contributor Covenant, version 3.1 is available at "
+                "https://www.contributor-covenant.org/version/3/0/.\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                validate_scaffold.validate_code_of_conduct(root),
+                [
+                    "CODE_OF_CONDUCT.md: attribution URL must match Contributor "
+                    "Covenant version 3.1"
+                ],
+            )
+
+    def test_unreadable_policy_and_missing_attribution_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "CODE_OF_CONDUCT.md"
+            path.write_bytes(b"\xff")
+            unreadable = validate_scaffold.validate_code_of_conduct(root)
+            self.assertEqual(len(unreadable), 1)
+            self.assertTrue(
+                unreadable[0].startswith(
+                    "CODE_OF_CONDUCT.md: unreadable UTF-8 Markdown"
+                )
+            )
+
+            path.write_text(
+                "# Contributor Covenant\n\nNo attribution version.\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                validate_scaffold.validate_code_of_conduct(root),
+                [
+                    "CODE_OF_CONDUCT.md: Contributor Covenant attribution must "
+                    "identify one version"
+                ],
+            )
+
+    def test_patch_version_uses_three_component_url(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CODE_OF_CONDUCT.md").write_text(
+                "# Contributor Covenant\n\n"
+                "Contributor Covenant, version 3.1.2 is available at "
+                "https://www.contributor-covenant.org/version/3/1/2/.\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(validate_scaffold.validate_code_of_conduct(root), [])
+
+
 class TemplateContractTests(unittest.TestCase):
     def test_specialized_template_checks_report_invalid_utf8(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -961,6 +1069,11 @@ class TemplateContractTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     validate_scaffold,
+                    "validate_code_of_conduct",
+                    return_value=["conduct"],
+                ),
+                mock.patch.object(
+                    validate_scaffold,
                     "validate_pull_request_templates",
                     return_value=["pull"],
                 ),
@@ -974,7 +1087,9 @@ class TemplateContractTests(unittest.TestCase):
                     root, template_root=template_root
                 )
 
-            self.assertEqual(problems, ["source", "readme", "issue", "pull", "asset"])
+            self.assertEqual(
+                problems, ["source", "conduct", "readme", "issue", "pull", "asset"]
+            )
             sources.assert_called_once_with(
                 root, marker_exclusions=(template_root.parent,)
             )

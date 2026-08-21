@@ -43,6 +43,11 @@ COMMONMARK = MarkdownIt("commonmark")
 HTML_IMAGE = re.compile(r"<img(?:[ \t\r\n]|/?>)", re.IGNORECASE)
 CENTERED_DIV = re.compile(r'<div\s+align=["\']center["\']\s*>', re.IGNORECASE)
 LONG_README_SECTION_COUNT = 8
+CONTRIBUTOR_COVENANT_ATTRIBUTION = re.compile(
+    r"Contributor Covenant,\s*version\s+(\d+)\.(\d+)(?:\.(\d+))?",
+    re.IGNORECASE,
+)
+MINIMUM_CONTRIBUTOR_COVENANT_VERSION = (3, 0, 0)
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -403,6 +408,62 @@ def validate_markdown_sources(
     return problems
 
 
+def validate_code_of_conduct(repository_root: Path) -> list[str]:
+    """Reject obsolete or unfinished Contributor Covenant policies."""
+    candidates = (
+        repository_root / ".github" / "CODE_OF_CONDUCT.md",
+        repository_root / "CODE_OF_CONDUCT.md",
+        repository_root / "docs" / "CODE_OF_CONDUCT.md",
+    )
+    path = next(
+        (candidate for candidate in candidates if os.path.lexists(candidate)), None
+    )
+    if path is None:
+        return []
+
+    relative = path.relative_to(repository_root).as_posix()
+    text, problem = read_markdown(path, label=relative, repository_root=repository_root)
+    if problem is not None:
+        return [problem]
+    assert text is not None
+    if "contributor covenant" not in text.casefold():
+        return []
+
+    problems: list[str] = []
+    if "[INSERT CONTACT METHOD]" in text:
+        problems.append(f"{relative}: contains an unresolved reporting placeholder")
+    if "[NOTE:" in text:
+        problems.append(f"{relative}: contains an unresolved Contributor Covenant note")
+
+    matches = list(CONTRIBUTOR_COVENANT_ATTRIBUTION.finditer(text))
+    if len(matches) != 1:
+        problems.append(
+            f"{relative}: Contributor Covenant attribution must identify one version"
+        )
+        return problems
+
+    match = matches[0]
+    components = tuple(
+        int(component) if component is not None else 0 for component in match.groups()
+    )
+    if components < MINIMUM_CONTRIBUTOR_COVENANT_VERSION:
+        problems.append(
+            f"{relative}: Contributor Covenant must be version 3.0 or newer"
+        )
+    url_components = [match.group(1), match.group(2)]
+    if match.group(3) is not None:
+        url_components.append(match.group(3))
+    permanent_url = (
+        "https://www.contributor-covenant.org/version/" + "/".join(url_components) + "/"
+    )
+    if permanent_url not in text:
+        problems.append(
+            f"{relative}: attribution URL must match Contributor Covenant "
+            f"version {'.'.join(url_components)}"
+        )
+    return problems
+
+
 def validate_readme_text(text: str, *, label: str = "README.md") -> list[str]:
     """Validate the centered header and numbered README outline contract."""
     visible = without_markdown_code(text)
@@ -684,6 +745,7 @@ def validate_scaffold(
     """Run every deterministic rendered-document validation."""
     exclusions = (template_root.parent,) if template_root else ()
     problems = validate_markdown_sources(repository_root, marker_exclusions=exclusions)
+    problems.extend(validate_code_of_conduct(repository_root))
     problems.extend(validate_readme(repository_root))
     problems.extend(validate_markdown_issue_templates(repository_root))
     problems.extend(validate_pull_request_templates(repository_root))

@@ -14,7 +14,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-documentation-${{ github.ref }}
-  cancel-in-progress: true
+  # docs-contract can become a required check after a verified run.
+  cancel-in-progress: false
 
 jobs:
   prepare_docs:

@@ -13,6 +13,11 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Preserve a definitive required result for every emitted head SHA.
+  group: ${{ github.workflow }}-commitlint-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   commitlint:
     runs-on: ubuntu-latest
