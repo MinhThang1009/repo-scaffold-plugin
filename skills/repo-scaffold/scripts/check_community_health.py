@@ -10,7 +10,7 @@ import re
 import stat
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -449,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
             entries,
             args.repository,
             GitHubClient(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")),
-            datetime.now(UTC).replace(microsecond=0).isoformat(),
+            datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         )
         write_text(
             args.json_output, json.dumps(report, ensure_ascii=False, indent=2) + "\n"
