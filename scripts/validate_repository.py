@@ -1551,7 +1551,15 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 "required": "false",
                 "type": "boolean",
                 "default": "false",
-            }
+            },
+            "resume_run_id": {
+                "description": (
+                    "Resume verified state from a completed run on the same commit"
+                ),
+                "required": "false",
+                "type": "string",
+                "default": "",
+            },
         }
     }
     if dispatch != expected_dispatch:
@@ -1559,14 +1567,15 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: manual runs must expose the "
             "clean full-run verification input"
         )
-    if permissions != {"contents": "read"}:
+    if permissions != {"actions": "read", "contents": "read"}:
         problems.append(
-            ".github/workflows/mutation-testing.yml: permissions must be contents: read"
+            ".github/workflows/mutation-testing.yml: permissions must be actions: "
+            "read and contents: read"
         )
     if (
         not isinstance(job, dict)
         or job.get("runs-on") != "ubuntu-latest"
-        or job.get("timeout-minutes") != "120"
+        or job.get("timeout-minutes") != "180"
         or not isinstance(steps, list)
     ):
         problems.append(
@@ -1594,6 +1603,93 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: install the hashed lock, run "
             "mutmut, and validate exported results"
         )
+    resume_condition = "${{ inputs.resume_run_id != '' }}"
+    resume_verify_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("name") == "Verify resumable mutation run"
+    ]
+    expected_resume_environment = {
+        "GH_TOKEN": "${{ github.token }}",
+        "REPOSITORY": "${{ github.repository }}",
+        "RESUME_RUN_ID": "${{ inputs.resume_run_id }}",
+        "EXPECTED_SHA": "${{ github.sha }}",
+        "CLEAN_RUN": "${{ inputs.clean }}",
+    }
+    required_resume_fragments = (
+        '[[ ! "$RESUME_RUN_ID" =~ ^[1-9][0-9]*$ ]]',
+        "[[ \"$CLEAN_RUN\" == 'true' ]]",
+        '"repos/${REPOSITORY}/actions/runs/${RESUME_RUN_ID}"',
+        "\"$source_path\" != '.github/workflows/mutation-testing.yml'",
+        '"$source_sha" != "$EXPECTED_SHA"',
+        "\"$source_status\" != 'completed'",
+        '"$source_repository" != "$REPOSITORY"',
+        '"repos/${REPOSITORY}/actions/runs/${RESUME_RUN_ID}/artifacts"',
+        '.name == "mutation-results" and .expired == false',
+        "\"$artifact_count\" != '1'",
+    )
+    resume_verify = resume_verify_steps[0] if len(resume_verify_steps) == 1 else {}
+    resume_script = resume_verify.get("run")
+    if (
+        len(resume_verify_steps) != 1
+        or resume_verify.get("if") != resume_condition
+        or resume_verify.get("env") != expected_resume_environment
+        or resume_verify.get("shell") != "bash"
+        or not isinstance(resume_script, str)
+        or any(fragment not in resume_script for fragment in required_resume_fragments)
+        or "${{ inputs.resume_run_id }}" in (resume_script or "")
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: resumable state must be bound "
+            "to one completed mutation run from this repository and commit"
+        )
+
+    resume_download_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("name") == "Download resumable mutation state"
+    ]
+    resume_download = (
+        resume_download_steps[0] if len(resume_download_steps) == 1 else {}
+    )
+    resume_download_reference = resume_download.get("uses")
+    if (
+        len(resume_download_steps) != 1
+        or resume_download.get("if") != resume_condition
+        or not isinstance(resume_download_reference, str)
+        or not resume_download_reference.startswith("actions/download-artifact@")
+        or resume_download.get("with")
+        != {
+            "name": "mutation-results",
+            "path": "mutants/",
+            "github-token": "${{ github.token }}",
+            "repository": "${{ github.repository }}",
+            "run-id": "${{ inputs.resume_run_id }}",
+        }
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: resumable state must download "
+            "the verified mutation-results artifact without executing it"
+        )
+
+    resume_record_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("name") == "Record resumed mutation state"
+    ]
+    if (
+        len(resume_record_steps) != 1
+        or resume_record_steps[0].get("if") != resume_condition
+        or resume_record_steps[0].get("run")
+        != "python scripts/prepare_mutation_cache.py record"
+    ):
+        problems.append(
+            ".github/workflows/mutation-testing.yml: downloaded mutation state "
+            "must be recorded before conservative cache preparation"
+        )
     mutation_run_steps = [
         step
         for step in steps
@@ -1611,10 +1707,13 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         or mutation_run_steps[0].get("id") != "mutation-run"
         or mutation_run_steps[0].get("env") != expected_mutation_environment
         or mutation_run_steps[0].get("if") != mutation_required_condition
+        or mutation_run_steps[0].get("continue-on-error") != "true"
+        or mutation_run_steps[0].get("timeout-minutes") != "150"
     ):
         problems.append(
             ".github/workflows/mutation-testing.yml: mutation run must expose "
-            "the tracked source root and skip only for a verified clean cache hit"
+            "the tracked source root, use a bounded resumable step, and skip only "
+            "for a verified clean cache hit"
         )
     export_steps = [
         step
@@ -1694,7 +1793,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         and step["uses"].startswith("actions/cache/save@")
     ]
     cache_platform_prefix = (
-        "mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-"
+        "mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
         "${{ steps.python.outputs.python-version }}"
     )
     expected_clean_cache = {
@@ -1712,18 +1811,18 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             f"{cache_platform_prefix}-incremental-\n"
         ),
     }
-    clean_restore_condition = "${{ !inputs.clean }}"
+    clean_restore_condition = "${{ !inputs.clean && inputs.resume_run_id == '' }}"
     incremental_restore_condition = (
-        "${{ !inputs.clean && steps.mutation-clean-cache.outputs.cache-hit != 'true' }}"
+        "${{ !inputs.clean && inputs.resume_run_id == '' && "
+        "steps.mutation-clean-cache.outputs.cache-hit != 'true' }}"
     )
     clean_save_condition = (
         "${{ success() && inputs.clean && steps.mutation-run.outcome == 'success' "
         "&& steps.mutation-record.outcome == 'success' }}"
     )
     incremental_save_condition = (
-        "${{ success() && !inputs.clean && "
+        "${{ always() && "
         "steps.mutation-clean-cache.outputs.cache-hit != 'true' && "
-        "steps.mutation-run.outcome == 'success' && "
         "steps.mutation-record.outcome == 'success' }}"
     )
     expected_incremental_cache_save = {
@@ -1747,9 +1846,9 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     ):
         problems.append(
             ".github/workflows/mutation-testing.yml: mutation state cache must "
-            "restore and save progressive state under immutable per-run keys, "
+            "restore and save resumable state under immutable per-run keys, "
             "save verified clean results separately, and use runtime- and "
-            "platform-scoped v4 keys"
+            "platform-scoped v5 keys"
         )
 
     cache_preparer_relative = "scripts/prepare_mutation_cache.py"
@@ -1821,24 +1920,29 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         step
         for step in steps
         if isinstance(step, dict)
+        and step.get("id") == "mutation-record"
         and step.get("run") == "python scripts/prepare_mutation_cache.py record"
     ]
     record_condition = (
-        "${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' && "
-        "steps.mutation-run.outcome == 'success' }}"
+        "${{ always() && steps.mutation-clean-cache.outputs.cache-hit != 'true' }}"
     )
     if (
         len(prepare_cache_steps) != 1
         or prepare_cache_steps[0].get("if") != mutation_required_condition
         or len(record_cache_steps) != 1
-        or record_cache_steps[0].get("id") != "mutation-record"
         or record_cache_steps[0].get("if") != record_condition
     ):
         problems.append(
             ".github/workflows/mutation-testing.yml: incremental mutation state "
-            "must be prepared after every restore and recorded only after mutmut "
-            "succeeds"
+            "must be prepared after every restore and recorded after completed or "
+            "interrupted mutmut execution"
         )
+    if len(resume_record_steps) == 1 and len(prepare_cache_steps) == 1:
+        if steps.index(resume_record_steps[0]) >= steps.index(prepare_cache_steps[0]):
+            problems.append(
+                ".github/workflows/mutation-testing.yml: downloaded mutation state "
+                "must be recorded before conservative cache preparation"
+            )
     if len(mutation_cache_save_steps) == 2 and len(export_steps) == 1:
         incremental_save_index = steps.index(mutation_cache_save_steps[0])
         export_index = steps.index(export_steps[0])

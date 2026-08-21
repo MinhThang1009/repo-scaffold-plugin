@@ -1674,9 +1674,41 @@ jobs:
 
         self.assertIn(
             ".github/workflows/mutation-testing.yml: mutation run must expose "
-            "the tracked source root and skip only for a verified clean cache hit",
+            "the tracked source root, use a bounded resumable step, and skip only "
+            "for a verified clean cache hit",
             problems,
         )
+
+    def test_mutation_run_must_be_bounded_and_resumable(self) -> None:
+        replacements = (
+            ("        continue-on-error: true\n", "        continue-on-error: false\n"),
+            ("        timeout-minutes: 150\n", "        timeout-minutes: 0\n"),
+        )
+        for original, replacement in replacements:
+            with self.subTest(replacement=replacement.strip()):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow_path = (
+                        root / ".github" / "workflows" / "mutation-testing.yml"
+                    )
+                    workflow = workflow_path.read_text(encoding="utf-8").replace(
+                        original,
+                        replacement,
+                        1,
+                    )
+                    workflow_path.write_text(workflow, encoding="utf-8")
+
+                    problems = validate_repository.validate_mutation_testing_contract(
+                        root
+                    )
+
+                self.assertIn(
+                    ".github/workflows/mutation-testing.yml: mutation run must "
+                    "expose the tracked source root, use a bounded resumable step, "
+                    "and skip only for a verified clean cache hit",
+                    problems,
+                )
 
     def test_mutation_state_cache_is_scoped_and_controls_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1687,13 +1719,13 @@ jobs:
             workflow = workflow.replace(
                 "          path: mutants/\n"
                 "          key: >-\n"
-                "            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-"
                 "${{ github.run_id }}-${{ github.run_attempt }}\n"
                 "          restore-keys: |\n"
-                "            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-\n"
-                "            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-\n",
                 "          path: mutants/*.meta\n"
                 "          key: mutmut-shared\n"
@@ -1710,9 +1742,9 @@ jobs:
 
         self.assertIn(
             ".github/workflows/mutation-testing.yml: mutation state cache must "
-            "restore and save progressive state under immutable per-run keys, "
+            "restore and save resumable state under immutable per-run keys, "
             "save verified clean results separately, and use runtime- and "
-            "platform-scoped v4 keys",
+            "platform-scoped v5 keys",
             problems,
         )
         self.assertIn(
@@ -1721,15 +1753,23 @@ jobs:
             problems,
         )
 
-    def test_incremental_cache_steps_are_conditioned_on_mutmut_success(self) -> None:
+    def test_incremental_cache_records_and_saves_interrupted_progress(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
             workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
-            workflow = workflow_path.read_text(encoding="utf-8").replace(
-                "        if: ${{ steps.mutation-clean-cache.outputs.cache-hit != "
-                "'true' && steps.mutation-run.outcome == 'success' }}\n",
-                "        if: ${{ always() }}\n",
+            workflow = workflow_path.read_text(encoding="utf-8")
+            workflow = workflow.replace(
+                "        if: ${{ always() && steps.mutation-clean-cache.outputs."
+                "cache-hit != 'true' }}\n",
+                "        if: ${{ steps.mutation-run.outcome == 'success' }}\n",
+                1,
+            ).replace(
+                "        if: ${{ always() && steps.mutation-clean-cache.outputs."
+                "cache-hit != 'true' && steps.mutation-record.outcome == "
+                "'success' }}\n",
+                "        if: ${{ success() && steps.mutation-run.outcome == "
+                "'success' }}\n",
                 1,
             )
             workflow_path.write_text(workflow, encoding="utf-8")
@@ -1738,8 +1778,15 @@ jobs:
 
         self.assertIn(
             ".github/workflows/mutation-testing.yml: incremental mutation state "
-            "must be prepared after every restore and recorded only after mutmut "
-            "succeeds",
+            "must be prepared after every restore and recorded after completed or "
+            "interrupted mutmut execution",
+            problems,
+        )
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: mutation state cache must "
+            "restore and save resumable state under immutable per-run keys, save "
+            "verified clean results separately, and use runtime- and platform-scoped "
+            "v5 keys",
             problems,
         )
 
@@ -1874,6 +1921,78 @@ jobs:
         self.assertIn(
             ".github/workflows/mutation-testing.yml: manual runs must expose the "
             "clean full-run verification input",
+            problems,
+        )
+
+    def test_resumable_mutation_state_is_bound_to_the_source_run(self) -> None:
+        cases = (
+            (
+                '"$source_sha" != "$EXPECTED_SHA"',
+                '"$source_sha" == "$EXPECTED_SHA"',
+                ".github/workflows/mutation-testing.yml: resumable state must be "
+                "bound to one completed mutation run from this repository and commit",
+            ),
+            (
+                "          run-id: ${{ inputs.resume_run_id }}\n",
+                "          run-id: ${{ github.run_id }}\n",
+                ".github/workflows/mutation-testing.yml: resumable state must "
+                "download the verified mutation-results artifact without executing it",
+            ),
+            (
+                "      - name: Record resumed mutation state\n",
+                "      - name: Record unverified mutation state\n",
+                ".github/workflows/mutation-testing.yml: downloaded mutation state "
+                "must be recorded before conservative cache preparation",
+            ),
+        )
+        for original, replacement, expected in cases:
+            with self.subTest(replacement=replacement.strip()):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow_path = (
+                        root / ".github" / "workflows" / "mutation-testing.yml"
+                    )
+                    workflow = workflow_path.read_text(encoding="utf-8")
+                    self.assertIn(original, workflow)
+                    workflow_path.write_text(
+                        workflow.replace(original, replacement, 1),
+                        encoding="utf-8",
+                    )
+
+                    problems = validate_repository.validate_mutation_testing_contract(
+                        root
+                    )
+
+                self.assertIn(expected, problems)
+
+    def test_resumed_state_must_be_recorded_before_preparation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8")
+            record_start = workflow.index(
+                "      - name: Record resumed mutation state\n"
+            )
+            prepare_start = workflow.index(
+                "      - name: Prepare incremental mutation state\n"
+            )
+            run_start = workflow.index("      - name: Run mutation testing\n")
+            record_block = workflow[record_start:prepare_start]
+            workflow_path.write_text(
+                workflow[:record_start]
+                + workflow[prepare_start:run_start]
+                + record_block
+                + workflow[run_start:],
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: downloaded mutation state "
+            "must be recorded before conservative cache preparation",
             problems,
         )
 

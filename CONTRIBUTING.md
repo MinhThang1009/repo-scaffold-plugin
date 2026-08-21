@@ -86,12 +86,16 @@ on a newer interpreter. A mutmut update must pass the runner's internal API
 integration and behavioral tests; validators derive the reviewed version from
 the direct input instead of duplicating it. Regenerating the lock alone remains
 insufficient. Trusted scheduled and manual runs
-reuse previously killed mutants only when the cache manifest proves production,
-support, and the complete test suite are unchanged. Any test change forces a
-full run because a new module can introduce fixtures or import-time side effects
-that alter existing tests. Use the `clean` workflow-dispatch input before
-claiming a final mutation score so every mutant is independently rerun without
-cached results and the verified run seeds the next exact-commit cache.
+record complete or interrupted progress under an integrity manifest and reuse
+only previously killed mutants when production, support, and the complete test
+suite are unchanged. Survivor, timeout, and pending results are always reset.
+Any test change forces a full run because a new module can introduce fixtures or
+import-time side effects that alter existing tests. A completed run on the same
+repository and commit can be resumed explicitly with `resume_run_id`; the
+workflow verifies its source and downloads only its unexpired
+`mutation-results` artifact. Use the `clean` workflow-dispatch input without a
+resume run before claiming a final mutation score so every mutant is
+independently rerun without cached results.
 
 ## Make a change
 
