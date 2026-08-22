@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.2](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.5.1...v1.5.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* align Issue Form validation ([#53](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/53)) ([45ed977](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/45ed977b26d8af12ea66b08ea3013d22682566a7))
+
 ## [1.5.1](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.5.0...v1.5.1) (2026-08-22)
 
 
