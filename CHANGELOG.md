@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.5.2...v1.6.0) (2026-08-22)
+
+
+### Features
+
+* add freshness audit and PR template gates ([#55](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/55)) ([c01cc87](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/c01cc8782b434979672eafaf5824504c62101c38))
+
 ## [1.5.2](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.5.1...v1.5.2) (2026-08-22)
 
 
