@@ -700,7 +700,7 @@ def validate_issue_forms(
             continue
 
         required = {"name", "description", "body"}
-        supported = required | {"title", "labels", "assignees", "projects"}
+        supported = required | {"title", "labels", "assignees", "projects", "type"}
         if not required.issubset(document) or not set(document).issubset(supported):
             problems.append(
                 f"{relative}: form must contain {sorted(required)} and only "
@@ -711,6 +711,10 @@ def validate_issue_forms(
             for field in ("name", "description")
         ):
             problems.append(f"{relative}: name and description must be nonempty")
+        if "type" in document and (
+            not isinstance(document["type"], str) or not document["type"].strip()
+        ):
+            problems.append(f"{relative}: type must be a nonempty string")
 
         body = document.get("body")
         if not isinstance(body, list) or not body:

@@ -916,6 +916,7 @@ name: Bug report
 description: Report a reproducible problem.
 title: "[Bug]: "
 labels: [bug]
+type: bug
 body:
   - type: markdown
     attributes:
