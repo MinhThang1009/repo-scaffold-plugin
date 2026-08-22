@@ -122,7 +122,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -166,6 +166,22 @@ links, and Markdown issue/PR templates. When a change adds PowerShell blocks,
 also run PSScriptAnalyzer against each block.
 
 ## Open a pull request
+
+Use the default PR template for ordinary changes. Choose a specialized template
+only when its review workflow applies:
+
+- `feature.md` for a new or materially expanded capability;
+- `bugfix.md` for a confirmed defect and its regression coverage;
+- `documentation.md` for documentation-only or documentation-led changes; or
+- `security.md` for a safely disclosable security change. Follow `SECURITY.md`
+  instead of opening a public PR for an undisclosed vulnerability.
+
+Preserve the selected `repo-scaffold:pr-template` marker, all required
+headings, and the required checklist. Add only applicable items from `If
+applicable`, or omit that section entirely. The required `pr-template` gate
+rejects a body without exactly one trusted marker or with an incomplete
+required checklist. A draft PR may leave required items unchecked; before
+marking it ready for review, tick each required item only after it is complete.
 
 Include:
 

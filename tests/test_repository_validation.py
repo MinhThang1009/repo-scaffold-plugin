@@ -6,6 +6,7 @@ import os
 import re
 import runpy
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1478,6 +1479,7 @@ class MutationTestingContractTests(unittest.TestCase):
         "scripts/prepare_mutation_cache.py",
         "scripts/run_mutation_testing.py",
         "scripts/validate_mutation_results.py",
+        "tests/test_audit_freshness.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_validate_mutation_results.py",
@@ -4046,7 +4048,13 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             document["on"],
             {
                 "pull_request_target": {
-                    "types": ["opened", "edited", "reopened", "synchronize"]
+                    "types": [
+                        "opened",
+                        "edited",
+                        "ready_for_review",
+                        "reopened",
+                        "synchronize",
+                    ]
                 }
             },
         )
@@ -4058,12 +4066,71 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "ref: ${{ github.event.pull_request.base.sha }}",
             "persist-credentials: false",
             "PR_BODY: ${{ github.event.pull_request.body }}",
+            "PR_IS_DRAFT: ${{ github.event.pull_request.draft }}",
             'Path(".github/PULL_REQUEST_TEMPLATE.md")',
-            "Pull request body must preserve every heading and checklist item",
+            'Path(".github/PULL_REQUEST_TEMPLATE")',
+            "repo-scaffold:pr-template=",
+            "repo-scaffold:required-checklist:start",
+            "repo-scaffold:optional-checklist:start",
+            "Pull request body must select exactly one trusted template",
+            "Pull request body must preserve every required heading and checklist",
+            "Mark each required checklist item only after it is complete",
             "github.event.pull_request.user.login != 'dependabot[bot]'",
             "release-please--branches--",
         ):
             self.assertIn(fragment, workflow_text)
+
+        template_ids = ("default", "feature", "bugfix", "documentation", "security")
+        template_paths = {
+            "default": (
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "PULL_REQUEST_TEMPLATE.md",
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "PULL_REQUEST_TEMPLATE.vi.md",
+            ),
+            **{
+                template_id: (
+                    PLUGIN_ROOT
+                    / ".github"
+                    / "PULL_REQUEST_TEMPLATE"
+                    / f"{template_id}.md",
+                    PLUGIN_ROOT
+                    / "skills"
+                    / "repo-scaffold"
+                    / "assets"
+                    / "PULL_REQUEST_TEMPLATE"
+                    / f"{template_id}.md",
+                    PLUGIN_ROOT
+                    / "skills"
+                    / "repo-scaffold"
+                    / "assets"
+                    / "PULL_REQUEST_TEMPLATE.vi"
+                    / f"{template_id}.md",
+                )
+                for template_id in template_ids
+                if template_id != "default"
+            },
+        }
+        for template_id, paths in template_paths.items():
+            for path in paths:
+                text = path.read_text(encoding="utf-8")
+                self.assertIn(
+                    f"<!-- repo-scaffold:pr-template={template_id} -->",
+                    text,
+                    path,
+                )
+                self.assertIn("repo-scaffold:required-checklist:start", text, path)
+                self.assertIn("repo-scaffold:required-checklist:end", text, path)
+                self.assertIn("repo-scaffold:optional-checklist:start", text, path)
+                self.assertIn("repo-scaffold:optional-checklist:end", text, path)
+                self.assertRegex(text, r"(?m)^- \[ \] \S", path)
 
         for path in (
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md",
@@ -4073,6 +4140,140 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("--body-file", text)
             self.assertIn("--fill", text)
+            self.assertRegex(text, r"ready(?:\s+|_)for(?:\s+|_)review", path)
+
+    def test_gate_selects_the_marked_specialized_template(self) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
+        )
+        run = workflow["jobs"]["pr_template"]["steps"][-1]["run"]
+        script = run.split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github"
+            template_root.mkdir()
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+                template_root / "PULL_REQUEST_TEMPLATE.md",
+            )
+            shutil.copytree(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE",
+                template_root / "PULL_REQUEST_TEMPLATE",
+            )
+            feature_body = (
+                template_root / "PULL_REQUEST_TEMPLATE" / "feature.md"
+            ).read_text(encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": feature_body},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            ready_incomplete = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": feature_body, "PR_IS_DRAFT": "false"},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(ready_incomplete.returncode, 0)
+            self.assertIn("only after it is complete", ready_incomplete.stderr)
+
+            ready_body = re.sub(
+                r"(<!-- repo-scaffold:required-checklist:start -->)(.*?)"
+                r"(<!-- repo-scaffold:required-checklist:end -->)",
+                lambda match: (
+                    match.group(1)
+                    + match.group(2).replace("- [ ]", "- [x]")
+                    + match.group(3)
+                ),
+                feature_body,
+                flags=re.DOTALL,
+            )
+            ready_completed = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": ready_body, "PR_IS_DRAFT": "false"},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(ready_completed.returncode, 0, ready_completed.stderr)
+
+            vietnamese_root = root / "vietnamese"
+            vietnamese_template_root = vietnamese_root / ".github"
+            vietnamese_template_root.mkdir(parents=True)
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "PULL_REQUEST_TEMPLATE.vi.md",
+                vietnamese_template_root / "PULL_REQUEST_TEMPLATE.md",
+            )
+            shutil.copytree(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "PULL_REQUEST_TEMPLATE.vi",
+                vietnamese_template_root / "PULL_REQUEST_TEMPLATE",
+            )
+            vietnamese_body = (
+                vietnamese_template_root / "PULL_REQUEST_TEMPLATE" / "feature.md"
+            ).read_text(encoding="utf-8")
+            vietnamese_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=vietnamese_root,
+                env={**os.environ, "PR_BODY": vietnamese_body},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(vietnamese_result.returncode, 0, vietnamese_result.stderr)
+
+            body_without_optional_items = re.sub(
+                r"\n## If applicable\n\n"
+                r"<!-- repo-scaffold:optional-checklist:start -->.*?"
+                r"<!-- repo-scaffold:optional-checklist:end -->\n",
+                "\n",
+                feature_body,
+                flags=re.DOTALL,
+            )
+            without_optional_items = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": body_without_optional_items},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(
+                without_optional_items.returncode, 0, without_optional_items.stderr
+            )
+
+            missing_marker = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": feature_body.replace(
+                        "<!-- repo-scaffold:pr-template=feature -->\n\n", ""
+                    ),
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(missing_marker.returncode, 0)
+            self.assertIn(
+                "must select exactly one trusted template", missing_marker.stderr
+            )
 
     def test_workflow_never_checks_out_or_executes_the_pull_request_head(self) -> None:
         workflow = (

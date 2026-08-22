@@ -1,3 +1,5 @@
+<!-- repo-scaffold:pr-template=default -->
+
 ## Purpose
 
 Explain what this pull request changes and why it is needed.
@@ -10,21 +12,24 @@ Explain what this pull request changes and why it is needed.
 
 List the exact commands run and their results.
 
-```text
-Command:
-Result:
-```
+## Required checklist
 
-## Checklist
-
-- [ ] The change is focused and follows `CONTRIBUTING.md`
+<!-- repo-scaffold:required-checklist:start -->
+- [ ] The change is focused and follows CONTRIBUTING.md
 - [ ] Existing files and behavior were inspected before editing
-- [ ] Tests were added or updated for behavior changes
-- [ ] Python tests, format, lint, type checks, and relevant workflow checks pass
-- [ ] External requirements were checked against current authoritative sources
-- [ ] Documentation was updated where behavior or requirements changed
+- [ ] Verification evidence is recorded above
 - [ ] No secret, credential, private data, or unresolved scaffold marker is included
-- [ ] Security and permission boundaries were not weakened
+- [ ] Security and permission-boundary effects were considered
+<!-- repo-scaffold:required-checklist:end -->
+
+## If applicable
+
+<!-- repo-scaffold:optional-checklist:start -->
+- [ ] Tests were added or updated for behavior changes
+- [ ] Documentation was updated where behavior or requirements changed
+- [ ] External requirements were checked against current authoritative sources
+- [ ] Compatibility, migration, rollback, performance, or release effects were assessed
+<!-- repo-scaffold:optional-checklist:end -->
 
 ## Related issue
 

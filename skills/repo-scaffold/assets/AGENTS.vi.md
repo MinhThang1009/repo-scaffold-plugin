@@ -16,11 +16,16 @@ Tệp này là điểm vào hướng dẫn dùng chung cho các coding agent h�
 
 ## Pull request
 
-Trước khi tạo hoặc cập nhật pull request, đọc template đang có hiệu lực từ base
-branch đích. Giữ nguyên mọi heading và checklist, thay hướng dẫn bằng bằng chứng
-cụ thể về thay đổi và verification, sau đó dùng tệp body UTF-8 với
-`gh pr create --body-file` hoặc `gh pr edit --body-file`. Không dùng `--fill`
-hoặc `--body` tự do vì có thể bỏ qua template.
+Trước khi tạo hoặc cập nhật pull request, đọc tập template tin cậy từ base
+branch đích. Dùng template mặc định trừ khi thay đổi thực sự cần quy trình
+review cho feature, bugfix, documentation hoặc security. Giữ đúng một marker
+`<!-- repo-scaffold:pr-template=<id> -->` phù hợp, mọi heading bắt buộc và
+mọi mục của danh sách bắt buộc trong template đã chọn. Chỉ thêm mục `Khi phù
+hợp` khi áp dụng, và bỏ cả phần này khi không có mục nào áp dụng. Dùng tệp body
+UTF-8. PR ở trạng thái draft có thể để các mục bắt buộc chưa tick; trước khi
+chuyển sang ready for review, chỉ tick một mục bắt buộc sau khi đã hoàn tất. Dùng
+`gh pr create --body-file` hoặc `gh pr edit --body-file`. Không dùng
+`--fill` hoặc `--body` tự do vì có thể bỏ qua template.
 
 ## Ngôn ngữ
 

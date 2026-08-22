@@ -15,11 +15,16 @@ This file is the shared instruction entry point for coding agents that support
 
 ## Pull requests
 
-Before creating or updating a pull request, read the active template from the
-target base branch. Preserve every heading and checklist item, replace its
-guidance with specific change and verification evidence, and use a UTF-8 body
-file with `gh pr create --body-file` or `gh pr edit --body-file`. Do not use
-`--fill` or a free-form `--body` value that bypasses the template.
+Before creating or updating a pull request, read the trusted template set from
+the target base branch. Use the default template unless the change genuinely
+needs feature, bugfix, documentation, or security review. Preserve exactly one
+matching `<!-- repo-scaffold:pr-template=<id> -->` marker, every required
+heading, and every required-checklist item from the selected template. Include
+an `If applicable` item only when it applies, and omit that section when none
+apply. A draft PR may leave required items unchecked; before marking it ready
+for review, tick a required item only after it is complete. Use a UTF-8 body
+file with `gh pr create --body-file` or `gh pr edit --body-file`. Do not use `--fill`
+or a free-form `--body` value that bypasses the template.
 
 ## Language
 

@@ -885,24 +885,87 @@ def validate_template_assets(template_root: Path) -> list[str]:
             template_root, template_directory=template_root / "ISSUE_TEMPLATE"
         )
     )
-    pull_template = template_root / "PULL_REQUEST_TEMPLATE.md"
-    if path_has_link_or_reparse(pull_template, template_root):
-        problems.append(
-            "PULL_REQUEST_TEMPLATE.md asset: linked or reparse-point Markdown is "
-            "not dereferenced or validated"
-        )
-    elif pull_template.is_file():
+    pull_templates = [("default", template_root / "PULL_REQUEST_TEMPLATE.md")]
+    for directory_name in ("PULL_REQUEST_TEMPLATE", "PULL_REQUEST_TEMPLATE.vi"):
+        template_directory = template_root / directory_name
+        if path_has_link_or_reparse(template_directory, template_root):
+            problems.append(
+                f"{directory_name} asset directory: linked or reparse-point Markdown "
+                "is not dereferenced or validated"
+            )
+            continue
+        if template_directory.is_dir():
+            pull_templates.extend(
+                (path.stem, path) for path in sorted(template_directory.glob("*.md"))
+            )
+
+    marker_pattern = re.compile(
+        r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",
+        re.MULTILINE,
+    )
+    required_section_marker = "repo-scaffold:required-checklist"
+    optional_section_marker = "repo-scaffold:optional-checklist"
+    checklist_pattern = re.compile(r"(?m)^\s*[-*+]\s+\[ \]\s+\S")
+    optional_section_pattern = re.compile(
+        r"^##[ \t]+(?:If applicable|Khi phù hợp|Danh sách tùy chọn)[ \t]*$\s*"
+        r"<!-- repo-scaffold:optional-checklist:start -->",
+        re.MULTILINE,
+    )
+    for template_id, pull_template in pull_templates:
+        relative = pull_template.relative_to(template_root).as_posix()
+        label = f"{relative} asset"
+        if path_has_link_or_reparse(pull_template, template_root):
+            problems.append(
+                f"{label}: linked or reparse-point Markdown is not dereferenced or "
+                "validated"
+            )
+            continue
+        if not pull_template.is_file():
+            continue
         text, problem = read_markdown(
             pull_template,
-            label="PULL_REQUEST_TEMPLATE.md asset",
+            label=label,
             repository_root=template_root,
         )
         if problem is not None:
             problems.append(problem)
-        elif not re.search(r"(?m)^\s*[-*+]\s+\[ \]\s+\S", text or ""):
+            continue
+        assert text is not None
+        if marker_pattern.findall(text) != [template_id]:
             problems.append(
-                "PULL_REQUEST_TEMPLATE.md asset must contain a checklist item"
+                f"{label} must contain exactly one matching repo-scaffold template marker"
             )
+        if (
+            text.count(f"{required_section_marker}:start") != 1
+            or text.count(f"{required_section_marker}:end") != 1
+        ):
+            problems.append(
+                f"{label} must contain exactly one required checklist section"
+            )
+        if (
+            text.count(f"{optional_section_marker}:start") != 1
+            or text.count(f"{optional_section_marker}:end") != 1
+        ):
+            problems.append(
+                f"{label} must contain exactly one optional checklist section"
+            )
+        elif optional_section_pattern.search(text) is None:
+            problems.append(
+                f"{label} must label the optional checklist `If applicable`, `Khi phù hợp`, "
+                "or `Danh sách tùy chọn`"
+            )
+        required_start = f"<!-- {required_section_marker}:start -->"
+        required_end = f"<!-- {required_section_marker}:end -->"
+        required_checklist = text
+        if required_start in text and required_end in text:
+            required_checklist = text.split(required_start, maxsplit=1)[1].split(
+                required_end, maxsplit=1
+            )[0]
+        if checklist_pattern.search(required_checklist) is None:
+            if relative == "PULL_REQUEST_TEMPLATE.md":
+                problems.append(f"{label} must contain a checklist item")
+            else:
+                problems.append(f"{label} must contain a required checklist item")
     return list(dict.fromkeys(problems))
 
 

@@ -31,7 +31,7 @@ to production GitHub.com standard.
 Provides one shared `repo-scaffold` skill, which Codex and Claude Code can use
 when you ask to set up a new repository's standard files. It:
 
-- Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue/PR templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
+- Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue templates, a default PR template plus focused feature, bugfix, documentation, and security PR templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
 - For a verified GitHub.com remote, adds deterministic documentation checks, weekly community-health upstream reminders, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow with provenance attestations when the repository is eligible, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
 - Produces either English or Vietnamese project-facing content. An explicit request wins, followed by active project instructions and the established documentation convention; English is the default when no preference exists.
@@ -45,8 +45,10 @@ Code of Conduct from the official Contributor Covenant repository), with
 project-specific content generated from the repository itself. External GitHub
 Actions are pinned to immutable commit SHAs. Dependabot keeps installed
 workflows current; a weekly PR-only synchronizer mirrors reviewed releases to
-scaffold workflow assets. Shipped workflows do not delegate execution to a
-mutable container tag.
+scaffold workflow assets. A separate scheduled freshness audit compares action
+pins, Release Please schemas, and direct Python pins with their authoritative
+upstreams, then maintains one reminder issue until the drift is resolved.
+Shipped workflows do not delegate execution to a mutable container tag.
 
 ## 2. Requirements
 
@@ -153,6 +155,7 @@ repo-scaffold/
 │       ├── codeql.yml
 │       ├── commitlint.yml
 │       ├── dependency-review.yml
+│       ├── freshness.yml
 │       ├── labeler.yml
 │       ├── links.yml
 │       ├── mutation-testing.yml
@@ -178,6 +181,7 @@ repo-scaffold/
 │   ├── prepare_mutation_cache.py
 │   ├── python_support.py
 │   ├── run_mutation_testing.py
+│   ├── audit_freshness.py
 │   ├── validate_mutation_results.py
 │   ├── validate_repository.py
 │   └── validate_workflows.py
@@ -210,7 +214,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -259,6 +263,10 @@ to different immutable SHAs. Python updates are
 grouped by dependency across the root toolchain and
 `skills/repo-scaffold/assets/requirements-docs.txt`; security updates for the
 two mirrored documentation packages are grouped explicitly.
+The non-required weekly [freshness workflow](.github/workflows/freshness.yml)
+independently reports action-pin, Release Please schema, direct-PyPI-pin, and
+lock-consistency drift. It opens or updates one marker Issue when attention is
+required and closes it only after a clean scheduled/manual result.
 Mutation testing extends that toolchain through the separate, hash-verified
 `requirements-mutation.txt`. Mutmut versions are not duplicated in validators
 or tests; a compatible Dependabot bump passes the runner integration tests,

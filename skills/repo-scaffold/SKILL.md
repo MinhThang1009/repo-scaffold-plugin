@@ -120,7 +120,8 @@ CRITICAL (Windows/Git-Bash): pass `gh api` paths WITHOUT a leading slash, or the
     requirements-docs.txt, scripts/validate_scaffold.py,
     scripts/ci_toolchain.py, scripts/check_community_health.py,
     .github/ci-toolchain.json, .github/community-health-trackers.json,
-    .github/PULL_REQUEST_TEMPLATE.md, .github/dependabot.yml. Copy all three
+    .github/PULL_REQUEST_TEMPLATE.md, .github/PULL_REQUEST_TEMPLATE/*.md,
+    .github/dependabot.yml. Copy all three
     scripts byte-for-byte from the skill's `scripts/` directory; they are
     project tooling, not generated prose. Copy `.gitattributes` from
     `assets/gitattributes.template` so the template cannot affect its own
@@ -128,7 +129,9 @@ CRITICAL (Windows/Git-Bash): pass `gh api` paths WITHOUT a leading slash, or the
     `assets/ci-toolchain.json`, and `.github/community-health-trackers.json`
     from `assets/community-health-trackers.json`.
   - For `SCAFFOLD_LANGUAGE=en`, copy English assets to their canonical target
-    names. For `SCAFFOLD_LANGUAGE=vi`, use the Vietnamese sidecar as the source
+    names, including every Markdown file in
+    `assets/PULL_REQUEST_TEMPLATE/` to
+    `.github/PULL_REQUEST_TEMPLATE/`. For `SCAFFOLD_LANGUAGE=vi`, use the Vietnamese sidecar as the source
     and write its canonical target name:
     - `AGENTS.vi.md` → `AGENTS.md`
     - `CONTRIBUTING.vi.md` → `CONTRIBUTING.md`
@@ -137,6 +140,10 @@ CRITICAL (Windows/Git-Bash): pass `gh api` paths WITHOUT a leading slash, or the
     - `CHANGELOG.vi.md` → `CHANGELOG.md`
     - `GOVERNANCE.vi.md` → `GOVERNANCE.md`
     - `PULL_REQUEST_TEMPLATE.vi.md` → `.github/PULL_REQUEST_TEMPLATE.md`
+    - `PULL_REQUEST_TEMPLATE.vi/feature.md` → `.github/PULL_REQUEST_TEMPLATE/feature.md`
+    - `PULL_REQUEST_TEMPLATE.vi/bugfix.md` → `.github/PULL_REQUEST_TEMPLATE/bugfix.md`
+    - `PULL_REQUEST_TEMPLATE.vi/documentation.md` → `.github/PULL_REQUEST_TEMPLATE/documentation.md`
+    - `PULL_REQUEST_TEMPLATE.vi/security.md` → `.github/PULL_REQUEST_TEMPLATE/security.md`
     - `ISSUE_TEMPLATE/bug_report.vi.yml` → `.github/ISSUE_TEMPLATE/bug_report.yml`
     - `ISSUE_TEMPLATE/feature_request.vi.yml` → `.github/ISSUE_TEMPLATE/feature_request.yml`
     - `ISSUE_TEMPLATE/config.vi.yml` → `.github/ISSUE_TEMPLATE/config.yml`
@@ -192,13 +199,20 @@ An entirely canonical English policy is preferable to mixing languages or
 silently using an obsolete Vietnamese translation. Never leave an English/Vietnamese hybrid
 on a surface controlled by repo-scaffold.
 
-For every authorized pull-request creation or body update, read the active
-template from the target base branch before composing text. For this scaffold's
-canonical template, read
-`origin/<base>:.github/PULL_REQUEST_TEMPLATE.md`; if that path is absent,
-resolve the effective GitHub-supported template location before continuing.
-Preserve every template heading and checklist item, replace guidance with
-specific evidence, and write the UTF-8 PR body to a file. Use
+For every authorized pull-request creation or body update, read the trusted
+template set from the target base branch before composing text. Use the default
+template unless the PR genuinely needs a feature, bugfix, documentation, or
+security review workflow. For a specialized workflow, choose GitHub's
+`?template=<id>.md` URL parameter, read
+`origin/<base>:.github/PULL_REQUEST_TEMPLATE/<id>.md`, and preserve its
+exact `<!-- repo-scaffold:pr-template=<id> -->` marker. For the default
+workflow, read `origin/<base>:.github/PULL_REQUEST_TEMPLATE.md` and preserve
+its `<!-- repo-scaffold:pr-template=default -->` marker. Preserve every
+required heading and required-checklist item. The `If applicable` section is
+guidance only: include only the items that apply, or omit that section. Replace
+guidance with specific evidence. A draft PR may leave required items unchecked;
+before marking it ready for review, tick each required item only after it is
+complete. Write the UTF-8 PR body to a file. Use
 `gh pr create --body-file <path>` or `gh pr edit --body-file <path>`; do not
 use `--fill` or a free-form `--body` value that bypasses the template.
 
@@ -215,9 +229,17 @@ Enter this section only for a verified GitHub.com remote. With no remote, or wit
   check out `github.event.pull_request.base.sha` with
   `persist-credentials: false`, and never check out, fetch, or execute the
   pull-request head. Pass the untrusted PR body only through an environment
-  variable, then verify it preserves every heading and checklist item in the
-  base branch's `.github/PULL_REQUEST_TEMPLATE.md`. After a successful real PR
-  run verifies the stable `pr-template` context and its GitHub App identity,
+  variable, then require exactly one trusted
+  `<!-- repo-scaffold:pr-template=<id> -->` marker and verify it preserves
+  every required heading and required-checklist item from that selected
+  base-branch template. A marked `If applicable` checklist is guidance and
+  must not become a merge requirement. Draft PRs may leave required items
+  unchecked, but a `ready_for_review` event must reject every unchecked
+  required item. The trusted set is the default
+  `.github/PULL_REQUEST_TEMPLATE.md` plus each
+  `.github/PULL_REQUEST_TEMPLATE/*.md` whose filename and marker identifier
+  agree. After a successful real PR run verifies the stable `pr-template`
+  context and its GitHub App identity,
   add it as a required check so nonconforming human PR bodies cannot merge.
   Skip only `dependabot[bot]` and the reserved
   `release-please--branches--*` branch prefix, because their generated PR
