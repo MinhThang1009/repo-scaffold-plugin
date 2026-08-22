@@ -129,25 +129,28 @@ CRITICAL (Windows/Git-Bash): pass `gh api` paths WITHOUT a leading slash, or the
     from `assets/community-health-trackers.json`.
   - For `SCAFFOLD_LANGUAGE=en`, copy English assets to their canonical target
     names. For `SCAFFOLD_LANGUAGE=vi`, use the Vietnamese sidecar as the source
-    and write its canonical target name: `AGENTS.vi.md` → `AGENTS.md`,
-    `CONTRIBUTING.vi.md` → `CONTRIBUTING.md`, `SECURITY.vi.md` →
-    `SECURITY.md`, `SUPPORT.vi.md` → `SUPPORT.md`, `CHANGELOG.vi.md` →
-    `CHANGELOG.md`, `GOVERNANCE.vi.md` → `GOVERNANCE.md`,
-    `PULL_REQUEST_TEMPLATE.vi.md` → `.github/PULL_REQUEST_TEMPLATE.md`,
-    `ISSUE_TEMPLATE/bug_report.vi.md` → `ISSUE_TEMPLATE/bug_report.md`,
-    `ISSUE_TEMPLATE/feature_request.vi.md` →
-    `ISSUE_TEMPLATE/feature_request.md`, `ISSUE_TEMPLATE/config.vi.yml` →
-    `ISSUE_TEMPLATE/config.yml`, `CITATION.vi.cff` → `CITATION.cff`,
-    `release-config.vi.yml` → `.github/release.yml`, and
-    `release-please-config.vi.json` → `release-please-config.json`. Never
-    leave a locale suffix on a target instruction or community-health file.
+    and write its canonical target name:
+    - `AGENTS.vi.md` → `AGENTS.md`
+    - `CONTRIBUTING.vi.md` → `CONTRIBUTING.md`
+    - `SECURITY.vi.md` → `SECURITY.md`
+    - `SUPPORT.vi.md` → `SUPPORT.md`
+    - `CHANGELOG.vi.md` → `CHANGELOG.md`
+    - `GOVERNANCE.vi.md` → `GOVERNANCE.md`
+    - `PULL_REQUEST_TEMPLATE.vi.md` → `.github/PULL_REQUEST_TEMPLATE.md`
+    - `ISSUE_TEMPLATE/bug_report.vi.yml` → `.github/ISSUE_TEMPLATE/bug_report.yml`
+    - `ISSUE_TEMPLATE/feature_request.vi.yml` → `.github/ISSUE_TEMPLATE/feature_request.yml`
+    - `ISSUE_TEMPLATE/config.vi.yml` → `.github/ISSUE_TEMPLATE/config.yml`
+    - `CITATION.vi.cff` → `CITATION.cff`
+    - `release-config.vi.yml` → `.github/release.yml`
+    - `release-please-config.vi.json` → `release-please-config.json`
+    Never leave a locale suffix on a target instruction or community-health file.
     Copy the language-neutral `assets/CLAUDE.md` unchanged: its sole
     `@AGENTS.md` import is the official Claude Code adapter and keeps both
     agents on one source of instructions. For any other project-facing asset,
     render its prose in `SCAFFOLD_LANGUAGE` before writing the canonical target
     name, preserving YAML keys, Markdown front matter keys, commands,
     identifiers, URLs, and placeholders exactly.
-  - Only when the latest verified `HAS_ISSUES` value is true: .github/ISSUE_TEMPLATE/{bug_report,feature_request}.md, .github/ISSUE_TEMPLATE/config.yml, and .github/workflows/community-health.yml. Approval without a successful mutation/re-query is not sufficient. Copy the workflow from `assets/workflows/community-health.yml`; it needs Issues to provide its idempotent reminder.
+  - Only when the latest verified `HAS_ISSUES` value is true: .github/ISSUE_TEMPLATE/{bug_report,feature_request}.yml, .github/ISSUE_TEMPLATE/config.yml, and .github/workflows/community-health.yml. Use GitHub Issue Forms and mark every required contributor field with `validations.required: true`; do not replace them with permissive Markdown issue templates. Approval without a successful mutation/re-query is not sufficient. Copy the workflow from `assets/workflows/community-health.yml`; it needs Issues to provide its idempotent reminder.
   - Optional (offer based on project type): .github/FUNDING.yml (sponsorship), GOVERNANCE.md (community project), CITATION.cff (academic/citable).
 
 Render the capability-dependent markers as follows:
@@ -189,6 +192,16 @@ An entirely canonical English policy is preferable to mixing languages or
 silently using an obsolete Vietnamese translation. Never leave an English/Vietnamese hybrid
 on a surface controlled by repo-scaffold.
 
+For every authorized pull-request creation or body update, read the active
+template from the target base branch before composing text. For this scaffold's
+canonical template, read
+`origin/<base>:.github/PULL_REQUEST_TEMPLATE.md`; if that path is absent,
+resolve the effective GitHub-supported template location before continuing.
+Preserve every template heading and checklist item, replace guidance with
+specific evidence, and write the UTF-8 PR body to a file. Use
+`gh pr create --body-file <path>` or `gh pr edit --body-file <path>`; do not
+use `--fill` or a free-form `--body` value that bypasses the template.
+
 Before rendering, record the exact internal markers present in each selected repo-scaffold asset or inline template; after rendering, scan only that output for those recorded markers. Every internal marker is namespaced as `{{REPO_SCAFFOLD_<SUFFIX>}}`, where the supported suffixes are `ARTIFACT_BASENAME`, `CITATION_AUTHORS_YAML`, `CI_BADGE`, `CODEOWNERS_LINK`, `CODE_OF_CONDUCT_SECTION`, `CODEQL_LANGUAGE`, `CONTACT_EMAIL`, `CONTRIBUTION_REVIEW_STEP`, `DATE_JSON_ESCAPED`, `DEFAULT_BRANCH`, `DEFAULT_BRANCH_GLOB_JSON_ESCAPED`, `DEPENDABOT_PACKAGE_UPDATES`, `DISCUSSIONS_CONTACT_LINK`, `FUNDING_ENTRIES`, `ISSUE_REPORTING_GUIDANCE`, `LICENSE_BADGE`, `ORG`, `OWNER`, `PROJECT_NAME`, `PROJECT_NAME_JSON_ESCAPED`, `PR_CI_CHECKLIST_ITEM`, `RELEASE_TYPE_JSON_ESCAPED`, `REPOSITORY_URL_JSON_ESCAPED`, `REPO`, `SECURITY_POLICY_LINK`, `SUPPORT_CHANNELS`, `SUPPORT_CONTACT`, `TAGLINE`, `TEAM`, `USER`, and `VERSION_JSON_ESCAPED`. Never scan for unprefixed forms such as `{{PROJECT_NAME}}` or `{{USER}}`: they may be intentional project documentation. Do not use a generic double-brace regex on rendered output: Helm, Jinja, Angular, and other project documentation may legitimately contain unrelated `{{ ... }}` expressions, while `${{ ... }}` remains valid GitHub Actions syntax. Check `[NOTE:` and legacy `[INSERT CONTACT METHOD]` only in a generated Contributor Covenant. Check `[year]` and `[fullname]` only in a generated LICENSE whose GitHub API `.implementation` requires those exact substitutions. Fail generation only when one of those context-specific tokens remains. Also fail when an installed CI workflow still contains the exact `REPO_SCAFFOLD_CI_NOT_CONFIGURED` sentinel; an unrelated `TODO:` comment is not a scaffold sentinel. For an unreleased optional `CITATION.cff`, remove its `version` and `date-released` lines instead of leaving their placeholders.
 
 ### 4. Generate GitHub Actions workflows
@@ -196,6 +209,19 @@ Before rendering, record the exact internal markers present in each selected rep
 Enter this section only for a verified GitHub.com remote. With no remote, or with a GitHub Enterprise Server/GHE.com remote, defer every bundled workflow and GitHub.com-dependent badge until the repository is on GitHub.com. Add a CI workflow tailored to the detected stack plus a release workflow. Follow the [workflow syntax](https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions): top-level `name`, `on`, and `jobs`; a normal job sets `runs-on` and `steps`, while a reusable-workflow caller uses job-level `uses` without `runs-on` or `steps`; each normal step uses `uses` or `run`.
 
 - Documentation contract (`.github/workflows/documentation.yml`): copy `assets/workflows/documentation.yml`. It runs markdownlint across every project-owned Markdown file and the deterministic `scripts/validate_scaffold.py` contract on pushes, pull requests, merge groups, and manual dispatches. It must obtain its rolling stable Python bootstrap selector from `.github/ci-toolchain.json` through `scripts/ci_toolchain.py`; never hardcode a Python feature release in this workflow. Keep both scripts, `.github/ci-toolchain.json`, `.markdownlint-cli2.jsonc`, and `requirements-docs.txt` synchronized with their bundled sources. Do not weaken or broadly disable a lint rule merely to make existing content pass; fix confirmed content defects or document a narrow, format-driven exception. Treat `docs-contract` as a required-check candidate only after a real run confirms its exact context and GitHub App identity under the branch-protection rules below.
+- Pull-request template contract (`.github/workflows/pr-template.yml`): copy
+  `assets/workflows/pr-template.yml`. It must run on `pull_request_target` so
+  the workflow definition and template are trusted, use only `contents: read`,
+  check out `github.event.pull_request.base.sha` with
+  `persist-credentials: false`, and never check out, fetch, or execute the
+  pull-request head. Pass the untrusted PR body only through an environment
+  variable, then verify it preserves every heading and checklist item in the
+  base branch's `.github/PULL_REQUEST_TEMPLATE.md`. After a successful real PR
+  run verifies the stable `pr-template` context and its GitHub App identity,
+  add it as a required check so nonconforming human PR bodies cannot merge.
+  Skip only `dependabot[bot]` and the reserved
+  `release-please--branches--*` branch prefix, because their generated PR
+  bodies do not use the human contribution template.
 - Link health (`.github/workflows/links.yml`): copy `assets/workflows/links.yml`. It checks rendered Markdown links on documentation pull requests, a weekly schedule, and manual dispatch with retry and timeout bounds. Keep the narrow Release Please pre-check: only for a same-repository `release-please--branches--*` pull request, fetch tags, require one root-manifest version and matching changelog comparison, verify that the previous tag exists and the prospective tag does not, then append only that exact escaped comparison URL to the runner's temporary `.lycheeignore`. Normal pull requests plus scheduled/manual runs must continue checking every release comparison, and the generated ignore entry must never be committed. Keep link health outside required merge gates because external websites and networks can fail independently of the repository. Add any persistent `.lycheeignore` entry only for a separately verified false positive; never ignore all failures or accept a broken project link.
 - Community-health upstream reminders (`.github/workflows/community-health.yml`): when Issues are enabled, copy this workflow together with `.github/community-health-trackers.json` and `scripts/check_community_health.py`. It inventories every configured GitHub community-health surface, checks GitHub's Community Profile, and compares Contributor Covenant policies with the numerically latest stable English source on the official immutable release-branch commit. It runs weekly and manually, updates at most one marker issue when drift or an indeterminate check exists, and closes that issue when clean. Keep it on trusted `schedule` and `workflow_dispatch` events with `contents: read` and `issues: write`; never automatically overwrite a policy. Most project-authored community-health files have no canonical versioned upstream, so keep them explicitly inventoried as `not versioned` instead of fabricating a latest version. Extend the registry only when a canonical owner and deterministic version resolver are verified.
 - CI (`.github/workflows/ci.yml`): ensure this path exists so the README CI badge has a target. When it is missing, copy `assets/workflows/ci.yml` (a fail-closed skeleton with a version matrix, a slot for caching, and the `ci-success` aggregate gate) and replace every step containing the exact `REPO_SCAFFOLD_CI_NOT_CONFIGURED` sentinel with the stack-specific setup/install/lint/test — or adapt GitHub's workflow template (`actions/starter-workflows`) while retaining an aggregate gate. Never install or require `ci-success` while that exact sentinel remains; when real commands cannot be detected, ask the user or omit CI-dependent protection/auto-merge. Do not reject an adapted workflow merely because it contains an unrelated `TODO:` comment. When `ci.yml` already exists, inspect its jobs and ask before changing it; if it remains unchanged, do not assume it emits `ci-success`. Record only its actual user-confirmed aggregate check context for branch protection. Serialize duplicate runs for required checks with `cancel-in-progress: false`; a cancelled check can remain attached to a reused head SHA and block it even after another run succeeds. Enable dependency caching via the `setup-*` action's `cache:` input (`setup-node` `cache: npm`, `setup-python` `cache: pip`) or `actions/cache`. Pin every external action to a verified full commit SHA with a `# vX.Y.Z` comment; keep the `github-actions` Dependabot entry so these pins receive updates. Use a stack-valid version matrix (`lts/*` only for Node.js; explicit supported versions for Python and other runtimes), optionally testing the latest supported release.
@@ -241,7 +267,7 @@ Apply description, topics, classic branch protection, labels, eligible security 
 
 - `assets/workflows/codeql.yml` provides the optional repository-managed CodeQL advanced setup workflow, and `assets/workflows/scorecard.yml` provides optional OpenSSF Scorecard supply-chain analysis for eligible GitHub.com repositories.
 
-- `assets/` — file + workflow templates to copy and fill: community-health files, `community-health-trackers.json`, `README-header.md`, documentation validator requirements/config, `gitattributes.template` (copy to `.gitattributes`), other config files (`labeler.yml`, `release-config.yml`, release-please config/manifest), and `workflows/` (documentation, community-health upstream reminders, links, ci, reusable release engine, manual-tag release dispatcher, release-please, CodeQL, Scorecard, dependency-review, dependabot-auto-merge, auto-merge, commitlint, stale, labeler).
+- `assets/` — file + workflow templates to copy and fill: community-health files, `community-health-trackers.json`, `README-header.md`, documentation validator requirements/config, `gitattributes.template` (copy to `.gitattributes`), other config files (`labeler.yml`, `release-config.yml`, release-please config/manifest), and `workflows/` (documentation, pull-request template contract, community-health upstream reminders, links, ci, reusable release engine, manual-tag release dispatcher, release-please, CodeQL, Scorecard, dependency-review, dependabot-auto-merge, auto-merge, commitlint, stale, labeler).
 - `scripts/check_community_health.py` — dependency-free, bounded GitHub API checker for local inventory, Community Profile completeness, and genuinely versioned upstream drift.
 - `scripts/codeql_preflight.py` — fail-closed, shell-aware structural inspection for direct CodeQL/default-setup evidence, external/indirect confirmation, bounded GitHub API calls, and cycle-safe per-caller reusable-workflow traversal.
 - `scripts/ci_toolchain.py` — strict parser for `.github/ci-toolchain.json`, GitHub Actions output generator, policy-pinned markdownlint runner, and bounded npm/GitHub release drift verifier.

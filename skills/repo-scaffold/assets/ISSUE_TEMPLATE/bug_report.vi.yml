@@ -1,0 +1,51 @@
+name: Báo lỗi
+description: Báo cáo sự cố có thể tái hiện
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Mô tả lỗi
+      description: Giải thích sự cố rõ ràng và ngắn gọn.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Các bước tái hiện
+      description: Cung cấp chuỗi bước tái hiện ngắn nhất.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Hành vi mong đợi và thực tế
+      description: Nêu điều bạn mong đợi và điều đã xảy ra.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Môi trường
+      description: Nêu hệ điều hành, phiên bản và trình duyệt nếu phù hợp.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Log hoặc ảnh chụp màn hình
+      description: Đính kèm bằng chứng liên quan khi có. Không đưa secrets vào.
+    validations:
+      required: false
+  - type: checkboxes
+    id: sensitive_information
+    attributes:
+      label: Thông tin nhạy cảm
+      options:
+        - label: Tôi đã xóa secrets, credentials và thông tin riêng tư.
+          required: true

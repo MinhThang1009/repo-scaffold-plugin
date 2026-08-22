@@ -1,0 +1,40 @@
+name: Đề xuất tính năng
+description: Đề xuất tính năng mới
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Vấn đề cần giải quyết
+      description: Tính năng này cần giải quyết vấn đề nào?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Giải pháp đề xuất
+      description: Mô tả hành vi mong muốn và bề mặt dự án bị ảnh hưởng.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Các phương án đã cân nhắc
+      description: Mô tả các phương án hoặc cách khắc phục đã cân nhắc.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Bối cảnh bổ sung
+      description: Nêu các ràng buộc, lo ngại tương thích hoặc nguồn chính thống liên quan.
+    validations:
+      required: false
+  - type: checkboxes
+    id: sensitive_information
+    attributes:
+      label: Thông tin nhạy cảm
+      options:
+        - label: Tôi không đưa secrets, credentials hoặc thông tin riêng tư vào.
+          required: true
