@@ -1480,13 +1480,13 @@ class MutationTestingContractTests(unittest.TestCase):
         "scripts/validate_mutation_results.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
-        "tests/test_mutation_validation.py",
-        "tests/test_mutation_cache.py",
-        "tests/test_mutation_runner.py",
+        "tests/test_validate_mutation_results.py",
+        "tests/test_prepare_mutation_cache.py",
+        "tests/test_run_mutation_testing.py",
         "tests/test_mutation_runner_linux.py",
         "tests/test_python_support.py",
         "tests/test_repository_validation.py",
-        "tests/test_scaffold_validation.py",
+        "tests/test_validate_scaffold.py",
     )
 
     def copy_contract(self, root: Path) -> None:
@@ -2823,6 +2823,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_action_pin_sync_contract",
             "validate_required_check_concurrency",
             "validate_issue_templates",
+            "validate_release_notes_config",
             "validate_dependabot",
             "validate_markdown_links",
             "validate_community_health_tracking_contract",
@@ -3398,32 +3399,26 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             asset_root = root / "skills" / "repo-scaffold" / "assets"
             unreadable_english = asset_root / "AGENTS.md"
             unreadable_vietnamese = asset_root / "CONTRIBUTING.vi.md"
-            read_text = Path.read_text
+            unreadable_english.unlink()
+            unreadable_english.mkdir()
+            unreadable_vietnamese.unlink()
+            unreadable_vietnamese.mkdir()
 
-            def read_text_with_asset_errors(
-                path: Path, *args: object, **kwargs: object
-            ) -> str:
-                if path in {unreadable_english, unreadable_vietnamese}:
-                    raise OSError("access denied")
-                return read_text(path, *args, **kwargs)
+            problems = validate_repository.validate_multi_agent_plugin_contract(root)
 
-            with mock.patch.object(
-                Path,
-                "read_text",
-                autospec=True,
-                side_effect=read_text_with_asset_errors,
-            ):
-                problems = validate_repository.validate_multi_agent_plugin_contract(
-                    root
-                )
-
-        self.assertIn(
-            "skills/repo-scaffold/assets/AGENTS.md: unreadable: access denied",
-            problems,
+        self.assertTrue(
+            any(
+                problem.startswith("skills/repo-scaffold/assets/AGENTS.md: unreadable:")
+                for problem in problems
+            )
         )
-        self.assertIn(
-            "skills/repo-scaffold/assets/CONTRIBUTING.vi.md: unreadable: access denied",
-            problems,
+        self.assertTrue(
+            any(
+                problem.startswith(
+                    "skills/repo-scaffold/assets/CONTRIBUTING.vi.md: unreadable:"
+                )
+                for problem in problems
+            )
         )
 
     def test_reports_unreadable_nonobject_and_inconsistent_contract_files(
@@ -4032,6 +4027,64 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
             )
 
 
+class PullRequestTemplateContractTests(unittest.TestCase):
+    def test_agents_and_trusted_workflows_enforce_the_template_contract(self) -> None:
+        workflow = PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
+        asset = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "pr-template.yml"
+        )
+        workflow_text = workflow.read_text(encoding="utf-8")
+
+        self.assertEqual(workflow_text, asset.read_text(encoding="utf-8"))
+        document = validate_repository.load_yaml(workflow)
+        self.assertEqual(
+            document["on"],
+            {
+                "pull_request_target": {
+                    "types": ["opened", "edited", "reopened", "synchronize"]
+                }
+            },
+        )
+        self.assertEqual(document["permissions"], {"contents": "read"})
+        self.assertEqual(document["concurrency"]["cancel-in-progress"], "false")
+        self.assertEqual(document["jobs"]["pr_template"]["name"], "pr-template")
+
+        for fragment in (
+            "ref: ${{ github.event.pull_request.base.sha }}",
+            "persist-credentials: false",
+            "PR_BODY: ${{ github.event.pull_request.body }}",
+            'Path(".github/PULL_REQUEST_TEMPLATE.md")',
+            "Pull request body must preserve every heading and checklist item",
+            "github.event.pull_request.user.login != 'dependabot[bot]'",
+            "release-please--branches--",
+        ):
+            self.assertIn(fragment, workflow_text)
+
+        for path in (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md",
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "AGENTS.md",
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "AGENTS.vi.md",
+        ):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("--body-file", text)
+            self.assertIn("--fill", text)
+
+    def test_workflow_never_checks_out_or_executes_the_pull_request_head(self) -> None:
+        workflow = (
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("pull_request_target", workflow)
+        self.assertNotIn("github.event.pull_request.head.sha", workflow)
+        self.assertNotIn("github.head_ref", workflow)
+        self.assertNotIn("github.event.pull_request.user.type != 'Bot'", workflow)
+
+
 class ReleaseAttestationValidationTests(unittest.TestCase):
     def write_valid_configuration(self, root: Path) -> None:
         action_sha = "a" * 40
@@ -4289,6 +4342,75 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
 
 
 class IssueFormValidationTests(unittest.TestCase):
+    def test_scaffold_issue_forms_require_core_contributor_input(self) -> None:
+        expected_forms = {
+            ".github/ISSUE_TEMPLATE/bug_report.yml": {
+                "description": True,
+                "reproduction": True,
+                "expected": True,
+                "environment": True,
+                "evidence": False,
+            },
+            ".github/ISSUE_TEMPLATE/feature_request.yml": {
+                "problem": True,
+                "proposal": True,
+                "alternatives": False,
+                "compatibility": True,
+            },
+            "skills/repo-scaffold/assets/ISSUE_TEMPLATE/bug_report.yml": {
+                "description": True,
+                "reproduction": True,
+                "expected_actual": True,
+                "environment": True,
+                "evidence": False,
+            },
+            "skills/repo-scaffold/assets/ISSUE_TEMPLATE/feature_request.yml": {
+                "problem": True,
+                "solution": True,
+                "alternatives": False,
+                "context": False,
+            },
+            "skills/repo-scaffold/assets/ISSUE_TEMPLATE/bug_report.vi.yml": {
+                "description": True,
+                "reproduction": True,
+                "expected_actual": True,
+                "environment": True,
+                "evidence": False,
+            },
+            "skills/repo-scaffold/assets/ISSUE_TEMPLATE/feature_request.vi.yml": {
+                "problem": True,
+                "solution": True,
+                "alternatives": False,
+                "context": False,
+            },
+        }
+
+        for relative, required_inputs in expected_forms.items():
+            document = validate_repository.load_yaml(PLUGIN_ROOT / relative)
+            body = document["body"]
+            inputs = {item["id"]: item for item in body if item["type"] == "textarea"}
+            self.assertEqual(set(inputs), set(required_inputs), relative)
+            for identifier, required in required_inputs.items():
+                self.assertEqual(
+                    inputs[identifier]["validations"]["required"],
+                    str(required).lower(),
+                    f"{relative}: {identifier}",
+                )
+            checkboxes = [item for item in body if item["type"] == "checkboxes"]
+            self.assertEqual(len(checkboxes), 1, relative)
+            self.assertEqual(
+                checkboxes[0]["attributes"]["options"][0]["required"],
+                "true",
+                relative,
+            )
+
+        for path in (
+            PLUGIN_ROOT / ".github" / "ISSUE_TEMPLATE",
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "ISSUE_TEMPLATE",
+        ):
+            self.assertEqual(list(path.glob("bug_report*.md")), [], path)
+            self.assertEqual(list(path.glob("feature_request*.md")), [], path)
+
     def test_scaffold_localized_chooser_is_not_misclassified_as_an_issue_form(
         self,
     ) -> None:
@@ -4451,6 +4573,25 @@ body:
                     "options": [{"label": "unique", "required": "false"}],
                 },
             },
+            {
+                "type": "input",
+                "id": "unexpected",
+                "unexpected": "value",
+                "attributes": {"label": "Duplicate label"},
+            },
+            {
+                "type": "input",
+                "id": "duplicate_label",
+                "attributes": {"label": "Duplicate label"},
+            },
+            {
+                "type": "checkboxes",
+                "id": "cross_input",
+                "attributes": {
+                    "label": "Confirm another",
+                    "options": [{"label": "Duplicate label"}],
+                },
+            },
         ]
 
         problems = validate_repository.validate_issue_form_body(relative, body)
@@ -4469,9 +4610,35 @@ body:
             "body[6].attributes.options labels must be unique",
             "body[7].validations.accept must be nonempty",
             "body[8].attributes.value must be nonempty",
+            "body[11] contains unsupported keys",
+            "body[12].attributes.label must be unique",
+            "body[13].attributes.options labels must be unique among form inputs",
         )
         for expected in expected_fragments:
             self.assertTrue(any(expected in item for item in problems), expected)
+
+    def test_issue_form_rejects_unsupported_top_level_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            (template_root / "invalid.yml").write_text(
+                "name: Invalid form\n"
+                "description: Validate the top-level schema.\n"
+                "unexpected: value\n"
+                "body:\n"
+                "  - type: input\n"
+                "    id: details\n"
+                "    attributes:\n"
+                "      label: Details\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_issue_templates(root)
+
+        self.assertTrue(
+            any("issue form contains unsupported keys" in item for item in problems)
+        )
 
     def test_legacy_issue_templates_and_chooser_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4482,6 +4649,7 @@ body:
                 "missing.md": "No front matter\n",
                 "shape.md": "---\n- invalid\n---\nBody\n",
                 "fields.md": "---\nname: Bug\nabout: ''\n---\n",
+                "valid.md": "---\nname: Valid template\nabout: Useful guidance\n---\nBody\n",
             }
             for name, content in markdown_cases.items():
                 (template_root / name).write_text(content, encoding="utf-8")
@@ -4583,6 +4751,93 @@ body:
                     for item in validate_repository.validate_issue_templates(root)
                 )
             )
+
+
+class ReleaseNotesConfigValidationTests(unittest.TestCase):
+    def test_repository_release_notes_configurations_are_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_release_notes_config(PLUGIN_ROOT), []
+        )
+
+    def test_release_notes_config_rejects_roots_and_empty_categories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid_yaml = validate_repository.yaml.YAMLError("invalid YAML")
+            with mock.patch.object(
+                validate_repository,
+                "load_yaml",
+                side_effect=[invalid_yaml, [], {"changelog": {"categories": []}}],
+            ):
+                problems = validate_repository.validate_release_notes_config(root)
+            with mock.patch.object(
+                validate_repository,
+                "load_yaml",
+                return_value={"changelog": "invalid"},
+            ):
+                problems.extend(validate_repository.validate_release_notes_config(root))
+            with mock.patch.object(
+                validate_repository,
+                "load_yaml",
+                side_effect=[
+                    {
+                        "changelog": {
+                            "exclude": "invalid",
+                            "categories": [{"title": "Other", "labels": ["*"]}],
+                        }
+                    },
+                    {
+                        "changelog": {
+                            "exclude": {"labels": []},
+                            "categories": [{"title": "Other", "labels": ["*"]}],
+                        }
+                    },
+                    {
+                        "changelog": {
+                            "categories": [{"title": "Other", "labels": ["*"]}]
+                        }
+                    },
+                ],
+            ):
+                problems.extend(validate_repository.validate_release_notes_config(root))
+
+        expected_fragments = (
+            "invalid release-notes YAML",
+            "release-notes root must be a mapping",
+            "changelog must be a mapping",
+            "changelog.exclude must be a mapping",
+            "changelog.exclude.labels must be a nonempty string list",
+            "changelog.categories must be a nonempty list",
+        )
+        for expected in expected_fragments:
+            self.assertTrue(any(expected in item for item in problems), expected)
+
+    def test_release_notes_config_rejects_invalid_categories_and_catchall(self) -> None:
+        document = {
+            "changelog": {
+                "categories": [
+                    "invalid",
+                    {},
+                    {"title": "Invalid labels", "labels": []},
+                    {"title": "Duplicate catchall", "labels": ["*", "*"]},
+                ]
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(
+                validate_repository, "load_yaml", return_value=document
+            ):
+                problems = validate_repository.validate_release_notes_config(root)
+
+        expected_fragments = (
+            "changelog.categories[0] must be a mapping",
+            "changelog.categories[1].title must be nonempty",
+            "changelog.categories[1].labels must be a nonempty string list",
+            "changelog.categories[2].labels must be a nonempty string list",
+            "must contain exactly one '*' catchall",
+        )
+        for expected in expected_fragments:
+            self.assertTrue(any(expected in item for item in problems), expected)
 
 
 class DependabotValidationTests(unittest.TestCase):

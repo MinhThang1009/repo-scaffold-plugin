@@ -48,6 +48,16 @@ CONTRIBUTOR_COVENANT_ATTRIBUTION = re.compile(
     re.IGNORECASE,
 )
 MINIMUM_CONTRIBUTOR_COVENANT_VERSION = (3, 0, 0)
+ISSUE_FORM_ID = re.compile(r"^[0-9A-Za-z_-]+$")
+ISSUE_FORM_INPUT_TYPES = {
+    "checkboxes",
+    "dropdown",
+    "input",
+    "markdown",
+    "textarea",
+    "upload",
+}
+ISSUE_FORM_BODY_KEYS = {"attributes", "id", "type", "validations"}
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -652,6 +662,154 @@ def validate_markdown_issue_templates(
     return problems
 
 
+def validate_issue_forms(
+    repository_root: Path, *, template_directory: Path | None = None
+) -> list[str]:
+    """Validate the core GitHub Issue Form schema for every YAML template."""
+    template_root = template_directory or (
+        repository_root / ".github" / "ISSUE_TEMPLATE"
+    )
+    if path_has_link_or_reparse(template_root, repository_root):
+        relative = template_root.relative_to(repository_root).as_posix()
+        return [
+            f"{relative}: linked or reparse-point path is not dereferenced or validated"
+        ]
+
+    problems: list[str] = []
+    for path in sorted(template_root.glob("*.yaml")):
+        relative = path.relative_to(repository_root).as_posix()
+        problems.append(f"{relative}: issue forms must use the .yml extension")
+    for path in sorted(template_root.glob("*.yml")):
+        if path.name in {"config.yml", "config.vi.yml"}:
+            continue
+        relative = path.relative_to(repository_root).as_posix()
+        if path_has_link_or_reparse(path, repository_root):
+            problems.append(
+                f"{relative}: linked or reparse-point YAML is not dereferenced or validated"
+            )
+            continue
+        try:
+            document = yaml.load(
+                path.read_text(encoding="utf-8"), Loader=UniqueKeyBaseLoader
+            )
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: invalid issue form YAML: {error}")
+            continue
+        if not isinstance(document, dict):
+            problems.append(f"{relative}: issue form root must be a mapping")
+            continue
+
+        required = {"name", "description", "body"}
+        supported = required | {"title", "labels", "assignees", "projects"}
+        if not required.issubset(document) or not set(document).issubset(supported):
+            problems.append(
+                f"{relative}: form must contain {sorted(required)} and only "
+                f"supported keys {sorted(supported)}"
+            )
+        if not all(
+            isinstance(document[field], str) and document[field].strip()
+            for field in ("name", "description")
+        ):
+            problems.append(f"{relative}: name and description must be nonempty")
+
+        body = document.get("body")
+        if not isinstance(body, list) or not body:
+            problems.append(f"{relative}: body must be a nonempty list")
+            continue
+        seen_ids: set[str] = set()
+        seen_labels: set[str] = set()
+        has_input = False
+        for index, item in enumerate(body):
+            prefix = f"{relative}: body[{index}]"
+            if not isinstance(item, dict):
+                problems.append(f"{prefix} must be a mapping")
+                continue
+            if set(item) - ISSUE_FORM_BODY_KEYS:
+                problems.append(f"{prefix} contains unsupported keys")
+            item_type = item.get("type")
+            if item_type not in ISSUE_FORM_INPUT_TYPES:
+                problems.append(f"{prefix}.type must be a supported input type")
+                continue
+            if item_type == "markdown":
+                required_attribute = "value"
+            else:
+                has_input = True
+                required_attribute = "label"
+                item_id = item.get("id")
+                if not isinstance(item_id, str) or not ISSUE_FORM_ID.fullmatch(item_id):
+                    problems.append(
+                        f"{prefix}.id may contain only letters, numbers, -, and _"
+                    )
+                elif item_id in seen_ids:
+                    problems.append(f"{prefix}.id must be unique")
+                else:
+                    seen_ids.add(item_id)
+            attributes = item.get("attributes")
+            if not isinstance(attributes, dict):
+                problems.append(f"{prefix}.attributes must be a mapping")
+                continue
+            if (
+                not isinstance(attributes.get(required_attribute), str)
+                or not attributes[required_attribute].strip()
+            ):
+                problems.append(
+                    f"{prefix}.attributes.{required_attribute} must be nonempty"
+                )
+            elif item_type != "markdown":
+                label = attributes["label"]
+                if label in seen_labels:
+                    problems.append(f"{prefix}.attributes.label must be unique")
+                else:
+                    seen_labels.add(label)
+            options = attributes.get("options")
+            if item_type == "dropdown" and (
+                not isinstance(options, list)
+                or not options
+                or not all(
+                    isinstance(option, str) and option.strip() for option in options
+                )
+            ):
+                problems.append(
+                    f"{prefix}.attributes.options must be a nonempty string list"
+                )
+            if item_type == "checkboxes" and (
+                not isinstance(options, list)
+                or not options
+                or not all(
+                    isinstance(option, dict)
+                    and isinstance(option.get("label"), str)
+                    and option["label"].strip()
+                    and option.get("required", "false") in {"true", "false"}
+                    for option in options
+                )
+            ):
+                problems.append(
+                    f"{prefix}.attributes.options must be a nonempty checkbox list"
+                )
+            elif item_type == "checkboxes":
+                assert isinstance(options, list)
+                for option in options:
+                    assert isinstance(option, dict)
+                    label = option["label"]
+                    assert isinstance(label, str)
+                    if label in seen_labels:
+                        problems.append(
+                            f"{prefix}.attributes.options labels must be unique "
+                            "among form inputs"
+                        )
+                    else:
+                        seen_labels.add(label)
+            validations = item.get("validations")
+            if validations is not None and (
+                not isinstance(validations, dict)
+                or validations.get("required", "false") not in {"true", "false"}
+            ):
+                problems.append(f"{prefix}.validations.required must be a boolean")
+        if not has_input:
+            problems.append(f"{relative}: body must contain a non-markdown input")
+    return problems
+
+
 def pull_request_templates(repository_root: Path) -> list[Path]:
     """Return supported single and multi-template Markdown paths."""
     candidates = {
@@ -718,6 +876,11 @@ def validate_template_assets(template_root: Path) -> list[str]:
             template_root, template_directory=template_root / "ISSUE_TEMPLATE"
         )
     )
+    problems.extend(
+        validate_issue_forms(
+            template_root, template_directory=template_root / "ISSUE_TEMPLATE"
+        )
+    )
     pull_template = template_root / "PULL_REQUEST_TEMPLATE.md"
     if path_has_link_or_reparse(pull_template, template_root):
         problems.append(
@@ -748,6 +911,7 @@ def validate_scaffold(
     problems.extend(validate_code_of_conduct(repository_root))
     problems.extend(validate_readme(repository_root))
     problems.extend(validate_markdown_issue_templates(repository_root))
+    problems.extend(validate_issue_forms(repository_root))
     problems.extend(validate_pull_request_templates(repository_root))
     if template_root is not None:
         problems.extend(validate_template_assets(template_root))

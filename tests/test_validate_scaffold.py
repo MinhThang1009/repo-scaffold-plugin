@@ -910,6 +910,191 @@ class TemplateContractTests(unittest.TestCase):
             )
             self.assertFalse(any(item.startswith("valid.md") for item in problems))
 
+    def test_issue_forms_accept_valid_schema_and_reject_invalid_forms(self) -> None:
+        valid_form = """\
+name: Bug report
+description: Report a reproducible problem.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Provide only non-sensitive information.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: dropdown
+    id: version
+    attributes:
+      label: Version
+      options: [stable, preview]
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Terms
+      options:
+        - label: I agree.
+          required: true
+"""
+        invalid_form = """\
+name: " "
+description: " "
+unsupported: value
+body:
+  - type: markdown
+    attributes:
+      value: " "
+  - type: unknown
+  - type: textarea
+    id: invalid!
+    attributes: []
+  - type: textarea
+    id: invalid_validations
+    attributes:
+      label: Validation
+    validations: invalid
+  - type: textarea
+    id: repeated
+    attributes:
+      label: " "
+  - type: dropdown
+    id: repeated
+    attributes:
+      label: Version
+      options: []
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Terms
+      options:
+        - label: " "
+          required: invalid
+  - type: input
+    id: unexpected
+    unexpected: value
+    attributes:
+      label: Duplicate label
+  - type: input
+    id: duplicate_label
+    attributes:
+      label: Duplicate label
+  - type: checkboxes
+    id: cross_input
+    attributes:
+      label: Confirm another
+      options:
+        - label: Duplicate label
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            (template_root / "valid.yml").write_text(valid_form, encoding="utf-8")
+            self.assertEqual(validate_scaffold.validate_issue_forms(root), [])
+
+            (template_root / "invalid.yml").write_text(invalid_form, encoding="utf-8")
+            (template_root / "legacy.yaml").write_text(valid_form, encoding="utf-8")
+            (template_root / "broken.yml").write_text("body: [\n", encoding="utf-8")
+
+            problems = validate_scaffold.validate_issue_forms(root)
+
+        expected_fragments = (
+            "form must contain",
+            "name and description must be nonempty",
+            "attributes.value must be nonempty",
+            "type must be a supported input type",
+            "id may contain only letters",
+            "attributes must be a mapping",
+            "validations.required must be a boolean",
+            "attributes.label must be nonempty",
+            "id must be unique",
+            "options must be a nonempty string list",
+            "options must be a nonempty checkbox list",
+            "contains unsupported keys",
+            "attributes.label must be unique",
+            "options labels must be unique among form inputs",
+            "legacy.yaml: issue forms must use the .yml extension",
+            "broken.yml: invalid issue form YAML",
+        )
+        for fragment in expected_fragments:
+            self.assertTrue(any(fragment in problem for problem in problems), fragment)
+
+    def test_issue_forms_report_invalid_roots_bodies_and_linked_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            (template_root / "root.yml").write_text("- invalid\n", encoding="utf-8")
+            (template_root / "body.yml").write_text(
+                "name: Valid name\ndescription: Valid description\nbody: []\n",
+                encoding="utf-8",
+            )
+            (template_root / "nonmapping.yml").write_text(
+                "name: Valid name\ndescription: Valid description\nbody: [invalid]\n",
+                encoding="utf-8",
+            )
+            (template_root / "markdown.yml").write_text(
+                "name: Valid name\ndescription: Valid description\n"
+                "body:\n  - type: markdown\n    attributes:\n      value: Notice\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_scaffold.validate_issue_forms(root)
+
+            self.assertTrue(
+                any(
+                    "issue form root must be a mapping" in problem
+                    for problem in problems
+                )
+            )
+            self.assertTrue(
+                any("body must be a nonempty list" in problem for problem in problems)
+            )
+            self.assertTrue(
+                any("body[0] must be a mapping" in problem for problem in problems)
+            )
+            self.assertTrue(
+                any(
+                    "body must contain a non-markdown input" in problem
+                    for problem in problems
+                )
+            )
+
+            with mock.patch.object(
+                validate_scaffold,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path == template_root,
+            ):
+                self.assertEqual(
+                    validate_scaffold.validate_issue_forms(root),
+                    [
+                        ".github/ISSUE_TEMPLATE: linked or reparse-point path is "
+                        "not dereferenced or validated"
+                    ],
+                )
+
+            linked_form = template_root / "linked.yml"
+            linked_form.write_text(
+                "name: Valid name\ndescription: Valid description\nbody: []\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                validate_scaffold,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path == linked_form,
+            ):
+                problems = validate_scaffold.validate_issue_forms(root)
+            self.assertTrue(
+                any(
+                    "linked.yml: linked or reparse-point YAML is not dereferenced"
+                    in problem
+                    for problem in problems
+                )
+            )
+
     def test_pull_request_template_requires_checklist(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1069,6 +1254,11 @@ class TemplateContractTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     validate_scaffold,
+                    "validate_issue_forms",
+                    return_value=["form"],
+                ),
+                mock.patch.object(
+                    validate_scaffold,
                     "validate_code_of_conduct",
                     return_value=["conduct"],
                 ),
@@ -1088,7 +1278,8 @@ class TemplateContractTests(unittest.TestCase):
                 )
 
             self.assertEqual(
-                problems, ["source", "conduct", "readme", "issue", "pull", "asset"]
+                problems,
+                ["source", "conduct", "readme", "issue", "form", "pull", "asset"],
             )
             sources.assert_called_once_with(
                 root, marker_exclusions=(template_root.parent,)

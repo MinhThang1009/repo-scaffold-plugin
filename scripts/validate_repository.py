@@ -104,14 +104,14 @@ MULTILINGUAL_SCAFFOLD_ASSET_PAIRS = (
         Path("release-please-config.json"),
     ),
     (
-        Path("ISSUE_TEMPLATE/bug_report.md"),
-        Path("ISSUE_TEMPLATE/bug_report.vi.md"),
-        Path(".github/ISSUE_TEMPLATE/bug_report.md"),
+        Path("ISSUE_TEMPLATE/bug_report.yml"),
+        Path("ISSUE_TEMPLATE/bug_report.vi.yml"),
+        Path(".github/ISSUE_TEMPLATE/bug_report.yml"),
     ),
     (
-        Path("ISSUE_TEMPLATE/feature_request.md"),
-        Path("ISSUE_TEMPLATE/feature_request.vi.md"),
-        Path(".github/ISSUE_TEMPLATE/feature_request.md"),
+        Path("ISSUE_TEMPLATE/feature_request.yml"),
+        Path("ISSUE_TEMPLATE/feature_request.vi.yml"),
+        Path(".github/ISSUE_TEMPLATE/feature_request.yml"),
     ),
     (
         Path("ISSUE_TEMPLATE/config.yml"),
@@ -130,6 +130,16 @@ ISSUE_FORM_INPUT_TYPES = {
     "textarea",
     "upload",
 }
+ISSUE_FORM_TOP_LEVEL_KEYS = {
+    "assignees",
+    "body",
+    "description",
+    "labels",
+    "name",
+    "projects",
+    "title",
+}
+ISSUE_FORM_BODY_KEYS = {"attributes", "id", "type", "validations"}
 ATTESTATION_VALIDATION_SCRIPT = """\
 set -euo pipefail
 if [[ ! -d dist ]] || ! find dist -type f -print -quit | grep -q .; then
@@ -1445,13 +1455,13 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "scripts/validate_mutation_results.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
-        "tests/test_mutation_validation.py",
-        "tests/test_mutation_cache.py",
-        "tests/test_mutation_runner.py",
+        "tests/test_validate_mutation_results.py",
+        "tests/test_prepare_mutation_cache.py",
+        "tests/test_run_mutation_testing.py",
         "tests/test_mutation_runner_linux.py",
         "tests/test_python_support.py",
         "tests/test_repository_validation.py",
-        "tests/test_scaffold_validation.py",
+        "tests/test_validate_scaffold.py",
     )
     texts: dict[str, str] = {}
     problems: list[str] = []
@@ -2118,15 +2128,17 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             "scripts.validate_workflows",
             "skills.repo-scaffold.scripts.codeql_preflight",
         ),
-        "tests/test_mutation_validation.py": ("scripts.validate_mutation_results",),
-        "tests/test_mutation_cache.py": ("scripts.prepare_mutation_cache",),
-        "tests/test_mutation_runner.py": ("scripts.run_mutation_testing",),
+        "tests/test_validate_mutation_results.py": (
+            "scripts.validate_mutation_results",
+        ),
+        "tests/test_prepare_mutation_cache.py": ("scripts.prepare_mutation_cache",),
+        "tests/test_run_mutation_testing.py": ("scripts.run_mutation_testing",),
         "tests/test_python_support.py": ("scripts.python_support",),
         "tests/test_repository_validation.py": (
             "scripts.validate_repository",
             "scripts.validate_workflows",
         ),
-        "tests/test_scaffold_validation.py": (
+        "tests/test_validate_scaffold.py": (
             "skills.repo-scaffold.scripts.validate_scaffold",
         ),
     }
@@ -3088,12 +3100,16 @@ def validate_issue_form_body(relative: Path, form_body: list[Any]) -> list[str]:
     """Validate current GitHub issue-form body types and core constraints."""
     problems: list[str] = []
     seen_ids: set[str] = set()
+    seen_labels: set[str] = set()
     has_input = False
     for index, item in enumerate(form_body):
         prefix = f"{relative}: body[{index}]"
         if not isinstance(item, dict):
             problems.append(f"{prefix} must be a mapping")
             continue
+        unsupported_keys = set(item) - ISSUE_FORM_BODY_KEYS
+        if unsupported_keys:
+            problems.append(f"{prefix} contains unsupported keys")
         item_type = item.get("type")
         if item_type not in ISSUE_FORM_INPUT_TYPES:
             problems.append(f"{prefix} has invalid type")
@@ -3121,6 +3137,12 @@ def validate_issue_form_body(relative: Path, form_body: list[Any]) -> list[str]:
             problems.append(
                 f"{prefix}.attributes.{required_attribute} must be nonempty"
             )
+        elif item_type != "markdown":
+            label = attributes["label"]
+            if label in seen_labels:
+                problems.append(f"{prefix}.attributes.label must be unique")
+            else:
+                seen_labels.add(label)
 
         if item_type == "dropdown":
             options = attributes.get("options")
@@ -3160,6 +3182,14 @@ def validate_issue_form_body(relative: Path, form_body: list[Any]) -> list[str]:
                     problems.append(
                         f"{prefix}.attributes.options labels must be unique"
                     )
+                for label in labels:
+                    if label in seen_labels:
+                        problems.append(
+                            f"{prefix}.attributes.options labels must be unique "
+                            "among form inputs"
+                        )
+                    else:
+                        seen_labels.add(label)
 
         validations = item.get("validations")
         if validations is not None:
@@ -3231,6 +3261,8 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
             if not isinstance(document, dict):
                 problems.append(f"{relative}: issue form root must be a mapping")
                 continue
+            if not set(document).issubset(ISSUE_FORM_TOP_LEVEL_KEYS):
+                problems.append(f"{relative}: issue form contains unsupported keys")
             for field in ("name", "description"):
                 if not nonempty_string(document.get(field)):
                     problems.append(f"{relative}: {field} must be nonempty")
@@ -3279,6 +3311,73 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
                 problems.append(
                     f"{relative}: contact_links[{index}].url must use HTTPS"
                 )
+    return problems
+
+
+def validate_release_notes_config(repository_root: Path) -> list[str]:
+    """Validate GitHub's release-notes category configuration and its assets."""
+    paths = (
+        repository_root / ".github" / "release.yml",
+        repository_root / "skills" / "repo-scaffold" / "assets" / "release-config.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "release-config.vi.yml",
+    )
+    problems: list[str] = []
+    for path in paths:
+        relative = path.relative_to(repository_root)
+        try:
+            document = load_yaml(path)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: invalid release-notes YAML: {error}")
+            continue
+        if not isinstance(document, dict):
+            problems.append(f"{relative}: release-notes root must be a mapping")
+            continue
+        changelog = document.get("changelog")
+        if not isinstance(changelog, dict):
+            problems.append(f"{relative}: changelog must be a mapping")
+            continue
+        exclude = changelog.get("exclude")
+        if exclude is not None:
+            if not isinstance(exclude, dict):
+                problems.append(f"{relative}: changelog.exclude must be a mapping")
+            elif "labels" in exclude and (
+                not isinstance(exclude["labels"], list)
+                or not exclude["labels"]
+                or any(not nonempty_string(label) for label in exclude["labels"])
+            ):
+                problems.append(
+                    f"{relative}: changelog.exclude.labels must be a nonempty "
+                    "string list"
+                )
+        categories = changelog.get("categories")
+        if not isinstance(categories, list) or not categories:
+            problems.append(f"{relative}: changelog.categories must be a nonempty list")
+            continue
+        catchall_count = 0
+        for index, category in enumerate(categories):
+            prefix = f"{relative}: changelog.categories[{index}]"
+            if not isinstance(category, dict):
+                problems.append(f"{prefix} must be a mapping")
+                continue
+            if not nonempty_string(category.get("title")):
+                problems.append(f"{prefix}.title must be nonempty")
+            labels = category.get("labels")
+            if (
+                not isinstance(labels, list)
+                or not labels
+                or any(not nonempty_string(label) for label in labels)
+            ):
+                problems.append(f"{prefix}.labels must be a nonempty string list")
+                continue
+            catchall_count += labels.count("*")
+        if catchall_count != 1:
+            problems.append(
+                f"{relative}: changelog.categories must contain exactly one '*' catchall"
+            )
     return problems
 
 
@@ -4083,6 +4182,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_action_pin_sync_contract,
         validate_required_check_concurrency,
         validate_issue_templates,
+        validate_release_notes_config,
         validate_dependabot,
         validate_markdown_links,
         validate_community_health_tracking_contract,

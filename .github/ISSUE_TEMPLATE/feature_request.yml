@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose an improvement to repo-scaffold
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What repository-scaffolding problem should be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the desired behavior and affected plugin surface.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Describe alternatives or workarounds considered.
+    validations:
+      required: false
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and sources
+      description: List relevant GitHub, Codex, operating-system, or project-stack constraints.
+    validations:
+      required: true
+  - type: checkboxes
+    id: sensitive_information
+    attributes:
+      label: Sensitive information
+      options:
+        - label: I did not include tokens, credentials, private repository content, or vulnerability details.
+          required: true

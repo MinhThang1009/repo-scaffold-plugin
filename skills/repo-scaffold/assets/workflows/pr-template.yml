@@ -1,0 +1,67 @@
+name: Pull Request Template
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-pr-template-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  pr_template:
+    name: pr-template
+    if: >-
+      ${{ github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !startsWith(github.event.pull_request.head.ref, 'release-please--branches--') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # pull_request_target uses the trusted base workflow. Never check out or
+      # execute the pull request head in this job.
+      - name: Check out the base template
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Validate pull request body against its template
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          template = Path(".github/PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
+          body = os.environ.get("PR_BODY", "")
+          heading_pattern = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+          checklist_pattern = re.compile(r"^- \[[ xX]\] (.+?)\s*$", re.MULTILINE)
+
+          required_headings = heading_pattern.findall(template)
+          required_checklist_items = checklist_pattern.findall(template)
+          body_headings = set(heading_pattern.findall(body))
+          body_checklist_items = set(checklist_pattern.findall(body))
+
+          if not required_headings or not required_checklist_items:
+              raise SystemExit("The base pull request template must contain headings and checklist items.")
+
+          missing_headings = [heading for heading in required_headings if heading not in body_headings]
+          missing_checklist_items = [
+              item for item in required_checklist_items if item not in body_checklist_items
+          ]
+          if missing_headings or missing_checklist_items:
+              if missing_headings:
+                  print("Missing template headings: " + ", ".join(missing_headings))
+              if missing_checklist_items:
+                  print("Missing checklist items: " + ", ".join(missing_checklist_items))
+              raise SystemExit(
+                  "Pull request body must preserve every heading and checklist item from "
+                  ".github/PULL_REQUEST_TEMPLATE.md."
+              )
+          PY
