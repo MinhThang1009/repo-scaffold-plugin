@@ -138,6 +138,7 @@ ISSUE_FORM_TOP_LEVEL_KEYS = {
     "name",
     "projects",
     "title",
+    "type",
 }
 ISSUE_FORM_BODY_KEYS = {"attributes", "id", "type", "validations"}
 ATTESTATION_VALIDATION_SCRIPT = """\
@@ -3263,6 +3264,8 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
                 continue
             if not set(document).issubset(ISSUE_FORM_TOP_LEVEL_KEYS):
                 problems.append(f"{relative}: issue form contains unsupported keys")
+            if "type" in document and not nonempty_string(document["type"]):
+                problems.append(f"{relative}: type must be a nonempty string")
             for field in ("name", "description"):
                 if not nonempty_string(document.get(field)):
                     problems.append(f"{relative}: {field} must be nonempty")

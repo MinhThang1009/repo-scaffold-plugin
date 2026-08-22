@@ -4617,14 +4617,28 @@ body:
         for expected in expected_fragments:
             self.assertTrue(any(expected in item for item in problems), expected)
 
-    def test_issue_form_rejects_unsupported_top_level_keys(self) -> None:
+    def test_issue_form_accepts_type_and_rejects_unsupported_top_level_keys(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template_root = root / ".github" / "ISSUE_TEMPLATE"
             template_root.mkdir(parents=True)
+            (template_root / "valid.yml").write_text(
+                "name: Valid form\n"
+                "description: Validate the top-level schema.\n"
+                "type: bug\n"
+                "body:\n"
+                "  - type: input\n"
+                "    id: details\n"
+                "    attributes:\n"
+                "      label: Details\n",
+                encoding="utf-8",
+            )
             (template_root / "invalid.yml").write_text(
                 "name: Invalid form\n"
                 "description: Validate the top-level schema.\n"
+                "type: ''\n"
                 "unexpected: value\n"
                 "body:\n"
                 "  - type: input\n"
@@ -4636,6 +4650,14 @@ body:
 
             problems = validate_repository.validate_issue_templates(root)
 
+        self.assertFalse(
+            any(
+                item.startswith(".github/ISSUE_TEMPLATE/valid.yml") for item in problems
+            )
+        )
+        self.assertTrue(
+            any("type must be a nonempty string" in item for item in problems)
+        )
         self.assertTrue(
             any("issue form contains unsupported keys" in item for item in problems)
         )
