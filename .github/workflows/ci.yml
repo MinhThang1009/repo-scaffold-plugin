@@ -136,6 +136,7 @@ jobs:
           skills/repo-scaffold/scripts/codeql_preflight.py
           skills/repo-scaffold/scripts/ci_toolchain.py
           skills/repo-scaffold/scripts/validate_scaffold.py
+          scripts/audit_freshness.py
           scripts/prepare_mutation_cache.py
           scripts/python_support.py
           scripts/run_mutation_testing.py

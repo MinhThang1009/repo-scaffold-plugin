@@ -92,6 +92,26 @@ MULTILINGUAL_SCAFFOLD_ASSET_PAIRS = (
         Path("PULL_REQUEST_TEMPLATE.vi.md"),
         Path(".github/PULL_REQUEST_TEMPLATE.md"),
     ),
+    (
+        Path("PULL_REQUEST_TEMPLATE/feature.md"),
+        Path("PULL_REQUEST_TEMPLATE.vi/feature.md"),
+        Path(".github/PULL_REQUEST_TEMPLATE/feature.md"),
+    ),
+    (
+        Path("PULL_REQUEST_TEMPLATE/bugfix.md"),
+        Path("PULL_REQUEST_TEMPLATE.vi/bugfix.md"),
+        Path(".github/PULL_REQUEST_TEMPLATE/bugfix.md"),
+    ),
+    (
+        Path("PULL_REQUEST_TEMPLATE/documentation.md"),
+        Path("PULL_REQUEST_TEMPLATE.vi/documentation.md"),
+        Path(".github/PULL_REQUEST_TEMPLATE/documentation.md"),
+    ),
+    (
+        Path("PULL_REQUEST_TEMPLATE/security.md"),
+        Path("PULL_REQUEST_TEMPLATE.vi/security.md"),
+        Path(".github/PULL_REQUEST_TEMPLATE/security.md"),
+    ),
     (Path("CITATION.cff"), Path("CITATION.vi.cff"), Path("CITATION.cff")),
     (
         Path("release-config.yml"),
@@ -1348,6 +1368,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         "skills/repo-scaffold/scripts/codeql_preflight.py",
         "skills/repo-scaffold/scripts/ci_toolchain.py",
         "skills/repo-scaffold/scripts/validate_scaffold.py",
+        "scripts/audit_freshness.py",
         "scripts/prepare_mutation_cache.py",
         "scripts/python_support.py",
         "scripts/run_mutation_testing.py",
@@ -1454,6 +1475,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "scripts/prepare_mutation_cache.py",
         "scripts/run_mutation_testing.py",
         "scripts/validate_mutation_results.py",
+        "tests/test_audit_freshness.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_validate_mutation_results.py",
@@ -2124,6 +2146,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         )
 
     loader_contract = {
+        "tests/test_audit_freshness.py": ("scripts.audit_freshness",),
         "tests/test_ci_toolchain.py": ("skills.repo-scaffold.scripts.ci_toolchain",),
         "tests/test_codeql_preflight.py": (
             "scripts.validate_workflows",

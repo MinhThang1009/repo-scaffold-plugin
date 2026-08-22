@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import runpy
+import shutil
 import sys
 import tempfile
 import unittest
@@ -1175,6 +1176,88 @@ body:
                 [f"{root / 'README-header.md'}: missing README header asset"],
             )
 
+    def test_template_assets_validate_specialized_pull_request_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "README-header.md",
+                root / "README-header.md",
+            )
+            template = root / "PULL_REQUEST_TEMPLATE" / "feature.md"
+            template.parent.mkdir()
+            template.write_text(
+                "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                "## Summary\n\nDescribe the feature.\n\n"
+                "## Required checklist\n\n"
+                "<!-- repo-scaffold:required-checklist:start -->\n"
+                "- [ ] Add focused tests\n"
+                "<!-- repo-scaffold:required-checklist:end -->\n\n"
+                "## Danh sách tùy chọn\n\n"
+                "<!-- repo-scaffold:optional-checklist:start -->\n"
+                "- [ ] Update documentation\n"
+                "<!-- repo-scaffold:optional-checklist:end -->\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(validate_scaffold.validate_template_assets(root), [])
+
+            template.write_text(
+                "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                "## Required checklist\n\n"
+                "<!-- repo-scaffold:required-checklist:start -->\n"
+                "Describe the required work.\n"
+                "<!-- repo-scaffold:required-checklist:end -->\n\n"
+                "## If applicable\n\n"
+                "<!-- repo-scaffold:optional-checklist:start -->\n"
+                "- [ ] Update documentation\n"
+                "<!-- repo-scaffold:optional-checklist:end -->\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                validate_scaffold.validate_template_assets(root),
+                [
+                    "PULL_REQUEST_TEMPLATE/feature.md asset must contain a required "
+                    "checklist item"
+                ],
+            )
+
+            template.write_text(
+                "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                "## Required checklist\n\n"
+                "<!-- repo-scaffold:required-checklist:start -->\n"
+                "- [ ] Add focused tests\n"
+                "<!-- repo-scaffold:required-checklist:end -->\n\n"
+                "## Optional details\n\n"
+                "<!-- repo-scaffold:optional-checklist:start -->\n"
+                "- [ ] Update documentation\n"
+                "<!-- repo-scaffold:optional-checklist:end -->\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                validate_scaffold.validate_template_assets(root),
+                [
+                    "PULL_REQUEST_TEMPLATE/feature.md asset must label the optional "
+                    "checklist `If applicable`, `Khi phù hợp`, or `Danh sách tùy chọn`"
+                ],
+            )
+
+            template.write_text("- [ ] Add focused tests\n", encoding="utf-8")
+            self.assertEqual(
+                validate_scaffold.validate_template_assets(root),
+                [
+                    "PULL_REQUEST_TEMPLATE/feature.md asset must contain exactly "
+                    "one matching repo-scaffold template marker",
+                    "PULL_REQUEST_TEMPLATE/feature.md asset must contain exactly "
+                    "one required checklist section",
+                    "PULL_REQUEST_TEMPLATE/feature.md asset must contain exactly "
+                    "one optional checklist section",
+                ],
+            )
+
     def test_linked_template_boundaries_are_reported_without_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1227,6 +1310,19 @@ body:
             self.assertIn(
                 "PULL_REQUEST_TEMPLATE.md asset: linked or reparse-point Markdown "
                 "is not dereferenced or validated",
+                problems,
+            )
+
+            specialized_template_directory = root / "PULL_REQUEST_TEMPLATE"
+            with mock.patch.object(
+                validate_scaffold,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path == specialized_template_directory,
+            ):
+                problems = validate_scaffold.validate_template_assets(root)
+            self.assertIn(
+                "PULL_REQUEST_TEMPLATE asset directory: linked or reparse-point "
+                "Markdown is not dereferenced or validated",
                 problems,
             )
 
