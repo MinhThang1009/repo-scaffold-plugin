@@ -944,6 +944,7 @@ body:
 name: " "
 description: " "
 unsupported: value
+type: []
 body:
   - type: markdown
     attributes:
@@ -1005,6 +1006,7 @@ body:
         expected_fragments = (
             "form must contain",
             "name and description must be nonempty",
+            "type must be a nonempty string",
             "attributes.value must be nonempty",
             "type must be a supported input type",
             "id may contain only letters",
