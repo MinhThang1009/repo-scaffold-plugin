@@ -2781,6 +2781,10 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 any("missing repo-scaffold/LICENSE" in item for item in problems)
             )
             self.assertIn(
+                "release archive: missing repo-scaffold/.claude-plugin/plugin.json",
+                problems,
+            )
+            self.assertIn(
                 "release archive: missing "
                 "repo-scaffold/skills/repo-scaffold/assets/extra.txt",
                 problems,
@@ -2812,6 +2816,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_development_dependency_contract",
             "validate_mutation_testing_contract",
             "validate_plugin_manifest",
+            "validate_multi_agent_plugin_contract",
             "validate_release_please",
             "validate_release_attestation",
             "validate_privileged_workflow_permissions",
@@ -3216,6 +3221,211 @@ class PluginManifestValidationTests(unittest.TestCase):
         )
 
 
+class MultiAgentPluginContractTests(unittest.TestCase):
+    @staticmethod
+    def write_valid_contract(root: Path) -> None:
+        shared = {
+            "name": "repo-scaffold",
+            "version": "1.2.3",
+            "description": "Shared Agent Skills plugin",
+            "author": {"name": "Maintainer"},
+            "homepage": "https://example.test/readme",
+            "repository": "https://example.test",
+            "license": "MIT",
+            "keywords": ["agent-skills"],
+        }
+        codex_root = root / ".codex-plugin"
+        codex_root.mkdir()
+        (codex_root / "plugin.json").write_text(json.dumps(shared), encoding="utf-8")
+        claude_root = root / ".claude-plugin"
+        claude_root.mkdir()
+        claude = {
+            "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+            "displayName": "Repo Scaffold",
+            **shared,
+        }
+        (claude_root / "plugin.json").write_text(json.dumps(claude), encoding="utf-8")
+        skill = root / "skills" / "repo-scaffold" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            "Follow the active host, system, developer, and project instructions\n"
+            "Codex can use AGENTS.md\n"
+            "Claude Code reads `CLAUDE.md`\n"
+            "references/agent-compatibility.md\n",
+            encoding="utf-8",
+        )
+        reference_text = (
+            "Agent Skills Codex Claude Code\n"
+            "https://developers.openai.com/plugins/build/plugins\n"
+            "https://code.claude.com/docs/en/plugins\n"
+            "https://code.claude.com/docs/en/skills\n"
+        )
+        references = skill.parent / "references"
+        references.mkdir()
+        for name in ("agent-compatibility.md", "agent-compatibility.vi.md"):
+            (references / name).write_text(reference_text, encoding="utf-8")
+
+    def test_accepts_synchronized_host_adapters_and_shared_documentation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+
+            self.assertEqual(
+                validate_repository.validate_multi_agent_plugin_contract(root), []
+            )
+
+    def test_plugin_release_workflow_bundles_and_synchronizes_both_adapters(
+        self,
+    ) -> None:
+        workflow = (PLUGIN_ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        for fragment in (
+            "codex_manifest_version",
+            "claude_manifest_version",
+            "Codex and Claude plugin manifest versions must match.",
+            "HEAD -- .claude-plugin .codex-plugin skills README.md LICENSE",
+        ):
+            self.assertIn(fragment, workflow)
+
+    def test_scaffold_templates_support_language_and_host_adapters(self) -> None:
+        asset_root = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
+
+        self.assertEqual(
+            (asset_root / "CLAUDE.md").read_text(encoding="utf-8"),
+            "@AGENTS.md\n",
+        )
+        for english_name, vietnamese_name in (
+            ("AGENTS.md", "AGENTS.vi.md"),
+            ("CONTRIBUTING.md", "CONTRIBUTING.vi.md"),
+            ("SECURITY.md", "SECURITY.vi.md"),
+            ("SUPPORT.md", "SUPPORT.vi.md"),
+            ("CHANGELOG.md", "CHANGELOG.vi.md"),
+            ("GOVERNANCE.md", "GOVERNANCE.vi.md"),
+            ("PULL_REQUEST_TEMPLATE.md", "PULL_REQUEST_TEMPLATE.vi.md"),
+            ("CITATION.cff", "CITATION.vi.cff"),
+            ("release-config.yml", "release-config.vi.yml"),
+            ("release-please-config.json", "release-please-config.vi.json"),
+            ("ISSUE_TEMPLATE/bug_report.md", "ISSUE_TEMPLATE/bug_report.vi.md"),
+            (
+                "ISSUE_TEMPLATE/feature_request.md",
+                "ISSUE_TEMPLATE/feature_request.vi.md",
+            ),
+            ("ISSUE_TEMPLATE/config.yml", "ISSUE_TEMPLATE/config.vi.yml"),
+        ):
+            english = (asset_root / english_name).read_text(encoding="utf-8")
+            vietnamese = (asset_root / vietnamese_name).read_text(encoding="utf-8")
+            self.assertTrue(english.strip(), english_name)
+            self.assertTrue(vietnamese.strip(), vietnamese_name)
+            self.assertNotEqual(english, vietnamese, vietnamese_name)
+            self.assertRegex(vietnamese, r"[À-ỹ]", vietnamese_name)
+
+    def test_reports_unreadable_nonobject_and_inconsistent_contract_files(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing_problems = validate_repository.validate_multi_agent_plugin_contract(
+                root
+            )
+            self.assertTrue(
+                any(
+                    ".codex-plugin/plugin.json: invalid JSON" in item
+                    for item in missing_problems
+                )
+            )
+            self.assertTrue(
+                any(
+                    "skills/repo-scaffold/SKILL.md: unreadable" in item
+                    for item in missing_problems
+                )
+            )
+            self.assertEqual(
+                sum("agent-compatibility" in item for item in missing_problems), 2
+            )
+
+            self.write_valid_contract(root)
+            (root / ".codex-plugin" / "plugin.json").write_text("[]", encoding="utf-8")
+            self.assertIn(
+                ".codex-plugin/plugin.json: root must be an object",
+                validate_repository.validate_multi_agent_plugin_contract(root),
+            )
+
+            claude = json.loads(
+                (root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+            )
+            codex = dict(claude)
+            for field in (
+                "name",
+                "version",
+                "description",
+                "author",
+                "homepage",
+                "repository",
+                "license",
+                "keywords",
+            ):
+                codex[field] = f"different-{field}"
+            (root / ".codex-plugin" / "plugin.json").write_text(
+                json.dumps(codex), encoding="utf-8"
+            )
+            claude["$schema"] = "wrong"
+            claude["displayName"] = "Wrong"
+            (root / ".claude-plugin" / "plugin.json").write_text(
+                json.dumps(claude), encoding="utf-8"
+            )
+            (root / "skills" / "repo-scaffold" / "SKILL.md").write_text(
+                "missing guidance\n", encoding="utf-8"
+            )
+            (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "agent-compatibility.md"
+            ).write_text("incomplete\n", encoding="utf-8")
+
+            problems = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        for field in (
+            "name",
+            "version",
+            "description",
+            "author",
+            "homepage",
+            "repository",
+            "license",
+            "keywords",
+        ):
+            self.assertIn(
+                ".claude-plugin/plugin.json: "
+                f"{field} must match .codex-plugin/plugin.json",
+                problems,
+            )
+        self.assertIn(
+            ".claude-plugin/plugin.json: $schema must identify the Claude Code "
+            "plugin manifest",
+            problems,
+        )
+        self.assertIn(
+            ".claude-plugin/plugin.json: displayName must be Repo Scaffold",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/SKILL.md: must retain host-neutral agent "
+            "compatibility guidance",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/references/agent-compatibility.md: must document "
+            "Codex, Claude Code, and Agent Skills",
+            problems,
+        )
+
+
 class ReleasePleaseValidationTests(unittest.TestCase):
     def write_valid_configuration(self, root: Path) -> None:
         workflow_root = root / ".github" / "workflows"
@@ -3238,6 +3448,11 @@ jobs:
         (plugin_root / "plugin.json").write_text(
             '{"version": "1.2.3"}', encoding="utf-8"
         )
+        claude_plugin_root = root / ".claude-plugin"
+        claude_plugin_root.mkdir()
+        (claude_plugin_root / "plugin.json").write_text(
+            '{"version": "1.2.3"}', encoding="utf-8"
+        )
         (root / "release-please-config.json").write_text(
             json.dumps(
                 {
@@ -3255,7 +3470,12 @@ jobs:
                                     "type": "json",
                                     "path": ".codex-plugin/plugin.json",
                                     "jsonpath": "$.version",
-                                }
+                                },
+                                {
+                                    "type": "json",
+                                    "path": ".claude-plugin/plugin.json",
+                                    "jsonpath": "$.version",
+                                },
                             ]
                         }
                     },
@@ -3383,6 +3603,9 @@ jobs:
             (root / ".codex-plugin" / "plugin.json").write_text(
                 '{"version": "1.2.3+build.7"}', encoding="utf-8"
             )
+            (root / ".claude-plugin" / "plugin.json").write_text(
+                '{"version": "1.2.3+build.7"}', encoding="utf-8"
+            )
             (root / ".release-please-manifest.json").write_text(
                 '{".": "1.2.3+build.7"}', encoding="utf-8"
             )
@@ -3397,6 +3620,9 @@ jobs:
             (root / ".codex-plugin" / "plugin.json").write_text(
                 '{"version": "1.2.3+codex.test"}', encoding="utf-8"
             )
+            (root / ".claude-plugin" / "plugin.json").write_text(
+                '{"version": "1.2.3+codex.test"}', encoding="utf-8"
+            )
             (root / ".release-please-manifest.json").write_text(
                 '{".": "1.2.3+codex.test"}', encoding="utf-8"
             )
@@ -3406,6 +3632,7 @@ jobs:
 
             for source in (
                 ".codex-plugin/plugin.json",
+                ".claude-plugin/plugin.json",
                 ".release-please-manifest.json",
                 "version.txt",
             ):
@@ -3438,6 +3665,19 @@ jobs:
             )
             self.assertIn(
                 "release version files must contain the same version", problems
+            )
+
+    def test_rejects_claude_plugin_version_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            (root / ".claude-plugin" / "plugin.json").write_text(
+                '{"version": "1.2.4"}', encoding="utf-8"
+            )
+
+            self.assertIn(
+                "release version files must contain the same version",
+                validate_repository.validate_release_please(root),
             )
 
     def test_missing_workflow_and_invalid_config_shapes_are_reported(self) -> None:
@@ -3512,7 +3752,7 @@ jobs:
 
             self.assertTrue(
                 any(
-                    "root package must update plugin version" in item
+                    "root package must update all plugin versions" in item
                     for item in problems
                 )
             )
@@ -3946,6 +4186,26 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
 
 
 class IssueFormValidationTests(unittest.TestCase):
+    def test_scaffold_localized_chooser_is_not_misclassified_as_an_issue_form(
+        self,
+    ) -> None:
+        self.assertEqual(validate_repository.validate_issue_templates(PLUGIN_ROOT), [])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            (template_root / "config.vi.yml").write_text(
+                "blank_issues_enabled: false\n", encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_issue_templates(root)
+
+        self.assertIn(
+            f"{Path('.github/ISSUE_TEMPLATE/config.vi.yml')}: name must be nonempty",
+            problems,
+        )
+
     def test_upload_input_matches_current_github_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

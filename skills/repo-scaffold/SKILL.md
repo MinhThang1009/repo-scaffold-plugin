@@ -7,7 +7,14 @@ description: Scaffold or update a repository to production GitHub.com standards 
 
 Set up a new repository to production GitHub.com standard: generate community-health files with project-tailored content in correct GitHub format, then configure the verified GitHub.com repository (description, topics, branch protection, labels).
 
-Follow the user's active Codex instructions, including project or global `AGENTS.md` files, plus any repository security guidance if present. Fall back to standard git and security best practice when no durable instructions exist. The scaffold supports English (`en`) and Vietnamese (`vi`) project output; resolve one language before generation and use it consistently.
+Follow the active host, system, developer, and project instructions. Read the
+host-native instruction files that the active host supports: Codex can use
+`AGENTS.md`; Claude Code reads `CLAUDE.md` and can import `AGENTS.md` from it.
+Fall back to standard git and security best practice when no durable
+instructions exist. The scaffold supports English (`en`) and Vietnamese (`vi`)
+project output; resolve one language before generation and use it consistently.
+See `references/agent-compatibility.md` for adapter-specific installation and
+invocation guidance.
 
 ## Core principles
 
@@ -108,7 +115,38 @@ CRITICAL (Windows/Git-Bash): pass `gh api` paths WITHOUT a leading slash, or the
 - README.md: generate from the real project following `references/readme.md` — GitHub's recommended elements, a centered header (`assets/README-header.md`), numbered sections/subsections, CI/license badges, and a manual TOC for long READMEs. Do not invent features.
 - CODEOWNERS: preserve the active supported location. When none exists, write `.github/CODEOWNERS` inline. GitHub requires a valid user/team owner with write access: use `* @{{REPO_SCAFFOLD_OWNER}}` only when the repository owner is a user account; for organization-owned repositories, ask for a visible team or maintainer user and use `* @{{REPO_SCAFFOLD_ORG}}/{{REPO_SCAFFOLD_TEAM}}` or `* @{{REPO_SCAFFOLD_USER}}`.
 - From `assets/` (fill the context-specific placeholders documented below):
-  - Always: CONTRIBUTING.md, SECURITY.md, SUPPORT.md, CHANGELOG.md, .editorconfig, .gitattributes, .markdownlint-cli2.jsonc, requirements-docs.txt, scripts/validate_scaffold.py, scripts/ci_toolchain.py, scripts/check_community_health.py, .github/ci-toolchain.json, .github/community-health-trackers.json, .github/PULL_REQUEST_TEMPLATE.md, .github/dependabot.yml. Copy all three scripts byte-for-byte from the skill's `scripts/` directory; they are project tooling, not generated prose. Copy `.gitattributes` from `assets/gitattributes.template` so the template cannot affect its own plugin archive, `.github/ci-toolchain.json` from `assets/ci-toolchain.json`, and `.github/community-health-trackers.json` from `assets/community-health-trackers.json`.
+  - Always: CONTRIBUTING.md, SECURITY.md, SUPPORT.md, CHANGELOG.md, AGENTS.md,
+    CLAUDE.md, .editorconfig, .gitattributes, .markdownlint-cli2.jsonc,
+    requirements-docs.txt, scripts/validate_scaffold.py,
+    scripts/ci_toolchain.py, scripts/check_community_health.py,
+    .github/ci-toolchain.json, .github/community-health-trackers.json,
+    .github/PULL_REQUEST_TEMPLATE.md, .github/dependabot.yml. Copy all three
+    scripts byte-for-byte from the skill's `scripts/` directory; they are
+    project tooling, not generated prose. Copy `.gitattributes` from
+    `assets/gitattributes.template` so the template cannot affect its own
+    plugin archive, `.github/ci-toolchain.json` from
+    `assets/ci-toolchain.json`, and `.github/community-health-trackers.json`
+    from `assets/community-health-trackers.json`.
+  - For `SCAFFOLD_LANGUAGE=en`, copy English assets to their canonical target
+    names. For `SCAFFOLD_LANGUAGE=vi`, use the Vietnamese sidecar as the source
+    and write its canonical target name: `AGENTS.vi.md` → `AGENTS.md`,
+    `CONTRIBUTING.vi.md` → `CONTRIBUTING.md`, `SECURITY.vi.md` →
+    `SECURITY.md`, `SUPPORT.vi.md` → `SUPPORT.md`, `CHANGELOG.vi.md` →
+    `CHANGELOG.md`, `GOVERNANCE.vi.md` → `GOVERNANCE.md`,
+    `PULL_REQUEST_TEMPLATE.vi.md` → `.github/PULL_REQUEST_TEMPLATE.md`,
+    `ISSUE_TEMPLATE/bug_report.vi.md` → `ISSUE_TEMPLATE/bug_report.md`,
+    `ISSUE_TEMPLATE/feature_request.vi.md` →
+    `ISSUE_TEMPLATE/feature_request.md`, `ISSUE_TEMPLATE/config.vi.yml` →
+    `ISSUE_TEMPLATE/config.yml`, `CITATION.vi.cff` → `CITATION.cff`,
+    `release-config.vi.yml` → `.github/release.yml`, and
+    `release-please-config.vi.json` → `release-please-config.json`. Never
+    leave a locale suffix on a target instruction or community-health file.
+    Copy the language-neutral `assets/CLAUDE.md` unchanged: its sole
+    `@AGENTS.md` import is the official Claude Code adapter and keeps both
+    agents on one source of instructions. For any other project-facing asset,
+    render its prose in `SCAFFOLD_LANGUAGE` before writing the canonical target
+    name, preserving YAML keys, Markdown front matter keys, commands,
+    identifiers, URLs, and placeholders exactly.
   - Only when the latest verified `HAS_ISSUES` value is true: .github/ISSUE_TEMPLATE/{bug_report,feature_request}.md, .github/ISSUE_TEMPLATE/config.yml, and .github/workflows/community-health.yml. Approval without a successful mutation/re-query is not sufficient. Copy the workflow from `assets/workflows/community-health.yml`; it needs Issues to provide its idempotent reminder.
   - Optional (offer based on project type): .github/FUNDING.yml (sponsorship), GOVERNANCE.md (community project), CITATION.cff (academic/citable).
 
@@ -188,7 +226,7 @@ Apply description, topics, classic branch protection, labels, eligible security 
 ### 6. Handoff or authorized Git operations
 
 - By default, leave generated changes unstaged and uncommitted, then report the files and verification results. A request to scaffold a repository does not by itself authorize staging, committing, pushing, creating a branch, or opening a PR.
-- Only when the user explicitly requests those Git operations: for a new or empty repo, stage only the intended scaffold files, commit `chore: scaffold repo to production standard`, and push to `{{REPO_SCAFFOLD_DEFAULT_BRANCH}}`; for an existing repo with a protected default branch, create a branch and open a PR following the active Codex/project git workflow. Enable branch protection after that PR merges, to avoid blocking the scaffold PR itself.
+- Only when the user explicitly requests those Git operations: for a new or empty repo, stage only the intended scaffold files, commit `chore: scaffold repo to production standard`, and push to `{{REPO_SCAFFOLD_DEFAULT_BRANCH}}`; for an existing repo with a protected default branch, create a branch and open a PR following the active host/project git workflow. Enable branch protection after that PR merges, to avoid blocking the scaffold PR itself.
 
 ### 7. Verify
 
