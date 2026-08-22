@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.4.1...v1.5.0) (2026-08-22)
+
+
+### Features
+
+* add multilingual agent support ([#49](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/49)) ([b4c902a](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/b4c902aaa544588a2f33857322caa2f3beaa4c79))
+
 ## [1.4.1](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.4.0...v1.4.1) (2026-08-22)
 
 
