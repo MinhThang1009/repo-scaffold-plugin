@@ -18,13 +18,19 @@ portal selection are listed separately and must be verified at submission time.
 Use the canonical default-branch URLs declared in the plugin manifest when
 copying these policies into the submission portal.
 
+The Codex marketplace package includes the native `.codex-plugin` manifest.
+The same release archive also includes a native Claude Code
+`.claude-plugin` manifest. See
+[`agent-compatibility.md`](skills/repo-scaffold/references/agent-compatibility.md)
+for host-specific installation and invocation details.
+
 Long description:
 
 > Repo Scaffold creates project-specific GitHub community files, maintenance
 > configuration, and validated workflows. It supports English or Vietnamese
 > project-facing content, preserves existing work, pins third-party Actions to
 > reviewed commit SHAs, and confirms remote repository changes before applying
-> them.
+> them. The same Agent Skills core supports Codex and Claude Code.
 
 ## Starter prompts
 

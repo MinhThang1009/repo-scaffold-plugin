@@ -2,7 +2,8 @@
 
 # repo-scaffold
 
-A Codex plugin that scaffolds a new repository to production GitHub.com standard.
+An Agent Skills plugin for Codex and Claude Code that scaffolds a new repository
+to production GitHub.com standard.
 
 [![CI](https://github.com/MinhThang1009/repo-scaffold-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/MinhThang1009/repo-scaffold-plugin/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -27,12 +28,16 @@ A Codex plugin that scaffolds a new repository to production GitHub.com standard
 
 ## 1. What it does
 
-Provides the `repo-scaffold` skill, which Codex activates when you ask to set up a new repository's standard files. It:
+Provides one shared `repo-scaffold` skill, which Codex and Claude Code can use
+when you ask to set up a new repository's standard files. It:
 
 - Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue/PR templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
 - For a verified GitHub.com remote, adds deterministic documentation checks, weekly community-health upstream reminders, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow with provenance attestations when the repository is eligible, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
 - Produces either English or Vietnamese project-facing content. An explicit request wins, followed by active project instructions and the established documentation convention; English is the default when no preference exists.
+- Creates one shared `AGENTS.md` instruction entry point for supported agents and
+  a minimal `CLAUDE.md` adapter that imports it, so Claude Code and agents that
+  consume `AGENTS.md` follow the same project guidance without duplicated rules.
 
 Content follows GitHub's community-standards format and is pulled from canonical
 sources where possible (LICENSE and `.gitignore` through the GitHub API, and the
@@ -59,7 +64,8 @@ Every new repository needs the same production boilerplate in the correct GitHub
 
 ## 4. How to use
 
-Install the plugin (see below), then, in any repository, ask Codex:
+Install the plugin (see below), then, in any repository, ask your supported
+agent:
 
 - "scaffold this repo"
 - "scaffold this repo in English"
@@ -67,6 +73,10 @@ Install the plugin (see below), then, in any repository, ask Codex:
 - "dựng repo chuẩn GitHub bằng tiếng Việt"
 
 The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. It resolves one project language (`en` or `vi`) before generation and applies it consistently to documentation, templates, and release metadata. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
+
+For supported adapters, invocation, and generic Agent Skills use, read the
+[agent compatibility guidance](skills/repo-scaffold/references/agent-compatibility.md)
+or its [Vietnamese version](skills/repo-scaffold/references/agent-compatibility.vi.md).
 
 ## 5. Support
 
@@ -85,6 +95,18 @@ codex plugin add repo-scaffold@personal
 ```
 
 `personal` is a local marketplace name, not a global default. A personal marketplace catalog lives at `~/.agents/plugins/marketplace.json`; its plugin source path must point to this checkout.
+
+For Claude Code, validate and load the same checkout directly:
+
+```powershell
+claude plugin validate --strict .
+claude --plugin-dir .
+```
+
+Then invoke `/repo-scaffold:repo-scaffold`, or ask Claude to scaffold the
+current repository. The release archive contains both `.codex-plugin/` and
+`.claude-plugin/`; extract it first, then pass the extracted `repo-scaffold/`
+directory to `claude --plugin-dir`.
 
 ## 7. Update
 
@@ -251,14 +273,16 @@ mutmut; contributors can use WSL for the same check.
 
 This repository uses Release Please with Conventional Commits. Each push to
 `main` updates a release pull request. Merging that pull request updates
-`CHANGELOG.md`, `version.txt`, and `.codex-plugin/plugin.json`, creates the tag
+`CHANGELOG.md`, `version.txt`, `.codex-plugin/plugin.json`, and
+`.claude-plugin/plugin.json`, creates the tag
 and draft GitHub Release, then invokes the reusable release engine.
 
 The engine verifies the tag target, builds
 `repo-scaffold-plugin-<filesystem-safe-tag>.zip` from the immutable commit,
 generates signed SLSA build provenance in a separate no-checkout job, attaches
 the asset to the draft, and publishes only after attestation succeeds. The
-archive contains `.codex-plugin/`, `skills/`, `README.md`, and `LICENSE` under a
+archive contains `.codex-plugin/`, `.claude-plugin/`, `skills/`, `README.md`, and
+`LICENSE` under a
 `repo-scaffold/` directory. The workflow requires a fine-grained PAT stored as
 `RELEASE_PLEASE_TOKEN`; see [CONTRIBUTING.md](CONTRIBUTING.md) for the release
 process and token scope.

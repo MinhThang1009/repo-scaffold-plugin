@@ -1,0 +1,12 @@
+# Danh mục ghi chú phát hành tự động. Sao chép sang .github/release.yml.
+# Dùng cho “Generate release notes” của GitHub và `gh release ... --generate-notes`.
+changelog:
+  exclude:
+    labels: [ignore-for-release]
+  categories:
+    - title: Tính năng
+      labels: [enhancement, feature]
+    - title: Sửa lỗi
+      labels: [bug, fix]
+    - title: Thay đổi khác
+      labels: ['*']

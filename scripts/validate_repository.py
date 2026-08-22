@@ -72,6 +72,14 @@ RELEASE_PLEASE_ENGLISH_CHANGELOG_SECTIONS = [
     {"type": "build", "section": "Build System", "hidden": True},
     {"type": "ci", "section": "Continuous Integration", "hidden": True},
 ]
+RELEASE_PLUGIN_VERSION_PATHS = (
+    Path(".codex-plugin/plugin.json"),
+    Path(".claude-plugin/plugin.json"),
+)
+AGENT_COMPATIBILITY_REFERENCE_PATHS = (
+    Path("skills/repo-scaffold/references/agent-compatibility.md"),
+    Path("skills/repo-scaffold/references/agent-compatibility.vi.md"),
+)
 TEMPLATE_TOKEN = re.compile(r"(?:\{\{|\$\{\{)")
 ISSUE_FORM_ID = re.compile(r"^[0-9A-Za-z_-]+$")
 ISSUE_FORM_INPUT_TYPES = {
@@ -2296,6 +2304,101 @@ def validate_plugin_manifest(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
+    """Require Codex and Claude adapters to expose one shared Agent Skills core."""
+    repository_root = repository_root.resolve()
+    codex_path, claude_path = (
+        repository_root / relative for relative in RELEASE_PLUGIN_VERSION_PATHS
+    )
+    documents: dict[Path, dict[str, Any]] = {}
+    problems: list[str] = []
+    for path in (codex_path, claude_path):
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            document = load_json(path)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            problems.append(f"{relative}: invalid JSON: {error}")
+            continue
+        if not isinstance(document, dict):
+            problems.append(f"{relative}: root must be an object")
+            continue
+        documents[path] = document
+
+    codex = documents.get(codex_path)
+    claude = documents.get(claude_path)
+    if codex is not None and claude is not None:
+        shared_fields = (
+            "name",
+            "version",
+            "description",
+            "author",
+            "homepage",
+            "repository",
+            "license",
+            "keywords",
+        )
+        for field in shared_fields:
+            if codex.get(field) != claude.get(field):
+                problems.append(
+                    ".claude-plugin/plugin.json: "
+                    f"{field} must match .codex-plugin/plugin.json"
+                )
+        if claude.get("$schema") != (
+            "https://json.schemastore.org/claude-code-plugin-manifest.json"
+        ):
+            problems.append(
+                ".claude-plugin/plugin.json: $schema must identify the Claude "
+                "Code plugin manifest"
+            )
+        if claude.get("displayName") != "Repo Scaffold":
+            problems.append(
+                ".claude-plugin/plugin.json: displayName must be Repo Scaffold"
+            )
+
+    skill_path = repository_root / "skills" / "repo-scaffold" / "SKILL.md"
+    try:
+        skill_text = skill_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"skills/repo-scaffold/SKILL.md: unreadable: {error}")
+    else:
+        for fragment in (
+            "Follow the active host, system, developer, and project instructions",
+            "Codex can use",
+            "Claude Code reads `CLAUDE.md`",
+            "references/agent-compatibility.md",
+        ):
+            if fragment not in skill_text:
+                problems.append(
+                    "skills/repo-scaffold/SKILL.md: must retain host-neutral "
+                    "agent compatibility guidance"
+                )
+                break
+
+    required_reference_fragments = (
+        "Agent Skills",
+        "Codex",
+        "Claude Code",
+        "https://developers.openai.com/plugins/build/plugins",
+        "https://code.claude.com/docs/en/plugins",
+        "https://code.claude.com/docs/en/skills",
+    )
+    for relative_path in AGENT_COMPATIBILITY_REFERENCE_PATHS:
+        path = repository_root / relative_path
+        relative = relative_path.as_posix()
+        try:
+            reference_text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(f"{relative}: unreadable: {error}")
+            continue
+        if any(
+            fragment not in reference_text for fragment in required_reference_fragments
+        ):
+            problems.append(
+                f"{relative}: must document Codex, Claude Code, and Agent Skills"
+            )
+    return problems
+
+
 def validate_release_please(repository_root: Path) -> list[str]:
     """Validate the repository's single automated release mode and version state."""
     workflow_root = repository_root / ".github" / "workflows"
@@ -2303,7 +2406,6 @@ def validate_release_please(repository_root: Path) -> list[str]:
     manual_dispatcher = workflow_root / "release-tag.yml"
     config_path = repository_root / "release-please-config.json"
     versions_path = repository_root / ".release-please-manifest.json"
-    plugin_path = repository_root / ".codex-plugin" / "plugin.json"
     version_path = repository_root / "version.txt"
     problems: list[str] = []
 
@@ -2342,15 +2444,22 @@ def validate_release_please(repository_root: Path) -> list[str]:
     if not isinstance(root_package, dict):
         problems.append("release-please-config.json: packages must define root package")
     else:
-        required_extra_file = {
-            "type": "json",
-            "path": ".codex-plugin/plugin.json",
-            "jsonpath": "$.version",
-        }
+        required_extra_files = [
+            {
+                "type": "json",
+                "path": relative_path.as_posix(),
+                "jsonpath": "$.version",
+            }
+            for relative_path in RELEASE_PLUGIN_VERSION_PATHS
+        ]
         extra_files = root_package.get("extra-files")
-        if not isinstance(extra_files, list) or required_extra_file not in extra_files:
+        if not isinstance(extra_files, list) or any(
+            required_extra_file not in extra_files
+            for required_extra_file in required_extra_files
+        ):
             problems.append(
-                "release-please-config.json: root package must update plugin version"
+                "release-please-config.json: root package must update all plugin "
+                "versions"
             )
 
     versions: dict[str, Any] = {}
@@ -2364,12 +2473,15 @@ def validate_release_please(repository_root: Path) -> list[str]:
             )
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
         problems.append(f".release-please-manifest.json: invalid JSON: {error}")
-    try:
-        plugin = load_json(plugin_path)
-        if isinstance(plugin, dict):
-            versions[".codex-plugin/plugin.json"] = plugin.get("version")
-    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
-        problems.append(f".codex-plugin/plugin.json: invalid JSON: {error}")
+    for relative_path in RELEASE_PLUGIN_VERSION_PATHS:
+        plugin_path = repository_root / relative_path
+        relative = relative_path.as_posix()
+        try:
+            plugin = load_json(plugin_path)
+            if isinstance(plugin, dict):
+                versions[relative] = plugin.get("version")
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            problems.append(f"{relative}: invalid JSON: {error}")
     try:
         versions["version.txt"] = version_path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError) as error:
@@ -2396,7 +2508,10 @@ def validate_release_please(repository_root: Path) -> list[str]:
         for version_source, version in versions.items()
         if version_source not in invalid_versions
     }
-    if len(versions) == 3 and len(valid_versions) > 1:
+    if (
+        len(versions) == 2 + len(RELEASE_PLUGIN_VERSION_PATHS)
+        and len(valid_versions) > 1
+    ):
         problems.append("release version files must contain the same version")
 
     for workflow_file in sorted(workflow_root.glob("*.yml")):
@@ -2983,7 +3098,16 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
             problems.append(f"{relative}: issue forms must use the .yml extension")
 
         for path in sorted(template_root.glob("*.yml")):
-            if path.name == "config.yml":
+            is_scaffold_localized_config = (
+                template_root
+                == repository_root
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "ISSUE_TEMPLATE"
+                and path.name == "config.vi.yml"
+            )
+            if path.name == "config.yml" or is_scaffold_localized_config:
                 continue
             relative = path.relative_to(repository_root)
             try:
@@ -3664,7 +3788,13 @@ def validate_release_archive(repository_root: Path) -> list[str]:
     git = resolve_path_executable("git", forbidden_root=source_root)
     if git is None:
         return ["release archive: git is unavailable outside the repository"]
-    archive_paths = (".codex-plugin", "skills", "README.md", "LICENSE")
+    archive_paths = (
+        ".claude-plugin",
+        ".codex-plugin",
+        "skills",
+        "README.md",
+        "LICENSE",
+    )
     with tempfile.TemporaryDirectory(prefix="repo-scaffold-archive-") as directory:
         archive = Path(directory) / "plugin.zip"
         command = [
@@ -3750,6 +3880,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
         expected.update(
             {
                 "repo-scaffold/.codex-plugin/plugin.json",
+                "repo-scaffold/.claude-plugin/plugin.json",
                 "repo-scaffold/README.md",
                 "repo-scaffold/LICENSE",
                 "repo-scaffold/skills/repo-scaffold/SKILL.md",
@@ -3832,6 +3963,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_development_dependency_contract,
         validate_mutation_testing_contract,
         validate_plugin_manifest,
+        validate_multi_agent_plugin_contract,
         validate_release_please,
         validate_release_attestation,
         validate_privileged_workflow_permissions,
@@ -3859,7 +3991,7 @@ def main() -> int:
             print(f"error: {problem}", file=sys.stderr)
         return 1
     print(
-        "Repository metadata, action pins, dependency locks, coverage policy, "
+        "Repository metadata, multi-agent adapters, action pins, dependency locks, coverage policy, "
         "CI policies, mutation testing, test quality, links, community-health "
         "tracking, templates, attestations, and release archive are valid."
     )

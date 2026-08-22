@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "repo-scaffold",
+  "displayName": "Repo Scaffold",
+  "version": "1.4.1",
+  "description": "Scaffold a repository to production GitHub.com standard with community-health files, workflows, and repository configuration.",
+  "author": {
+    "name": "Minh Thang",
+    "url": "https://github.com/MinhThang1009"
+  },
+  "homepage": "https://github.com/MinhThang1009/repo-scaffold-plugin#readme",
+  "repository": "https://github.com/MinhThang1009/repo-scaffold-plugin",
+  "license": "MIT",
+  "keywords": [
+    "scaffold",
+    "repository",
+    "github",
+    "community-health",
+    "ci",
+    "release",
+    "automation"
+  ]
+}

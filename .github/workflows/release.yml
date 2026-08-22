@@ -120,9 +120,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          manifest_version="$(jq -er '.version | strings | select(length > 0)' .codex-plugin/plugin.json)"
-          if [[ "${RELEASE_TAG}" != "v${manifest_version}" ]]; then
-            echo "::error::Release tag ${RELEASE_TAG} does not match plugin manifest version v${manifest_version}."
+          codex_manifest_version="$(jq -er '.version | strings | select(length > 0)' .codex-plugin/plugin.json)"
+          claude_manifest_version="$(jq -er '.version | strings | select(length > 0)' .claude-plugin/plugin.json)"
+          if [[ "${codex_manifest_version}" != "${claude_manifest_version}" ]]; then
+            echo "::error::Codex and Claude plugin manifest versions must match."
+            exit 1
+          fi
+          if [[ "${RELEASE_TAG}" != "v${codex_manifest_version}" ]]; then
+            echo "::error::Release tag ${RELEASE_TAG} does not match plugin manifest version v${codex_manifest_version}."
             exit 1
           fi
 
@@ -159,7 +164,7 @@ jobs:
             --format=zip \
             --prefix="repo-scaffold/" \
             --output "dist/repo-scaffold-plugin-${artifact_tag}.zip" \
-            HEAD -- .codex-plugin skills README.md LICENSE
+            HEAD -- .claude-plugin .codex-plugin skills README.md LICENSE
 
       - name: Validate release artifacts
         shell: bash
