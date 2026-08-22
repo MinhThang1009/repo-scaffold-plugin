@@ -242,6 +242,50 @@ class ActionPinSyncTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "request failed"):
             failing.get_json("/test")
 
+    def test_github_release_client_rejects_unresolvable_release_tags(self) -> None:
+        cases = (
+            (
+                [
+                    [
+                        {
+                            "name": "codeql-bundle-v9.9.9",
+                            "commit": {"sha": "a" * 40},
+                        },
+                    ],
+                ],
+                "no stable action tag",
+                "github/codeql-action",
+            ),
+            (
+                [
+                    {"tag_name": "v1.2.3"},
+                    {"object": {"type": "tag", "sha": "a" * 40}},
+                    {"object": []},
+                ],
+                "release tag is invalid",
+                "actions/checkout",
+            ),
+            (
+                [
+                    {"tag_name": "v1.2.3"},
+                    {"object": {"type": "commit", "sha": "not-a-sha"}},
+                ],
+                "does not resolve to a commit",
+                "actions/checkout",
+            ),
+        )
+        for payloads, message, repository in cases:
+            with self.subTest(message=message):
+                responses = iter(payloads)
+
+                def opener(_request: Any, *, timeout: int) -> FakeResponse:
+                    self.assertEqual(timeout, 30)
+                    return FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+                client = sync_action_pins.GitHubReleaseClient("token", opener)
+                with self.assertRaisesRegex(ValueError, message):
+                    client.latest_release(repository)
+
     def test_main_writes_changed_paths_and_reports_failures(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -256,9 +300,29 @@ class ActionPinSyncTests(unittest.TestCase):
                     sync_action_pins.main(["--repository-root", str(root), "--write"]),
                     0,
                 )
+            changed_paths = [
+                Path(path).resolve().relative_to(root.resolve()).as_posix()
+                for path in stdout.getvalue().splitlines()
+            ]
             self.assertEqual(
-                stdout.getvalue(), f"{installed.as_posix()}\n{_asset.as_posix()}\n"
+                changed_paths,
+                [
+                    installed.relative_to(root).as_posix(),
+                    _asset.relative_to(root).as_posix(),
+                ],
             )
+
+            stdout = StringIO()
+            with (
+                mock.patch.object(sync_action_pins, "GitHubReleaseClient") as client,
+                redirect_stdout(stdout),
+            ):
+                client.return_value.latest_release.side_effect = self.releases
+                self.assertEqual(
+                    sync_action_pins.main(["--repository-root", str(root), "--write"]),
+                    0,
+                )
+            self.assertEqual(stdout.getvalue(), "Action pins are already current.\n")
 
         stderr = StringIO()
         with (

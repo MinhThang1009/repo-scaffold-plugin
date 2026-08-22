@@ -19,9 +19,6 @@ GITHUB_API_URL = "https://api.github.com"
 ACTION_PIN_PATTERN = re.compile(
     r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>\s*(?:#.*)?)$"
 )
-ACTION_REFERENCE_PATTERN = re.compile(
-    r"(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})"
-)
 USES_PATTERN = re.compile(r"(?m)^\s*(?:-\s*)?uses:\s*(?P<reference>\S+)")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -97,10 +94,8 @@ def action_repositories(path: Path, content: str) -> set[str]:
             continue
         if reference not in pinned_references:
             raise ValueError(f"workflow action is not pinned to a full SHA: {path}")
-        match = ACTION_REFERENCE_PATTERN.fullmatch(reference)
-        if match is None:
-            raise ValueError(f"workflow action reference is invalid: {path}")
-        repository = action_repository(match.group("action"))
+        action = reference.rsplit("@", 1)[0]
+        repository = action_repository(action)
         if repository not in ALLOWED_ACTION_REPOSITORIES:
             raise ValueError(
                 f"workflow action is not in the synchronization allowlist: {repository}"
@@ -172,12 +167,18 @@ class GitHubReleaseClient:
             sha = commit.get("sha") if isinstance(commit, dict) else None
             if (
                 match is not None
+                and isinstance(tag, str)
                 and isinstance(sha, str)
                 and SHA_PATTERN.fullmatch(sha)
             ):
+                version: tuple[int, int, int] = (
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    int(match.group(3)),
+                )
                 releases.append(
                     (
-                        tuple(int(component) for component in match.groups()),
+                        version,
                         ActionRelease(tag=tag, sha=sha),
                     )
                 )

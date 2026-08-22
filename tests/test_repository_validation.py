@@ -643,6 +643,64 @@ class ActionPinSyncContractTests(unittest.TestCase):
             any("synchronizer job contract" in problem for problem in problems)
         )
 
+    def test_unreadable_and_non_mapping_synchronizer_workflows_are_reported(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            unreadable = validate_repository.validate_action_pin_sync_contract(root)
+
+            workflow = root / ".github" / "workflows" / "action-pin-sync.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("scalar\n", encoding="utf-8")
+            non_mapping = validate_repository.validate_action_pin_sync_contract(root)
+
+        self.assertTrue(
+            any("workflow is unreadable" in problem for problem in unreadable)
+        )
+        self.assertTrue(
+            any("workflow must be a mapping" in problem for problem in non_mapping)
+        )
+
+    def test_tampered_synchronizer_steps_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "scripts" / "sync_action_pins.py"
+            workflow = root / ".github" / "workflows" / "action-pin-sync.yml"
+            script.parent.mkdir(parents=True)
+            workflow.parent.mkdir(parents=True)
+            shutil.copy2(PLUGIN_ROOT / "scripts" / "sync_action_pins.py", script)
+            original = (
+                PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
+            ).read_text(encoding="utf-8")
+
+            workflow.write_text(
+                original.replace(
+                    "python scripts/sync_action_pins.py --write", "echo bypass", 1
+                ),
+                encoding="utf-8",
+            )
+            invalid_sync = validate_repository.validate_action_pin_sync_contract(root)
+
+            workflow.write_text(
+                original.replace(
+                    "branch: chore/synchronize-action-pins", "branch: unsafe", 1
+                ),
+                encoding="utf-8",
+            )
+            invalid_pr = validate_repository.validate_action_pin_sync_contract(root)
+
+        self.assertTrue(
+            any(
+                "only through the reviewed script" in problem
+                for problem in invalid_sync
+            )
+        )
+        self.assertTrue(
+            any("create a reviewed pull request" in problem for problem in invalid_pr)
+        )
+
 
 class CiToolchainContractValidationTests(unittest.TestCase):
     CONTRACT_FILES = (

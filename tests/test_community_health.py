@@ -577,7 +577,9 @@ class AuditAndCliTests(unittest.TestCase):
                     audit.call_args.args
                 )
                 self.assertEqual(audit_root, root.resolve())
-                self.assertEqual(audit_entries, community_health.load_registry(registry))
+                self.assertEqual(
+                    audit_entries, community_health.load_registry(registry)
+                )
                 self.assertEqual(audit_repository, "owner/repository")
                 self.assertEqual(audit_client.token, "token")
                 self.assertRegex(checked, r"^\d{4}-\d{2}-\d{2}T")
