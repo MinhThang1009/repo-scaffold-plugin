@@ -24,7 +24,9 @@ KILLED_EXIT_CODES = {1, 3}
 MAX_PROJECT_FILES = 10_000
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
-MAX_META_BYTES = 64 * 1024 * 1024
+# The repository validator generates a large instrumented source file. Keep the
+# bound above its observed artifact size while still rejecting oversized cache input.
+MAX_META_BYTES = 128 * 1024 * 1024
 MAX_STATE_BYTES = 256 * 1024 * 1024
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 IGNORED_DIRECTORIES = {
@@ -279,7 +281,7 @@ def snapshot_project(repository_root: Path) -> ProjectSnapshot:
 
 
 def manifest_document(snapshot: ProjectSnapshot) -> dict[str, Any]:
-    """Return the stable JSON document saved with completed mutation state."""
+    """Return the stable JSON document saved with recorded mutation state."""
     return {
         "schema_version": SCHEMA_VERSION,
         "source_hashes": snapshot.source_hashes,
@@ -372,11 +374,11 @@ def _collect_state_hashes(
         path = mutation_root.joinpath(*PurePosixPath(relative).parts)
         _assert_safe_cache_path(mutation_root, path)
         if not path.is_file():
-            raise ValueError(f"completed mutation state is missing {relative!r}")
+            raise ValueError(f"mutation state is missing {relative!r}")
         content = path.read_bytes()
         total_bytes += len(content)
         if len(content) > MAX_META_BYTES or total_bytes > MAX_STATE_BYTES:
-            raise ValueError("completed mutation state exceeds the size limits")
+            raise ValueError("mutation state exceeds the size limits")
         state_hashes[relative] = _sha256(content)
     return state_hashes
 
@@ -558,11 +560,11 @@ def prepare_cache(repository_root: Path) -> PreparationResult:
 
 
 def record_cache(repository_root: Path) -> None:
-    """Record the repository inputs for a completed mutation run."""
+    """Record inputs for mutation state that may be complete or interrupted."""
     repository_root = Path(os.path.abspath(repository_root))
     mutation_root = _mutation_root(repository_root)
     if not mutation_root.is_dir():
-        raise ValueError("completed mutation state is required before recording")
+        raise ValueError("mutation state is required before recording")
     reusable_path = mutation_root / REUSABLE_SOURCES_NAME
     _assert_safe_cache_path(mutation_root, reusable_path)
     reusable_path.unlink(missing_ok=True)
@@ -594,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments.operation == "record":
             record_cache(arguments.repository_root)
-            print("Recorded mutation cache inputs.")
+            print("Recorded mutation cache inputs and progress.")
         else:
             result = prepare_cache(arguments.repository_root)
             print(

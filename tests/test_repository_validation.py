@@ -613,6 +613,95 @@ class ActionReferenceValidationTests(unittest.TestCase):
             self.assertFalse(any("invalid.yml" in item for item in problems))
 
 
+class ActionPinSyncContractTests(unittest.TestCase):
+    def test_repository_has_a_pr_only_template_action_synchronizer(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_action_pin_sync_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_script_and_invalid_workflow_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / ".github" / "workflows" / "action-pin-sync.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("jobs: {}\n", encoding="utf-8")
+
+            problems = validate_repository.validate_action_pin_sync_contract(root)
+
+        self.assertTrue(any("script is unreadable" in problem for problem in problems))
+        self.assertTrue(
+            any("allowlisted GitHub API" in problem for problem in problems)
+        )
+        self.assertTrue(
+            any("must run weekly and manually" in problem for problem in problems)
+        )
+        self.assertTrue(
+            any("only contents and pull-requests" in problem for problem in problems)
+        )
+        self.assertTrue(
+            any("synchronizer job contract" in problem for problem in problems)
+        )
+
+    def test_unreadable_and_non_mapping_synchronizer_workflows_are_reported(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            unreadable = validate_repository.validate_action_pin_sync_contract(root)
+
+            workflow = root / ".github" / "workflows" / "action-pin-sync.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("scalar\n", encoding="utf-8")
+            non_mapping = validate_repository.validate_action_pin_sync_contract(root)
+
+        self.assertTrue(
+            any("workflow is unreadable" in problem for problem in unreadable)
+        )
+        self.assertTrue(
+            any("workflow must be a mapping" in problem for problem in non_mapping)
+        )
+
+    def test_tampered_synchronizer_steps_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "scripts" / "sync_action_pins.py"
+            workflow = root / ".github" / "workflows" / "action-pin-sync.yml"
+            script.parent.mkdir(parents=True)
+            workflow.parent.mkdir(parents=True)
+            shutil.copy2(PLUGIN_ROOT / "scripts" / "sync_action_pins.py", script)
+            original = (
+                PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
+            ).read_text(encoding="utf-8")
+
+            workflow.write_text(
+                original.replace(
+                    "python scripts/sync_action_pins.py --write", "echo bypass", 1
+                ),
+                encoding="utf-8",
+            )
+            invalid_sync = validate_repository.validate_action_pin_sync_contract(root)
+
+            workflow.write_text(
+                original.replace(
+                    "branch: chore/synchronize-action-pins", "branch: unsafe", 1
+                ),
+                encoding="utf-8",
+            )
+            invalid_pr = validate_repository.validate_action_pin_sync_contract(root)
+
+        self.assertTrue(
+            any(
+                "only through the reviewed script" in problem
+                for problem in invalid_sync
+            )
+        )
+        self.assertTrue(
+            any("create a reviewed pull request" in problem for problem in invalid_pr)
+        )
+
+
 class CiToolchainContractValidationTests(unittest.TestCase):
     CONTRACT_FILES = (
         ".github/ci-toolchain.json",
@@ -1674,7 +1763,63 @@ jobs:
 
         self.assertIn(
             ".github/workflows/mutation-testing.yml: mutation run must expose "
-            "the tracked source root and skip only for a verified clean cache hit",
+            "the tracked source root, heartbeat, bounded resumable step, and skip "
+            "only for a verified clean cache hit",
+            problems,
+        )
+
+    def test_mutation_run_must_be_bounded_and_resumable(self) -> None:
+        replacements = (
+            ("        continue-on-error: true\n", "        continue-on-error: false\n"),
+            ("        timeout-minutes: 150\n", "        timeout-minutes: 0\n"),
+            ("            while sleep 60; do\n", "            while sleep 600; do\n"),
+            (
+                '          trap \'kill "$heartbeat_pid" 2>/dev/null || true; '
+                'wait "$heartbeat_pid" 2>/dev/null || true\' EXIT\n',
+                "          trap 'kill \"$heartbeat_pid\" 2>/dev/null || true' EXIT\n",
+            ),
+        )
+        for original, replacement in replacements:
+            with self.subTest(replacement=replacement.strip()):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow_path = (
+                        root / ".github" / "workflows" / "mutation-testing.yml"
+                    )
+                    workflow = workflow_path.read_text(encoding="utf-8").replace(
+                        original,
+                        replacement,
+                        1,
+                    )
+                    workflow_path.write_text(workflow, encoding="utf-8")
+
+                    problems = validate_repository.validate_mutation_testing_contract(
+                        root
+                    )
+
+                self.assertIn(
+                    ".github/workflows/mutation-testing.yml: mutation run must "
+                    "expose the tracked source root, heartbeat, bounded resumable "
+                    "step, and skip only for a verified clean cache hit",
+                    problems,
+                )
+
+    def test_mutation_concurrency_must_preserve_active_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "  cancel-in-progress: false\n", "  cancel-in-progress: true\n", 1
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: concurrent mutation runs "
+            "must preserve active resumable progress",
             problems,
         )
 
@@ -1687,13 +1832,13 @@ jobs:
             workflow = workflow.replace(
                 "          path: mutants/\n"
                 "          key: >-\n"
-                "            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-"
                 "${{ github.run_id }}-${{ github.run_attempt }}\n"
                 "          restore-keys: |\n"
-                "            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-\n"
-                "            mutmut-v4-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-\n",
                 "          path: mutants/*.meta\n"
                 "          key: mutmut-shared\n"
@@ -1710,9 +1855,9 @@ jobs:
 
         self.assertIn(
             ".github/workflows/mutation-testing.yml: mutation state cache must "
-            "restore and save progressive state under immutable per-run keys, "
+            "restore and save resumable state under immutable per-run keys, "
             "save verified clean results separately, and use runtime- and "
-            "platform-scoped v4 keys",
+            "platform-scoped v5 keys",
             problems,
         )
         self.assertIn(
@@ -1721,15 +1866,23 @@ jobs:
             problems,
         )
 
-    def test_incremental_cache_steps_are_conditioned_on_mutmut_success(self) -> None:
+    def test_incremental_cache_records_and_saves_interrupted_progress(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
             workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
-            workflow = workflow_path.read_text(encoding="utf-8").replace(
-                "        if: ${{ steps.mutation-clean-cache.outputs.cache-hit != "
-                "'true' && steps.mutation-run.outcome == 'success' }}\n",
-                "        if: ${{ always() }}\n",
+            workflow = workflow_path.read_text(encoding="utf-8")
+            workflow = workflow.replace(
+                "        if: ${{ always() && steps.mutation-clean-cache.outputs."
+                "cache-hit != 'true' }}\n",
+                "        if: ${{ steps.mutation-run.outcome == 'success' }}\n",
+                1,
+            ).replace(
+                "        if: ${{ always() && steps.mutation-clean-cache.outputs."
+                "cache-hit != 'true' && steps.mutation-record.outcome == "
+                "'success' }}\n",
+                "        if: ${{ success() && steps.mutation-run.outcome == "
+                "'success' }}\n",
                 1,
             )
             workflow_path.write_text(workflow, encoding="utf-8")
@@ -1738,8 +1891,15 @@ jobs:
 
         self.assertIn(
             ".github/workflows/mutation-testing.yml: incremental mutation state "
-            "must be prepared after every restore and recorded only after mutmut "
-            "succeeds",
+            "must be prepared after every restore and recorded after completed or "
+            "interrupted mutmut execution",
+            problems,
+        )
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: mutation state cache must "
+            "restore and save resumable state under immutable per-run keys, save "
+            "verified clean results separately, and use runtime- and platform-scoped "
+            "v5 keys",
             problems,
         )
 
@@ -1874,6 +2034,78 @@ jobs:
         self.assertIn(
             ".github/workflows/mutation-testing.yml: manual runs must expose the "
             "clean full-run verification input",
+            problems,
+        )
+
+    def test_resumable_mutation_state_is_bound_to_the_source_run(self) -> None:
+        cases = (
+            (
+                '"$source_sha" != "$EXPECTED_SHA"',
+                '"$source_sha" == "$EXPECTED_SHA"',
+                ".github/workflows/mutation-testing.yml: resumable state must be "
+                "bound to one completed mutation run from this repository and commit",
+            ),
+            (
+                "          run-id: ${{ inputs.resume_run_id }}\n",
+                "          run-id: ${{ github.run_id }}\n",
+                ".github/workflows/mutation-testing.yml: resumable state must "
+                "download the verified mutation-results artifact without executing it",
+            ),
+            (
+                "      - name: Record resumed mutation state\n",
+                "      - name: Record unverified mutation state\n",
+                ".github/workflows/mutation-testing.yml: downloaded mutation state "
+                "must be recorded before conservative cache preparation",
+            ),
+        )
+        for original, replacement, expected in cases:
+            with self.subTest(replacement=replacement.strip()):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow_path = (
+                        root / ".github" / "workflows" / "mutation-testing.yml"
+                    )
+                    workflow = workflow_path.read_text(encoding="utf-8")
+                    self.assertIn(original, workflow)
+                    workflow_path.write_text(
+                        workflow.replace(original, replacement, 1),
+                        encoding="utf-8",
+                    )
+
+                    problems = validate_repository.validate_mutation_testing_contract(
+                        root
+                    )
+
+                self.assertIn(expected, problems)
+
+    def test_resumed_state_must_be_recorded_before_preparation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8")
+            record_start = workflow.index(
+                "      - name: Record resumed mutation state\n"
+            )
+            prepare_start = workflow.index(
+                "      - name: Prepare incremental mutation state\n"
+            )
+            run_start = workflow.index("      - name: Run mutation testing\n")
+            record_block = workflow[record_start:prepare_start]
+            workflow_path.write_text(
+                workflow[:record_start]
+                + workflow[prepare_start:run_start]
+                + record_block
+                + workflow[run_start:],
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: downloaded mutation state "
+            "must be recorded before conservative cache preparation",
             problems,
         )
 
@@ -2583,6 +2815,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_release_please",
             "validate_release_attestation",
             "validate_privileged_workflow_permissions",
+            "validate_action_pin_sync_contract",
             "validate_required_check_concurrency",
             "validate_issue_templates",
             "validate_dependabot",
@@ -4084,7 +4317,10 @@ class DependabotValidationTests(unittest.TestCase):
             self.assertTrue(any("nonempty unique list" in item for item in problems))
             self.assertTrue(any("not both" in item for item in problems))
             self.assertTrue(
-                any("must group every installed workflow" in item for item in problems)
+                any(
+                    "must group every installed workflow action" in item
+                    for item in problems
+                )
             )
 
     def test_dependabot_rejects_unsynchronized_python_and_incomplete_template(
@@ -4132,7 +4368,10 @@ class DependabotValidationTests(unittest.TestCase):
                 any("fixed root GitHub Actions updater" in item for item in problems)
             )
             self.assertTrue(
-                any("must group every installed workflow" in item for item in problems)
+                any(
+                    "must group every installed workflow action" in item
+                    for item in problems
+                )
             )
 
     def test_dependabot_rendering_contract_keeps_mandatory_documentation_pip(
@@ -4229,7 +4468,7 @@ class WorkflowShellValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             forbidden = root / "repository"
-            external = root / "external"
+            external = root / "XexternalX"
             forbidden.mkdir()
             external.mkdir()
             tool = external / "actionlint"
@@ -4475,6 +4714,7 @@ jobs:
             result = validate_workflows.run_shellcheck("shellcheck", [path])
 
             self.assertEqual(result, 0)
+            extract_blocks.assert_called_once_with(path)
             subprocess_run.assert_called_once_with(
                 [
                     "shellcheck",
@@ -4674,6 +4914,15 @@ jobs:
         )
 
     def test_main_propagates_validators_and_checks_copied_assets(self) -> None:
+        repository_root = WORKFLOW_SCRIPT_PATH.resolve().parents[1]
+        installed_workflows = sorted(
+            (repository_root / ".github" / "workflows").glob("*.yml")
+        )
+        asset_workflows = sorted(
+            (
+                repository_root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            ).glob("*.yml")
+        )
         with (
             mock.patch.object(
                 validate_workflows,
@@ -4685,7 +4934,11 @@ jobs:
             ) as actionlint,
         ):
             self.assertEqual(validate_workflows.main(), 4)
-            self.assertEqual(actionlint.call_count, 1)
+            actionlint.assert_called_once_with(
+                "actionlint",
+                installed_workflows,
+                working_directory=repository_root,
+            )
 
         with (
             mock.patch.object(
@@ -4694,9 +4947,14 @@ jobs:
                 side_effect=["actionlint", "shellcheck"],
             ),
             mock.patch.object(validate_workflows, "run_actionlint", return_value=0),
-            mock.patch.object(validate_workflows, "run_shellcheck", return_value=5),
+            mock.patch.object(
+                validate_workflows, "run_shellcheck", return_value=5
+            ) as shellcheck,
         ):
             self.assertEqual(validate_workflows.main(), 5)
+            shellcheck.assert_called_once_with(
+                "shellcheck", [*installed_workflows, *asset_workflows]
+            )
 
         with (
             mock.patch.object(
@@ -4712,13 +4970,60 @@ jobs:
             self.assertEqual(validate_workflows.main(), 6)
 
         self.assertEqual(actionlint.call_count, 2)
+        self.assertEqual(
+            actionlint.call_args_list[0],
+            mock.call(
+                "actionlint",
+                installed_workflows,
+                working_directory=repository_root,
+            ),
+        )
+        self.assertEqual(actionlint.call_args_list[1].args[0], "actionlint")
         copied_files = actionlint.call_args_list[1].args[1]
         copied_root = actionlint.call_args_list[1].kwargs["working_directory"]
         self.assertTrue(copied_files)
-        self.assertTrue(all(path.parent.name == "workflows" for path in copied_files))
+        self.assertTrue(copied_root.name.startswith("repo-scaffold-actionlint-"))
+        self.assertTrue(
+            all(
+                path.parent.name == "workflows" and path.parent.parent.name == ".github"
+                for path in copied_files
+            )
+        )
         self.assertTrue(
             all(str(path).startswith(str(copied_root)) for path in copied_files)
         )
+
+    def test_main_requires_both_installed_and_asset_workflow_groups(self) -> None:
+        repository_root = WORKFLOW_SCRIPT_PATH.resolve().parents[1]
+        installed = repository_root / ".github" / "workflows" / "ci.yml"
+        asset = (
+            repository_root
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "ci.yml"
+        )
+        for glob_results in ([installed], [asset]):
+            with (
+                self.subTest(glob_results=glob_results),
+                mock.patch.object(
+                    validate_workflows,
+                    "resolve_path_executable",
+                    side_effect=["actionlint", "shellcheck"],
+                ),
+                mock.patch.object(
+                    validate_workflows.Path,
+                    "glob",
+                    side_effect=[glob_results, []]
+                    if glob_results == [installed]
+                    else [[], glob_results],
+                ),
+                mock.patch.object(validate_workflows, "run_actionlint") as actionlint,
+                redirect_stderr(StringIO()),
+            ):
+                self.assertEqual(validate_workflows.main(), 2)
+            actionlint.assert_not_called()
 
     def test_script_entrypoint_returns_main_status(self) -> None:
         stderr = mock.Mock()

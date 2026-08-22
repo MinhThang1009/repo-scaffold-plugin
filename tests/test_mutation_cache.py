@@ -623,11 +623,11 @@ class MutationCacheTests(unittest.TestCase):
                     self.assertFalse(result.full_reset)
                     self.assertFalse(target.exists())
 
-    def test_record_requires_completed_metadata(self) -> None:
+    def test_record_requires_mutation_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.make_repository(root)
-            with self.assertRaisesRegex(ValueError, "completed mutation state"):
+            with self.assertRaisesRegex(ValueError, "mutation state"):
                 prepare_mutation_cache.record_cache(root)
 
     def test_snapshot_rejects_symlinks_and_non_utf8_tests(self) -> None:
@@ -681,7 +681,10 @@ class MutationCacheTests(unittest.TestCase):
                     ),
                     0,
                 )
-            self.assertEqual(output.getvalue(), "Recorded mutation cache inputs.\n")
+            self.assertEqual(
+                output.getvalue(),
+                "Recorded mutation cache inputs and progress.\n",
+            )
 
             output = StringIO()
             with redirect_stdout(output):
@@ -722,7 +725,9 @@ class MutationCacheTests(unittest.TestCase):
             finally:
                 os.chdir(original_cwd)
             self.assertEqual(raised.exception.code, 0)
-            self.assertIn("Recorded mutation cache inputs", output.getvalue())
+            self.assertIn(
+                "Recorded mutation cache inputs and progress", output.getvalue()
+            )
 
     def test_help_documents_both_cache_operations(self) -> None:
         output = StringIO()

@@ -98,6 +98,18 @@ class MutationStatisticsTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("99.00% is below required 100.00%", problems[0])
 
+    def test_zero_testable_score_is_reported_exactly(self) -> None:
+        self.assertEqual(
+            validate_mutation_results.validate_statistics(
+                statistics(killed=0, skipped=1, total=1)
+            ),
+            [
+                "mutation run has 1 result(s) classified as skipped",
+                "mutation score 0.00% is below required 100.00% "
+                "(0 detected of 0 testable mutants)",
+            ],
+        )
+
     def test_loader_reports_the_exact_schema_failure(self) -> None:
         with self.assertRaises(
             validate_mutation_results.DuplicateJsonMember
@@ -220,6 +232,30 @@ class MutationStatisticsTests(unittest.TestCase):
             with redirect_stderr(errors):
                 self.assertEqual(validate_mutation_results.main([str(path)]), 1)
             self.assertIn("could not read mutation statistics", errors.getvalue())
+
+    def test_main_summary_calculation_is_independent_of_the_policy_gate(self) -> None:
+        document = statistics(killed=2, timeout=1, survived=1, total=4)
+        output = StringIO()
+        with (
+            mock.patch.object(
+                validate_mutation_results,
+                "load_statistics",
+                return_value=document,
+            ),
+            mock.patch.object(
+                validate_mutation_results,
+                "validate_statistics",
+                return_value=[],
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(validate_mutation_results.main(["ignored.json"]), 0)
+
+        self.assertEqual(
+            output.getvalue(),
+            "Mutation testing is complete: 2/4 mutants were killed, "
+            "1 timed out; mutation score 75.00%.\n",
+        )
 
     def test_default_argument_and_script_entrypoint_use_the_standard_artifact(
         self,

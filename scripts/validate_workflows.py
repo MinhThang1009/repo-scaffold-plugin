@@ -69,14 +69,20 @@ def workflow_shell_blocks(path: Path) -> list[tuple[str, str, bytes]]:
     for job_name, job in jobs.items():
         if not isinstance(job, dict) or "runs-on" not in job:
             continue
-        defaults = job.get("defaults", {})
-        default_run = defaults.get("run", {}) if isinstance(defaults, dict) else {}
+        defaults = job.get("defaults")
+        default_run = defaults.get("run") if isinstance(defaults, dict) else None
         default_shell = (
             default_run.get("shell") if isinstance(default_run, dict) else None
         )
         runner = job.get("runs-on")
-        runner_text = " ".join(runner) if isinstance(runner, list) else str(runner)
-        steps = job.get("steps", [])
+        runner_has_ubuntu = (
+            any("ubuntu" in str(value) for value in runner)
+            if isinstance(runner, list)
+            else "ubuntu" in str(runner)
+        )
+        steps = job.get("steps")
+        if steps is None:
+            continue
         if not isinstance(steps, list):
             raise ValueError(f"job {job_name!r} steps must be a list")
         for index, step in enumerate(steps):
@@ -86,26 +92,23 @@ def workflow_shell_blocks(path: Path) -> list[tuple[str, str, bytes]]:
             if not isinstance(script, str):
                 raise ValueError(f"job {job_name!r} step {index} run must be text")
             shell_value = step.get("shell", default_shell)
-            if shell_value is None and "ubuntu" in runner_text.lower():
+            if shell_value is None and runner_has_ubuntu:
                 shell_value = "bash"
-            shell_name = (
-                str(shell_value).strip().split(maxsplit=1)[0].lower()
-                if shell_value is not None
-                else ""
-            )
+            shell_parts = str(shell_value).split() if shell_value is not None else []
+            shell_name = shell_parts[0] if shell_parts else ""
             if shell_name not in {"bash", "sh"}:
                 raise ValueError(
                     f"job {job_name!r} step {index} uses unsupported shell "
                     f"{shell_value!r}"
                 )
             label = str(step.get("name", f"step {index}"))
-            blocks.append((f"{job_name}: {label}", shell_name, script.encode("utf-8")))
+            blocks.append((f"{job_name}: {label}", shell_name, script.encode()))
     return blocks
 
 
 def run_shellcheck(executable: str, workflow_files: list[Path]) -> int:
     """Run ShellCheck with bounded binary stdin for every workflow run block."""
-    block_count = 0
+    found_block = False
     for path in workflow_files:
         try:
             blocks = workflow_shell_blocks(path)
@@ -113,7 +116,7 @@ def run_shellcheck(executable: str, workflow_files: list[Path]) -> int:
             print(f"{path}: could not extract shell blocks: {error}", file=sys.stderr)
             return 2
         for label, shell_name, script in blocks:
-            block_count += 1
+            found_block = True
             command = [
                 executable,
                 f"--shell={shell_name}",
@@ -136,7 +139,7 @@ def run_shellcheck(executable: str, workflow_files: list[Path]) -> int:
                 sys.stderr.buffer.write(result.stdout)
                 sys.stderr.buffer.write(result.stderr)
                 return result.returncode
-    if block_count == 0:
+    if not found_block:
         print("No shell run blocks were found.", file=sys.stderr)
         return 2
     return 0
