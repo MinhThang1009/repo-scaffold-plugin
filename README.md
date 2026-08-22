@@ -137,6 +137,8 @@ repo-scaffold/
 ├── .coveragerc
 ├── .release-please-manifest.json
 ├── .markdownlint-cli2.jsonc
+├── .claude-plugin/
+│   └── plugin.json
 ├── .codex-plugin/
 │   └── plugin.json
 ├── .github/

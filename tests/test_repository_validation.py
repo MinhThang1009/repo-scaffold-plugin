@@ -3247,11 +3247,18 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         (claude_root / "plugin.json").write_text(json.dumps(claude), encoding="utf-8")
         skill = root / "skills" / "repo-scaffold" / "SKILL.md"
         skill.parent.mkdir(parents=True)
+        language_mappings = "".join(
+            f"`{vietnamese.as_posix()}` → `{target.as_posix()}`\n"
+            for _english, vietnamese, target in (
+                validate_repository.MULTILINGUAL_SCAFFOLD_ASSET_PAIRS
+            )
+        )
         skill.write_text(
             "Follow the active host, system, developer, and project instructions\n"
             "Codex can use AGENTS.md\n"
             "Claude Code reads `CLAUDE.md`\n"
-            "references/agent-compatibility.md\n",
+            "references/agent-compatibility.md\n"
+            f"{language_mappings}",
             encoding="utf-8",
         )
         reference_text = (
@@ -3259,11 +3266,29 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "https://developers.openai.com/plugins/build/plugins\n"
             "https://code.claude.com/docs/en/plugins\n"
             "https://code.claude.com/docs/en/skills\n"
+            "https://code.claude.com/docs/en/memory\n"
         )
         references = skill.parent / "references"
         references.mkdir()
         for name in ("agent-compatibility.md", "agent-compatibility.vi.md"):
             (references / name).write_text(reference_text, encoding="utf-8")
+        asset_root = skill.parent / "assets"
+        (asset_root / "CLAUDE.md").parent.mkdir(parents=True)
+        (asset_root / "CLAUDE.md").write_text(
+            validate_repository.CLAUDE_SHARED_INSTRUCTIONS,
+            encoding="utf-8",
+        )
+        for (
+            english,
+            vietnamese,
+            _target,
+        ) in validate_repository.MULTILINGUAL_SCAFFOLD_ASSET_PAIRS:
+            english_path = asset_root / english
+            vietnamese_path = asset_root / vietnamese
+            english_path.parent.mkdir(parents=True, exist_ok=True)
+            vietnamese_path.parent.mkdir(parents=True, exist_ok=True)
+            english_path.write_text("English source\n", encoding="utf-8")
+            vietnamese_path.write_text("Nội dung tiếng Việt\n", encoding="utf-8")
 
     def test_accepts_synchronized_host_adapters_and_shared_documentation(
         self,
@@ -3296,32 +3321,55 @@ class MultiAgentPluginContractTests(unittest.TestCase):
 
         self.assertEqual(
             (asset_root / "CLAUDE.md").read_text(encoding="utf-8"),
-            "@AGENTS.md\n",
+            validate_repository.CLAUDE_SHARED_INSTRUCTIONS,
         )
-        for english_name, vietnamese_name in (
-            ("AGENTS.md", "AGENTS.vi.md"),
-            ("CONTRIBUTING.md", "CONTRIBUTING.vi.md"),
-            ("SECURITY.md", "SECURITY.vi.md"),
-            ("SUPPORT.md", "SUPPORT.vi.md"),
-            ("CHANGELOG.md", "CHANGELOG.vi.md"),
-            ("GOVERNANCE.md", "GOVERNANCE.vi.md"),
-            ("PULL_REQUEST_TEMPLATE.md", "PULL_REQUEST_TEMPLATE.vi.md"),
-            ("CITATION.cff", "CITATION.vi.cff"),
-            ("release-config.yml", "release-config.vi.yml"),
-            ("release-please-config.json", "release-please-config.vi.json"),
-            ("ISSUE_TEMPLATE/bug_report.md", "ISSUE_TEMPLATE/bug_report.vi.md"),
-            (
-                "ISSUE_TEMPLATE/feature_request.md",
-                "ISSUE_TEMPLATE/feature_request.vi.md",
-            ),
-            ("ISSUE_TEMPLATE/config.yml", "ISSUE_TEMPLATE/config.vi.yml"),
-        ):
+        skill_text = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        for (
+            english_name,
+            vietnamese_name,
+            canonical_target,
+        ) in validate_repository.MULTILINGUAL_SCAFFOLD_ASSET_PAIRS:
             english = (asset_root / english_name).read_text(encoding="utf-8")
             vietnamese = (asset_root / vietnamese_name).read_text(encoding="utf-8")
             self.assertTrue(english.strip(), english_name)
             self.assertTrue(vietnamese.strip(), vietnamese_name)
             self.assertNotEqual(english, vietnamese, vietnamese_name)
             self.assertRegex(vietnamese, r"[À-ỹ]", vietnamese_name)
+            self.assertIn(
+                f"`{vietnamese_name.as_posix()}` → `{canonical_target.as_posix()}`",
+                skill_text,
+            )
+
+    def test_rejects_drifted_shared_instruction_and_localized_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            asset_root = root / "skills" / "repo-scaffold" / "assets"
+            (asset_root / "CLAUDE.md").write_text(
+                "Extra instructions\n", encoding="utf-8"
+            )
+            (asset_root / "AGENTS.vi.md").write_text(
+                "English source\n", encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        self.assertIn(
+            "skills/repo-scaffold/assets/CLAUDE.md: must contain only @AGENTS.md "
+            "so Claude Code and AGENTS.md consumers share one instruction source",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/assets/AGENTS.vi.md: must contain Vietnamese prose",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/assets/AGENTS.vi.md: must not duplicate the "
+            "English source",
+            problems,
+        )
 
     def test_reports_unreadable_nonobject_and_inconsistent_contract_files(
         self,

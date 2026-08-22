@@ -80,6 +80,46 @@ AGENT_COMPATIBILITY_REFERENCE_PATHS = (
     Path("skills/repo-scaffold/references/agent-compatibility.md"),
     Path("skills/repo-scaffold/references/agent-compatibility.vi.md"),
 )
+MULTILINGUAL_SCAFFOLD_ASSET_PAIRS = (
+    (Path("AGENTS.md"), Path("AGENTS.vi.md"), Path("AGENTS.md")),
+    (Path("CONTRIBUTING.md"), Path("CONTRIBUTING.vi.md"), Path("CONTRIBUTING.md")),
+    (Path("SECURITY.md"), Path("SECURITY.vi.md"), Path("SECURITY.md")),
+    (Path("SUPPORT.md"), Path("SUPPORT.vi.md"), Path("SUPPORT.md")),
+    (Path("CHANGELOG.md"), Path("CHANGELOG.vi.md"), Path("CHANGELOG.md")),
+    (Path("GOVERNANCE.md"), Path("GOVERNANCE.vi.md"), Path("GOVERNANCE.md")),
+    (
+        Path("PULL_REQUEST_TEMPLATE.md"),
+        Path("PULL_REQUEST_TEMPLATE.vi.md"),
+        Path(".github/PULL_REQUEST_TEMPLATE.md"),
+    ),
+    (Path("CITATION.cff"), Path("CITATION.vi.cff"), Path("CITATION.cff")),
+    (
+        Path("release-config.yml"),
+        Path("release-config.vi.yml"),
+        Path(".github/release.yml"),
+    ),
+    (
+        Path("release-please-config.json"),
+        Path("release-please-config.vi.json"),
+        Path("release-please-config.json"),
+    ),
+    (
+        Path("ISSUE_TEMPLATE/bug_report.md"),
+        Path("ISSUE_TEMPLATE/bug_report.vi.md"),
+        Path(".github/ISSUE_TEMPLATE/bug_report.md"),
+    ),
+    (
+        Path("ISSUE_TEMPLATE/feature_request.md"),
+        Path("ISSUE_TEMPLATE/feature_request.vi.md"),
+        Path(".github/ISSUE_TEMPLATE/feature_request.md"),
+    ),
+    (
+        Path("ISSUE_TEMPLATE/config.yml"),
+        Path("ISSUE_TEMPLATE/config.vi.yml"),
+        Path(".github/ISSUE_TEMPLATE/config.yml"),
+    ),
+)
+CLAUDE_SHARED_INSTRUCTIONS = "@AGENTS.md\n"
 TEMPLATE_TOKEN = re.compile(r"(?:\{\{|\$\{\{)")
 ISSUE_FORM_ID = re.compile(r"^[0-9A-Za-z_-]+$")
 ISSUE_FORM_INPUT_TYPES = {
@@ -2373,6 +2413,78 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
                     "agent compatibility guidance"
                 )
                 break
+        for (
+            _english_source,
+            vietnamese_source,
+            canonical_target,
+        ) in MULTILINGUAL_SCAFFOLD_ASSET_PAIRS:
+            mapping = (
+                f"`{vietnamese_source.as_posix()}` → `{canonical_target.as_posix()}`"
+            )
+            if mapping not in skill_text:
+                problems.append(
+                    "skills/repo-scaffold/SKILL.md: must map "
+                    f"{vietnamese_source.as_posix()} to "
+                    f"{canonical_target.as_posix()} for Vietnamese output"
+                )
+
+    asset_root = repository_root / "skills" / "repo-scaffold" / "assets"
+    claude_instructions_path = asset_root / "CLAUDE.md"
+    try:
+        claude_instructions = claude_instructions_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"skills/repo-scaffold/assets/CLAUDE.md: unreadable: {error}")
+    else:
+        if claude_instructions != CLAUDE_SHARED_INSTRUCTIONS:
+            problems.append(
+                "skills/repo-scaffold/assets/CLAUDE.md: must contain only "
+                "@AGENTS.md so Claude Code and AGENTS.md consumers share one "
+                "instruction source"
+            )
+
+    for (
+        english_source,
+        vietnamese_source,
+        _canonical_target,
+    ) in MULTILINGUAL_SCAFFOLD_ASSET_PAIRS:
+        english_path = asset_root / english_source
+        vietnamese_path = asset_root / vietnamese_source
+        try:
+            english_text = english_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"skills/repo-scaffold/assets/{english_source.as_posix()}: "
+                f"unreadable: {error}"
+            )
+            continue
+        try:
+            vietnamese_text = vietnamese_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"skills/repo-scaffold/assets/{vietnamese_source.as_posix()}: "
+                f"unreadable: {error}"
+            )
+            continue
+        if not english_text.strip():
+            problems.append(
+                f"skills/repo-scaffold/assets/{english_source.as_posix()}: "
+                "English source must be nonempty"
+            )
+        if not vietnamese_text.strip():
+            problems.append(
+                f"skills/repo-scaffold/assets/{vietnamese_source.as_posix()}: "
+                "Vietnamese source must be nonempty"
+            )
+        elif not re.search(r"[À-ỹ]", vietnamese_text):
+            problems.append(
+                f"skills/repo-scaffold/assets/{vietnamese_source.as_posix()}: "
+                "must contain Vietnamese prose"
+            )
+        if english_text == vietnamese_text:
+            problems.append(
+                f"skills/repo-scaffold/assets/{vietnamese_source.as_posix()}: "
+                "must not duplicate the English source"
+            )
 
     required_reference_fragments = (
         "Agent Skills",
@@ -2381,6 +2493,7 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
         "https://developers.openai.com/plugins/build/plugins",
         "https://code.claude.com/docs/en/plugins",
         "https://code.claude.com/docs/en/skills",
+        "https://code.claude.com/docs/en/memory",
     )
     for relative_path in AGENT_COMPATIBILITY_REFERENCE_PATHS:
         path = repository_root / relative_path

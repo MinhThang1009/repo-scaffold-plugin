@@ -129,18 +129,21 @@ CRITICAL (Windows/Git-Bash): pass `gh api` paths WITHOUT a leading slash, or the
     from `assets/community-health-trackers.json`.
   - For `SCAFFOLD_LANGUAGE=en`, copy English assets to their canonical target
     names. For `SCAFFOLD_LANGUAGE=vi`, use the Vietnamese sidecar as the source
-    and write its canonical target name: `AGENTS.vi.md` → `AGENTS.md`,
-    `CONTRIBUTING.vi.md` → `CONTRIBUTING.md`, `SECURITY.vi.md` →
-    `SECURITY.md`, `SUPPORT.vi.md` → `SUPPORT.md`, `CHANGELOG.vi.md` →
-    `CHANGELOG.md`, `GOVERNANCE.vi.md` → `GOVERNANCE.md`,
-    `PULL_REQUEST_TEMPLATE.vi.md` → `.github/PULL_REQUEST_TEMPLATE.md`,
-    `ISSUE_TEMPLATE/bug_report.vi.md` → `ISSUE_TEMPLATE/bug_report.md`,
-    `ISSUE_TEMPLATE/feature_request.vi.md` →
-    `ISSUE_TEMPLATE/feature_request.md`, `ISSUE_TEMPLATE/config.vi.yml` →
-    `ISSUE_TEMPLATE/config.yml`, `CITATION.vi.cff` → `CITATION.cff`,
-    `release-config.vi.yml` → `.github/release.yml`, and
-    `release-please-config.vi.json` → `release-please-config.json`. Never
-    leave a locale suffix on a target instruction or community-health file.
+    and write its canonical target name:
+    - `AGENTS.vi.md` → `AGENTS.md`
+    - `CONTRIBUTING.vi.md` → `CONTRIBUTING.md`
+    - `SECURITY.vi.md` → `SECURITY.md`
+    - `SUPPORT.vi.md` → `SUPPORT.md`
+    - `CHANGELOG.vi.md` → `CHANGELOG.md`
+    - `GOVERNANCE.vi.md` → `GOVERNANCE.md`
+    - `PULL_REQUEST_TEMPLATE.vi.md` → `.github/PULL_REQUEST_TEMPLATE.md`
+    - `ISSUE_TEMPLATE/bug_report.vi.md` → `.github/ISSUE_TEMPLATE/bug_report.md`
+    - `ISSUE_TEMPLATE/feature_request.vi.md` → `.github/ISSUE_TEMPLATE/feature_request.md`
+    - `ISSUE_TEMPLATE/config.vi.yml` → `.github/ISSUE_TEMPLATE/config.yml`
+    - `CITATION.vi.cff` → `CITATION.cff`
+    - `release-config.vi.yml` → `.github/release.yml`
+    - `release-please-config.vi.json` → `release-please-config.json`
+    Never leave a locale suffix on a target instruction or community-health file.
     Copy the language-neutral `assets/CLAUDE.md` unchanged: its sole
     `@AGENTS.md` import is the official Claude Code adapter and keeps both
     agents on one source of instructions. For any other project-facing asset,
