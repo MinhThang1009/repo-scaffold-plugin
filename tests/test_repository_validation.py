@@ -3371,6 +3371,61 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             problems,
         )
 
+    def test_rejects_empty_multilingual_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            asset_root = root / "skills" / "repo-scaffold" / "assets"
+            (asset_root / "AGENTS.md").write_text("", encoding="utf-8")
+            (asset_root / "CONTRIBUTING.vi.md").write_text("", encoding="utf-8")
+
+            problems = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        self.assertIn(
+            "skills/repo-scaffold/assets/AGENTS.md: English source must be nonempty",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/assets/CONTRIBUTING.vi.md: Vietnamese source must "
+            "be nonempty",
+            problems,
+        )
+
+    def test_reports_unreadable_multilingual_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            asset_root = root / "skills" / "repo-scaffold" / "assets"
+            unreadable_english = asset_root / "AGENTS.md"
+            unreadable_vietnamese = asset_root / "CONTRIBUTING.vi.md"
+            read_text = Path.read_text
+
+            def read_text_with_asset_errors(
+                path: Path, *args: object, **kwargs: object
+            ) -> str:
+                if path in {unreadable_english, unreadable_vietnamese}:
+                    raise OSError("access denied")
+                return read_text(path, *args, **kwargs)
+
+            with mock.patch.object(
+                Path,
+                "read_text",
+                autospec=True,
+                side_effect=read_text_with_asset_errors,
+            ):
+                problems = validate_repository.validate_multi_agent_plugin_contract(
+                    root
+                )
+
+        self.assertIn(
+            "skills/repo-scaffold/assets/AGENTS.md: unreadable: access denied",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/assets/CONTRIBUTING.vi.md: unreadable: access denied",
+            problems,
+        )
+
     def test_reports_unreadable_nonobject_and_inconsistent_contract_files(
         self,
     ) -> None:
