@@ -3180,9 +3180,9 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         "workflow_dispatch": "",
     }:
         problems.append(f"{relative}: synchronizer must run weekly and manually")
-    if workflow.get("permissions") != {"contents": "write", "pull-requests": "write"}:
+    if workflow.get("permissions") != {"contents": "read"}:
         problems.append(
-            f"{relative}: synchronizer must use only contents and pull-requests write"
+            f"{relative}: synchronizer workflow permissions must be contents: read"
         )
     concurrency = workflow.get("concurrency")
     if (
@@ -3205,6 +3205,14 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     ):
         problems.append(f"{relative}: synchronizer job contract is invalid")
         return problems
+    if job.get("permissions") != {
+        "contents": "write",
+        "pull-requests": "write",
+    }:
+        problems.append(
+            f"{relative}: synchronizer job permissions must use only contents and "
+            "pull-requests write"
+        )
     sync_steps = [
         step
         for step in steps
