@@ -10,6 +10,12 @@ commit. Use an official Vietnamese source only when it exists for that exact
 version; otherwise retain canonical English and report the gap.
 
 Copy assets and bundled scripts from this skill byte-for-byte where applicable.
+When installing the CodeQL asset, also copy the bundled plugin script
+`scripts/check_code_scanning_alerts.py` to the generated repository at the same
+path and copy `assets/code-scanning-allowlist.json` to
+`.github/code-scanning-allowlist.json`. Keep the scaffold allowlist empty unless
+the target repository has independently reviewed a specific alert and recorded
+its exact selector and reason.
 For English, use canonical assets. For Vietnamese, render the matching `.vi`
 sidecar to its canonical target name, including `AGENTS.md`, community-health
 files, issue and PR templates, `CITATION.cff`, release config, and

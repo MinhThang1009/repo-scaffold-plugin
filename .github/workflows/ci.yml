@@ -139,6 +139,7 @@ jobs:
           skills/repo-scaffold/scripts/sync_action_pins.py
           skills/repo-scaffold/scripts/validate_scaffold.py
           scripts/audit_freshness.py
+          scripts/check_code_scanning_alerts.py
           scripts/prepare_mutation_cache.py
           scripts/python_support.py
           scripts/run_mutation_testing.py

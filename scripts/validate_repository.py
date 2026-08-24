@@ -1394,6 +1394,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         "skills/repo-scaffold/scripts/sync_action_pins.py",
         "skills/repo-scaffold/scripts/validate_scaffold.py",
         "scripts/audit_freshness.py",
+        "scripts/check_code_scanning_alerts.py",
         "scripts/prepare_mutation_cache.py",
         "scripts/python_support.py",
         "scripts/run_mutation_testing.py",
@@ -4216,6 +4217,57 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
+    """Require the CodeQL workflow to gate unreviewed open scanning alerts."""
+    problems: list[str] = []
+    allowlist_path = repository_root / ".github" / "code-scanning-allowlist.json"
+    workflow_path = repository_root / ".github" / "workflows" / "codeql.yml"
+    try:
+        allowlist = load_json(allowlist_path)
+    except (OSError, UnicodeError, ValueError) as error:
+        problems.append(f".github/code-scanning-allowlist.json: unreadable: {error}")
+    else:
+        entries = allowlist.get("allowlist") if isinstance(allowlist, dict) else None
+        schema_version = (
+            allowlist.get("schema-version") if isinstance(allowlist, dict) else None
+        )
+        if schema_version != 1 or not isinstance(entries, list):
+            problems.append(
+                ".github/code-scanning-allowlist.json: require schema-version 1 and an allowlist"
+            )
+    try:
+        workflow = load_yaml(workflow_path)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        problems.append(f".github/workflows/codeql.yml: unreadable: {error}")
+        return problems
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    gate = jobs.get("code_scanning_gate") if isinstance(jobs, dict) else None
+    if not isinstance(gate, dict):
+        return [
+            *problems,
+            ".github/workflows/codeql.yml: missing code_scanning_gate job",
+        ]
+    if gate.get("needs") != "analyze":
+        problems.append(
+            ".github/workflows/codeql.yml: code_scanning_gate must depend on analyze"
+        )
+    permissions = gate.get("permissions")
+    if permissions != {"contents": "read", "security-events": "read"}:
+        problems.append(
+            ".github/workflows/codeql.yml: code_scanning_gate must use contents and security-events read only"
+        )
+    steps = gate.get("steps")
+    if not isinstance(steps, list) or not any(
+        isinstance(step, dict)
+        and step.get("run") == "python scripts/check_code_scanning_alerts.py"
+        for step in steps
+    ):
+        problems.append(
+            ".github/workflows/codeql.yml: code_scanning_gate must run the checked-in alert gate"
+        )
+    return problems
+
+
 def validate_scaffold_contract(repository_root: Path) -> list[str]:
     """Run the distributable rendered-document contract against this plugin."""
     script = (
@@ -4469,6 +4521,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_markdown_links,
         validate_community_health_tracking_contract,
         validate_freshness_tracking_contract,
+        validate_code_scanning_gate_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,

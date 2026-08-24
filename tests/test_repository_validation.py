@@ -2842,6 +2842,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_markdown_links",
             "validate_community_health_tracking_contract",
             "validate_freshness_tracking_contract",
+            "validate_code_scanning_gate_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
             "validate_release_archive",
