@@ -393,6 +393,14 @@ class CodeScanningGateTests(unittest.TestCase):
         ):
             self.assertIsNone(gate.pull_request_merge_sha("owner/repo", "42", "token"))
 
+        with mock.patch.object(
+            gate,
+            "api_json",
+            side_effect=[{"mergeable": True}, []],
+        ):
+            with self.assertRaisesRegex(gate.GateError, "merge ref response"):
+                gate.pull_request_merge_sha("owner/repo", "42", "token")
+
     def test_main_waits_for_analyses_and_fails_only_unapproved_alerts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             allowlist = self.write_allowlist(
