@@ -112,6 +112,11 @@ MULTILINGUAL_SCAFFOLD_ASSET_PAIRS = (
         Path("PULL_REQUEST_TEMPLATE.vi/security.md"),
         Path(".github/PULL_REQUEST_TEMPLATE/security.md"),
     ),
+    (
+        Path("PULL_REQUEST_TEMPLATE/deployment.md"),
+        Path("PULL_REQUEST_TEMPLATE.vi/deployment.md"),
+        Path(".github/PULL_REQUEST_TEMPLATE/deployment.md"),
+    ),
     (Path("CITATION.cff"), Path("CITATION.vi.cff"), Path("CITATION.cff")),
     (
         Path("release-config.yml"),

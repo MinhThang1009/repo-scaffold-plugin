@@ -144,6 +144,7 @@ CRITICAL (Windows/Git-Bash): pass `gh api` paths WITHOUT a leading slash, or the
     - `PULL_REQUEST_TEMPLATE.vi/bugfix.md` → `.github/PULL_REQUEST_TEMPLATE/bugfix.md`
     - `PULL_REQUEST_TEMPLATE.vi/documentation.md` → `.github/PULL_REQUEST_TEMPLATE/documentation.md`
     - `PULL_REQUEST_TEMPLATE.vi/security.md` → `.github/PULL_REQUEST_TEMPLATE/security.md`
+    - `PULL_REQUEST_TEMPLATE.vi/deployment.md` → `.github/PULL_REQUEST_TEMPLATE/deployment.md`
     - `ISSUE_TEMPLATE/bug_report.vi.yml` → `.github/ISSUE_TEMPLATE/bug_report.yml`
     - `ISSUE_TEMPLATE/feature_request.vi.yml` → `.github/ISSUE_TEMPLATE/feature_request.yml`
     - `ISSUE_TEMPLATE/config.vi.yml` → `.github/ISSUE_TEMPLATE/config.yml`
