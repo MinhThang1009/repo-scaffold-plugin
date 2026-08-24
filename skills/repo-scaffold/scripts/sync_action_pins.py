@@ -81,8 +81,8 @@ def workflow_paths(repository_root: Path) -> list[Path]:
     return sorted(paths)
 
 
-def action_repositories(path: Path, content: str) -> set[str]:
-    """Validate and collect the external action repositories used by one workflow."""
+def auditable_action_repositories(path: Path, content: str) -> set[str]:
+    """Collect every externally hosted action pinned to an immutable SHA."""
     repositories: set[str] = set()
     pins = {match.group("reference") for match in USES_PATTERN.finditer(content)}
     pinned_references = {
@@ -96,11 +96,18 @@ def action_repositories(path: Path, content: str) -> set[str]:
             raise ValueError(f"workflow action is not pinned to a full SHA: {path}")
         action = reference.rsplit("@", 1)[0]
         repository = action_repository(action)
+        repositories.add(repository)
+    return repositories
+
+
+def action_repositories(path: Path, content: str) -> set[str]:
+    """Collect only reviewed action repositories for the write-capable synchronizer."""
+    repositories = auditable_action_repositories(path, content)
+    for repository in repositories:
         if repository not in ALLOWED_ACTION_REPOSITORIES:
             raise ValueError(
                 f"workflow action is not in the synchronization allowlist: {repository}"
             )
-        repositories.add(repository)
     return repositories
 
 

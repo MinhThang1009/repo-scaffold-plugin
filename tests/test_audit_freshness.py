@@ -192,6 +192,35 @@ class FreshnessTests(unittest.TestCase):
                 [],
             )
 
+    def test_action_findings_accepts_project_actions_outside_sync_allowlist(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + "      - uses: actions/setup-node@"
+                + "a" * 40
+                + " # v1.0.0\n",
+                encoding="utf-8",
+            )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            calls: list[str] = []
+
+            def lookup(repository: str) -> Any:
+                calls.append(repository)
+                return release("v2.0.0", "b" * 40)
+
+            findings = freshness.action_findings(
+                root, trackers.workflow_directories, lookup
+            )
+            self.assertEqual(calls, ["actions/checkout", "actions/setup-node"])
+            self.assertTrue(
+                any(finding["subject"] == "actions/setup-node" for finding in findings)
+            )
+
     def test_release_please_and_requirement_findings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

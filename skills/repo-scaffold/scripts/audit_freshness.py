@@ -232,7 +232,7 @@ def action_findings(
         raise AuditError("freshness tracker registry found no workflow files")
     for path in sorted(workflow_paths):
         text = path.read_text(encoding="utf-8")
-        sync_action_pins.action_repositories(path, text)
+        sync_action_pins.auditable_action_repositories(path, text)
         for match in sync_action_pins.ACTION_PIN_PATTERN.finditer(text):
             action = match.group("action")
             repository = sync_action_pins.action_repository(action)

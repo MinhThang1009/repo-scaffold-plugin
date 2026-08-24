@@ -115,6 +115,12 @@ class ActionPinSyncTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     sync_action_pins.action_repositories(path, content)
         self.assertEqual(
+            sync_action_pins.auditable_action_repositories(
+                path, "  - uses: actions/setup-node@" + "a" * 40 + "\n"
+            ),
+            {"actions/setup-node"},
+        )
+        self.assertEqual(
             sync_action_pins.action_repositories(
                 path,
                 "  - uses: ./local-action\n  - uses: docker://alpine@sha256:"
