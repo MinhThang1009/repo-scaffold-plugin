@@ -4230,9 +4230,26 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         schema_version = (
             allowlist.get("schema-version") if isinstance(allowlist, dict) else None
         )
-        if schema_version != 1 or not isinstance(entries, list):
+        if schema_version != 2 or not isinstance(entries, list):
             problems.append(
-                ".github/code-scanning-allowlist.json: require schema-version 1 and an allowlist"
+                ".github/code-scanning-allowlist.json: require schema-version 2 and an allowlist"
+            )
+        elif any(
+            not isinstance(entry, dict)
+            or set(entry) != {"number", "tool", "rule", "path", "reason"}
+            or not isinstance(entry.get("number"), int)
+            or entry["number"] < 1
+            or not all(
+                isinstance(entry.get(field), str) and entry[field].strip()
+                for field in ("tool", "rule", "reason")
+            )
+            or (
+                entry.get("path") is not None and not isinstance(entry.get("path"), str)
+            )
+            for entry in entries
+        ):
+            problems.append(
+                ".github/code-scanning-allowlist.json: each entry must use an exact positive alert number and selector"
             )
     expected_permissions = {
         "contents": "read",
@@ -4249,6 +4266,17 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         / "code-scanning-gate.yml",
     ):
         relative = path.relative_to(repository_root).as_posix()
+        expected_categories = (
+            (
+                '--expected-codeql-category "/language:actions"',
+                '--expected-codeql-category "/language:python"',
+            )
+            if relative == ".github/workflows/code-scanning-gate.yml"
+            else (
+                '--expected-codeql-category "/language:actions"',
+                '--expected-codeql-category "/language:{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"',
+            )
+        )
         try:
             workflow = load_yaml(path)
         except (OSError, UnicodeError, yaml.YAMLError) as error:
@@ -4287,6 +4315,9 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             }
             or "scripts/check_code_scanning_alerts.py" not in str(run_step.get("run"))
             or '--pull-request "$PR_NUMBER"' not in str(run_step.get("run"))
+            or not all(
+                category in str(run_step.get("run")) for category in expected_categories
+            )
             or "merge_commit_sha" in str(run_step)
         ):
             problems.append(

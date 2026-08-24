@@ -35,6 +35,7 @@ class GateError(RuntimeError):
 class AlertSelector:
     """One reviewed exception for an otherwise merge-blocking alert."""
 
+    number: int
     tool: str
     rule: str
     path: str | None
@@ -65,23 +66,27 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
         raise GateError(
             f"could not read code-scanning allowlist {path}: {error}"
         ) from error
-    if not isinstance(document, dict) or document.get("schema-version") != 1:
-        raise GateError("code-scanning allowlist must use schema-version 1")
+    if not isinstance(document, dict) or document.get("schema-version") != 2:
+        raise GateError("code-scanning allowlist must use schema-version 2")
     entries = document.get("allowlist")
     if not isinstance(entries, list):
         raise GateError("code-scanning allowlist allowlist must be a list")
     selectors: list[AlertSelector] = []
-    seen: set[tuple[str, str, str | None]] = set()
+    seen: set[int] = set()
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != {
+            "number",
             "tool",
             "rule",
             "path",
             "reason",
         }:
             raise GateError(
-                "each code-scanning allowlist entry must have tool, rule, path, and reason"
+                "each code-scanning allowlist entry must have number, tool, rule, path, and reason"
             )
+        number = entry["number"]
+        if not isinstance(number, int) or number < 1:
+            raise GateError("code-scanning allowlist number must be a positive integer")
         path_value = entry["path"]
         if path_value is not None:
             path_value = require_text(path_value, field="code-scanning allowlist path")
@@ -90,15 +95,15 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
                     "code-scanning allowlist path must be repository-relative"
                 )
         selector = AlertSelector(
+            number,
             require_text(entry["tool"], field="code-scanning allowlist tool"),
             require_text(entry["rule"], field="code-scanning allowlist rule"),
             path_value,
             require_text(entry["reason"], field="code-scanning allowlist reason"),
         )
-        identity = (selector.tool, selector.rule, selector.path)
-        if identity in seen:
-            raise GateError("code-scanning allowlist must not repeat selectors")
-        seen.add(identity)
+        if selector.number in seen:
+            raise GateError("code-scanning allowlist must not repeat alert numbers")
+        seen.add(selector.number)
         selectors.append(selector)
     return tuple(selectors)
 
@@ -128,20 +133,23 @@ def api_json(url: str, token: str) -> Any:
 
 
 def analyses_ready(
-    repository: str, ref: str, sha: str, token: str, expected: int
+    repository: str, ref: str, sha: str, token: str, expected_categories: frozenset[str]
 ) -> bool:
-    """Return whether CodeQL has uploaded every expected analysis for this commit."""
+    """Return whether every configured CodeQL category is uploaded for this commit."""
     url = f"{API_ROOT}/repos/{repository}/code-scanning/analyses?ref={quote(ref, safe='')}&per_page=100"
     document = api_json(url, token)
     if not isinstance(document, list):
         raise GateError("GitHub analyses response must be a list")
-    return (
-        sum(
-            isinstance(item, dict) and item.get("commit_sha") == sha
-            for item in document
-        )
-        >= expected
-    )
+    available_categories = {
+        category
+        for item in document
+        if isinstance(item, dict)
+        and item.get("commit_sha") == sha
+        and isinstance(item.get("tool"), dict)
+        and item["tool"].get("name") == "CodeQL"
+        and isinstance((category := item.get("category")), str)
+    }
+    return expected_categories <= available_categories
 
 
 def pull_request_merge_sha(repository: str, number: str, token: str) -> str | None:
@@ -169,11 +177,11 @@ def wait_for_analyses(
     token: str,
     attempts: int,
     delay: float,
-    expected: int,
+    expected_categories: frozenset[str],
 ) -> None:
     """Wait briefly for the just-finished CodeQL uploads to become queryable."""
     for attempt in range(attempts):
-        if analyses_ready(repository, ref, sha, token, expected):
+        if analyses_ready(repository, ref, sha, token, expected_categories):
             return
         if attempt + 1 < attempts:
             time.sleep(delay)
@@ -188,13 +196,15 @@ def wait_for_pull_request_analyses(
     token: str,
     attempts: int,
     delay: float,
-    expected: int,
+    expected_categories: frozenset[str],
 ) -> tuple[str, str]:
     """Wait for GitHub to create the test merge commit and receive CodeQL results."""
     ref = f"refs/pull/{number}/merge"
     for attempt in range(attempts):
         sha = pull_request_merge_sha(repository, number, token)
-        if sha is not None and analyses_ready(repository, ref, sha, token, expected):
+        if sha is not None and analyses_ready(
+            repository, ref, sha, token, expected_categories
+        ):
             return ref, sha
         if attempt + 1 < attempts:
             time.sleep(delay)
@@ -247,9 +257,11 @@ def unapproved_alerts(
     alerts: tuple[Alert, ...], selectors: tuple[AlertSelector, ...]
 ) -> list[Alert]:
     """Return alerts that have no exact reviewed selector."""
-    allowed = {(item.tool, item.rule, item.path) for item in selectors}
+    allowed = {(item.number, item.tool, item.rule, item.path) for item in selectors}
     return [
-        alert for alert in alerts if (alert.tool, alert.rule, alert.path) not in allowed
+        alert
+        for alert in alerts
+        if (alert.number, alert.tool, alert.rule, alert.path) not in allowed
     ]
 
 
@@ -263,17 +275,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allowlist", type=Path, default=DEFAULT_ALLOWLIST)
     parser.add_argument("--attempts", type=int, default=12)
     parser.add_argument("--delay-seconds", type=float, default=5.0)
-    parser.add_argument("--expected-analyses", type=int, default=2)
+    parser.add_argument("--expected-codeql-category", action="append", default=[])
     args = parser.parse_args(argv)
     try:
         repository = require_text(args.repository, field="repository")
         if REPOSITORY.fullmatch(repository) is None:
             raise GateError("repository must be an owner/name pair")
         token = require_text(args.token, field="token")
-        if args.attempts < 1 or args.delay_seconds < 0 or args.expected_analyses < 1:
-            raise GateError(
-                "attempts and expected analyses must be positive, delay must be non-negative"
-            )
+        if args.attempts < 1 or args.delay_seconds < 0:
+            raise GateError("attempts must be positive and delay must be non-negative")
+        expected_categories = frozenset(args.expected_codeql_category)
+        if not expected_categories or any(
+            not isinstance(category, str) or not category.strip()
+            for category in expected_categories
+        ):
+            raise GateError("at least one expected CodeQL category is required")
         selectors = load_allowlist(args.allowlist)
         if args.pull_request is not None:
             number = require_text(args.pull_request, field="pull request number")
@@ -285,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
                 token,
                 args.attempts,
                 args.delay_seconds,
-                args.expected_analyses,
+                expected_categories,
             )
         else:
             ref = require_text(args.ref, field="ref")
@@ -299,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
                 token,
                 args.attempts,
                 args.delay_seconds,
-                args.expected_analyses,
+                expected_categories,
             )
         unexpected = unapproved_alerts(open_alerts(repository, ref, token), selectors)
     except GateError as error:

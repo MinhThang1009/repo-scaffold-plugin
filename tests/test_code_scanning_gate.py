@@ -45,7 +45,7 @@ class CodeScanningGateTests(unittest.TestCase):
     def write_allowlist(self, root: Path, entries: object) -> Path:
         path = root / "allowlist.json"
         path.write_text(
-            json.dumps({"schema-version": 1, "allowlist": entries}), encoding="utf-8"
+            json.dumps({"schema-version": 2, "allowlist": entries}), encoding="utf-8"
         )
         return path
 
@@ -55,6 +55,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 Path(directory),
                 [
                     {
+                        "number": 1,
                         "tool": "CodeQL",
                         "rule": "py/example",
                         "path": "scripts/example.py",
@@ -78,13 +79,48 @@ class CodeScanningGateTests(unittest.TestCase):
             ),
             1,
         )
+        self.assertEqual(
+            len(
+                gate.unapproved_alerts(
+                    (gate.Alert(2, "CodeQL", "py/example", "scripts/example.py"),),
+                    selectors,
+                )
+            ),
+            1,
+        )
 
     def test_allowlist_rejects_unsafe_or_ambiguous_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for entries in (
-                [{"tool": "CodeQL", "rule": "x", "path": "../escape", "reason": "x"}],
-                [{"tool": "CodeQL", "rule": "x", "path": None, "reason": "x"}] * 2,
+                [
+                    {
+                        "number": 1,
+                        "tool": "CodeQL",
+                        "rule": "x",
+                        "path": "../escape",
+                        "reason": "x",
+                    }
+                ],
+                [
+                    {
+                        "number": 1,
+                        "tool": "CodeQL",
+                        "rule": "x",
+                        "path": None,
+                        "reason": "x",
+                    }
+                ]
+                * 2,
+                [
+                    {
+                        "number": 0,
+                        "tool": "CodeQL",
+                        "rule": "x",
+                        "path": None,
+                        "reason": "x",
+                    }
+                ],
                 [{"tool": "CodeQL", "rule": "x", "path": None}],
             ):
                 with self.subTest(entries=entries):
@@ -97,8 +133,8 @@ class CodeScanningGateTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.GateError, "could not read"):
                 gate.load_allowlist(root / "missing.json")
             for document, message in (
-                ({"schema-version": 2, "allowlist": []}, "schema-version"),
-                ({"schema-version": 1, "allowlist": {}}, "must be a list"),
+                ({"schema-version": 1, "allowlist": []}, "schema-version"),
+                ({"schema-version": 2, "allowlist": {}}, "must be a list"),
             ):
                 path = root / "allowlist.json"
                 path.write_text(json.dumps(document), encoding="utf-8")
@@ -136,27 +172,80 @@ class CodeScanningGateTests(unittest.TestCase):
             gate,
             "api_json",
             side_effect=[
-                [{"commit_sha": "a" * 40}, {"commit_sha": "different"}],
+                [
+                    {
+                        "commit_sha": "a" * 40,
+                        "tool": {"name": "CodeQL"},
+                        "category": "/language:python",
+                    },
+                    {
+                        "commit_sha": "a" * 40,
+                        "tool": {"name": "Scorecard"},
+                        "category": "/language:actions",
+                    },
+                    {"commit_sha": "different"},
+                ],
+                [
+                    {
+                        "commit_sha": "a" * 40,
+                        "tool": {"name": "CodeQL"},
+                        "category": "/language:actions",
+                    },
+                    {
+                        "commit_sha": "a" * 40,
+                        "tool": {"name": "CodeQL"},
+                        "category": "/language:python",
+                    },
+                ],
                 {"unexpected": "mapping"},
             ],
         ):
             self.assertFalse(
-                gate.analyses_ready("owner/repo", "refs/pull/1/merge", "a" * 40, "t", 2)
+                gate.analyses_ready(
+                    "owner/repo",
+                    "refs/pull/1/merge",
+                    "a" * 40,
+                    "t",
+                    frozenset({"/language:actions", "/language:python"}),
+                )
+            )
+            self.assertTrue(
+                gate.analyses_ready(
+                    "owner/repo",
+                    "refs/pull/1/merge",
+                    "a" * 40,
+                    "t",
+                    frozenset({"/language:actions", "/language:python"}),
+                )
             )
             with self.assertRaisesRegex(gate.GateError, "must be a list"):
-                gate.analyses_ready("owner/repo", "refs/pull/1/merge", "a" * 40, "t", 2)
+                gate.analyses_ready(
+                    "owner/repo", "refs/pull/1/merge", "a" * 40, "t", frozenset()
+                )
         with (
             mock.patch.object(gate, "analyses_ready", side_effect=[False, True]),
             mock.patch.object(gate, "time") as clock,
         ):
             gate.wait_for_analyses(
-                "owner/repo", "refs/pull/1/merge", "a" * 40, "t", 2, 1.5, 2
+                "owner/repo",
+                "refs/pull/1/merge",
+                "a" * 40,
+                "t",
+                2,
+                1.5,
+                frozenset({"/language:python"}),
             )
         clock.sleep.assert_called_once_with(1.5)
         with mock.patch.object(gate, "analyses_ready", return_value=False):
             with self.assertRaisesRegex(gate.GateError, "were not queryable"):
                 gate.wait_for_analyses(
-                    "owner/repo", "refs/pull/1/merge", "a" * 40, "t", 1, 0, 2
+                    "owner/repo",
+                    "refs/pull/1/merge",
+                    "a" * 40,
+                    "t",
+                    1,
+                    0,
+                    frozenset({"/language:python"}),
                 )
 
     def test_open_alerts_handles_pagination_and_rejects_invalid_responses(self) -> None:
@@ -224,12 +313,21 @@ class CodeScanningGateTests(unittest.TestCase):
             mock.patch.object(gate, "time") as clock,
         ):
             ref, sha = gate.wait_for_pull_request_analyses(
-                "owner/repo", "42", "token", attempts=2, delay=3.0, expected=2
+                "owner/repo",
+                "42",
+                "token",
+                attempts=2,
+                delay=3.0,
+                expected_categories=frozenset({"/language:python"}),
             )
 
         self.assertEqual((ref, sha), ("refs/pull/42/merge", "a" * 40))
         ready.assert_called_once_with(
-            "owner/repo", "refs/pull/42/merge", "a" * 40, "token", 2
+            "owner/repo",
+            "refs/pull/42/merge",
+            "a" * 40,
+            "token",
+            frozenset({"/language:python"}),
         )
         clock.sleep.assert_called_once_with(3.0)
 
@@ -241,7 +339,12 @@ class CodeScanningGateTests(unittest.TestCase):
         ):
             self.assertEqual(
                 gate.wait_for_pull_request_analyses(
-                    "owner/repo", "42", "token", attempts=2, delay=2.0, expected=2
+                    "owner/repo",
+                    "42",
+                    "token",
+                    attempts=2,
+                    delay=2.0,
+                    expected_categories=frozenset({"/language:python"}),
                 ),
                 ("refs/pull/42/merge", "a" * 40),
             )
@@ -249,7 +352,12 @@ class CodeScanningGateTests(unittest.TestCase):
         with mock.patch.object(gate, "pull_request_merge_sha", return_value=None):
             with self.assertRaisesRegex(gate.GateError, "were not queryable"):
                 gate.wait_for_pull_request_analyses(
-                    "owner/repo", "42", "token", attempts=1, delay=0, expected=2
+                    "owner/repo",
+                    "42",
+                    "token",
+                    attempts=1,
+                    delay=0,
+                    expected_categories=frozenset({"/language:python"}),
                 )
 
     def test_pull_request_merge_sha_rejects_unmergeable_or_invalid_responses(
@@ -273,6 +381,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 Path(directory),
                 [
                     {
+                        "number": 1,
                         "tool": "CodeQL",
                         "rule": "py/example",
                         "path": "scripts/example.py",
@@ -291,6 +400,8 @@ class CodeScanningGateTests(unittest.TestCase):
                 "token",
                 "--allowlist",
                 str(allowlist),
+                "--expected-codeql-category",
+                "/language:python",
                 "--delay-seconds",
                 "0",
             ]
@@ -328,6 +439,8 @@ class CodeScanningGateTests(unittest.TestCase):
                 "token",
                 "--allowlist",
                 str(allowlist),
+                "--expected-codeql-category",
+                "/language:python",
             ]
             with (
                 mock.patch.object(
@@ -338,7 +451,9 @@ class CodeScanningGateTests(unittest.TestCase):
                 mock.patch.object(gate, "open_alerts", return_value=()),
             ):
                 self.assertEqual(gate.main(arguments), 0)
-            wait.assert_called_once_with("owner/repo", "42", "token", 12, 5.0, 2)
+            wait.assert_called_once_with(
+                "owner/repo", "42", "token", 12, 5.0, frozenset({"/language:python"})
+            )
 
             arguments[arguments.index("42")] = "0"
             self.assertEqual(gate.main(arguments), 2)
@@ -346,8 +461,28 @@ class CodeScanningGateTests(unittest.TestCase):
     def test_main_rejects_invalid_arguments_and_script_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             allowlist = self.write_allowlist(Path(directory), [])
-            base = ["--token", "token", "--allowlist", str(allowlist)]
+            base = [
+                "--token",
+                "token",
+                "--allowlist",
+                str(allowlist),
+                "--expected-codeql-category",
+                "/language:python",
+            ]
             self.assertEqual(gate.main(["--repository", "invalid", *base]), 2)
+            self.assertEqual(
+                gate.main(
+                    [
+                        "--repository",
+                        "owner/repo",
+                        "--token",
+                        "token",
+                        "--allowlist",
+                        str(allowlist),
+                    ]
+                ),
+                2,
+            )
             self.assertEqual(
                 gate.main(["--repository", "owner/repo", "--token", "", *base[2:]]),
                 2,

@@ -4301,6 +4301,19 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("trusted pull-request gate contract" in item for item in malformed)
             )
 
+            allowlist.write_text(
+                '{"schema-version": 2, "allowlist": ['
+                '{"number": 0, "tool": "CodeQL", "rule": "x", '
+                '"path": null, "reason": "x"}]}',
+                encoding="utf-8",
+            )
+            invalid_selector = validate_repository.validate_code_scanning_gate_contract(
+                root
+            )
+            self.assertTrue(
+                any("exact positive alert number" in item for item in invalid_selector)
+            )
+
             source = (
                 PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
             ).read_text(encoding="utf-8")
@@ -4310,7 +4323,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
                     encoding="utf-8",
                 )
             allowlist.write_text(
-                '{"schema-version": 1, "allowlist": []}', encoding="utf-8"
+                '{"schema-version": 2, "allowlist": []}', encoding="utf-8"
             )
             unsafe = validate_repository.validate_code_scanning_gate_contract(root)
             self.assertTrue(
@@ -4329,7 +4342,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
         )
         text = workflow.read_text(encoding="utf-8")
 
-        self.assertEqual(text, asset.read_text(encoding="utf-8"))
+        asset_text = asset.read_text(encoding="utf-8")
         document = validate_repository.load_yaml(workflow)
         self.assertEqual(
             document["on"],
@@ -4346,6 +4359,12 @@ class CodeScanningGateContractTests(unittest.TestCase):
         self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn('--pull-request "$PR_NUMBER"', text)
+        self.assertIn('--expected-codeql-category "/language:actions"', text)
+        self.assertIn('--expected-codeql-category "/language:python"', text)
+        self.assertIn(
+            '--expected-codeql-category "/language:{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"',
+            asset_text,
+        )
         self.assertNotIn("merge_commit_sha", text)
         self.assertNotIn("github.event.pull_request.head.sha", text)
 

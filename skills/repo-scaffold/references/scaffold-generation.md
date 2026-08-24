@@ -16,7 +16,8 @@ When installing the CodeQL asset, also copy the bundled plugin-root script
 `assets/code-scanning-allowlist.json` to
 `.github/code-scanning-allowlist.json`. Keep the scaffold allowlist empty unless
 the target repository has independently reviewed a specific alert and recorded
-its exact selector and reason.
+its exact alert number, selector, and reason. Never reuse an exception for a
+new alert, even when its tool, rule, and path match a prior alert.
 The gate polls the Pull Request API for GitHub's mergeable test commit before
 checking CodeQL uploads. Do not substitute the event payload's
 `merge_commit_sha`, which can be absent while GitHub is calculating mergeability.

@@ -34,5 +34,7 @@ jobs:
         run: >-
           python scripts/check_code_scanning_alerts.py
           --pull-request "$PR_NUMBER"
+          --expected-codeql-category "/language:actions"
+          --expected-codeql-category "/language:{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"
           --attempts 120
           --delay-seconds 10

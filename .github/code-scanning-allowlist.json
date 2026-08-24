@@ -1,58 +1,67 @@
 {
-  "schema-version": 1,
+  "schema-version": 2,
   "allowlist": [
     {
+      "number": 17,
       "tool": "Scorecard",
       "rule": "DangerousWorkflowID",
       "path": ".github/workflows/pr-template.yml",
       "reason": "The pull_request_target workflow checks out only github.event.pull_request.base.sha with contents: read and never executes pull-request code."
     },
     {
+      "number": 16,
       "tool": "Scorecard",
       "rule": "TokenPermissionsID",
       "path": ".github/workflows/action-pin-sync.yml",
       "reason": "The scheduled job needs contents and pull-requests write permissions only to create its reviewed synchronization pull request."
     },
     {
+      "number": 12,
       "tool": "Scorecard",
       "rule": "TokenPermissionsID",
       "path": ".github/workflows/release.yml",
       "reason": "The publish job needs contents: write only to attach verified assets to the release selected by its reusable-workflow inputs."
     },
     {
+      "number": 11,
       "tool": "Scorecard",
       "rule": "TokenPermissionsID",
       "path": ".github/workflows/release-please.yml",
       "reason": "The reusable release publication job needs its explicit release and attestation write permissions."
     },
     {
+      "number": 7,
       "tool": "Scorecard",
       "rule": "CIIBestPracticesID",
-      "path": null,
+      "path": "no file associated with this alert",
       "reason": "Scorecard cannot verify external CII best-practices enrollment; repository controls are enforced by this checked-in policy."
     },
     {
+      "number": 6,
       "tool": "Scorecard",
       "rule": "CodeReviewID",
-      "path": null,
+      "path": "no file associated with this alert",
       "reason": "Scorecard cannot inspect repository rulesets and review enforcement; those settings are verified separately before merge."
     },
     {
+      "number": 5,
       "tool": "Scorecard",
       "rule": "MaintainedID",
-      "path": null,
+      "path": "no file associated with this alert",
       "reason": "The heuristic cannot establish maintainer activity from repository-local source; scheduled maintenance gates provide the tracked evidence."
     },
     {
+      "number": 4,
       "tool": "Scorecard",
       "rule": "FuzzingID",
-      "path": null,
+      "path": "no file associated with this alert",
       "reason": "This repository is a deterministic developer-tooling plugin with mutation testing; no applicable OSS-Fuzz integration exists."
     },
     {
+      "number": 3,
       "tool": "Scorecard",
       "rule": "SecurityPolicyID",
-      "path": null,
+      "path": "no file associated with this alert",
       "reason": "The repository has SECURITY.md, but Scorecard's repository-level heuristic remains open; the policy is validated locally."
     }
   ]
