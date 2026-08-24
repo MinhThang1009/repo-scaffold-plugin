@@ -3608,10 +3608,14 @@ class PlaceholderContractTests(unittest.TestCase):
         self.assertFalse(any(marker in documentation for marker in internal))
 
     def test_default_branch_glob_contract_masks_expression_openers(self) -> None:
-        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("replace every `${{` with `[$*]{{`", skill)
+        generation = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Replace every `${{` with `[$*]{{`", generation)
 
         branch = "${{true}}"
         pattern = branch.replace("!", r"\!").replace("+", r"\+")
