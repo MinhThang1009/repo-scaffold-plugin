@@ -107,8 +107,8 @@ claude --plugin-dir .
 
 Then invoke `/repo-scaffold:repo-scaffold`, or ask Claude to scaffold the
 current repository. The release archive contains both `.codex-plugin/` and
-`.claude-plugin/`; extract it first, then pass the extracted `repo-scaffold/`
-directory to `claude --plugin-dir`.
+`.claude-plugin/`; pass the ZIP directly to `claude --plugin-dir`, or extract
+it and pass the resulting `repo-scaffold/` directory.
 
 ## 7. Update
 

@@ -12,8 +12,9 @@ marketplace as described in the [official Codex plugin documentation](https://de
 
 Codex reads project instructions from `AGENTS.md`; it layers the applicable
 files from the repository root to the working directory. The generated
-`AGENTS.md` is therefore the single, language-selected project instruction
-source. See the [official AGENTS.md documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+`AGENTS.md` is the language-selected root instruction entry point created by
+the scaffold; Codex can layer applicable global or nested instruction files
+around it. See the [official AGENTS.md documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 
 ## Claude Code
 
@@ -31,8 +32,9 @@ to scaffold the repository. Claude Code documents both the plugin layout and
 the shared `SKILL.md` format in its [plugin guide](https://code.claude.com/docs/en/plugins)
 and [skills guide](https://code.claude.com/docs/en/skills).
 
-Release assets contain both manifests under `repo-scaffold/`. Extract the
-archive, then pass that extracted directory to `claude --plugin-dir`.
+Release assets contain both manifests under `repo-scaffold/`. Pass the ZIP
+directly to `claude --plugin-dir`, or extract it and pass the extracted
+directory.
 
 ## Other agents
 
