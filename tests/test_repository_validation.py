@@ -4260,6 +4260,63 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
 
 
 class CodeScanningGateContractTests(unittest.TestCase):
+    def test_validator_reports_missing_malformed_and_unsafe_gate_contracts(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertTrue(
+                any("allowlist.json: unreadable" in item for item in missing)
+            )
+            self.assertTrue(
+                any("code-scanning-gate.yml: unreadable" in item for item in missing)
+            )
+            self.assertTrue(
+                any("bundled gate script is missing" in item for item in missing)
+            )
+
+            allowlist = root / ".github" / "code-scanning-allowlist.json"
+            allowlist.parent.mkdir(parents=True)
+            allowlist.write_text("{}", encoding="utf-8")
+            workflow_paths = (
+                root / ".github" / "workflows" / "code-scanning-gate.yml",
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "workflows"
+                / "code-scanning-gate.yml",
+            )
+            for workflow in workflow_paths:
+                workflow.parent.mkdir(parents=True, exist_ok=True)
+                workflow.write_text("{}", encoding="utf-8")
+            (root / "scripts").mkdir()
+            (root / "scripts" / "check_code_scanning_alerts.py").write_text(
+                "", encoding="utf-8"
+            )
+            malformed = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertTrue(any("require schema-version" in item for item in malformed))
+            self.assertTrue(
+                any("trusted pull-request gate contract" in item for item in malformed)
+            )
+
+            source = (
+                PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
+            ).read_text(encoding="utf-8")
+            for workflow in workflow_paths:
+                workflow.write_text(
+                    source.replace('--pull-request "$PR_NUMBER"', "--ref invalid"),
+                    encoding="utf-8",
+                )
+            allowlist.write_text(
+                '{"schema-version": 1, "allowlist": []}', encoding="utf-8"
+            )
+            unsafe = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertTrue(
+                any("only base-branch alert-gate code" in item for item in unsafe)
+            )
+
     def test_gate_uses_base_trusted_code_and_polls_for_the_test_merge(self) -> None:
         workflow = PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
         asset = (
