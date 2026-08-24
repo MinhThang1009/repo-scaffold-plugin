@@ -5,7 +5,7 @@ Thanks for your interest in contributing! This document describes the workflow.
 ## Workflow (GitHub Flow)
 
 1. Create a branch off **{{REPO_SCAFFOLD_DEFAULT_BRANCH}}**: `git checkout -b feat/<short-description>`.
-2. Commit using [Conventional Commits](https://www.conventionalcommits.org/): `feat(scope): description`.
+2. Commit using [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `feat(scope): description`.
 3. Push the branch and open a Pull Request against **{{REPO_SCAFFOLD_DEFAULT_BRANCH}}**.
 {{REPO_SCAFFOLD_CONTRIBUTION_REVIEW_STEP}}
 

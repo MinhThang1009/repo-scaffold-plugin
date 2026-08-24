@@ -125,6 +125,26 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertEqual(changed, [workflow])
             self.assertIn("# v9.1.2", workflow.read_text(encoding="utf-8"))
 
+    def test_synchronize_updates_yaml_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/scheduled.yaml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            self.assertIn("# v9.1.2", workflow.read_text(encoding="utf-8"))
+
     def test_action_repositories_rejects_unpinned_and_unallowed_references(
         self,
     ) -> None:
@@ -161,8 +181,23 @@ class ActionPinSyncTests(unittest.TestCase):
                 sync_action_pins.workflow_paths(root, (Path("../outside"),))
             for relative in sync_action_pins.WORKFLOW_DIRECTORIES:
                 (root / relative).mkdir(parents=True)
+            ignored = root / sync_action_pins.WORKFLOW_DIRECTORIES[0] / "ignored.yml"
+            ignored.mkdir()
             with self.assertRaisesRegex(ValueError, "no workflow files"):
                 sync_action_pins.workflow_paths(root)
+            workflow = root / sync_action_pins.WORKFLOW_DIRECTORIES[0] / "workflow.yml"
+            workflow.write_text("jobs: {}\n", encoding="utf-8")
+            original_is_symlink = Path.is_symlink
+            with mock.patch.object(
+                Path,
+                "is_symlink",
+                autospec=True,
+                side_effect=lambda path: path == workflow or original_is_symlink(path),
+            ):
+                with self.assertRaisesRegex(ValueError, "workflow file is unsafe"):
+                    sync_action_pins.workflow_paths(root)
+            workflow.unlink()
+            ignored.rmdir()
             link = root / sync_action_pins.WORKFLOW_DIRECTORIES[0]
             link.rmdir()
             try:
@@ -171,7 +206,7 @@ class ActionPinSyncTests(unittest.TestCase):
                     target_is_directory=True,
                 )
             except OSError:
-                self.skipTest("symbolic links are unavailable")
+                return
             with self.assertRaisesRegex(ValueError, "missing or unsafe"):
                 sync_action_pins.workflow_paths(root)
 
@@ -253,6 +288,19 @@ class ActionPinSyncTests(unittest.TestCase):
             client.get_json("/test")
         with self.assertRaisesRegex(ValueError, "bounded object list"):
             client.get_json_list("/test")
+        oversized = sync_action_pins.GitHubReleaseClient(
+            "token",
+            lambda *_args, **_kwargs: FakeResponse(
+                b"x" * (sync_action_pins.MAX_RESPONSE_BYTES + 1)
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "exceeds the size limit"):
+            oversized.get_json("/test")
+        malformed = sync_action_pins.GitHubReleaseClient(
+            "token", lambda *_args, **_kwargs: FakeResponse(b"{")
+        )
+        with self.assertRaisesRegex(ValueError, "request failed"):
+            malformed.get_json("/test")
         for payload, message in (
             ({"tag_name": "main"}, "invalid tag"),
             ({"tag_name": "v1.2.3"}, "no tag object"),

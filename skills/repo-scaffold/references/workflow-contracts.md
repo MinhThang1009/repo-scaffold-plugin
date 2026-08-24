@@ -12,7 +12,8 @@ The reviewed runtime policy is the single source of truth. Do not duplicate
 supported versions in prose or workflow YAML, retain the scheduled compatibility
 canary, load `.github/ci-toolchain.json` through the bundled
 `ci_toolchain.py run-markdownlint` tooling, retain the scheduled/manual drift
-canary, and must not install an unreviewed release automatically.
+canary, reconcile one durable reminder issue when a concrete policy canary
+detects drift, and must not install an unreviewed release automatically.
 
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.

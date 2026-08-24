@@ -12,8 +12,9 @@ theo [tài liệu plugin chính thức](https://developers.openai.com/plugins/bu
 rồi yêu cầu scaffold repository như bình thường.
 
 Codex đọc hướng dẫn dự án từ `AGENTS.md` và áp dụng các tệp phù hợp từ root
-của repository đến thư mục làm việc. Vì vậy, `AGENTS.md` được tạo ra là nguồn
-hướng dẫn duy nhất theo ngôn ngữ đã chọn. Xem [tài liệu AGENTS.md chính
+của repository đến thư mục làm việc. `AGENTS.md` được tạo ra là điểm vào hướng
+dẫn ở root theo ngôn ngữ đã chọn của scaffold; Codex vẫn có thể áp dụng thêm
+hướng dẫn global hoặc nested phù hợp. Xem [tài liệu AGENTS.md chính
 thức](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 
 ## Claude Code
@@ -32,8 +33,9 @@ scaffold repository. Xem [plugin guide](https://code.claude.com/docs/en/plugins)
 và [skills guide](https://code.claude.com/docs/en/skills) chính thức của Claude
 Code để biết layout và định dạng `SKILL.md` dùng chung.
 
-Release asset chứa cả hai manifest trong thư mục `repo-scaffold/`. Hãy giải nén
-archive rồi truyền thư mục đã giải nén cho `claude --plugin-dir`.
+Release asset chứa cả hai manifest trong thư mục `repo-scaffold/`. Có thể truyền
+trực tiếp ZIP cho `claude --plugin-dir`, hoặc giải nén rồi truyền thư mục đã giải
+nén.
 
 ## Agent khác
 

@@ -1,0 +1,40 @@
+name: Code scanning gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: read
+
+concurrency:
+  group: code-scanning-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  code_scanning_gate:
+    name: code-scanning-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # Use only base-branch policy and code. Never check out or execute PR code.
+      - name: Checkout trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Require an explicit disposition for every open alert
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: >-
+          python scripts/check_code_scanning_alerts.py
+          --pull-request "$PR_NUMBER"
+          --expected-codeql-category "/language:actions"
+          --expected-codeql-category "/language:{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"
+          --attempts 120
+          --delay-seconds 10

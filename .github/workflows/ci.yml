@@ -117,6 +117,9 @@ jobs:
           python -m pip install --disable-pip-version-check --require-hashes
           --requirement requirements-dev.txt
 
+      - name: Validate official documentation tracker registry
+        run: python scripts/audit_official_docs.py --repository-root . --validate-registry
+
       - name: Enforce test coverage baseline
         run: |
           python -m coverage erase
@@ -139,6 +142,8 @@ jobs:
           skills/repo-scaffold/scripts/sync_action_pins.py
           skills/repo-scaffold/scripts/validate_scaffold.py
           scripts/audit_freshness.py
+          scripts/audit_official_docs.py
+          scripts/check_code_scanning_alerts.py
           scripts/prepare_mutation_cache.py
           scripts/python_support.py
           scripts/run_mutation_testing.py
@@ -288,6 +293,70 @@ jobs:
 
       - name: Detect reviewed CI tool release drift
         run: python skills/repo-scaffold/scripts/ci_toolchain.py verify-latest-releases
+
+  policy-drift-reminder:
+    name: policy-drift-reminder
+    needs: [python-latest-canary, toolchain-drift-canary]
+    if: ${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Reconcile policy-drift reminder issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PYTHON_CANARY_RESULT: ${{ needs.python-latest-canary.result }}
+          TOOLCHAIN_CANARY_RESULT: ${{ needs.toolchain-drift-canary.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker='<!-- repo-scaffold-ci-policy-drift -->'
+          title='CI policy review required'
+          mapfile -t issue_numbers < <(
+            gh api --hostname github.com --paginate \
+              "repos/${REPOSITORY}/issues?state=open&per_page=100" \
+              --jq '.[] | select(.pull_request == null) | select((.body // "") | contains("<!-- repo-scaffold-ci-policy-drift -->")) | .number'
+          )
+          if (( ${#issue_numbers[@]} > 1 )); then
+            printf 'Found multiple open CI policy reminder issues.\n' >&2
+            exit 1
+          fi
+          if [[ "$PYTHON_CANARY_RESULT" == 'success' && "$TOOLCHAIN_CANARY_RESULT" == 'success' ]]; then
+            if (( ${#issue_numbers[@]} == 1 )); then
+              gh issue close "${issue_numbers[0]}" \
+                --repo "github.com/${REPOSITORY}" \
+                --comment 'The scheduled CI policy canaries are current, so this reminder is closing automatically.'
+            fi
+            exit 0
+          fi
+          if [[ "$PYTHON_CANARY_RESULT" != 'failure' && "$TOOLCHAIN_CANARY_RESULT" != 'failure' ]]; then
+            printf '%s\n' 'A CI policy canary did not complete, so no drift reminder was changed.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          report="$RUNNER_TEMP/ci-policy-drift.md"
+          {
+            printf '%s\n' "$marker" '# CI policy drift report' ''
+            printf '%s\n' "- Workflow run: $RUN_URL" ''
+            printf '%s\n' '| Canary | Result | Required action |' '| --- | --- | --- |'
+            printf '%s\n' "| Latest stable Python | \`$PYTHON_CANARY_RESULT\` | Review compatibility, then update \`.github/python-support.json\` if appropriate. |"
+            printf '%s\n' "| CI toolchain | \`$TOOLCHAIN_CANARY_RESULT\` | Review the release and artifact digest, then update \`.github/ci-toolchain.json\` if appropriate. |"
+          } > "$report"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          if (( ${#issue_numbers[@]} == 1 )); then
+            gh issue edit "${issue_numbers[0]}" \
+              --repo "github.com/${REPOSITORY}" \
+              --title "$title" \
+              --body-file "$report"
+          else
+            gh issue create \
+              --repo "github.com/${REPOSITORY}" \
+              --title "$title" \
+              --body-file "$report"
+          fi
 
   ci-success:
     name: ci-success

@@ -1155,6 +1155,48 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
+    """Require one durable reminder for reviewed Python and toolchain drift."""
+    workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
+    try:
+        workflow = load_yaml(workflow_path)
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        return [f".github/workflows/ci.yml: could not verify policy reminder: {error}"]
+
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    job = jobs.get("policy-drift-reminder") if isinstance(jobs, dict) else None
+    expected_needs = {"python-latest-canary", "toolchain-drift-canary"}
+    if (
+        not isinstance(job, dict)
+        or job.get("name") != "policy-drift-reminder"
+        or not isinstance(job.get("needs"), list)
+        or set(job["needs"]) != expected_needs
+        or job.get("if")
+        != "${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}"
+        or job.get("permissions") != {"contents": "read", "issues": "write"}
+        or job.get("timeout-minutes") != "5"
+    ):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder must depend on both "
+            "scheduled canaries with least-privilege issue access"
+        ]
+    for fragment in (
+        "repo-scaffold-ci-policy-drift",
+        "CI policy review required",
+        "PYTHON_CANARY_RESULT",
+        "TOOLCHAIN_CANARY_RESULT",
+        "if [[ \"$PYTHON_CANARY_RESULT\" != 'failure' && \"$TOOLCHAIN_CANARY_RESULT\" != 'failure' ]]; then",
+        "--body-file",
+    ):
+        if fragment not in workflow_text:
+            return [
+                ".github/workflows/ci.yml: policy drift reminder must reconcile "
+                "one marker issue from both canary results"
+            ]
+    return []
+
+
 def validate_mirrored_dependency_metadata(repository_root: Path) -> list[str]:
     """Keep intentionally mirrored dependency metadata synchronized."""
     problems: list[str] = []
@@ -1394,6 +1436,8 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         "skills/repo-scaffold/scripts/sync_action_pins.py",
         "skills/repo-scaffold/scripts/validate_scaffold.py",
         "scripts/audit_freshness.py",
+        "scripts/audit_official_docs.py",
+        "scripts/check_code_scanning_alerts.py",
         "scripts/prepare_mutation_cache.py",
         "scripts/python_support.py",
         "scripts/run_mutation_testing.py",
@@ -2696,7 +2740,10 @@ def validate_release_please(repository_root: Path) -> list[str]:
     """Validate the repository's single automated release mode and version state."""
     workflow_root = repository_root / ".github" / "workflows"
     workflow_path = workflow_root / "release-please.yml"
-    manual_dispatcher = workflow_root / "release-tag.yml"
+    manual_dispatchers = (
+        workflow_root / "release-tag.yml",
+        workflow_root / "release-tag.yaml",
+    )
     config_path = repository_root / "release-please-config.json"
     versions_path = repository_root / ".release-please-manifest.json"
     version_path = repository_root / "version.txt"
@@ -2704,10 +2751,12 @@ def validate_release_please(repository_root: Path) -> list[str]:
 
     if not workflow_path.is_file():
         problems.append(".github/workflows/release-please.yml: missing")
-    if manual_dispatcher.exists():
-        problems.append(
-            ".github/workflows/release-tag.yml: must not coexist with Release Please"
-        )
+    for manual_dispatcher in manual_dispatchers:
+        if manual_dispatcher.exists():
+            problems.append(
+                f"{manual_dispatcher.relative_to(repository_root).as_posix()}: "
+                "must not coexist with Release Please"
+            )
 
     try:
         config = load_json(config_path)
@@ -2807,7 +2856,14 @@ def validate_release_please(repository_root: Path) -> list[str]:
     ):
         problems.append("release version files must contain the same version")
 
-    for workflow_file in sorted(workflow_root.glob("*.yml")):
+    workflow_files = sorted(
+        {
+            path
+            for pattern in ("*.yml", "*.yaml")
+            for path in workflow_root.glob(pattern)
+        }
+    )
+    for workflow_file in workflow_files:
         try:
             document = load_yaml(workflow_file)
         except (OSError, UnicodeError, yaml.YAMLError):
@@ -4216,6 +4272,266 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]:
+    """Require the bounded reminder for externally documented plugin claims."""
+    problems: list[str] = []
+    registry_path = repository_root / ".github" / "official-docs-trackers.json"
+    script_path = repository_root / "scripts" / "audit_official_docs.py"
+    ci_path = repository_root / ".github" / "workflows" / "ci.yml"
+    workflow_path = repository_root / ".github" / "workflows" / "official-docs.yml"
+    try:
+        registry = load_json(registry_path)
+    except (OSError, UnicodeError, ValueError) as error:
+        problems.append(
+            ".github/official-docs-trackers.json: could not verify tracker registry: "
+            f"{error}"
+        )
+    else:
+        claims = registry.get("claims") if isinstance(registry, dict) else None
+        if (
+            not isinstance(registry, dict)
+            or registry.get("schema-version") != 1
+            or not isinstance(claims, list)
+            or not claims
+        ):
+            problems.append(
+                ".github/official-docs-trackers.json: must keep a versioned non-empty official-documentation claim registry"
+            )
+        else:
+            tracked_paths_by_url: dict[str, set[str]] = {}
+            tracked_hosts: set[str] = set()
+            for claim in claims:
+                if not isinstance(claim, dict):
+                    continue
+                url = claim.get("url")
+                claim_paths = claim.get("paths")
+                if isinstance(url, str) and isinstance(claim_paths, list):
+                    tracked_paths_by_url.setdefault(url, set()).update(
+                        path for path in claim_paths if isinstance(path, str)
+                    )
+                    try:
+                        host = urlsplit(url).hostname
+                    except ValueError:
+                        host = None
+                    if host:
+                        tracked_hosts.add(host.casefold())
+            for path in project_files(repository_root, ("*.md",)):
+                relative = path.relative_to(repository_root)
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as error:
+                    problems.append(
+                        f"{relative}: could not read Markdown for official-documentation tracking: {error}"
+                    )
+                    continue
+                for destination in markdown_link_destinations(text):
+                    try:
+                        parsed = urlsplit(destination)
+                        host = parsed.hostname.casefold() if parsed.hostname else ""
+                    except ValueError:
+                        continue
+                    source_url = parsed._replace(fragment="").geturl()
+                    if host not in tracked_hosts:
+                        continue
+                    tracked_paths = tracked_paths_by_url.get(source_url)
+                    if tracked_paths is None:
+                        problems.append(
+                            f"{relative}: official documentation URL is not tracked: {source_url}"
+                        )
+                    elif relative.as_posix() not in tracked_paths:
+                        problems.append(
+                            f"{relative}: official documentation URL must list this file in its tracker claim: {source_url}"
+                        )
+    try:
+        script_text = script_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"scripts/audit_official_docs.py: unreadable: {error}")
+    else:
+        for fragment in (
+            "load_trackers",
+            "required-markers",
+            "review-period-days",
+            "--tracker-registry",
+            "repo-scaffold-official-docs-audit",
+        ):
+            if fragment not in script_text:
+                problems.append(
+                    "scripts/audit_official_docs.py: must keep the registry, marker, and review-period contracts"
+                )
+                break
+    try:
+        workflow = load_yaml(workflow_path)
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        problems.append(f".github/workflows/official-docs.yml: unreadable: {error}")
+        return problems
+    if not isinstance(workflow, dict):
+        return [
+            *problems,
+            ".github/workflows/official-docs.yml: workflow must be a mapping",
+        ]
+    if workflow.get("on") != {
+        "schedule": [{"cron": "29 6 * * 4"}],
+        "workflow_dispatch": "",
+    }:
+        problems.append(
+            ".github/workflows/official-docs.yml: must use only its scheduled and manual triggers"
+        )
+    if workflow.get("permissions") != {"contents": "read", "issues": "write"}:
+        problems.append(
+            ".github/workflows/official-docs.yml: must use read-only contents and issue write permissions"
+        )
+    concurrency = workflow.get("concurrency")
+    jobs = workflow.get("jobs")
+    job = jobs.get("audit") if isinstance(jobs, dict) else None
+    if (
+        not isinstance(concurrency, dict)
+        or concurrency.get("cancel-in-progress") != "false"
+        or not isinstance(job, dict)
+        or job.get("name") != "official-docs-review"
+        or job.get("timeout-minutes") != "10"
+    ):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder concurrency or audit job contract is invalid"
+        )
+    for fragment in (
+        "python scripts/audit_official_docs.py",
+        "repo-scaffold-official-docs-audit",
+        "--body-file",
+    ):
+        if fragment not in workflow_text:
+            problems.append(
+                ".github/workflows/official-docs.yml: must run the checker and reconcile one marker issue"
+            )
+            break
+    try:
+        ci_text = ci_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f".github/workflows/ci.yml: unreadable: {error}")
+    else:
+        if (
+            "python scripts/audit_official_docs.py --repository-root . --validate-registry"
+            not in ci_text
+        ):
+            problems.append(
+                ".github/workflows/ci.yml: must validate the official-documentation tracker registry"
+            )
+    return problems
+
+
+def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
+    """Require a base-trusted workflow to gate unreviewed scanning alerts."""
+    problems: list[str] = []
+    allowlist_path = repository_root / ".github" / "code-scanning-allowlist.json"
+    try:
+        allowlist = load_json(allowlist_path)
+    except (OSError, UnicodeError, ValueError) as error:
+        problems.append(f".github/code-scanning-allowlist.json: unreadable: {error}")
+    else:
+        entries = allowlist.get("allowlist") if isinstance(allowlist, dict) else None
+        schema_version = (
+            allowlist.get("schema-version") if isinstance(allowlist, dict) else None
+        )
+        if schema_version != 2 or not isinstance(entries, list):
+            problems.append(
+                ".github/code-scanning-allowlist.json: require schema-version 2 and an allowlist"
+            )
+        elif any(
+            not isinstance(entry, dict)
+            or set(entry) != {"number", "tool", "rule", "path", "reason"}
+            or type(entry.get("number")) is not int
+            or entry["number"] < 1
+            or not all(
+                isinstance(entry.get(field), str) and entry[field].strip()
+                for field in ("tool", "rule", "reason")
+            )
+            or (
+                entry.get("path") is not None and not isinstance(entry.get("path"), str)
+            )
+            for entry in entries
+        ):
+            problems.append(
+                ".github/code-scanning-allowlist.json: each entry must use an exact positive alert number and selector"
+            )
+    expected_permissions = {
+        "contents": "read",
+        "pull-requests": "read",
+        "security-events": "read",
+    }
+    for path in (
+        repository_root / ".github" / "workflows" / "code-scanning-gate.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "code-scanning-gate.yml",
+    ):
+        relative = path.relative_to(repository_root).as_posix()
+        expected_categories = (
+            (
+                '--expected-codeql-category "/language:actions"',
+                '--expected-codeql-category "/language:python"',
+            )
+            if relative == ".github/workflows/code-scanning-gate.yml"
+            else (
+                '--expected-codeql-category "/language:actions"',
+                '--expected-codeql-category "/language:{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"',
+            )
+        )
+        try:
+            workflow = load_yaml(path)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: unreadable: {error}")
+            continue
+        jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+        gate = jobs.get("code_scanning_gate") if isinstance(jobs, dict) else None
+        if (
+            not isinstance(workflow, dict)
+            or workflow.get("on")
+            != {"pull_request_target": {"types": ["opened", "reopened", "synchronize"]}}
+            or workflow.get("permissions") != expected_permissions
+            or not isinstance(gate, dict)
+            or gate.get("name") != "code-scanning-gate"
+            or gate.get("timeout-minutes") != "25"
+        ):
+            problems.append(
+                f"{relative}: must use the trusted pull-request gate contract"
+            )
+            continue
+        steps = gate.get("steps")
+        checkout = steps[0] if isinstance(steps, list) and steps else None
+        run_step = steps[1] if isinstance(steps, list) and len(steps) == 2 else None
+        if (
+            not isinstance(checkout, dict)
+            or checkout.get("with")
+            != {
+                "ref": "${{ github.event.pull_request.base.sha }}",
+                "persist-credentials": "false",
+            }
+            or not isinstance(run_step, dict)
+            or run_step.get("env")
+            != {
+                "GITHUB_TOKEN": "${{ github.token }}",
+                "PR_NUMBER": "${{ github.event.pull_request.number }}",
+            }
+            or "scripts/check_code_scanning_alerts.py" not in str(run_step.get("run"))
+            or '--pull-request "$PR_NUMBER"' not in str(run_step.get("run"))
+            or not all(
+                category in str(run_step.get("run")) for category in expected_categories
+            )
+            or "merge_commit_sha" in str(run_step)
+        ):
+            problems.append(
+                f"{relative}: must execute only base-branch alert-gate code"
+            )
+    if not (repository_root / "scripts" / "check_code_scanning_alerts.py").is_file():
+        problems.append(
+            "scripts/check_code_scanning_alerts.py: bundled gate script is missing"
+        )
+    return problems
+
+
 def validate_scaffold_contract(repository_root: Path) -> list[str]:
     """Run the distributable rendered-document contract against this plugin."""
     script = (
@@ -4452,6 +4768,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_action_references,
         validate_python_support_contract,
         validate_ci_toolchain_contract,
+        validate_policy_drift_reminder_contract,
         validate_mirrored_dependency_metadata,
         validate_development_dependency_contract,
         validate_mutation_testing_contract,
@@ -4469,6 +4786,8 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_markdown_links,
         validate_community_health_tracking_contract,
         validate_freshness_tracking_contract,
+        validate_official_docs_tracking_contract,
+        validate_code_scanning_gate_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,
@@ -4488,8 +4807,8 @@ def main() -> int:
         return 1
     print(
         "Repository metadata, multi-agent adapters, action pins, dependency locks, coverage policy, "
-        "CI policies, mutation testing, test quality, links, community-health and "
-        "freshness tracking, templates, attestations, and release archive are valid."
+        "CI policies and drift reminders, mutation testing, test quality, links, community-health and "
+        "freshness tracking, official documentation, templates, attestations, and release archive are valid."
     )
     return 0
 

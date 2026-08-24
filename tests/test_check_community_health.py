@@ -149,6 +149,13 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(community_health.AuditError, "unique"):
             community_health.parse_registry(duplicate)
 
+        too_many = registry_document()
+        too_many["files"] = [too_many["files"][0]] * (  # type: ignore[index]
+            community_health.MAX_REGISTRY_ENTRIES + 1
+        )
+        with self.assertRaisesRegex(community_health.AuditError, "entry limit"):
+            community_health.parse_registry(too_many)
+
     def test_load_registry_wraps_read_and_json_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing.json"
@@ -158,6 +165,19 @@ class RegistryTests(unittest.TestCase):
             invalid.write_text("{", encoding="utf-8")
             with self.assertRaisesRegex(community_health.AuditError, "could not read"):
                 community_health.load_registry(invalid)
+            duplicate = Path(directory) / "duplicate.json"
+            duplicate.write_text(
+                '{"schema-version": 1, "schema-version": 1, "files": []}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(community_health.AuditError, "could not read"):
+                community_health.load_registry(duplicate)
+            oversized = Path(directory) / "oversized.json"
+            oversized.write_text(
+                " " * (community_health.MAX_REGISTRY_BYTES + 1), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(community_health.AuditError, "size limit"):
+                community_health.load_registry(oversized)
 
 
 class GitHubClientTests(unittest.TestCase):
@@ -481,20 +501,24 @@ class AuditAndCliTests(unittest.TestCase):
             entries = community_health.parse_registry(registry_document(tracker="none"))
             with self.assertRaisesRegex(community_health.AuditError, "OWNER/REPO"):
                 community_health.audit(root, entries, "invalid", FakeClient({}), "now")
-            report = community_health.audit(
-                root,
-                entries,
-                "owner/repository",
-                FakeClient(
-                    {
-                        "repos/owner/repository/community/profile": {
-                            "health_percentage": 101
-                        }
-                    }
-                ),
-                "now",
-            )
-            self.assertEqual(report["community-profile"]["status"], "indeterminate")
+            for health in (101, True, False):
+                with self.subTest(health=health):
+                    report = community_health.audit(
+                        root,
+                        entries,
+                        "owner/repository",
+                        FakeClient(
+                            {
+                                "repos/owner/repository/community/profile": {
+                                    "health_percentage": health
+                                }
+                            }
+                        ),
+                        "now",
+                    )
+                    self.assertEqual(
+                        report["community-profile"]["status"], "indeterminate"
+                    )
 
     def test_markdown_report_covers_errors_and_absent_paths(self) -> None:
         report: dict[str, Any] = {

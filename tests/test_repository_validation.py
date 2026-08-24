@@ -13,6 +13,7 @@ import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import BytesIO, StringIO
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import yaml
@@ -2825,6 +2826,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_action_references",
             "validate_python_support_contract",
             "validate_ci_toolchain_contract",
+            "validate_policy_drift_reminder_contract",
             "validate_mirrored_dependency_metadata",
             "validate_development_dependency_contract",
             "validate_mutation_testing_contract",
@@ -2842,6 +2844,8 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_markdown_links",
             "validate_community_health_tracking_contract",
             "validate_freshness_tracking_contract",
+            "validate_official_docs_tracking_contract",
+            "validate_code_scanning_gate_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
             "validate_release_archive",
@@ -3978,6 +3982,9 @@ jobs:
             (root / ".github" / "workflows" / "release-tag.yml").write_text(
                 "on:\n  push:\n    tags: ['v*']\n", encoding="utf-8"
             )
+            (root / ".github" / "workflows" / "release-tag.yaml").write_text(
+                "on:\n  push:\n    tags: ['v*']\n", encoding="utf-8"
+            )
             (root / "version.txt").write_text("1.2.4\n", encoding="utf-8")
 
             problems = validate_repository.validate_release_please(root)
@@ -3989,6 +3996,16 @@ jobs:
             )
             self.assertIn(
                 ".github/workflows/release-tag.yml: tag push trigger conflicts "
+                "with Release Please",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release-tag.yaml: must not coexist with "
+                "Release Please",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release-tag.yaml: tag push trigger conflicts "
                 "with Release Please",
                 problems,
             )
@@ -4256,6 +4273,129 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
                 sum("must serialize" in item for item in problems),
                 4,
             )
+
+
+class CodeScanningGateContractTests(unittest.TestCase):
+    def test_validator_reports_missing_malformed_and_unsafe_gate_contracts(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertTrue(
+                any("allowlist.json: unreadable" in item for item in missing)
+            )
+            self.assertTrue(
+                any("code-scanning-gate.yml: unreadable" in item for item in missing)
+            )
+            self.assertTrue(
+                any("bundled gate script is missing" in item for item in missing)
+            )
+
+            allowlist = root / ".github" / "code-scanning-allowlist.json"
+            allowlist.parent.mkdir(parents=True)
+            allowlist.write_text("{}", encoding="utf-8")
+            workflow_paths = (
+                root / ".github" / "workflows" / "code-scanning-gate.yml",
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "workflows"
+                / "code-scanning-gate.yml",
+            )
+            for workflow in workflow_paths:
+                workflow.parent.mkdir(parents=True, exist_ok=True)
+                workflow.write_text("{}", encoding="utf-8")
+            (root / "scripts").mkdir()
+            (root / "scripts" / "check_code_scanning_alerts.py").write_text(
+                "", encoding="utf-8"
+            )
+            malformed = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertTrue(any("require schema-version" in item for item in malformed))
+            self.assertTrue(
+                any("trusted pull-request gate contract" in item for item in malformed)
+            )
+
+            allowlist.write_text(
+                '{"schema-version": 2, "allowlist": ['
+                '{"number": 0, "tool": "CodeQL", "rule": "x", '
+                '"path": null, "reason": "x"}]}',
+                encoding="utf-8",
+            )
+            invalid_selector = validate_repository.validate_code_scanning_gate_contract(
+                root
+            )
+            self.assertTrue(
+                any("exact positive alert number" in item for item in invalid_selector)
+            )
+
+            allowlist.write_text(
+                '{"schema-version": 2, "allowlist": ['
+                '{"number": true, "tool": "CodeQL", "rule": "x", '
+                '"path": null, "reason": "x"}]}',
+                encoding="utf-8",
+            )
+            boolean_number = validate_repository.validate_code_scanning_gate_contract(
+                root
+            )
+            self.assertTrue(
+                any("exact positive alert number" in item for item in boolean_number)
+            )
+
+            source = (
+                PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
+            ).read_text(encoding="utf-8")
+            for workflow in workflow_paths:
+                workflow.write_text(
+                    source.replace('--pull-request "$PR_NUMBER"', "--ref invalid"),
+                    encoding="utf-8",
+                )
+            allowlist.write_text(
+                '{"schema-version": 2, "allowlist": []}', encoding="utf-8"
+            )
+            unsafe = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertTrue(
+                any("only base-branch alert-gate code" in item for item in unsafe)
+            )
+
+    def test_gate_uses_base_trusted_code_and_polls_for_the_test_merge(self) -> None:
+        workflow = PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
+        asset = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "code-scanning-gate.yml"
+        )
+        text = workflow.read_text(encoding="utf-8")
+
+        asset_text = asset.read_text(encoding="utf-8")
+        document = validate_repository.load_yaml(workflow)
+        self.assertEqual(
+            document["on"],
+            {"pull_request_target": {"types": ["opened", "reopened", "synchronize"]}},
+        )
+        self.assertEqual(
+            document["permissions"],
+            {
+                "contents": "read",
+                "pull-requests": "read",
+                "security-events": "read",
+            },
+        )
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
+        self.assertIn("persist-credentials: false", text)
+        self.assertIn('--pull-request "$PR_NUMBER"', text)
+        self.assertIn('--expected-codeql-category "/language:actions"', text)
+        self.assertIn('--expected-codeql-category "/language:python"', text)
+        self.assertIn(
+            '--expected-codeql-category "/language:{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"',
+            asset_text,
+        )
+        self.assertNotIn("merge_commit_sha", text)
+        self.assertNotIn("github.event.pull_request.head.sha", text)
 
 
 class PullRequestTemplateContractTests(unittest.TestCase):
@@ -5504,6 +5644,23 @@ class WorkflowShellValidationTests(unittest.TestCase):
         path.write_text(content.strip(), encoding="utf-8")
         return path
 
+    def test_workflow_discovery_includes_both_supported_yaml_suffixes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            yml = root / "ci.yml"
+            yaml_file = root / "scheduled.yaml"
+            ignored = root / "notes.txt"
+            nested = root / "nested"
+            yml.write_text("jobs: {}\n", encoding="utf-8")
+            yaml_file.write_text("jobs: {}\n", encoding="utf-8")
+            ignored.write_text("ignored\n", encoding="utf-8")
+            nested.mkdir()
+            (nested / "nested.yml").write_text("jobs: {}\n", encoding="utf-8")
+
+            self.assertEqual(
+                validate_workflows.discover_workflows(root), [yml, yaml_file]
+            )
+
     def test_executable_resolution_skips_unsafe_and_unusable_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -6350,6 +6507,289 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             self.assertTrue(any(fragment in problem for problem in problems), fragment)
         self.assertTrue(
             any("workflow must match" in problem for problem in workflow_drift)
+        )
+
+
+class OfficialDocumentationTrackingContractTests(unittest.TestCase):
+    def copy_contract(self, root: Path) -> None:
+        for relative in (
+            ".github/official-docs-trackers.json",
+            ".github/workflows/ci.yml",
+            ".github/workflows/official-docs.yml",
+            "scripts/audit_official_docs.py",
+        ):
+            source = PLUGIN_ROOT / relative
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+
+    def test_current_official_documentation_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_official_docs_tracking_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_and_drifted_official_documentation_contract_is_reported(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing = validate_repository.validate_official_docs_tracking_contract(root)
+            self.copy_contract(root)
+            (root / ".github/official-docs-trackers.json").write_text(
+                '{"schema-version": 1, "claims": []}\n', encoding="utf-8"
+            )
+            (root / "scripts/audit_official_docs.py").write_text(
+                "checker-drift\n", encoding="utf-8"
+            )
+            (root / ".github/workflows/official-docs.yml").write_text(
+                "name: stale\n"
+                "on:\n"
+                "  push:\n"
+                "permissions:\n"
+                "  contents: write\n"
+                "jobs: {}\n",
+                encoding="utf-8",
+            )
+            drifted = validate_repository.validate_official_docs_tracking_contract(root)
+            (root / ".github/workflows/official-docs.yml").write_text(
+                "[]\n", encoding="utf-8"
+            )
+            non_mapping = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(any("tracker registry" in problem for problem in missing))
+        self.assertTrue(any("audit_official_docs.py" in problem for problem in missing))
+        self.assertTrue(any("versioned non-empty" in problem for problem in drifted))
+        self.assertTrue(any("marker" in problem for problem in drifted))
+        self.assertTrue(any("must use only" in problem for problem in drifted))
+        self.assertTrue(any("permissions" in problem for problem in drifted))
+        self.assertTrue(any("job contract" in problem for problem in drifted))
+        self.assertTrue(any("must be a mapping" in problem for problem in non_mapping))
+
+    def test_untracked_official_documentation_link_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "untracked.md").write_text(
+                "[New Claude documentation](https://code.claude.com/docs/en/new-topic)\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any(
+                "untracked.md: official documentation URL is not tracked" in problem
+                for problem in problems
+            )
+        )
+
+    def test_tracked_link_outside_claim_paths_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "unlisted.md").write_text(
+                "[Claude skills](https://code.claude.com/docs/en/skills)\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any(
+                "unlisted.md: official documentation URL must list this file" in problem
+                for problem in problems
+            )
+        )
+
+    def test_registry_tracks_every_declared_authoritative_host(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "untracked.md").write_text(
+                "[New GitHub CLI documentation](https://cli.github.com/new-topic)\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any(
+                "untracked.md: official documentation URL is not tracked" in problem
+                for problem in problems
+            )
+        )
+
+    def test_invalid_tracker_entries_and_unreadable_markdown_are_handled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / ".github/official-docs-trackers.json").write_text(
+                json.dumps(
+                    {
+                        "schema-version": 1,
+                        "claims": [
+                            {
+                                "url": "https://code.claude.com/docs/en/skills",
+                                "paths": [],
+                            },
+                            "not an object",
+                            {"url": 7, "paths": "not a list"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unreadable = root / "unreadable.md"
+            original_read_text = Path.read_text
+
+            def read_text_or_raise(path: Path, *args: Any, **kwargs: Any) -> str:
+                if path == unreadable:
+                    raise OSError("denied")
+                return original_read_text(path, *args, **kwargs)
+
+            with (
+                mock.patch.object(
+                    validate_repository, "project_files", return_value=[unreadable]
+                ),
+                mock.patch.object(
+                    Path, "read_text", autospec=True, side_effect=read_text_or_raise
+                ),
+            ):
+                problems = validate_repository.validate_official_docs_tracking_contract(
+                    root
+                )
+        self.assertTrue(
+            any(
+                "unreadable.md: could not read Markdown" in problem
+                for problem in problems
+            )
+        )
+
+    def test_malformed_tracker_url_does_not_break_host_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / ".github/official-docs-trackers.json").write_text(
+                json.dumps(
+                    {
+                        "schema-version": 1,
+                        "claims": [{"url": "https://[invalid", "paths": ["README.md"]}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertEqual(problems, [])
+
+    def test_malformed_and_nonofficial_markdown_urls_do_not_break_tracking(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "links.md").write_text("# Links\n", encoding="utf-8")
+            with mock.patch.object(
+                validate_repository,
+                "markdown_link_destinations",
+                return_value=["https://[invalid", "https://example.test"],
+            ):
+                problems = validate_repository.validate_official_docs_tracking_contract(
+                    root
+                )
+        self.assertEqual(problems, [])
+
+    def test_missing_ci_registry_gate_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / ".github/workflows/ci.yml").write_text(
+                "name: CI\n", encoding="utf-8"
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(any("ci.yml: must validate" in problem for problem in problems))
+
+    def test_unreadable_ci_registry_gate_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            ci_path = root / ".github/workflows/ci.yml"
+            ci_path.unlink()
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(any("ci.yml: unreadable" in problem for problem in problems))
+
+
+class PolicyDriftReminderContractTests(unittest.TestCase):
+    def test_current_policy_drift_reminder_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_policy_drift_reminder_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_policy_drift_reminder_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            shutil.copyfile(
+                PLUGIN_ROOT / ".github" / "workflows" / "ci.yml",
+                workflow_directory / "ci.yml",
+            )
+            (workflow_directory / "ci.yml").write_text(
+                "name: CI\non: {}\njobs: {}\n", encoding="utf-8"
+            )
+            problems = validate_repository.validate_policy_drift_reminder_contract(root)
+        self.assertEqual(
+            problems,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must depend on both "
+                "scheduled canaries with least-privilege issue access"
+            ],
+        )
+
+    def test_policy_drift_reminder_reports_missing_semantics_and_unreadable_workflow(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            workflow_path = workflow_directory / "ci.yml"
+            shutil.copyfile(
+                PLUGIN_ROOT / ".github" / "workflows" / "ci.yml", workflow_path
+            )
+            workflow_path.write_text(
+                workflow_path.read_text(encoding="utf-8").replace(
+                    "if [[ \"$PYTHON_CANARY_RESULT\" != 'failure' && \"$TOOLCHAIN_CANARY_RESULT\" != 'failure' ]]; then",
+                    "if [[ \"$PYTHON_CANARY_RESULT\" == 'failure' && \"$TOOLCHAIN_CANARY_RESULT\" == 'failure' ]]; then",
+                ),
+                encoding="utf-8",
+            )
+            missing_semantics = (
+                validate_repository.validate_policy_drift_reminder_contract(root)
+            )
+            workflow_path.unlink()
+            unreadable = validate_repository.validate_policy_drift_reminder_contract(
+                root
+            )
+        self.assertEqual(
+            missing_semantics,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must reconcile "
+                "one marker issue from both canary results"
+            ],
+        )
+        self.assertTrue(
+            unreadable[0].startswith(
+                ".github/workflows/ci.yml: could not verify policy reminder:"
+            )
         )
 
 

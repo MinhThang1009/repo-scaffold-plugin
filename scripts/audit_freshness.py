@@ -20,6 +20,8 @@ import sync_action_pins
 
 PYPI_ROOT = "https://pypi.org/pypi"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
+MAX_TRACKER_ENTRIES = 256
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PINNED_REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\]+)(?:\s+\\)?\Z"
@@ -33,6 +35,10 @@ DEFAULT_TRACKER_REGISTRY = Path(".github/freshness-trackers.json")
 
 class AuditError(RuntimeError):
     """Raised when a freshness input or upstream response cannot be trusted."""
+
+
+class DuplicateJsonMember(ValueError):
+    """Raised when a tracker registry uses duplicate JSON members."""
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,16 @@ class FreshnessTrackers:
     workflow_directories: tuple[Path, ...]
     release_please_configs: tuple[Path, ...]
     requirement_sources: tuple[RequirementSource, ...]
+
+
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting ambiguous duplicate member names."""
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
+        document[key] = value
+    return document
 
 
 def safe_relative_path(value: object, *, field: str) -> Path:
@@ -83,8 +99,21 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         kind="freshness tracker registry",
     )
     try:
-        document = json.loads(registry_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        if registry_path.stat().st_size > MAX_TRACKER_REGISTRY_BYTES:
+            raise AuditError(
+                f"freshness tracker registry exceeds the size limit: {relative}"
+            )
+        document = json.loads(
+            registry_path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+        )
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        DuplicateJsonMember,
+        RecursionError,
+    ) as error:
         raise AuditError(
             f"could not read freshness tracker registry {relative}: {error}"
         ) from error
@@ -95,6 +124,10 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         values = document.get(key)
         if not isinstance(values, list) or (not allow_empty and not values):
             raise AuditError(f"freshness tracker registry {key} must be a list")
+        if len(values) > MAX_TRACKER_ENTRIES:
+            raise AuditError(
+                f"freshness tracker registry {key} exceeds the entry limit"
+            )
         parsed = tuple(
             safe_relative_path(value, field=f"freshness tracker registry {key}")
             for value in values
@@ -107,6 +140,10 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
     if not isinstance(sources, list):
         raise AuditError(
             "freshness tracker registry requirement-sources must be a list"
+        )
+    if len(sources) > MAX_TRACKER_ENTRIES:
+        raise AuditError(
+            "freshness tracker registry requirement-sources exceeds the entry limit"
         )
     requirement_sources: list[RequirementSource] = []
     seen_sources: set[Path] = set()

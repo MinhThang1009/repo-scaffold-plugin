@@ -48,6 +48,10 @@ workflows current; a weekly PR-only synchronizer mirrors reviewed releases to
 scaffold workflow assets. A separate scheduled freshness audit compares action
 pins, Release Please schemas, and direct Python pins with their authoritative
 upstreams, then maintains one reminder issue until the drift is resolved.
+An independent weekly official-documentation review validates the allowlisted
+GitHub, OpenAI, and Claude Code source pages, their claim markers, and the
+review interval recorded for each affected plugin document. It opens one
+reminder Issue for human review rather than auto-editing prose.
 Shipped workflows do not delegate execution to a mutable container tag.
 
 ## 2. Requirements
@@ -107,8 +111,8 @@ claude --plugin-dir .
 
 Then invoke `/repo-scaffold:repo-scaffold`, or ask Claude to scaffold the
 current repository. The release archive contains both `.codex-plugin/` and
-`.claude-plugin/`; extract it first, then pass the extracted `repo-scaffold/`
-directory to `claude --plugin-dir`.
+`.claude-plugin/`; pass the ZIP directly to `claude --plugin-dir`, or extract
+it and pass the resulting `repo-scaffold/` directory.
 
 ## 7. Update
 
@@ -148,6 +152,7 @@ repo-scaffold/
 │   ├── ci-toolchain.json
 │   ├── dependabot.yml
 │   ├── labeler.yml
+│   ├── official-docs-trackers.json
 │   ├── python-support.json
 │   ├── release.yml
 │   └── workflows/
@@ -159,6 +164,7 @@ repo-scaffold/
 │       ├── labeler.yml
 │       ├── links.yml
 │       ├── mutation-testing.yml
+│       ├── official-docs.yml
 │       ├── release-please.yml
 │       ├── release.yml
 │       ├── scorecard.yml
@@ -182,6 +188,7 @@ repo-scaffold/
 │   ├── python_support.py
 │   ├── run_mutation_testing.py
 │   ├── audit_freshness.py
+│   ├── audit_official_docs.py
 │   ├── validate_mutation_results.py
 │   ├── validate_repository.py
 │   └── validate_workflows.py
@@ -216,7 +223,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -243,14 +250,15 @@ the minimum/latest boundaries on Windows. The quality job consumes the policy's
 latest value. A non-required weekly `3.x` canary tests the latest stable Python,
 then fails on undeclared-version drift so support changes require a reviewed
 policy update. Repository validation rejects policy, workflow, scaffold, and
-documentation drift. The quality job also runs formatting, lint, type, compile,
+documentation drift. Scheduled/manual canaries maintain one reminder Issue when
+either reviewed policy needs attention. The quality job also runs formatting, lint, type, compile,
 workflow, metadata, link, and release-archive checks.
 The [CI toolchain policy](.github/ci-toolchain.json) separately centralizes the
 rolling documentation bootstrap runtime, minimum Python for bundled tooling,
 the markdownlint npm pin, and reviewed standalone-tool release metadata and
 digests. Workflows and setup guidance consume that policy instead of embedding
 those values, and a non-required scheduled/manual canary reports npm, upstream
-release, or digest drift for review.
+release, or digest drift for review through the same durable reminder Issue.
 Dependabot checks the pinned Python development tools, mirrored scaffold
 documentation dependencies, and installed GitHub Actions weekly.
 `requirements-dev.in` records reviewed direct pins; `requirements-dev.txt`
@@ -274,6 +282,13 @@ scaffold ships the same registry-driven checker and workflow to generated
 repositories when Issues are available. Track only sources with an
 authoritative owner and deterministic version resolver; community-health policy
 tracking remains in its separate registry.
+The non-required weekly [official-documentation workflow](.github/workflows/official-docs.yml)
+uses [its explicit tracker registry](.github/official-docs-trackers.json) to
+revalidate the authoritative source URLs and stable claim markers, then requires
+a reviewed registry-date update at least every 90 days. It covers the plugin's
+Codex, Claude Code, GitHub Actions, Agent Skills, Conventional Commits, and
+Keep a Changelog claims. Generated repositories do not inherit those
+plugin-specific claims.
 Mutation testing extends that toolchain through the separate, hash-verified
 `requirements-mutation.txt`. Mutmut versions are not duplicated in validators
 or tests; a compatible Dependabot bump passes the runner integration tests,
