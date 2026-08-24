@@ -2697,7 +2697,10 @@ def validate_release_please(repository_root: Path) -> list[str]:
     """Validate the repository's single automated release mode and version state."""
     workflow_root = repository_root / ".github" / "workflows"
     workflow_path = workflow_root / "release-please.yml"
-    manual_dispatcher = workflow_root / "release-tag.yml"
+    manual_dispatchers = (
+        workflow_root / "release-tag.yml",
+        workflow_root / "release-tag.yaml",
+    )
     config_path = repository_root / "release-please-config.json"
     versions_path = repository_root / ".release-please-manifest.json"
     version_path = repository_root / "version.txt"
@@ -2705,10 +2708,12 @@ def validate_release_please(repository_root: Path) -> list[str]:
 
     if not workflow_path.is_file():
         problems.append(".github/workflows/release-please.yml: missing")
-    if manual_dispatcher.exists():
-        problems.append(
-            ".github/workflows/release-tag.yml: must not coexist with Release Please"
-        )
+    for manual_dispatcher in manual_dispatchers:
+        if manual_dispatcher.exists():
+            problems.append(
+                f"{manual_dispatcher.relative_to(repository_root).as_posix()}: "
+                "must not coexist with Release Please"
+            )
 
     try:
         config = load_json(config_path)
@@ -2808,7 +2813,14 @@ def validate_release_please(repository_root: Path) -> list[str]:
     ):
         problems.append("release version files must contain the same version")
 
-    for workflow_file in sorted(workflow_root.glob("*.yml")):
+    workflow_files = sorted(
+        {
+            path
+            for pattern in ("*.yml", "*.yaml")
+            for path in workflow_root.glob(pattern)
+        }
+    )
+    for workflow_file in workflow_files:
         try:
             document = load_yaml(workflow_file)
         except (OSError, UnicodeError, yaml.YAMLError):

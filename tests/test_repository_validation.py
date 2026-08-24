@@ -3979,6 +3979,9 @@ jobs:
             (root / ".github" / "workflows" / "release-tag.yml").write_text(
                 "on:\n  push:\n    tags: ['v*']\n", encoding="utf-8"
             )
+            (root / ".github" / "workflows" / "release-tag.yaml").write_text(
+                "on:\n  push:\n    tags: ['v*']\n", encoding="utf-8"
+            )
             (root / "version.txt").write_text("1.2.4\n", encoding="utf-8")
 
             problems = validate_repository.validate_release_please(root)
@@ -3990,6 +3993,16 @@ jobs:
             )
             self.assertIn(
                 ".github/workflows/release-tag.yml: tag push trigger conflicts "
+                "with Release Please",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release-tag.yaml: must not coexist with "
+                "Release Please",
+                problems,
+            )
+            self.assertIn(
+                ".github/workflows/release-tag.yaml: tag push trigger conflicts "
                 "with Release Please",
                 problems,
             )
