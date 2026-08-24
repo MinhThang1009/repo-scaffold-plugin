@@ -3267,9 +3267,12 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         reference_text = (
             "Agent Skills Codex Claude Code\n"
             "https://developers.openai.com/plugins/build/plugins\n"
+            "https://learn.chatgpt.com/docs/agent-configuration/agents-md\n"
+            "https://learn.chatgpt.com/docs/agent-configuration/subagents\n"
             "https://code.claude.com/docs/en/plugins\n"
             "https://code.claude.com/docs/en/skills\n"
             "https://code.claude.com/docs/en/memory\n"
+            "https://code.claude.com/docs/en/sub-agents\n"
         )
         references = skill.parent / "references"
         references.mkdir()
@@ -3371,6 +3374,32 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         self.assertIn(
             "skills/repo-scaffold/assets/AGENTS.vi.md: must not duplicate the "
             "English source",
+            problems,
+        )
+
+    def test_rejects_reference_without_current_subagent_documentation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            reference = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "agent-compatibility.vi.md"
+            )
+            reference.write_text(
+                reference.read_text(encoding="utf-8").replace(
+                    "https://code.claude.com/docs/en/sub-agents\n", ""
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        self.assertIn(
+            "skills/repo-scaffold/references/agent-compatibility.vi.md: must "
+            "document Codex, Claude Code, and Agent Skills",
             problems,
         )
 

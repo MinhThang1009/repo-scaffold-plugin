@@ -11,6 +11,11 @@ Adapter cho Codex là `.codex-plugin/plugin.json`. Cài qua Codex marketplace
 theo [tài liệu plugin chính thức](https://developers.openai.com/plugins/build/plugins),
 rồi yêu cầu scaffold repository như bình thường.
 
+Codex đọc hướng dẫn dự án từ `AGENTS.md` và áp dụng các tệp phù hợp từ root
+của repository đến thư mục làm việc. Vì vậy, `AGENTS.md` được tạo ra là nguồn
+hướng dẫn duy nhất theo ngôn ngữ đã chọn. Xem [tài liệu AGENTS.md chính
+thức](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+
 ## Claude Code
 
 Adapter cho Claude Code là `.claude-plugin/plugin.json`. Claude Code tự phát
@@ -43,6 +48,25 @@ Claude Code đọc `CLAUDE.md`, không đọc trực tiếp `AGENTS.md`. Khi rep
 đích cần dùng chung hướng dẫn, dùng `CLAUDE.md` chứa `@AGENTS.md`. Scaffold
 cung cấp đúng adapter đó tại `assets/CLAUDE.md`. Xem [tài liệu memory của
 Claude Code](https://code.claude.com/docs/en/memory).
+
+## Hành vi multi-agent
+
+Repo Scaffold không đóng gói custom subagent. Một skill dùng chung có thể được
+gọi an toàn bởi agent chính hoặc subagent do host quản lý; host quyết định việc
+phân công, concurrency, model và permission.
+
+- Với Codex, repository đích có thể thêm custom agent theo phạm vi dự án tại
+  `.codex/agents/<name>.toml`. Mỗi định nghĩa cần `name`, `description` và
+  `developer_instructions`; chỉ thêm khi có một vai trò hẹp, thực sự cần thiết.
+  Xem [tài liệu subagents chính thức của Codex](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+- Với Claude Code, repository đích có thể thêm project subagent tại
+  `.claude/agents/<name>.md`. Một Claude Code plugin phân phối chỉ dùng thư mục
+  `agents/` ở root của plugin khi nó thực sự đóng gói một agent chuyên biệt.
+  Xem [tài liệu subagents chính thức của Claude Code](https://code.claude.com/docs/en/sub-agents).
+
+Khi repository đích thêm custom agent, các agent đó phải dùng cùng contract
+hướng dẫn `AGENTS.md` và `CLAUDE.md` đã tạo. Không sao chép quy trình scaffold
+hoặc tạo biến thể ngôn ngữ riêng cho từng agent.
 
 ## Chính sách ngôn ngữ
 
