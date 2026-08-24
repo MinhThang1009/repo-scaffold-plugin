@@ -21,6 +21,8 @@ API_ROOT = "https://api.github.com"
 CONTRIBUTOR_COVENANT_REPOSITORY = "EthicalSource/contributor_covenant"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_POLICY_BYTES = 1024 * 1024
+MAX_REGISTRY_BYTES = 1024 * 1024
+MAX_REGISTRY_ENTRIES = 256
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 VERSION_PATTERN = re.compile(r"\d+(?:\.\d+){1,2}\Z")
 CONTRIBUTOR_COVENANT_PATH = re.compile(
@@ -43,6 +45,10 @@ class AuditError(RuntimeError):
     """Raised when an audit input or upstream response is unsafe or invalid."""
 
 
+class DuplicateJsonMember(ValueError):
+    """Raised when a registry uses ambiguous duplicate JSON members."""
+
+
 @dataclass(frozen=True)
 class RegistryEntry:
     """One logical community-health surface and its supported local locations."""
@@ -54,6 +60,16 @@ class RegistryEntry:
     candidates: tuple[str, ...]
     tracker: str
     allow_multiple: bool = False
+
+
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting ambiguous duplicate member names."""
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
+        document[key] = value
+    return document
 
 
 class GitHubClient:
@@ -117,6 +133,8 @@ def parse_registry(document: object) -> list[RegistryEntry]:
     raw_files = document.get("files")
     if not isinstance(raw_files, list) or not raw_files:
         raise AuditError("tracker registry files must be a non-empty list")
+    if len(raw_files) > MAX_REGISTRY_ENTRIES:
+        raise AuditError("tracker registry files exceeds the entry limit")
     entries: list[RegistryEntry] = []
     seen: set[str] = set()
     for index, value in enumerate(raw_files):
@@ -165,8 +183,18 @@ def parse_registry(document: object) -> list[RegistryEntry]:
 
 def load_registry(path: Path) -> list[RegistryEntry]:
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        if path.stat().st_size > MAX_REGISTRY_BYTES:
+            raise AuditError(f"tracker registry exceeds the size limit: {path}")
+        document = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+        )
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        DuplicateJsonMember,
+        RecursionError,
+    ) as error:
         raise AuditError(f"could not read tracker registry {path}: {error}") from error
     return parse_registry(document)
 

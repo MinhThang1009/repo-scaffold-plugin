@@ -288,6 +288,16 @@ class FreshnessTests(unittest.TestCase):
             registry.write_text("{", encoding="utf-8")
             with self.assertRaisesRegex(freshness.AuditError, "could not read"):
                 freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            registry.write_text(
+                '{"schema-version": 1, "schema-version": 1}', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(freshness.AuditError, "could not read"):
+                freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            registry.write_text(
+                " " * (freshness.MAX_TRACKER_REGISTRY_BYTES + 1), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(freshness.AuditError, "size limit"):
+                freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
             for document, message in (
                 ({"schema-version": 2}, "schema-version"),
                 (
@@ -325,7 +335,23 @@ class FreshnessTests(unittest.TestCase):
                     },
                     "must not repeat",
                 ),
+                (
+                    {
+                        **valid,
+                        "workflow-directories": [".github/workflows"]
+                        * (freshness.MAX_TRACKER_ENTRIES + 1),
+                    },
+                    "entry limit",
+                ),
                 ({**valid, "requirement-sources": "not-a-list"}, "sources"),
+                (
+                    {
+                        **valid,
+                        "requirement-sources": [valid["requirement-sources"][0]]
+                        * (freshness.MAX_TRACKER_ENTRIES + 1),
+                    },
+                    "entry limit",
+                ),
                 ({**valid, "requirement-sources": ["not-an-object"]}, "object"),
                 (
                     {
