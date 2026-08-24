@@ -87,11 +87,12 @@ def workflow_paths(
             raise ValueError(
                 f"workflow directory is missing or unsafe: {relative_directory}"
             )
-        for path in directory.glob("*.yml"):
-            if path.is_symlink():
-                raise ValueError(f"workflow file is unsafe: {path}")
-            if path.is_file():
-                paths.append(path)
+        for pattern in ("*.yml", "*.yaml"):
+            for path in directory.glob(pattern):
+                if path.is_symlink():
+                    raise ValueError(f"workflow file is unsafe: {path}")
+                if path.is_file():
+                    paths.append(path)
     if not paths:
         raise ValueError("no workflow files were found for action-pin synchronization")
     return sorted(paths)

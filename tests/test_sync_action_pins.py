@@ -125,6 +125,26 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertEqual(changed, [workflow])
             self.assertIn("# v9.1.2", workflow.read_text(encoding="utf-8"))
 
+    def test_synchronize_updates_yaml_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/scheduled.yaml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            self.assertIn("# v9.1.2", workflow.read_text(encoding="utf-8"))
+
     def test_action_repositories_rejects_unpinned_and_unallowed_references(
         self,
     ) -> None:
