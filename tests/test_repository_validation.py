@@ -4109,7 +4109,14 @@ class PullRequestTemplateContractTests(unittest.TestCase):
         ):
             self.assertIn(fragment, workflow_text)
 
-        template_ids = ("default", "feature", "bugfix", "documentation", "security")
+        template_ids = (
+            "default",
+            "feature",
+            "bugfix",
+            "documentation",
+            "security",
+            "deployment",
+        )
         template_paths = {
             "default": (
                 PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
@@ -4201,6 +4208,19 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+            deployment_body = (
+                template_root / "PULL_REQUEST_TEMPLATE" / "deployment.md"
+            ).read_text(encoding="utf-8")
+            deployment_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": deployment_body},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(deployment_result.returncode, 0, deployment_result.stderr)
 
             ready_incomplete = subprocess.run(
                 [sys.executable, "-c", script],
