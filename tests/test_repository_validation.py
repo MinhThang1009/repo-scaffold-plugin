@@ -4259,6 +4259,40 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
             )
 
 
+class CodeScanningGateContractTests(unittest.TestCase):
+    def test_gate_uses_base_trusted_code_and_polls_for_the_test_merge(self) -> None:
+        workflow = PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
+        asset = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "code-scanning-gate.yml"
+        )
+        text = workflow.read_text(encoding="utf-8")
+
+        self.assertEqual(text, asset.read_text(encoding="utf-8"))
+        document = validate_repository.load_yaml(workflow)
+        self.assertEqual(
+            document["on"],
+            {"pull_request_target": {"types": ["opened", "reopened", "synchronize"]}},
+        )
+        self.assertEqual(
+            document["permissions"],
+            {
+                "contents": "read",
+                "pull-requests": "read",
+                "security-events": "read",
+            },
+        )
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
+        self.assertIn("persist-credentials: false", text)
+        self.assertIn('--pull-request "$PR_NUMBER"', text)
+        self.assertNotIn("merge_commit_sha", text)
+        self.assertNotIn("github.event.pull_request.head.sha", text)
+
+
 class PullRequestTemplateContractTests(unittest.TestCase):
     def test_agents_and_trusted_workflows_enforce_the_template_contract(self) -> None:
         workflow = PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"

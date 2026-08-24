@@ -23,6 +23,8 @@ DEFAULT_ALLOWLIST = Path(".github/code-scanning-allowlist.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_PAGES = 20
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
+PULL_REQUEST = re.compile(r"[1-9][0-9]*\Z")
 
 
 class GateError(RuntimeError):
@@ -142,6 +144,24 @@ def analyses_ready(
     )
 
 
+def pull_request_merge_sha(repository: str, number: str, token: str) -> str | None:
+    """Return the current test-merge SHA, or ``None`` while GitHub computes it."""
+    document = api_json(f"{API_ROOT}/repos/{repository}/pulls/{number}", token)
+    if not isinstance(document, dict):
+        raise GateError("GitHub pull request response must be an object")
+    mergeable = document.get("mergeable")
+    if mergeable is None:
+        return None
+    if mergeable is not True:
+        raise GateError(f"pull request #{number} has no mergeable test commit")
+    sha = document.get("merge_commit_sha")
+    if not isinstance(sha, str) or COMMIT_SHA.fullmatch(sha) is None:
+        raise GateError(
+            f"pull request #{number} has an invalid mergeable test commit SHA"
+        )
+    return sha
+
+
 def wait_for_analyses(
     repository: str,
     ref: str,
@@ -159,6 +179,27 @@ def wait_for_analyses(
             time.sleep(delay)
     raise GateError(
         f"CodeQL analyses for {ref} at {sha} were not queryable after {attempts} attempts"
+    )
+
+
+def wait_for_pull_request_analyses(
+    repository: str,
+    number: str,
+    token: str,
+    attempts: int,
+    delay: float,
+    expected: int,
+) -> tuple[str, str]:
+    """Wait for GitHub to create the test merge commit and receive CodeQL results."""
+    ref = f"refs/pull/{number}/merge"
+    for attempt in range(attempts):
+        sha = pull_request_merge_sha(repository, number, token)
+        if sha is not None and analyses_ready(repository, ref, sha, token, expected):
+            return ref, sha
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    raise GateError(
+        f"CodeQL analyses for pull request #{number} were not queryable after {attempts} attempts"
     )
 
 
@@ -215,6 +256,7 @@ def unapproved_alerts(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY"))
+    parser.add_argument("--pull-request", default=os.environ.get("PR_NUMBER"))
     parser.add_argument("--ref", default=os.environ.get("GITHUB_REF"))
     parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA"))
     parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN"))
@@ -227,23 +269,38 @@ def main(argv: list[str] | None = None) -> int:
         repository = require_text(args.repository, field="repository")
         if REPOSITORY.fullmatch(repository) is None:
             raise GateError("repository must be an owner/name pair")
-        ref = require_text(args.ref, field="ref")
-        sha = require_text(args.sha, field="sha")
         token = require_text(args.token, field="token")
         if args.attempts < 1 or args.delay_seconds < 0 or args.expected_analyses < 1:
             raise GateError(
                 "attempts and expected analyses must be positive, delay must be non-negative"
             )
         selectors = load_allowlist(args.allowlist)
-        wait_for_analyses(
-            repository,
-            ref,
-            sha,
-            token,
-            args.attempts,
-            args.delay_seconds,
-            args.expected_analyses,
-        )
+        if args.pull_request is not None:
+            number = require_text(args.pull_request, field="pull request number")
+            if PULL_REQUEST.fullmatch(number) is None:
+                raise GateError("pull request number must be a positive integer")
+            ref, _ = wait_for_pull_request_analyses(
+                repository,
+                number,
+                token,
+                args.attempts,
+                args.delay_seconds,
+                args.expected_analyses,
+            )
+        else:
+            ref = require_text(args.ref, field="ref")
+            sha = require_text(args.sha, field="sha")
+            if COMMIT_SHA.fullmatch(sha) is None:
+                raise GateError("sha must be a 40-character lowercase Git commit SHA")
+            wait_for_analyses(
+                repository,
+                ref,
+                sha,
+                token,
+                args.attempts,
+                args.delay_seconds,
+                args.expected_analyses,
+            )
         unexpected = unapproved_alerts(open_alerts(repository, ref, token), selectors)
     except GateError as error:
         print(f"code-scanning gate error: {error}", file=sys.stderr)

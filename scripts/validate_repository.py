@@ -4218,10 +4218,9 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
 
 
 def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
-    """Require the CodeQL workflow to gate unreviewed open scanning alerts."""
+    """Require a base-trusted workflow to gate unreviewed scanning alerts."""
     problems: list[str] = []
     allowlist_path = repository_root / ".github" / "code-scanning-allowlist.json"
-    workflow_path = repository_root / ".github" / "workflows" / "codeql.yml"
     try:
         allowlist = load_json(allowlist_path)
     except (OSError, UnicodeError, ValueError) as error:
@@ -4235,35 +4234,67 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             problems.append(
                 ".github/code-scanning-allowlist.json: require schema-version 1 and an allowlist"
             )
-    try:
-        workflow = load_yaml(workflow_path)
-    except (OSError, UnicodeError, yaml.YAMLError) as error:
-        problems.append(f".github/workflows/codeql.yml: unreadable: {error}")
-        return problems
-    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
-    gate = jobs.get("code_scanning_gate") if isinstance(jobs, dict) else None
-    if not isinstance(gate, dict):
-        return [
-            *problems,
-            ".github/workflows/codeql.yml: missing code_scanning_gate job",
-        ]
-    if gate.get("needs") != "analyze":
-        problems.append(
-            ".github/workflows/codeql.yml: code_scanning_gate must depend on analyze"
-        )
-    permissions = gate.get("permissions")
-    if permissions != {"contents": "read", "security-events": "read"}:
-        problems.append(
-            ".github/workflows/codeql.yml: code_scanning_gate must use contents and security-events read only"
-        )
-    steps = gate.get("steps")
-    if not isinstance(steps, list) or not any(
-        isinstance(step, dict)
-        and step.get("run") == "python scripts/check_code_scanning_alerts.py"
-        for step in steps
+    expected_permissions = {
+        "contents": "read",
+        "pull-requests": "read",
+        "security-events": "read",
+    }
+    for path in (
+        repository_root / ".github" / "workflows" / "code-scanning-gate.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "code-scanning-gate.yml",
     ):
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            workflow = load_yaml(path)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: unreadable: {error}")
+            continue
+        jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+        gate = jobs.get("code_scanning_gate") if isinstance(jobs, dict) else None
+        if (
+            not isinstance(workflow, dict)
+            or workflow.get("on")
+            != {"pull_request_target": {"types": ["opened", "reopened", "synchronize"]}}
+            or workflow.get("permissions") != expected_permissions
+            or not isinstance(gate, dict)
+            or gate.get("name") != "code-scanning-gate"
+            or gate.get("timeout-minutes") != "25"
+        ):
+            problems.append(
+                f"{relative}: must use the trusted pull-request gate contract"
+            )
+            continue
+        steps = gate.get("steps")
+        checkout = steps[0] if isinstance(steps, list) and steps else None
+        run_step = steps[1] if isinstance(steps, list) and len(steps) == 2 else None
+        if (
+            not isinstance(checkout, dict)
+            or checkout.get("with")
+            != {
+                "ref": "${{ github.event.pull_request.base.sha }}",
+                "persist-credentials": "false",
+            }
+            or not isinstance(run_step, dict)
+            or run_step.get("env")
+            != {
+                "GITHUB_TOKEN": "${{ github.token }}",
+                "PR_NUMBER": "${{ github.event.pull_request.number }}",
+            }
+            or "scripts/check_code_scanning_alerts.py" not in str(run_step.get("run"))
+            or '--pull-request "$PR_NUMBER"' not in str(run_step.get("run"))
+            or "merge_commit_sha" in str(run_step)
+        ):
+            problems.append(
+                f"{relative}: must execute only base-branch alert-gate code"
+            )
+    if not (repository_root / "scripts" / "check_code_scanning_alerts.py").is_file():
         problems.append(
-            ".github/workflows/codeql.yml: code_scanning_gate must run the checked-in alert gate"
+            "scripts/check_code_scanning_alerts.py: bundled gate script is missing"
         )
     return problems
 

@@ -117,6 +117,46 @@ class CodeScanningGateTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.GateError, "must be a list"):
                 gate.open_alerts("owner/repo", "refs/heads/main", "token")
 
+    def test_pull_request_merge_sha_waits_for_github_to_finish_mergeability(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(
+                gate,
+                "api_json",
+                side_effect=[
+                    {"mergeable": None},
+                    {"mergeable": True, "merge_commit_sha": "a" * 40},
+                ],
+            ),
+            mock.patch.object(gate, "analyses_ready", return_value=True) as ready,
+            mock.patch.object(gate, "time") as clock,
+        ):
+            ref, sha = gate.wait_for_pull_request_analyses(
+                "owner/repo", "42", "token", attempts=2, delay=3.0, expected=2
+            )
+
+        self.assertEqual((ref, sha), ("refs/pull/42/merge", "a" * 40))
+        ready.assert_called_once_with(
+            "owner/repo", "refs/pull/42/merge", "a" * 40, "token", 2
+        )
+        clock.sleep.assert_called_once_with(3.0)
+
+    def test_pull_request_merge_sha_rejects_unmergeable_or_invalid_responses(
+        self,
+    ) -> None:
+        for response, message in (
+            ({"mergeable": False}, "no mergeable"),
+            ({"mergeable": True, "merge_commit_sha": "invalid"}, "invalid mergeable"),
+            ([], "must be an object"),
+        ):
+            with (
+                self.subTest(response=response),
+                mock.patch.object(gate, "api_json", return_value=response),
+            ):
+                with self.assertRaisesRegex(gate.GateError, message):
+                    gate.pull_request_merge_sha("owner/repo", "42", "token")
+
     def test_main_waits_for_analyses_and_fails_only_unapproved_alerts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             allowlist = self.write_allowlist(
@@ -165,3 +205,30 @@ class CodeScanningGateTests(unittest.TestCase):
                 ),
             ):
                 self.assertEqual(gate.main(arguments), 1)
+
+    def test_main_uses_pull_request_polling_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            allowlist = self.write_allowlist(Path(directory), [])
+            arguments = [
+                "--repository",
+                "owner/repo",
+                "--pull-request",
+                "42",
+                "--token",
+                "token",
+                "--allowlist",
+                str(allowlist),
+            ]
+            with (
+                mock.patch.object(
+                    gate,
+                    "wait_for_pull_request_analyses",
+                    return_value=("refs/pull/42/merge", "a" * 40),
+                ) as wait,
+                mock.patch.object(gate, "open_alerts", return_value=()),
+            ):
+                self.assertEqual(gate.main(arguments), 0)
+            wait.assert_called_once_with("owner/repo", "42", "token", 12, 5.0, 2)
+
+            arguments[arguments.index("42")] = "0"
+            self.assertEqual(gate.main(arguments), 2)
