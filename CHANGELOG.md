@@ -4,6 +4,14 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.6.0...v1.7.0) (2026-08-24)
+
+
+### Features
+
+* add deployment pull request template ([#58](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/58)) ([2bed87d](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/2bed87da470de6906d61adda96073666744bc2eb))
+* **templates:** add deployment pull request template ([2bed87d](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/2bed87da470de6906d61adda96073666744bc2eb))
+
 ## [1.6.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.5.2...v1.6.0) (2026-08-22)
 
 
