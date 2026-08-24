@@ -2527,9 +2527,12 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
         "Codex",
         "Claude Code",
         "https://developers.openai.com/plugins/build/plugins",
+        "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
+        "https://learn.chatgpt.com/docs/agent-configuration/subagents",
         "https://code.claude.com/docs/en/plugins",
         "https://code.claude.com/docs/en/skills",
         "https://code.claude.com/docs/en/memory",
+        "https://code.claude.com/docs/en/sub-agents",
     )
     for relative_path in AGENT_COMPATIBILITY_REFERENCE_PATHS:
         path = repository_root / relative_path
