@@ -3253,7 +3253,7 @@ class SkillReferenceValidationTests(unittest.TestCase):
             with mock.patch.object(
                 validate_repository,
                 "is_link_or_reparse",
-                side_effect=lambda path: path == skill,
+                side_effect=lambda path: path.name == "SKILL.md",
             ):
                 problems = validate_repository.validate_skill_reference_paths(root)
 
@@ -3274,7 +3274,7 @@ class SkillReferenceValidationTests(unittest.TestCase):
             with mock.patch.object(
                 validate_repository,
                 "is_link_or_reparse",
-                side_effect=lambda path: path == skill_root,
+                side_effect=lambda path: path.name == "skills",
             ):
                 self.assertEqual(
                     validate_repository.validate_skill_reference_paths(root),
@@ -3302,7 +3302,7 @@ class SkillReferenceValidationTests(unittest.TestCase):
             with mock.patch.object(
                 validate_repository,
                 "is_link_or_reparse",
-                side_effect=lambda path: path == references,
+                side_effect=lambda path: path.name == "references",
             ):
                 linked_directory = validate_repository.validate_skill_reference_paths(
                     root
@@ -3310,7 +3310,7 @@ class SkillReferenceValidationTests(unittest.TestCase):
             with mock.patch.object(
                 validate_repository,
                 "is_link_or_reparse",
-                side_effect=lambda path: path == present,
+                side_effect=lambda path: path.name == "present.md",
             ):
                 linked_file = validate_repository.validate_skill_reference_paths(root)
 
