@@ -100,6 +100,8 @@ class SerializedFileValidationTests(unittest.TestCase):
         self.assertFalse(validate_repository.is_link_or_reparse(missing))
         with mock.patch.object(Path, "is_symlink", return_value=True):
             self.assertTrue(validate_repository.is_link_or_reparse(missing))
+        with mock.patch.object(Path, "is_symlink", side_effect=OSError("denied")):
+            self.assertTrue(validate_repository.is_link_or_reparse(missing))
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3263,6 +3265,66 @@ class SkillReferenceValidationTests(unittest.TestCase):
             ],
         )
 
+    def test_linked_skills_root_and_enumeration_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill_root = root / "skills"
+            skill_root.mkdir()
+
+            with mock.patch.object(
+                validate_repository,
+                "is_link_or_reparse",
+                side_effect=lambda path: path == skill_root,
+            ):
+                self.assertEqual(
+                    validate_repository.validate_skill_reference_paths(root),
+                    ["skills: linked or reparse-point directory is not traversed"],
+                )
+
+            with mock.patch.object(Path, "rglob", side_effect=OSError("denied")):
+                self.assertEqual(
+                    validate_repository.validate_skill_reference_paths(root),
+                    ["skills: cannot enumerate skill entry points: denied"],
+                )
+
+    def test_reference_validator_rejects_unreadable_and_linked_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "skills" / "example" / "SKILL.md"
+            references = skill.parent / "references"
+            references.mkdir(parents=True)
+            skill.write_bytes(b"\xff")
+            unreadable = validate_repository.validate_skill_reference_paths(root)
+
+            skill.write_text("Read `references/present.md`.\n", encoding="utf-8")
+            present = references / "present.md"
+            present.write_text("Present\n", encoding="utf-8")
+            with mock.patch.object(
+                validate_repository,
+                "is_link_or_reparse",
+                side_effect=lambda path: path == references,
+            ):
+                linked_directory = validate_repository.validate_skill_reference_paths(
+                    root
+                )
+            with mock.patch.object(
+                validate_repository,
+                "is_link_or_reparse",
+                side_effect=lambda path: path == present,
+            ):
+                linked_file = validate_repository.validate_skill_reference_paths(root)
+
+        self.assertTrue(any("SKILL.md: unreadable" in item for item in unreadable))
+        self.assertTrue(
+            any("skill and references directories" in item for item in linked_directory)
+        )
+        self.assertTrue(
+            any(
+                "references/present.md: linked or reparse-point path" in item
+                for item in linked_file
+            )
+        )
+
     def test_entrypoint_routes_readme_work_to_the_readme_reference(self) -> None:
         skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
             encoding="utf-8"
@@ -3300,11 +3362,21 @@ class SkillReferenceValidationTests(unittest.TestCase):
             (references / "missing.md").write_bytes(b"\xff")
             problems = validate_repository.validate_skill_reference_paths(root)
 
+            directory_reference = references / "directory.md"
+            directory_reference.mkdir()
+            skill.write_text("Read `references/directory.md`.\n", encoding="utf-8")
+            non_file = validate_repository.validate_skill_reference_paths(root)
+
         self.assertTrue(
             any(
                 "unreadable referenced file references/missing.md" in problem
                 for problem in problems
             )
+        )
+        self.assertIn(
+            "skills/example/SKILL.md: referenced path is not a file "
+            "references/directory.md",
+            non_file,
         )
 
 
@@ -3394,6 +3466,33 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             self.assertEqual(
                 validate_repository.validate_multi_agent_plugin_contract(root), []
             )
+
+    def test_reports_missing_scaffold_generation_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            generation_reference = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "scaffold-generation.md"
+            )
+            generation_reference.unlink()
+
+            problems = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        self.assertTrue(
+            any(
+                item.startswith(
+                    "skills/repo-scaffold/references/scaffold-generation.md: "
+                )
+                for item in problems
+            )
+        )
+        self.assertTrue(
+            any("must map AGENTS.vi.md to AGENTS.md" in item for item in problems)
+        )
 
     def test_plugin_release_workflow_bundles_and_synchronizes_both_adapters(
         self,
