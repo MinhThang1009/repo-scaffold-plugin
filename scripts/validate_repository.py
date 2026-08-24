@@ -4016,9 +4016,11 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         if label == "freshness checker" and (
             "load_trackers" not in current_text
             or "--tracker-registry" not in current_text
+            or "auditable_action_repositories" not in current_text
         ):
             problems.append(
-                "freshness tracking: checker must load an explicit tracker registry"
+                "freshness tracking: checker must load an explicit tracker registry "
+                "and audit generic pinned actions"
             )
 
     expected_asset_registry = {

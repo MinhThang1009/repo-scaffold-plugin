@@ -66,10 +66,21 @@ def action_repository(action: str) -> str:
     return "/".join(action.split("/")[:2]).casefold()
 
 
-def workflow_paths(repository_root: Path) -> list[Path]:
+def workflow_paths(
+    repository_root: Path,
+    workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
+) -> list[Path]:
     """Return every tracked workflow that carries a synchronized action pin."""
     paths: list[Path] = []
-    for relative_directory in WORKFLOW_DIRECTORIES:
+    for relative_directory in workflow_directories:
+        if (
+            relative_directory.is_absolute()
+            or ".." in relative_directory.parts
+            or not relative_directory.parts
+        ):
+            raise ValueError(
+                f"workflow directory must be a safe relative path: {relative_directory}"
+            )
         directory = repository_root / relative_directory
         if not directory.is_dir() or directory.is_symlink():
             raise ValueError(
@@ -81,8 +92,8 @@ def workflow_paths(repository_root: Path) -> list[Path]:
     return sorted(paths)
 
 
-def action_repositories(path: Path, content: str) -> set[str]:
-    """Validate and collect the external action repositories used by one workflow."""
+def auditable_action_repositories(path: Path, content: str) -> set[str]:
+    """Collect every externally hosted action pinned to an immutable SHA."""
     repositories: set[str] = set()
     pins = {match.group("reference") for match in USES_PATTERN.finditer(content)}
     pinned_references = {
@@ -96,11 +107,18 @@ def action_repositories(path: Path, content: str) -> set[str]:
             raise ValueError(f"workflow action is not pinned to a full SHA: {path}")
         action = reference.rsplit("@", 1)[0]
         repository = action_repository(action)
+        repositories.add(repository)
+    return repositories
+
+
+def action_repositories(path: Path, content: str) -> set[str]:
+    """Collect only reviewed action repositories for the write-capable synchronizer."""
+    repositories = auditable_action_repositories(path, content)
+    for repository in repositories:
         if repository not in ALLOWED_ACTION_REPOSITORIES:
             raise ValueError(
                 f"workflow action is not in the synchronization allowlist: {repository}"
             )
-        repositories.add(repository)
     return repositories
 
 
@@ -228,11 +246,12 @@ def synchronize_action_pins(
     release_lookup: Callable[[str], ActionRelease],
     *,
     write: bool,
+    workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
 ) -> list[Path]:
     """Update all allowed action pins atomically after resolving every release."""
     contents = {
         path: path.read_text(encoding="utf-8")
-        for path in workflow_paths(repository_root)
+        for path in workflow_paths(repository_root, workflow_directories)
     }
     repositories = sorted(
         {
@@ -260,9 +279,15 @@ def synchronize_action_pins(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the repository root and explicit write authorization."""
+    """Parse the repository root, optional workflow scope, and write authorization."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository-root", type=Path, default=Path("."))
+    parser.add_argument(
+        "--workflow-directory",
+        action="append",
+        type=Path,
+        help="Relative workflow directory to synchronize; repeat to include more.",
+    )
     parser.add_argument("--write", action="store_true")
     return parser.parse_args(argv)
 
@@ -276,6 +301,11 @@ def main(argv: list[str] | None = None) -> int:
             arguments.repository_root.resolve(),
             client.latest_release,
             write=arguments.write,
+            workflow_directories=(
+                tuple(arguments.workflow_directory)
+                if arguments.workflow_directory is not None
+                else WORKFLOW_DIRECTORIES
+            ),
         )
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
