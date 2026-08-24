@@ -4,6 +4,20 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.7.2...v1.8.0) (2026-08-24)
+
+
+### Features
+
+* **ci:** gate unreviewed scanning alerts ([#66](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/66)) ([1c7c483](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/1c7c4834b62ed2c836410e28643723c37d6b120d))
+
+
+### Bug Fixes
+
+* **ci:** bind code scanning to pr snapshot ([baa3a8f](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/baa3a8fd2ef5009c2942d34eac5008b0853f2926))
+* **ci:** handle equivalent merge analyses ([#69](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/69)) ([baa3a8f](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/baa3a8fd2ef5009c2942d34eac5008b0853f2926))
+* **ci:** unblock code-scanning gate ([#68](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/68)) ([70b6372](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/70b6372efa287576051c82a2d981cf2b86c07961))
+
 ## [1.7.2](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.7.1...v1.7.2) (2026-08-24)
 
 
