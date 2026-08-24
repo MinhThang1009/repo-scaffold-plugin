@@ -4420,6 +4420,8 @@ class CodeScanningGateContractTests(unittest.TestCase):
         self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn('--pull-request "$PR_NUMBER"', text)
+        self.assertIn('--base-sha "$PR_BASE_SHA"', text)
+        self.assertIn('--head-sha "$PR_HEAD_SHA"', text)
         self.assertIn('--expected-codeql-category "/language:actions"', text)
         self.assertIn('--expected-codeql-category "/language:python"', text)
         self.assertIn(
@@ -4427,7 +4429,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
             asset_text,
         )
         self.assertNotIn("merge_commit_sha", text)
-        self.assertNotIn("github.event.pull_request.head.sha", text)
+        self.assertIn("github.event.pull_request.head.sha", text)
 
 
 class PullRequestTemplateContractTests(unittest.TestCase):

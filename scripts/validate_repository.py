@@ -4522,9 +4522,13 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             != {
                 "GITHUB_TOKEN": "${{ github.token }}",
                 "PR_NUMBER": "${{ github.event.pull_request.number }}",
+                "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+                "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
             }
             or "scripts/check_code_scanning_alerts.py" not in str(run_step.get("run"))
             or '--pull-request "$PR_NUMBER"' not in str(run_step.get("run"))
+            or '--base-sha "$PR_BASE_SHA"' not in str(run_step.get("run"))
+            or '--head-sha "$PR_HEAD_SHA"' not in str(run_step.get("run"))
             or not all(
                 category in str(run_step.get("run")) for category in expected_categories
             )

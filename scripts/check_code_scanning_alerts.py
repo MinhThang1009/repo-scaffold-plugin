@@ -132,24 +132,59 @@ def api_json(url: str, token: str) -> Any:
         raise GateError(f"GitHub API response is not valid JSON: {error}") from error
 
 
+def merge_commit_has_parents(
+    repository: str, sha: str, token: str, expected_parents: tuple[str, str]
+) -> bool:
+    """Return whether a GitHub-created merge commit has the expected PR parents."""
+    document = api_json(f"{API_ROOT}/repos/{repository}/git/commits/{sha}", token)
+    if not isinstance(document, dict):
+        raise GateError("GitHub merge commit response must be an object")
+    parents = document.get("parents")
+    if not isinstance(parents, list):
+        raise GateError("GitHub merge commit parents must be a list")
+    parent_shas: list[str] = []
+    for parent in parents:
+        parent_sha = parent.get("sha") if isinstance(parent, dict) else None
+        if not isinstance(parent_sha, str) or COMMIT_SHA.fullmatch(parent_sha) is None:
+            raise GateError("GitHub merge commit parents must contain commit SHAs")
+        parent_shas.append(parent_sha)
+    return tuple(parent_shas) == expected_parents
+
+
 def analyses_ready(
-    repository: str, ref: str, sha: str, token: str, expected_categories: frozenset[str]
+    repository: str,
+    ref: str,
+    sha: str,
+    token: str,
+    expected_categories: frozenset[str],
+    expected_parents: tuple[str, str] | None = None,
 ) -> bool:
     """Return whether every configured CodeQL category is uploaded for this commit."""
     url = f"{API_ROOT}/repos/{repository}/code-scanning/analyses?ref={quote(ref, safe='')}&per_page=100"
     document = api_json(url, token)
     if not isinstance(document, list):
         raise GateError("GitHub analyses response must be a list")
-    available_categories = {
-        category
-        for item in document
-        if isinstance(item, dict)
-        and item.get("commit_sha") == sha
-        and isinstance(item.get("tool"), dict)
-        and item["tool"].get("name") == "CodeQL"
-        and isinstance((category := item.get("category")), str)
-    }
-    return expected_categories <= available_categories
+    categories_by_sha: dict[str, set[str]] = {}
+    for item in document:
+        if not isinstance(item, dict) or not isinstance(item.get("tool"), dict):
+            continue
+        analysis_sha = item.get("commit_sha")
+        category = item.get("category")
+        if (
+            item["tool"].get("name") != "CodeQL"
+            or not isinstance(analysis_sha, str)
+            or COMMIT_SHA.fullmatch(analysis_sha) is None
+            or not isinstance(category, str)
+        ):
+            continue
+        categories_by_sha.setdefault(analysis_sha, set()).add(category)
+    if expected_parents is None:
+        return expected_categories <= categories_by_sha.get(sha, set())
+    return any(
+        expected_categories <= categories
+        and merge_commit_has_parents(repository, analysis_sha, token, expected_parents)
+        for analysis_sha, categories in categories_by_sha.items()
+    )
 
 
 def pull_request_merge_sha(repository: str, number: str, token: str) -> str | None:
@@ -201,13 +236,14 @@ def wait_for_pull_request_analyses(
     attempts: int,
     delay: float,
     expected_categories: frozenset[str],
+    expected_parents: tuple[str, str],
 ) -> tuple[str, str]:
     """Wait for GitHub to create the test merge commit and receive CodeQL results."""
     ref = f"refs/pull/{number}/merge"
     for attempt in range(attempts):
         sha = pull_request_merge_sha(repository, number, token)
         if sha is not None and analyses_ready(
-            repository, ref, sha, token, expected_categories
+            repository, ref, sha, token, expected_categories, expected_parents
         ):
             return ref, sha
         if attempt + 1 < attempts:
@@ -275,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pull-request", default=os.environ.get("PR_NUMBER"))
     parser.add_argument("--ref", default=os.environ.get("GITHUB_REF"))
     parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA"))
+    parser.add_argument("--base-sha", default=os.environ.get("PR_BASE_SHA"))
+    parser.add_argument("--head-sha", default=os.environ.get("PR_HEAD_SHA"))
     parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN"))
     parser.add_argument("--allowlist", type=Path, default=DEFAULT_ALLOWLIST)
     parser.add_argument("--attempts", type=int, default=12)
@@ -299,6 +337,15 @@ def main(argv: list[str] | None = None) -> int:
             number = require_text(args.pull_request, field="pull request number")
             if PULL_REQUEST.fullmatch(number) is None:
                 raise GateError("pull request number must be a positive integer")
+            base_sha = require_text(args.base_sha, field="pull request base SHA")
+            head_sha = require_text(args.head_sha, field="pull request head SHA")
+            if (
+                COMMIT_SHA.fullmatch(base_sha) is None
+                or COMMIT_SHA.fullmatch(head_sha) is None
+            ):
+                raise GateError(
+                    "pull request base and head SHAs must be 40-character lowercase Git commit SHAs"
+                )
             ref, _ = wait_for_pull_request_analyses(
                 repository,
                 number,
@@ -306,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.attempts,
                 args.delay_seconds,
                 expected_categories,
+                (base_sha, head_sha),
             )
         else:
             ref = require_text(args.ref, field="ref")

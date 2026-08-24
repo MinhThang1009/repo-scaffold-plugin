@@ -30,10 +30,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: >-
           python scripts/check_code_scanning_alerts.py
           --pull-request "$PR_NUMBER"
+          --base-sha "$PR_BASE_SHA"
+          --head-sha "$PR_HEAD_SHA"
           --expected-codeql-category "/language:actions"
           --expected-codeql-category "/language:{{REPO_SCAFFOLD_CODEQL_LANGUAGE}}"
           --attempts 120

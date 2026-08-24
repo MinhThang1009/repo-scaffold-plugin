@@ -257,6 +257,72 @@ class CodeScanningGateTests(unittest.TestCase):
                     frozenset({"/language:python"}),
                 )
 
+    def test_analyses_accept_an_equivalent_event_merge_commit(self) -> None:
+        analyses = [
+            {
+                "commit_sha": "a" * 40,
+                "tool": {"name": "CodeQL"},
+                "category": "/language:actions",
+            },
+            {
+                "commit_sha": "a" * 40,
+                "tool": {"name": "CodeQL"},
+                "category": "/language:python",
+            },
+            {
+                "commit_sha": "b" * 40,
+                "tool": {"name": "CodeQL"},
+                "category": "/language:actions",
+            },
+            {
+                "commit_sha": "b" * 40,
+                "tool": {"name": "CodeQL"},
+                "category": "/language:python",
+            },
+        ]
+        with (
+            mock.patch.object(gate, "api_json", return_value=analyses),
+            mock.patch.object(
+                gate, "merge_commit_has_parents", side_effect=[False, True]
+            ) as matches,
+        ):
+            self.assertTrue(
+                gate.analyses_ready(
+                    "owner/repo",
+                    "refs/pull/1/merge",
+                    "c" * 40,
+                    "token",
+                    frozenset({"/language:actions", "/language:python"}),
+                    ("d" * 40, "e" * 40),
+                )
+            )
+        self.assertEqual(matches.call_count, 2)
+
+    def test_merge_commit_parent_validation_rejects_malformed_responses(self) -> None:
+        with mock.patch.object(
+            gate,
+            "api_json",
+            return_value={"parents": [{"sha": "b" * 40}, {"sha": "c" * 40}]},
+        ):
+            self.assertTrue(
+                gate.merge_commit_has_parents(
+                    "owner/repo", "a" * 40, "token", ("b" * 40, "c" * 40)
+                )
+            )
+        for response, message in (
+            ([], "response must be an object"),
+            ({"parents": {}}, "parents must be a list"),
+            ({"parents": [{"sha": "invalid"}]}, "must contain commit SHAs"),
+        ):
+            with (
+                self.subTest(response=response),
+                mock.patch.object(gate, "api_json", return_value=response),
+            ):
+                with self.assertRaisesRegex(gate.GateError, message):
+                    gate.merge_commit_has_parents(
+                        "owner/repo", "a" * 40, "token", ("b" * 40, "c" * 40)
+                    )
+
     def test_open_alerts_handles_pagination_and_rejects_invalid_responses(self) -> None:
         first = [alert(index) for index in range(100)]
         with mock.patch.object(
@@ -330,6 +396,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 attempts=2,
                 delay=3.0,
                 expected_categories=frozenset({"/language:python"}),
+                expected_parents=("b" * 40, "c" * 40),
             )
 
         self.assertEqual((ref, sha), ("refs/pull/42/merge", "a" * 40))
@@ -339,6 +406,7 @@ class CodeScanningGateTests(unittest.TestCase):
             "a" * 40,
             "token",
             frozenset({"/language:python"}),
+            ("b" * 40, "c" * 40),
         )
         clock.sleep.assert_called_once_with(3.0)
 
@@ -356,6 +424,7 @@ class CodeScanningGateTests(unittest.TestCase):
                     attempts=2,
                     delay=2.0,
                     expected_categories=frozenset({"/language:python"}),
+                    expected_parents=("b" * 40, "c" * 40),
                 ),
                 ("refs/pull/42/merge", "a" * 40),
             )
@@ -369,6 +438,7 @@ class CodeScanningGateTests(unittest.TestCase):
                     attempts=1,
                     delay=0,
                     expected_categories=frozenset({"/language:python"}),
+                    expected_parents=("b" * 40, "c" * 40),
                 )
 
     def test_pull_request_merge_sha_rejects_unmergeable_or_malformed_responses(
@@ -461,6 +531,10 @@ class CodeScanningGateTests(unittest.TestCase):
                 "owner/repo",
                 "--pull-request",
                 "42",
+                "--base-sha",
+                "a" * 40,
+                "--head-sha",
+                "b" * 40,
                 "--token",
                 "token",
                 "--allowlist",
@@ -478,10 +552,19 @@ class CodeScanningGateTests(unittest.TestCase):
             ):
                 self.assertEqual(gate.main(arguments), 0)
             wait.assert_called_once_with(
-                "owner/repo", "42", "token", 12, 5.0, frozenset({"/language:python"})
+                "owner/repo",
+                "42",
+                "token",
+                12,
+                5.0,
+                frozenset({"/language:python"}),
+                ("a" * 40, "b" * 40),
             )
 
             arguments[arguments.index("42")] = "0"
+            self.assertEqual(gate.main(arguments), 2)
+            arguments[arguments.index("0")] = "42"
+            arguments[arguments.index("a" * 40)] = "invalid"
             self.assertEqual(gate.main(arguments), 2)
 
     def test_main_rejects_invalid_arguments_and_script_entrypoint(self) -> None:
