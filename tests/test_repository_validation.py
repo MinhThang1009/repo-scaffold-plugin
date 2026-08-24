@@ -2826,6 +2826,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_action_references",
             "validate_python_support_contract",
             "validate_ci_toolchain_contract",
+            "validate_policy_drift_reminder_contract",
             "validate_mirrored_dependency_metadata",
             "validate_development_dependency_contract",
             "validate_mutation_testing_contract",
@@ -6602,6 +6603,24 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             )
         )
 
+    def test_registry_tracks_every_declared_authoritative_host(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "untracked.md").write_text(
+                "[New GitHub CLI documentation](https://cli.github.com/new-topic)\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any(
+                "untracked.md: official documentation URL is not tracked" in problem
+                for problem in problems
+            )
+        )
+
     def test_invalid_tracker_entries_and_unreadable_markdown_are_handled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -6648,6 +6667,24 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             )
         )
 
+    def test_malformed_tracker_url_does_not_break_host_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / ".github/official-docs-trackers.json").write_text(
+                json.dumps(
+                    {
+                        "schema-version": 1,
+                        "claims": [{"url": "https://[invalid", "paths": ["README.md"]}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertEqual(problems, [])
+
     def test_malformed_and_nonofficial_markdown_urls_do_not_break_tracking(
         self,
     ) -> None:
@@ -6687,6 +6724,73 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 root
             )
         self.assertTrue(any("ci.yml: unreadable" in problem for problem in problems))
+
+
+class PolicyDriftReminderContractTests(unittest.TestCase):
+    def test_current_policy_drift_reminder_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_policy_drift_reminder_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_policy_drift_reminder_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            shutil.copyfile(
+                PLUGIN_ROOT / ".github" / "workflows" / "ci.yml",
+                workflow_directory / "ci.yml",
+            )
+            (workflow_directory / "ci.yml").write_text(
+                "name: CI\non: {}\njobs: {}\n", encoding="utf-8"
+            )
+            problems = validate_repository.validate_policy_drift_reminder_contract(root)
+        self.assertEqual(
+            problems,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must depend on both "
+                "scheduled canaries with least-privilege issue access"
+            ],
+        )
+
+    def test_policy_drift_reminder_reports_missing_semantics_and_unreadable_workflow(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            workflow_path = workflow_directory / "ci.yml"
+            shutil.copyfile(
+                PLUGIN_ROOT / ".github" / "workflows" / "ci.yml", workflow_path
+            )
+            workflow_path.write_text(
+                workflow_path.read_text(encoding="utf-8").replace(
+                    "if [[ \"$PYTHON_CANARY_RESULT\" != 'failure' && \"$TOOLCHAIN_CANARY_RESULT\" != 'failure' ]]; then",
+                    "if [[ \"$PYTHON_CANARY_RESULT\" == 'failure' && \"$TOOLCHAIN_CANARY_RESULT\" == 'failure' ]]; then",
+                ),
+                encoding="utf-8",
+            )
+            missing_semantics = (
+                validate_repository.validate_policy_drift_reminder_contract(root)
+            )
+            workflow_path.unlink()
+            unreadable = validate_repository.validate_policy_drift_reminder_contract(
+                root
+            )
+        self.assertEqual(
+            missing_semantics,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must reconcile "
+                "one marker issue from both canary results"
+            ],
+        )
+        self.assertTrue(
+            unreadable[0].startswith(
+                ".github/workflows/ci.yml: could not verify policy reminder:"
+            )
+        )
 
 
 if __name__ == "__main__":

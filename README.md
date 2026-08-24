@@ -250,14 +250,15 @@ the minimum/latest boundaries on Windows. The quality job consumes the policy's
 latest value. A non-required weekly `3.x` canary tests the latest stable Python,
 then fails on undeclared-version drift so support changes require a reviewed
 policy update. Repository validation rejects policy, workflow, scaffold, and
-documentation drift. The quality job also runs formatting, lint, type, compile,
+documentation drift. Scheduled/manual canaries maintain one reminder Issue when
+either reviewed policy needs attention. The quality job also runs formatting, lint, type, compile,
 workflow, metadata, link, and release-archive checks.
 The [CI toolchain policy](.github/ci-toolchain.json) separately centralizes the
 rolling documentation bootstrap runtime, minimum Python for bundled tooling,
 the markdownlint npm pin, and reviewed standalone-tool release metadata and
 digests. Workflows and setup guidance consume that policy instead of embedding
 those values, and a non-required scheduled/manual canary reports npm, upstream
-release, or digest drift for review.
+release, or digest drift for review through the same durable reminder Issue.
 Dependabot checks the pinned Python development tools, mirrored scaffold
 documentation dependencies, and installed GitHub Actions weekly.
 `requirements-dev.in` records reviewed direct pins; `requirements-dev.txt`
@@ -284,9 +285,10 @@ tracking remains in its separate registry.
 The non-required weekly [official-documentation workflow](.github/workflows/official-docs.yml)
 uses [its explicit tracker registry](.github/official-docs-trackers.json) to
 revalidate the authoritative source URLs and stable claim markers, then requires
-a reviewed registry-date update at least every 90 days. This mechanism is
-limited to this plugin's documented host contracts; generated repositories do
-not inherit claims about Codex or Claude Code.
+a reviewed registry-date update at least every 90 days. It covers the plugin's
+Codex, Claude Code, GitHub Actions, Agent Skills, Conventional Commits, and
+Keep a Changelog claims. Generated repositories do not inherit those
+plugin-specific claims.
 Mutation testing extends that toolchain through the separate, hash-verified
 `requirements-mutation.txt`. Mutmut versions are not duplicated in validators
 or tests; a compatible Dependabot bump passes the runner integration tests,

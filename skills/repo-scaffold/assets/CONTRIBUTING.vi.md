@@ -5,7 +5,7 @@ Cảm ơn bạn đã quan tâm đóng góp! Tài liệu này mô tả quy trình
 ## Quy trình (GitHub Flow)
 
 1. Tạo branch từ **{{REPO_SCAFFOLD_DEFAULT_BRANCH}}**: `git checkout -b feat/<short-description>`.
-2. Commit theo [Conventional Commits](https://www.conventionalcommits.org/): `feat(scope): description`.
+2. Commit theo [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `feat(scope): description`.
 3. Push branch và mở Pull Request vào **{{REPO_SCAFFOLD_DEFAULT_BRANCH}}**.
 {{REPO_SCAFFOLD_CONTRIBUTION_REVIEW_STEP}}
 

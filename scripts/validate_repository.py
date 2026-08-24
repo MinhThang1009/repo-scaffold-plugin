@@ -80,14 +80,6 @@ AGENT_COMPATIBILITY_REFERENCE_PATHS = (
     Path("skills/repo-scaffold/references/agent-compatibility.md"),
     Path("skills/repo-scaffold/references/agent-compatibility.vi.md"),
 )
-OFFICIAL_DOCUMENTATION_HOSTS = frozenset(
-    {
-        "code.claude.com",
-        "developers.openai.com",
-        "docs.github.com",
-        "learn.chatgpt.com",
-    }
-)
 MULTILINGUAL_SCAFFOLD_ASSET_PAIRS = (
     (Path("AGENTS.md"), Path("AGENTS.vi.md"), Path("AGENTS.md")),
     (Path("CONTRIBUTING.md"), Path("CONTRIBUTING.vi.md"), Path("CONTRIBUTING.md")),
@@ -1161,6 +1153,48 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
                 "minimum must not be hardcoded"
             )
     return problems
+
+
+def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
+    """Require one durable reminder for reviewed Python and toolchain drift."""
+    workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
+    try:
+        workflow = load_yaml(workflow_path)
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        return [f".github/workflows/ci.yml: could not verify policy reminder: {error}"]
+
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    job = jobs.get("policy-drift-reminder") if isinstance(jobs, dict) else None
+    expected_needs = {"python-latest-canary", "toolchain-drift-canary"}
+    if (
+        not isinstance(job, dict)
+        or job.get("name") != "policy-drift-reminder"
+        or not isinstance(job.get("needs"), list)
+        or set(job["needs"]) != expected_needs
+        or job.get("if")
+        != "${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}"
+        or job.get("permissions") != {"contents": "read", "issues": "write"}
+        or job.get("timeout-minutes") != "5"
+    ):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder must depend on both "
+            "scheduled canaries with least-privilege issue access"
+        ]
+    for fragment in (
+        "repo-scaffold-ci-policy-drift",
+        "CI policy review required",
+        "PYTHON_CANARY_RESULT",
+        "TOOLCHAIN_CANARY_RESULT",
+        "if [[ \"$PYTHON_CANARY_RESULT\" != 'failure' && \"$TOOLCHAIN_CANARY_RESULT\" != 'failure' ]]; then",
+        "--body-file",
+    ):
+        if fragment not in workflow_text:
+            return [
+                ".github/workflows/ci.yml: policy drift reminder must reconcile "
+                "one marker issue from both canary results"
+            ]
+    return []
 
 
 def validate_mirrored_dependency_metadata(repository_root: Path) -> list[str]:
@@ -4265,6 +4299,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
             )
         else:
             tracked_paths_by_url: dict[str, set[str]] = {}
+            tracked_hosts: set[str] = set()
             for claim in claims:
                 if not isinstance(claim, dict):
                     continue
@@ -4274,6 +4309,12 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     tracked_paths_by_url.setdefault(url, set()).update(
                         path for path in claim_paths if isinstance(path, str)
                     )
+                    try:
+                        host = urlsplit(url).hostname
+                    except ValueError:
+                        host = None
+                    if host:
+                        tracked_hosts.add(host.casefold())
             for path in project_files(repository_root, ("*.md",)):
                 relative = path.relative_to(repository_root)
                 try:
@@ -4290,7 +4331,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     except ValueError:
                         continue
                     source_url = parsed._replace(fragment="").geturl()
-                    if host not in OFFICIAL_DOCUMENTATION_HOSTS:
+                    if host not in tracked_hosts:
                         continue
                     tracked_paths = tracked_paths_by_url.get(source_url)
                     if tracked_paths is None:
@@ -4727,6 +4768,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_action_references,
         validate_python_support_contract,
         validate_ci_toolchain_contract,
+        validate_policy_drift_reminder_contract,
         validate_mirrored_dependency_metadata,
         validate_development_dependency_contract,
         validate_mutation_testing_contract,
@@ -4765,7 +4807,7 @@ def main() -> int:
         return 1
     print(
         "Repository metadata, multi-agent adapters, action pins, dependency locks, coverage policy, "
-        "CI policies, mutation testing, test quality, links, community-health and "
+        "CI policies and drift reminders, mutation testing, test quality, links, community-health and "
         "freshness tracking, official documentation, templates, attestations, and release archive are valid."
     )
     return 0

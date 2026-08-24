@@ -2,6 +2,69 @@
   "schema-version": 1,
   "claims": [
     {
+      "id": "agent-skills-standard",
+      "label": "Agent Skills standard",
+      "url": "https://agentskills.io",
+      "allowed-hosts": ["agentskills.io"],
+      "paths": [
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["SKILL.md", "references/"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "conventional-commits",
+      "label": "Conventional Commits specification",
+      "url": "https://www.conventionalcommits.org/en/v1.0.0/",
+      "allowed-hosts": ["www.conventionalcommits.org"],
+      "paths": [
+        "skills/repo-scaffold/assets/CONTRIBUTING.md",
+        "skills/repo-scaffold/assets/CONTRIBUTING.vi.md"
+      ],
+      "required-markers": ["<title>Conventional Commits</title>", "1.0.0"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "keep-a-changelog",
+      "label": "Keep a Changelog format",
+      "url": "https://keepachangelog.com/en/1.1.0/",
+      "allowed-hosts": ["keepachangelog.com"],
+      "paths": [
+        "CHANGELOG.md",
+        "skills/repo-scaffold/assets/CHANGELOG.md",
+        "skills/repo-scaffold/assets/CHANGELOG.vi.md"
+      ],
+      "required-markers": ["Keep a Changelog", "All notable changes"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-cli-home",
+      "label": "GitHub CLI availability",
+      "url": "https://cli.github.com/",
+      "allowed-hosts": ["cli.github.com"],
+      "paths": ["README.md"],
+      "required-markers": ["Take GitHub to the command line"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-cli-repo-clone",
+      "label": "GitHub CLI fork default repository behavior",
+      "url": "https://cli.github.com/manual/gh_repo_clone",
+      "allowed-hosts": ["cli.github.com"],
+      "paths": ["skills/repo-scaffold/references/github-setup.md"],
+      "required-markers": [
+        "parent repository will be set as the default remote repository.",
+        "--no-upstream"
+      ],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
       "id": "codex-plugin-packaging",
       "label": "Codex plugin packaging",
       "url": "https://developers.openai.com/plugins/build/plugins",
