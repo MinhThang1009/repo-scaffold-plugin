@@ -161,8 +161,23 @@ class ActionPinSyncTests(unittest.TestCase):
                 sync_action_pins.workflow_paths(root, (Path("../outside"),))
             for relative in sync_action_pins.WORKFLOW_DIRECTORIES:
                 (root / relative).mkdir(parents=True)
+            ignored = root / sync_action_pins.WORKFLOW_DIRECTORIES[0] / "ignored.yml"
+            ignored.mkdir()
             with self.assertRaisesRegex(ValueError, "no workflow files"):
                 sync_action_pins.workflow_paths(root)
+            workflow = root / sync_action_pins.WORKFLOW_DIRECTORIES[0] / "workflow.yml"
+            workflow.write_text("jobs: {}\n", encoding="utf-8")
+            original_is_symlink = Path.is_symlink
+            with mock.patch.object(
+                Path,
+                "is_symlink",
+                autospec=True,
+                side_effect=lambda path: path == workflow or original_is_symlink(path),
+            ):
+                with self.assertRaisesRegex(ValueError, "workflow file is unsafe"):
+                    sync_action_pins.workflow_paths(root)
+            workflow.unlink()
+            ignored.rmdir()
             link = root / sync_action_pins.WORKFLOW_DIRECTORIES[0]
             link.rmdir()
             try:
@@ -171,7 +186,7 @@ class ActionPinSyncTests(unittest.TestCase):
                     target_is_directory=True,
                 )
             except OSError:
-                self.skipTest("symbolic links are unavailable")
+                return
             with self.assertRaisesRegex(ValueError, "missing or unsafe"):
                 sync_action_pins.workflow_paths(root)
 
