@@ -645,7 +645,10 @@ class ActionPinSyncContractTests(unittest.TestCase):
             any("must run weekly and manually" in problem for problem in problems)
         )
         self.assertTrue(
-            any("only contents and pull-requests" in problem for problem in problems)
+            any(
+                "workflow permissions must be contents: read" in problem
+                for problem in problems
+            )
         )
         self.assertTrue(
             any("synchronizer job contract" in problem for problem in problems)
@@ -671,7 +674,7 @@ class ActionPinSyncContractTests(unittest.TestCase):
             any("workflow must be a mapping" in problem for problem in non_mapping)
         )
 
-    def test_tampered_synchronizer_steps_are_reported(self) -> None:
+    def test_tampered_synchronizer_contract_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / "scripts" / "sync_action_pins.py"
@@ -699,6 +702,22 @@ class ActionPinSyncContractTests(unittest.TestCase):
             )
             invalid_pr = validate_repository.validate_action_pin_sync_contract(root)
 
+            workflow.write_text(
+                original.replace("contents: read", "contents: write", 1),
+                encoding="utf-8",
+            )
+            invalid_workflow_permissions = (
+                validate_repository.validate_action_pin_sync_contract(root)
+            )
+
+            workflow.write_text(
+                original.replace("pull-requests: write", "pull-requests: read", 1),
+                encoding="utf-8",
+            )
+            invalid_job_permissions = (
+                validate_repository.validate_action_pin_sync_contract(root)
+            )
+
         self.assertTrue(
             any(
                 "only through the reviewed script" in problem
@@ -707,6 +726,19 @@ class ActionPinSyncContractTests(unittest.TestCase):
         )
         self.assertTrue(
             any("create a reviewed pull request" in problem for problem in invalid_pr)
+        )
+        self.assertTrue(
+            any(
+                "workflow permissions must be contents: read" in problem
+                for problem in invalid_workflow_permissions
+            )
+        )
+        self.assertTrue(
+            any(
+                "job permissions must use only contents and pull-requests write"
+                in problem
+                for problem in invalid_job_permissions
+            )
         )
 
 
