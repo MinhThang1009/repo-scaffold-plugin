@@ -153,7 +153,7 @@ def analyses_ready(
 
 
 def pull_request_merge_sha(repository: str, number: str, token: str) -> str | None:
-    """Return the current test-merge SHA, or ``None`` while GitHub computes it."""
+    """Return the current test-merge ref SHA, or ``None`` while GitHub computes it."""
     document = api_json(f"{API_ROOT}/repos/{repository}/pulls/{number}", token)
     if not isinstance(document, dict):
         raise GateError("GitHub pull request response must be an object")
@@ -162,11 +162,15 @@ def pull_request_merge_sha(repository: str, number: str, token: str) -> str | No
         return None
     if mergeable is not True:
         raise GateError(f"pull request #{number} has no mergeable test commit")
-    sha = document.get("merge_commit_sha")
+    merge_ref = api_json(
+        f"{API_ROOT}/repos/{repository}/git/ref/pull/{number}/merge", token
+    )
+    if not isinstance(merge_ref, dict):
+        raise GateError("GitHub pull request merge ref response must be an object")
+    merge_object = merge_ref.get("object")
+    sha = merge_object.get("sha") if isinstance(merge_object, dict) else None
     if not isinstance(sha, str) or COMMIT_SHA.fullmatch(sha) is None:
-        raise GateError(
-            f"pull request #{number} has an invalid mergeable test commit SHA"
-        )
+        return None
     return sha
 
 

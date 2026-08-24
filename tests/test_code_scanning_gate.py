@@ -316,7 +316,8 @@ class CodeScanningGateTests(unittest.TestCase):
                 "api_json",
                 side_effect=[
                     {"mergeable": None},
-                    {"mergeable": True, "merge_commit_sha": "a" * 40},
+                    {"mergeable": True},
+                    {"object": {"sha": "a" * 40}},
                 ],
             ),
             mock.patch.object(gate, "analyses_ready", return_value=True) as ready,
@@ -370,12 +371,11 @@ class CodeScanningGateTests(unittest.TestCase):
                     expected_categories=frozenset({"/language:python"}),
                 )
 
-    def test_pull_request_merge_sha_rejects_unmergeable_or_invalid_responses(
+    def test_pull_request_merge_sha_rejects_unmergeable_or_malformed_responses(
         self,
     ) -> None:
         for response, message in (
             ({"mergeable": False}, "no mergeable"),
-            ({"mergeable": True, "merge_commit_sha": "invalid"}, "invalid mergeable"),
             ([], "must be an object"),
         ):
             with (
@@ -384,6 +384,14 @@ class CodeScanningGateTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(gate.GateError, message):
                     gate.pull_request_merge_sha("owner/repo", "42", "token")
+
+    def test_pull_request_merge_sha_retries_an_invalid_transient_sha(self) -> None:
+        with mock.patch.object(
+            gate,
+            "api_json",
+            side_effect=[{"mergeable": True}, {"object": {"sha": "invalid"}}],
+        ):
+            self.assertIsNone(gate.pull_request_merge_sha("owner/repo", "42", "token"))
 
     def test_main_waits_for_analyses_and_fails_only_unapproved_alerts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
