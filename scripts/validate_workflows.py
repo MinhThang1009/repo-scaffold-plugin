@@ -56,6 +56,15 @@ def run_actionlint(
         return 2
 
 
+def discover_workflows(directory: Path) -> list[Path]:
+    """Return direct GitHub workflow files using either supported YAML suffix."""
+    return sorted(
+        path
+        for path in directory.glob("*")
+        if path.is_file() and path.suffix.lower() in {".yml", ".yaml"}
+    )
+
+
 def workflow_shell_blocks(path: Path) -> list[tuple[str, str, bytes]]:
     """Extract statically identifiable Bash and POSIX shell run blocks."""
     document: Any = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
@@ -162,13 +171,9 @@ def main() -> int:
         )
         return 2
 
-    installed_workflows = sorted(
-        (repository_root / ".github" / "workflows").glob("*.yml")
-    )
-    asset_workflows = sorted(
-        (repository_root / "skills" / "repo-scaffold" / "assets" / "workflows").glob(
-            "*.yml"
-        )
+    installed_workflows = discover_workflows(repository_root / ".github" / "workflows")
+    asset_workflows = discover_workflows(
+        repository_root / "skills" / "repo-scaffold" / "assets" / "workflows"
     )
     if not installed_workflows or not asset_workflows:
         print("Expected installed workflows and workflow assets.", file=sys.stderr)

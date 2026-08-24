@@ -5628,6 +5628,23 @@ class WorkflowShellValidationTests(unittest.TestCase):
         path.write_text(content.strip(), encoding="utf-8")
         return path
 
+    def test_workflow_discovery_includes_both_supported_yaml_suffixes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            yml = root / "ci.yml"
+            yaml_file = root / "scheduled.yaml"
+            ignored = root / "notes.txt"
+            nested = root / "nested"
+            yml.write_text("jobs: {}\n", encoding="utf-8")
+            yaml_file.write_text("jobs: {}\n", encoding="utf-8")
+            ignored.write_text("ignored\n", encoding="utf-8")
+            nested.mkdir()
+            (nested / "nested.yml").write_text("jobs: {}\n", encoding="utf-8")
+
+            self.assertEqual(
+                validate_workflows.discover_workflows(root), [yml, yaml_file]
+            )
+
     def test_executable_resolution_skips_unsafe_and_unusable_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
