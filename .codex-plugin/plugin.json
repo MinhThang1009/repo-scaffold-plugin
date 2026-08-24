@@ -1,7 +1,7 @@
 {
   "name": "repo-scaffold",
   "version": "1.7.2",
-  "description": "Scaffold a repository to production GitHub.com standard with community-health files, workflows, and repository configuration.",
+  "description": "Agent Skills plugin for Codex and Claude Code that scaffolds repositories to production GitHub.com standards.",
   "author": {
     "name": "Minh Thang",
     "url": "https://github.com/MinhThang1009"
@@ -16,7 +16,12 @@
     "community-health",
     "ci",
     "release",
-    "automation"
+    "automation",
+    "plugins",
+    "repository-management",
+    "github-automation",
+    "claude-code-plugin",
+    "codex-plugin"
   ],
   "skills": "./skills/",
   "interface": {
