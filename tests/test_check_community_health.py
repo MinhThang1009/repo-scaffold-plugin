@@ -30,7 +30,10 @@ SPEC.loader.exec_module(community_health)
 
 
 def registry_document(
-    *, tracker: str = "contributor-covenant", kind: str = "file"
+    *,
+    tracker: str = "contributor-covenant",
+    kind: str = "file",
+    allow_multiple: bool = False,
 ) -> dict[str, object]:
     return {
         "schema-version": 1,
@@ -42,6 +45,7 @@ def registry_document(
                 "kind": kind,
                 "candidates": ["CODE_OF_CONDUCT.md"],
                 "tracker": tracker,
+                "allow_multiple": allow_multiple,
             }
         ],
     }
@@ -126,6 +130,7 @@ class RegistryTests(unittest.TestCase):
             ("candidates", ["../outside"]),
             ("candidates", [r"docs\file.md"]),
             ("candidates", ["README.md", "README.md"]),
+            ("allow_multiple", "true"),
         ]
         for key, value in mutations:
             document = registry_document()
@@ -256,6 +261,43 @@ class InventoryTests(unittest.TestCase):
             result = community_health.inventory_entry(root, entry)
             self.assertEqual(result["status"], "ambiguous")
             self.assertIn("shadow", result["details"])
+
+    def test_inventory_allows_explicit_multiple_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            default_template = root / ".github" / "PULL_REQUEST_TEMPLATE.md"
+            default_template.parent.mkdir(parents=True)
+            default_template.write_text("default\n", encoding="utf-8")
+            specialized_templates = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            specialized_templates.mkdir()
+            (specialized_templates / "feature.md").write_text(
+                "feature\n", encoding="utf-8"
+            )
+            document = registry_document(kind="any", allow_multiple=True)
+            document["files"][0].update(  # type: ignore[index]
+                {
+                    "id": "pull_request_template",
+                    "label": "Pull request template",
+                    "candidates": [
+                        ".github/PULL_REQUEST_TEMPLATE.md",
+                        ".github/PULL_REQUEST_TEMPLATE",
+                    ],
+                    "tracker": "none",
+                }
+            )
+            entry = community_health.parse_registry(document)[0]
+
+            result = community_health.inventory_entry(root, entry)
+
+            self.assertEqual(result["status"], "present")
+            self.assertEqual(
+                result["paths"],
+                [
+                    ".github/PULL_REQUEST_TEMPLATE.md",
+                    ".github/PULL_REQUEST_TEMPLATE/feature.md",
+                ],
+            )
+            self.assertIn("explicitly allowed", result["details"])
 
     def test_path_checks_reject_links_and_inventory_kind_mismatches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

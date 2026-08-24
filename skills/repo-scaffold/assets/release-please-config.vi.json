@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.6.0/schemas/config.json",
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.11.1/schemas/config.json",
   "release-type": "{{REPO_SCAFFOLD_RELEASE_TYPE_JSON_ESCAPED}}",
   "pull-request-title-pattern": "chore${scope}: release${component} ${version}",
   "pull-request-header": ":robot: Tôi đã tạo pull request phát hành *beep* *boop*",

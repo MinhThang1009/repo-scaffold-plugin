@@ -53,6 +53,7 @@ class RegistryEntry:
     kind: str
     candidates: tuple[str, ...]
     tracker: str
+    allow_multiple: bool = False
 
 
 class GitHubClient:
@@ -130,12 +131,15 @@ def parse_registry(document: object) -> list[RegistryEntry]:
         kind = _require_string(value, "kind", location)
         tracker = _require_string(value, "tracker", location)
         candidates = value.get("candidates")
+        allow_multiple = value.get("allow_multiple", False)
         if scope not in ALLOWED_SCOPES:
             raise AuditError(f"{location}.scope is unsupported: {scope}")
         if kind not in ALLOWED_KINDS:
             raise AuditError(f"{location}.kind is unsupported: {kind}")
         if tracker not in ALLOWED_TRACKERS:
             raise AuditError(f"{location}.tracker is unsupported: {tracker}")
+        if not isinstance(allow_multiple, bool):
+            raise AuditError(f"{location}.allow_multiple must be a boolean")
         if not isinstance(candidates, list) or not candidates:
             raise AuditError(f"{location}.candidates must be a non-empty list")
         parsed_candidates = tuple(
@@ -146,7 +150,15 @@ def parse_registry(document: object) -> list[RegistryEntry]:
             raise AuditError(f"{location}.candidates must not contain duplicates")
         seen.add(identifier)
         entries.append(
-            RegistryEntry(identifier, label, scope, kind, parsed_candidates, tracker)
+            RegistryEntry(
+                identifier,
+                label,
+                scope,
+                kind,
+                parsed_candidates,
+                tracker,
+                allow_multiple,
+            )
         )
     return entries
 
@@ -202,7 +214,14 @@ def inventory_entry(root: Path, entry: RegistryEntry) -> dict[str, Any]:
                 [relative] if candidate.is_file() else _directory_files(root, candidate)
             )
     paths = [path for match in matches for path in match]
-    status = "absent" if not matches else "ambiguous" if len(matches) > 1 else "present"
+    multiple_locations = len(matches) > 1
+    status = (
+        "absent"
+        if not matches
+        else "ambiguous"
+        if multiple_locations and not entry.allow_multiple
+        else "present"
+    )
     return {
         "id": entry.identifier,
         "label": entry.label,
@@ -215,6 +234,8 @@ def inventory_entry(root: Path, entry: RegistryEntry) -> dict[str, Any]:
             if status == "absent"
             else "Multiple supported locations exist and may shadow one another."
             if status == "ambiguous"
+            else "Multiple supported local locations are explicitly allowed."
+            if multiple_locations
             else "Local file inventory only; no versioned upstream exists."
         ),
     }
