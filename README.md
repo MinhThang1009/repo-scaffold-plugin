@@ -203,7 +203,7 @@ repo-scaffold/
                                    # Scorecard, dependency-review, auto-merge, commitlint, stale, labeler
 ```
 
-SKILL.md → Resources lists every generated file.
+SKILL.md → Resources identifies the shipped resource groups and their purpose.
 
 ## 10. Development validation
 
