@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 
 GITHUB_API_URL = "https://api.github.com"
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 ACTION_PIN_PATTERN = re.compile(
     r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>\s*(?:#.*)?)$"
 )
@@ -143,12 +144,19 @@ class GitHubReleaseClient:
         )
         try:
             with self.opener(request, timeout=30) as response:
-                document = json.loads(response.read().decode("utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+                payload = response.read(MAX_RESPONSE_BYTES + 1)
+        except (OSError, UnicodeError) as error:
             raise ValueError(
                 f"GitHub API request failed for {path}: {error}"
             ) from error
-        return document
+        if len(payload) > MAX_RESPONSE_BYTES:
+            raise ValueError(f"GitHub API response exceeds the size limit for {path}")
+        try:
+            return json.loads(payload.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError(
+                f"GitHub API request failed for {path}: {error}"
+            ) from error
 
     def get_json(self, path: str) -> dict[str, Any]:
         """Fetch one bounded GitHub API object with the workflow token."""

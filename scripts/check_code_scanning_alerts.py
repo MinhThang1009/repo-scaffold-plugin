@@ -85,7 +85,7 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
                 "each code-scanning allowlist entry must have number, tool, rule, path, and reason"
             )
         number = entry["number"]
-        if not isinstance(number, int) or number < 1:
+        if type(number) is not int or number < 1:
             raise GateError("code-scanning allowlist number must be a positive integer")
         path_value = entry["path"]
         if path_value is not None:
@@ -238,7 +238,7 @@ def open_alerts(repository: str, ref: str, token: str) -> tuple[Alert, ...]:
             if path is not None and not isinstance(path, str):
                 raise GateError("GitHub alert path must be text or null")
             number = item.get("number")
-            if not isinstance(number, int):
+            if type(number) is not int:
                 raise GateError("GitHub alert number must be an integer")
             alerts.append(
                 Alert(

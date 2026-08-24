@@ -121,6 +121,15 @@ class CodeScanningGateTests(unittest.TestCase):
                         "reason": "x",
                     }
                 ],
+                [
+                    {
+                        "number": True,
+                        "tool": "CodeQL",
+                        "rule": "x",
+                        "path": None,
+                        "reason": "x",
+                    }
+                ],
                 [{"tool": "CodeQL", "rule": "x", "path": None}],
             ):
                 with self.subTest(entries=entries):
@@ -283,6 +292,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 "path must be text",
             ),
             ([{**alert(1), "number": "one"}], "number must be an integer"),
+            ([{**alert(1), "number": True}], "number must be an integer"),
         ):
             with (
                 self.subTest(response=response),

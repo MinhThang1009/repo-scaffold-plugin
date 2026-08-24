@@ -4314,6 +4314,19 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("exact positive alert number" in item for item in invalid_selector)
             )
 
+            allowlist.write_text(
+                '{"schema-version": 2, "allowlist": ['
+                '{"number": true, "tool": "CodeQL", "rule": "x", '
+                '"path": null, "reason": "x"}]}',
+                encoding="utf-8",
+            )
+            boolean_number = validate_repository.validate_code_scanning_gate_contract(
+                root
+            )
+            self.assertTrue(
+                any("exact positive alert number" in item for item in boolean_number)
+            )
+
             source = (
                 PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
             ).read_text(encoding="utf-8")

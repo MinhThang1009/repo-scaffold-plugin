@@ -4237,7 +4237,7 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         elif any(
             not isinstance(entry, dict)
             or set(entry) != {"number", "tool", "rule", "path", "reason"}
-            or not isinstance(entry.get("number"), int)
+            or type(entry.get("number")) is not int
             or entry["number"] < 1
             or not all(
                 isinstance(entry.get(field), str) and entry[field].strip()

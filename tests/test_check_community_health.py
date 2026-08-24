@@ -481,20 +481,24 @@ class AuditAndCliTests(unittest.TestCase):
             entries = community_health.parse_registry(registry_document(tracker="none"))
             with self.assertRaisesRegex(community_health.AuditError, "OWNER/REPO"):
                 community_health.audit(root, entries, "invalid", FakeClient({}), "now")
-            report = community_health.audit(
-                root,
-                entries,
-                "owner/repository",
-                FakeClient(
-                    {
-                        "repos/owner/repository/community/profile": {
-                            "health_percentage": 101
-                        }
-                    }
-                ),
-                "now",
-            )
-            self.assertEqual(report["community-profile"]["status"], "indeterminate")
+            for health in (101, True, False):
+                with self.subTest(health=health):
+                    report = community_health.audit(
+                        root,
+                        entries,
+                        "owner/repository",
+                        FakeClient(
+                            {
+                                "repos/owner/repository/community/profile": {
+                                    "health_percentage": health
+                                }
+                            }
+                        ),
+                        "now",
+                    )
+                    self.assertEqual(
+                        report["community-profile"]["status"], "indeterminate"
+                    )
 
     def test_markdown_report_covers_errors_and_absent_paths(self) -> None:
         report: dict[str, Any] = {

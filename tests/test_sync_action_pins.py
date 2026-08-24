@@ -253,6 +253,19 @@ class ActionPinSyncTests(unittest.TestCase):
             client.get_json("/test")
         with self.assertRaisesRegex(ValueError, "bounded object list"):
             client.get_json_list("/test")
+        oversized = sync_action_pins.GitHubReleaseClient(
+            "token",
+            lambda *_args, **_kwargs: FakeResponse(
+                b"x" * (sync_action_pins.MAX_RESPONSE_BYTES + 1)
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "exceeds the size limit"):
+            oversized.get_json("/test")
+        malformed = sync_action_pins.GitHubReleaseClient(
+            "token", lambda *_args, **_kwargs: FakeResponse(b"{")
+        )
+        with self.assertRaisesRegex(ValueError, "request failed"):
+            malformed.get_json("/test")
         for payload, message in (
             ({"tag_name": "main"}, "invalid tag"),
             ({"tag_name": "v1.2.3"}, "no tag object"),

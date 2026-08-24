@@ -347,7 +347,7 @@ def audit(
             if isinstance(raw_profile, dict)
             else None
         )
-        if not isinstance(health, int) or not 0 <= health <= 100:
+        if type(health) is not int or not 0 <= health <= 100:
             raise AuditError(
                 "GitHub community profile response has invalid health_percentage"
             )
