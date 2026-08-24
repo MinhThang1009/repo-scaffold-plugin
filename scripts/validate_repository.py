@@ -242,12 +242,14 @@ def is_project_path(path: Path, repository_root: Path) -> bool:
 
 def is_link_or_reparse(path: Path) -> bool:
     """Return whether an existing path is a symlink or Windows reparse point."""
-    if path.is_symlink():
-        return True
     try:
+        if path.is_symlink():
+            return True
         metadata = path.lstat()
     except FileNotFoundError:
         return False
+    except (OSError, RuntimeError):
+        return True
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     attributes = getattr(metadata, "st_file_attributes", 0)
     return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
@@ -389,7 +391,6 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
     asset_path = (
         repository_root / "skills" / "repo-scaffold" / "assets" / "workflows" / "ci.yml"
     )
-    skill_path = repository_root / "skills" / "repo-scaffold" / "SKILL.md"
     try:
         workflow_text = workflow_path.read_text(encoding="utf-8")
         workflow = load_yaml(workflow_path)
@@ -596,10 +597,19 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
                 "skills/repo-scaffold/assets/workflows/ci.yml: scaffold CI must "
                 "load a runtime policy dynamically and retain a scheduled canary"
             )
+    workflow_reference_path = (
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "references"
+        / "workflow-contracts.md"
+    )
     try:
-        skill_text = skill_path.read_text(encoding="utf-8")
+        skill_text = workflow_reference_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        problems.append(f"{skill_path.relative_to(repository_root)}: {error}")
+        problems.append(
+            f"{workflow_reference_path.relative_to(repository_root)}: {error}"
+        )
     else:
         for requirement in (
             "single source of truth",
@@ -608,7 +618,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         ):
             if requirement not in skill_text:
                 problems.append(
-                    "skills/repo-scaffold/SKILL.md: missing Python support "
+                    "skills/repo-scaffold/references/workflow-contracts.md: missing Python support "
                     f"requirement {requirement!r}"
                 )
 
@@ -1099,11 +1109,19 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
             "docs-contract must consume the rolling policy runtime"
         )
 
-    skill_path = repository_root / "skills" / "repo-scaffold" / "SKILL.md"
+    workflow_reference_path = (
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "references"
+        / "workflow-contracts.md"
+    )
     try:
-        skill_text = skill_path.read_text(encoding="utf-8")
+        skill_text = workflow_reference_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        problems.append(f"skills/repo-scaffold/SKILL.md: {error}")
+        problems.append(
+            f"skills/repo-scaffold/references/workflow-contracts.md: {error}"
+        )
     else:
         for requirement in (
             ".github/ci-toolchain.json",
@@ -1113,7 +1131,7 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         ):
             if requirement not in skill_text:
                 problems.append(
-                    "skills/repo-scaffold/SKILL.md: missing CI toolchain "
+                    "skills/repo-scaffold/references/workflow-contracts.md: missing CI toolchain "
                     f"requirement {requirement!r}"
                 )
     setup_path = (
@@ -2398,6 +2416,97 @@ def validate_plugin_manifest(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_skill_reference_paths(repository_root: Path) -> list[str]:
+    """Require every local reference named by a skill entry point to be usable."""
+    repository_root = repository_root.resolve()
+    skill_root = repository_root / "skills"
+    problems: list[str] = []
+    if is_link_or_reparse(skill_root):
+        return ["skills: linked or reparse-point directory is not traversed"]
+    try:
+        skill_paths = sorted(skill_root.rglob("SKILL.md"))
+    except OSError as error:
+        return [f"skills: cannot enumerate skill entry points: {error}"]
+
+    for skill_path in skill_paths:
+        relative_skill = skill_path.relative_to(repository_root).as_posix()
+        if is_link_or_reparse(skill_path):
+            problems.append(
+                f"{relative_skill}: linked or reparse-point skill entry point is not read"
+            )
+            continue
+        try:
+            skill_text = skill_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(f"{relative_skill}: unreadable: {error}")
+            continue
+
+        skill_directory = skill_path.parent
+        reference_directory = skill_directory / "references"
+        if is_link_or_reparse(skill_directory) or is_link_or_reparse(
+            reference_directory
+        ):
+            problems.append(
+                f"{relative_skill}: skill and references directories must not be linked "
+                "or reparse points"
+            )
+            continue
+        reference_root = reference_directory.resolve()
+        skill_root = skill_directory.resolve()
+        references = sorted(
+            {
+                match.group(1)
+                for match in re.finditer(
+                    r"(?<![\w./-])(references/[^\s`]*\.md)",
+                    skill_text,
+                )
+            }
+        )
+        for reference in references:
+            reference_path = skill_directory / reference
+            current = skill_directory
+            unsafe_component = False
+            for part in Path(reference).parts:
+                current /= part
+                if is_link_or_reparse(current):
+                    unsafe_component = True
+                    break
+                if not os.path.lexists(current):
+                    break
+            if unsafe_component:
+                problems.append(
+                    f"{relative_skill}: unsafe referenced file {reference}: "
+                    "linked or reparse-point path"
+                )
+                continue
+            try:
+                resolved = reference_path.resolve(strict=True)
+                resolved.relative_to(skill_root)
+                resolved.relative_to(reference_root)
+            except FileNotFoundError:
+                problems.append(
+                    f"{relative_skill}: missing referenced file {reference}"
+                )
+                continue
+            except (OSError, RuntimeError, ValueError) as error:
+                problems.append(
+                    f"{relative_skill}: unsafe referenced file {reference}: {error}"
+                )
+                continue
+            if not resolved.is_file():
+                problems.append(
+                    f"{relative_skill}: referenced path is not a file {reference}"
+                )
+                continue
+            try:
+                resolved.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as error:
+                problems.append(
+                    f"{relative_skill}: unreadable referenced file {reference}: {error}"
+                )
+    return problems
+
+
 def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
     """Require Codex and Claude adapters to expose one shared Agent Skills core."""
     repository_root = repository_root.resolve()
@@ -2467,6 +2576,20 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
                     "agent compatibility guidance"
                 )
                 break
+        generation_reference = (
+            repository_root
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        )
+        try:
+            generation_text = generation_reference.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"{generation_reference.relative_to(repository_root)}: {error}"
+            )
+            generation_text = ""
         for (
             _english_source,
             vietnamese_source,
@@ -2475,9 +2598,9 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
             mapping = (
                 f"`{vietnamese_source.as_posix()}` → `{canonical_target.as_posix()}`"
             )
-            if mapping not in skill_text:
+            if mapping not in generation_text:
                 problems.append(
-                    "skills/repo-scaffold/SKILL.md: must map "
+                    "skills/repo-scaffold/references/scaffold-generation.md: must map "
                     f"{vietnamese_source.as_posix()} to "
                     f"{canonical_target.as_posix()} for Vietnamese output"
                 )
@@ -4333,6 +4456,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_development_dependency_contract,
         validate_mutation_testing_contract,
         validate_plugin_manifest,
+        validate_skill_reference_paths,
         validate_multi_agent_plugin_contract,
         validate_release_please,
         validate_release_attestation,

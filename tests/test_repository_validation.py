@@ -100,6 +100,8 @@ class SerializedFileValidationTests(unittest.TestCase):
         self.assertFalse(validate_repository.is_link_or_reparse(missing))
         with mock.patch.object(Path, "is_symlink", return_value=True):
             self.assertTrue(validate_repository.is_link_or_reparse(missing))
+        with mock.patch.object(Path, "is_symlink", side_effect=OSError("denied")):
+            self.assertTrue(validate_repository.is_link_or_reparse(missing))
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -260,8 +262,8 @@ class PythonSupportContractValidationTests(unittest.TestCase):
         "requirements-dev.in",
         "ruff.toml",
         "scripts/python_support.py",
-        "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/assets/workflows/ci.yml",
+        "skills/repo-scaffold/references/workflow-contracts.md",
     )
 
     def copy_contract(self, root: Path) -> None:
@@ -399,9 +401,13 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             (
                 root / "skills" / "repo-scaffold" / "assets" / "workflows" / "ci.yml"
             ).write_text("jobs: {}\n", encoding="utf-8")
-            (root / "skills" / "repo-scaffold" / "SKILL.md").write_text(
-                "incomplete\n", encoding="utf-8"
-            )
+            (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "workflow-contracts.md"
+            ).write_text("incomplete\n", encoding="utf-8")
             (root / ".github" / "python-support.json").write_text(
                 '{"versions": []}', encoding="utf-8"
             )
@@ -437,7 +443,7 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             for relative in (
                 ".github/workflows/ci.yml",
                 "skills/repo-scaffold/assets/workflows/ci.yml",
-                "skills/repo-scaffold/SKILL.md",
+                "skills/repo-scaffold/references/workflow-contracts.md",
                 "ruff.toml",
             ):
                 (root / relative).write_bytes(b"\xff")
@@ -453,7 +459,7 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                     for item in problems
                 )
             )
-            self.assertTrue(any("SKILL.md" in item for item in problems))
+            self.assertTrue(any("workflow-contracts.md" in item for item in problems))
             self.assertTrue(
                 any("could not verify Python target" in item for item in problems)
             )
@@ -710,10 +716,10 @@ class CiToolchainContractValidationTests(unittest.TestCase):
         "CONTRIBUTING.md",
         "pyproject.toml",
         "README.md",
-        "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/assets/ci-toolchain.json",
         "skills/repo-scaffold/assets/workflows/documentation.yml",
         "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/references/workflow-contracts.md",
         "skills/repo-scaffold/scripts/ci_toolchain.py",
     )
 
@@ -901,9 +907,13 @@ class CiToolchainContractValidationTests(unittest.TestCase):
                 / "documentation.yml"
             )
             documentation_path.write_text("jobs: []\n", encoding="utf-8")
-            (root / "skills" / "repo-scaffold" / "SKILL.md").write_text(
-                "incomplete\n", encoding="utf-8"
-            )
+            (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "workflow-contracts.md"
+            ).write_text("incomplete\n", encoding="utf-8")
             setup_path = (
                 root / "skills" / "repo-scaffold" / "references" / "github-setup.md"
             )
@@ -953,7 +963,7 @@ class CiToolchainContractValidationTests(unittest.TestCase):
                 "README.md",
                 ".github/workflows/ci.yml",
                 "skills/repo-scaffold/assets/workflows/documentation.yml",
-                "skills/repo-scaffold/SKILL.md",
+                "skills/repo-scaffold/references/workflow-contracts.md",
                 "skills/repo-scaffold/references/github-setup.md",
             ):
                 (root / relative).write_bytes(b"\xff")
@@ -966,7 +976,7 @@ class CiToolchainContractValidationTests(unittest.TestCase):
             self.assertTrue(
                 any("could not verify toolchain" in item for item in problems)
             )
-            self.assertTrue(any("SKILL.md" in item for item in problems))
+            self.assertTrue(any("workflow-contracts.md" in item for item in problems))
             self.assertTrue(any("github-setup.md" in item for item in problems))
 
     def test_documentation_guidance_must_reference_policy_without_hardcoded_pin(
@@ -2819,6 +2829,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_development_dependency_contract",
             "validate_mutation_testing_contract",
             "validate_plugin_manifest",
+            "validate_skill_reference_paths",
             "validate_multi_agent_plugin_contract",
             "validate_release_please",
             "validate_release_attestation",
@@ -3226,6 +3237,149 @@ class PluginManifestValidationTests(unittest.TestCase):
         )
 
 
+class SkillReferenceValidationTests(unittest.TestCase):
+    def test_reparse_points_are_rejected_without_dereferencing_them(self) -> None:
+        metadata = mock.Mock(st_mode=0, st_file_attributes=0x400)
+        with mock.patch.object(Path, "lstat", return_value=metadata):
+            self.assertTrue(validate_repository.is_link_or_reparse(Path("linked")))
+
+    def test_linked_skill_entry_point_is_not_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "skills" / "example" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("Read `references/example.md`.\n", encoding="utf-8")
+
+            with mock.patch.object(
+                validate_repository,
+                "is_link_or_reparse",
+                side_effect=lambda path: path.name == "SKILL.md",
+            ):
+                problems = validate_repository.validate_skill_reference_paths(root)
+
+        self.assertEqual(
+            problems,
+            [
+                "skills/example/SKILL.md: linked or reparse-point skill entry point "
+                "is not read"
+            ],
+        )
+
+    def test_linked_skills_root_and_enumeration_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill_root = root / "skills"
+            skill_root.mkdir()
+
+            with mock.patch.object(
+                validate_repository,
+                "is_link_or_reparse",
+                side_effect=lambda path: path.name == "skills",
+            ):
+                self.assertEqual(
+                    validate_repository.validate_skill_reference_paths(root),
+                    ["skills: linked or reparse-point directory is not traversed"],
+                )
+
+            with mock.patch.object(Path, "rglob", side_effect=OSError("denied")):
+                self.assertEqual(
+                    validate_repository.validate_skill_reference_paths(root),
+                    ["skills: cannot enumerate skill entry points: denied"],
+                )
+
+    def test_reference_validator_rejects_unreadable_and_linked_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "skills" / "example" / "SKILL.md"
+            references = skill.parent / "references"
+            references.mkdir(parents=True)
+            skill.write_bytes(b"\xff")
+            unreadable = validate_repository.validate_skill_reference_paths(root)
+
+            skill.write_text("Read `references/present.md`.\n", encoding="utf-8")
+            present = references / "present.md"
+            present.write_text("Present\n", encoding="utf-8")
+            with mock.patch.object(
+                validate_repository,
+                "is_link_or_reparse",
+                side_effect=lambda path: path.name == "references",
+            ):
+                linked_directory = validate_repository.validate_skill_reference_paths(
+                    root
+                )
+            with mock.patch.object(
+                validate_repository,
+                "is_link_or_reparse",
+                side_effect=lambda path: path.name == "present.md",
+            ):
+                linked_file = validate_repository.validate_skill_reference_paths(root)
+
+        self.assertTrue(any("SKILL.md: unreadable" in item for item in unreadable))
+        self.assertTrue(
+            any("skill and references directories" in item for item in linked_directory)
+        )
+        self.assertTrue(
+            any(
+                "references/present.md: linked or reparse-point path" in item
+                for item in linked_file
+            )
+        )
+
+    def test_entrypoint_routes_readme_work_to_the_readme_reference(self) -> None:
+        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "Before creating or updating a README, read `references/readme.md`",
+            skill,
+        )
+
+    def test_referenced_files_must_exist_be_utf8_and_stay_in_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "skills" / "example" / "SKILL.md"
+            references = skill.parent / "references"
+            references.mkdir(parents=True)
+            (references / "present.md").write_text("Present\n", encoding="utf-8")
+            (skill.parent / "outside.md").write_text("Outside\n", encoding="utf-8")
+            skill.write_text(
+                "Read `references/present.md`, `references/missing.md`, and "
+                "`references/../outside.md`.\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_skill_reference_paths(root)
+
+            self.assertIn(
+                "skills/example/SKILL.md: missing referenced file references/missing.md",
+                problems,
+            )
+            self.assertTrue(
+                any("references/../outside.md" in problem for problem in problems)
+            )
+
+            (references / "missing.md").write_bytes(b"\xff")
+            problems = validate_repository.validate_skill_reference_paths(root)
+
+            directory_reference = references / "directory.md"
+            directory_reference.mkdir()
+            skill.write_text("Read `references/directory.md`.\n", encoding="utf-8")
+            non_file = validate_repository.validate_skill_reference_paths(root)
+
+        self.assertTrue(
+            any(
+                "unreadable referenced file references/missing.md" in problem
+                for problem in problems
+            )
+        )
+        self.assertIn(
+            "skills/example/SKILL.md: referenced path is not a file "
+            "references/directory.md",
+            non_file,
+        )
+
+
 class MultiAgentPluginContractTests(unittest.TestCase):
     @staticmethod
     def write_valid_contract(root: Path) -> None:
@@ -3280,6 +3434,10 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         references.mkdir()
         for name in ("agent-compatibility.md", "agent-compatibility.vi.md"):
             (references / name).write_text(reference_text, encoding="utf-8")
+        (references / "scaffold-generation.md").write_text(
+            language_mappings,
+            encoding="utf-8",
+        )
         asset_root = skill.parent / "assets"
         (asset_root / "CLAUDE.md").parent.mkdir(parents=True)
         (asset_root / "CLAUDE.md").write_text(
@@ -3309,6 +3467,33 @@ class MultiAgentPluginContractTests(unittest.TestCase):
                 validate_repository.validate_multi_agent_plugin_contract(root), []
             )
 
+    def test_reports_missing_scaffold_generation_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            generation_reference = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "scaffold-generation.md"
+            )
+            generation_reference.unlink()
+
+            problems = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        self.assertTrue(
+            any(
+                item.startswith(
+                    "skills/repo-scaffold/references/scaffold-generation.md: "
+                )
+                for item in problems
+            )
+        )
+        self.assertTrue(
+            any("must map AGENTS.vi.md to AGENTS.md" in item for item in problems)
+        )
+
     def test_plugin_release_workflow_bundles_and_synchronizes_both_adapters(
         self,
     ) -> None:
@@ -3331,9 +3516,13 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             (asset_root / "CLAUDE.md").read_text(encoding="utf-8"),
             validate_repository.CLAUDE_SHARED_INSTRUCTIONS,
         )
-        skill_text = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
+        generation_text = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        ).read_text(encoding="utf-8")
         for (
             english_name,
             vietnamese_name,
@@ -3347,7 +3536,7 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             self.assertRegex(vietnamese, r"[À-ỹ]", vietnamese_name)
             self.assertIn(
                 f"`{vietnamese_name.as_posix()}` → `{canonical_target.as_posix()}`",
-                skill_text,
+                generation_text,
             )
 
     def test_rejects_drifted_shared_instruction_and_localized_assets(self) -> None:
@@ -3699,28 +3888,37 @@ jobs:
             ],
         )
 
-        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("Before changing `pull-request-title-pattern`", skill)
-        self.assertIn("update each existing release PR title", skill)
+        generation = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Before changing `pull-request-title-pattern`", generation)
+        self.assertIn("update each existing release PR title", generation)
 
     def test_skill_resolves_one_language_per_project(self) -> None:
-        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
+        generation = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        ).read_text(encoding="utf-8")
         setup = (
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("one `SCAFFOLD_LANGUAGE`, either `en` or `vi`", skill)
-        self.assertIn("the user's explicit language request", skill)
-        self.assertIn("active project instructions", skill)
-        self.assertIn("then `en` as the", skill)
-        self.assertIn("Never leave an English/Vietnamese hybrid", skill)
+        self.assertIn("`SCAFFOLD_LANGUAGE`, either `en` or `vi`", generation)
+        self.assertIn("the user's explicit language request", generation)
+        self.assertIn("active project instructions", generation)
+        self.assertIn("then `en` as the", generation)
+        self.assertIn("Never leave an", generation)
+        self.assertIn("English/Vietnamese hybrid", generation)
+        self.assertIn("commit, pull-request,", generation)
         self.assertIn(
-            "commit, pull-request, or release text created as part of an",
-            skill,
+            "or release text created as part of an authorized scaffold", generation
         )
         self.assertIn("chore${scope}: release${component} ${version}", setup)
         self.assertIn("chore${scope}: phát hành${component} ${version}", setup)
@@ -4171,7 +4369,6 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 self.assertRegex(text, r"(?m)^- \[ \] \S", path)
 
         for path in (
-            PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md",
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "AGENTS.md",
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "AGENTS.vi.md",
         ):
@@ -4179,6 +4376,20 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             self.assertIn("--body-file", text)
             self.assertIn("--fill", text)
             self.assertRegex(text, r"ready(?:\s+|_)for(?:\s+|_)review", path)
+
+        pull_request_reference = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "pull-request-contract.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("--body-file", pull_request_reference)
+        self.assertIn("--fill", pull_request_reference)
+        self.assertRegex(
+            pull_request_reference,
+            r"ready(?:\s+|_|-)for(?:\s+|_|-)review",
+        )
 
     def test_gate_selects_the_marked_specialized_template(self) -> None:
         workflow = validate_repository.load_yaml(
@@ -5269,14 +5480,18 @@ class DependabotValidationTests(unittest.TestCase):
     def test_dependabot_rendering_contract_keeps_mandatory_documentation_pip(
         self,
     ) -> None:
-        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
+        generation = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        ).read_text(encoding="utf-8")
         setup = (
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
         ).read_text(encoding="utf-8")
 
-        for document in (skill, setup):
+        for document in (generation, setup):
             self.assertIn("requirements-docs.txt", document)
             self.assertIn("fixed root `pip`", document)
             self.assertIn("Do not emit a duplicate root `pip` block", document)
