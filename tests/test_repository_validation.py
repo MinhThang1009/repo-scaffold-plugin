@@ -1274,8 +1274,9 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             )
 
             self.assertIn(
-                ".coveragerc: require branch coverage for both script trees with "
-                "a fail-under floor of at least 100",
+                ".coveragerc: require branch coverage for both script trees, only "
+                "the verified freshness-script copies omitted, and a fail-under "
+                "floor of at least 100",
                 problems,
             )
 
@@ -2829,6 +2830,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_dependabot",
             "validate_markdown_links",
             "validate_community_health_tracking_contract",
+            "validate_freshness_tracking_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
             "validate_release_archive",
@@ -6045,6 +6047,95 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
         )
         for fragment in expected:
             self.assertTrue(any(fragment in problem for problem in problems), fragment)
+
+
+class FreshnessTrackingContractTests(unittest.TestCase):
+    def copy_contract(self, root: Path) -> None:
+        relative_paths = (
+            ".github/freshness-trackers.json",
+            ".github/workflows/freshness.yml",
+            "scripts/audit_freshness.py",
+            "scripts/sync_action_pins.py",
+            "skills/repo-scaffold/assets/freshness-trackers.json",
+            "skills/repo-scaffold/assets/workflows/freshness.yml",
+            "skills/repo-scaffold/scripts/audit_freshness.py",
+            "skills/repo-scaffold/scripts/sync_action_pins.py",
+        )
+        for relative in relative_paths:
+            source = PLUGIN_ROOT / relative
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+
+    def test_current_freshness_tracking_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_freshness_tracking_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_freshness_tracking_contract_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            problems = validate_repository.validate_freshness_tracking_contract(
+                Path(directory)
+            )
+        self.assertTrue(any("freshness" in problem for problem in problems))
+
+    def test_freshness_contract_drift_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "scripts/audit_freshness.py").write_text(
+                "checker-drift\n", encoding="utf-8"
+            )
+            (root / "skills/repo-scaffold/scripts/audit_freshness.py").write_text(
+                "drift\n", encoding="utf-8"
+            )
+            (root / "skills/repo-scaffold/assets/freshness-trackers.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
+            (root / ".github/freshness-trackers.json").write_text(
+                "[]\n", encoding="utf-8"
+            )
+            workflow = root / ".github/workflows/freshness.yml"
+            workflow.write_text(
+                "name: stale\n"
+                "on:\n"
+                "  push:\n"
+                "permissions:\n"
+                "  contents: read\n"
+                "  issues: none\n"
+                "jobs: {}\n",
+                encoding="utf-8",
+            )
+            (root / "skills/repo-scaffold/assets/workflows/freshness.yml").write_text(
+                "- workflow\n", encoding="utf-8"
+            )
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+            self.copy_contract(root)
+            asset_workflow = (
+                root / "skills/repo-scaffold/assets/workflows/freshness.yml"
+            )
+            asset_workflow.write_text(
+                asset_workflow.read_text(encoding="utf-8") + "# drift\n",
+                encoding="utf-8",
+            )
+            workflow_drift = validate_repository.validate_freshness_tracking_contract(
+                root
+            )
+        for fragment in (
+            "must match its scaffold copy",
+            "must load an explicit tracker registry",
+            "must track its shipped inputs",
+            "must use schema-version 1",
+            "use only schedule",
+            "must use contents",
+            "reconcile one marker issue",
+            "workflow must be a mapping",
+        ):
+            self.assertTrue(any(fragment in problem for problem in problems), fragment)
+        self.assertTrue(
+            any("workflow must match" in problem for problem in workflow_drift)
+        )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,11 @@ relative_files = True
 source =
     scripts
     skills/repo-scaffold/scripts
+omit =
+    # These are byte-for-byte copies of the root scripts, enforced by the
+    # freshness tracking contract and covered through their canonical sources.
+    skills/repo-scaffold/scripts/audit_freshness.py
+    skills/repo-scaffold/scripts/sync_action_pins.py
 
 [report]
 fail_under = 100

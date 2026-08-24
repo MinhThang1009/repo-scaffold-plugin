@@ -1,0 +1,26 @@
+{
+  "schema-version": 1,
+  "workflow-directories": [
+    ".github/workflows",
+    "skills/repo-scaffold/assets/workflows"
+  ],
+  "release-please-configs": [
+    "release-please-config.json",
+    "skills/repo-scaffold/assets/release-please-config.json",
+    "skills/repo-scaffold/assets/release-please-config.vi.json"
+  ],
+  "requirement-sources": [
+    {
+      "path": "requirements-dev.in",
+      "locks": ["requirements-dev.txt", "requirements-mutation.txt"]
+    },
+    {
+      "path": "requirements-mutation.in",
+      "locks": ["requirements-mutation.txt"]
+    },
+    {
+      "path": "skills/repo-scaffold/assets/requirements-docs.txt",
+      "locks": []
+    }
+  ]
+}

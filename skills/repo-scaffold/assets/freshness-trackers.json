@@ -1,0 +1,11 @@
+{
+  "schema-version": 1,
+  "workflow-directories": [".github/workflows"],
+  "release-please-configs": [],
+  "requirement-sources": [
+    {
+      "path": "requirements-docs.txt",
+      "locks": []
+    }
+  ]
+}

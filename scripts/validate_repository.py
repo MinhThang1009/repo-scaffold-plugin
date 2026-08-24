@@ -1370,8 +1370,10 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     ]
     required_mypy_paths = {
         "skills/repo-scaffold/scripts/check_community_health.py",
+        "skills/repo-scaffold/scripts/audit_freshness.py",
         "skills/repo-scaffold/scripts/codeql_preflight.py",
         "skills/repo-scaffold/scripts/ci_toolchain.py",
+        "skills/repo-scaffold/scripts/sync_action_pins.py",
         "skills/repo-scaffold/scripts/validate_scaffold.py",
         "scripts/audit_freshness.py",
         "scripts/prepare_mutation_cache.py",
@@ -1400,19 +1402,30 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
             for line in coverage_config.get("run", "source").splitlines()
             if line.strip()
         }
+        omitted = {
+            line.strip().replace("\\", "/")
+            for line in coverage_config.get("run", "omit").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
         fail_under = coverage_config.getfloat("report", "fail_under")
     except (OSError, UnicodeError, configparser.Error, ValueError) as error:
         problems.append(f".coveragerc: could not verify coverage policy: {error}")
     else:
         expected_sources = {"scripts", "skills/repo-scaffold/scripts"}
+        expected_omitted = {
+            "skills/repo-scaffold/scripts/audit_freshness.py",
+            "skills/repo-scaffold/scripts/sync_action_pins.py",
+        }
         if (
             not branch
             or sources != expected_sources
+            or omitted != expected_omitted
             or fail_under < COVERAGE_FAIL_UNDER
         ):
             problems.append(
-                ".coveragerc: require branch coverage for both script trees with "
-                f"a fail-under floor of at least {COVERAGE_FAIL_UNDER}"
+                ".coveragerc: require branch coverage for both script trees, only "
+                "the verified freshness-script copies omitted, and a fail-under "
+                f"floor of at least {COVERAGE_FAIL_UNDER}"
             )
 
     for relative in ("README.md", "CONTRIBUTING.md"):
@@ -3969,6 +3982,115 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
     return problems
 
 
+def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
+    """Require the registry-driven freshness checker in the repo and scaffold."""
+    problems: list[str] = []
+    root_registry = repository_root / ".github" / "freshness-trackers.json"
+    asset_registry = (
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "freshness-trackers.json"
+    )
+    root_script = repository_root / "scripts" / "audit_freshness.py"
+    asset_script = (
+        repository_root / "skills" / "repo-scaffold" / "scripts" / "audit_freshness.py"
+    )
+    root_resolver = repository_root / "scripts" / "sync_action_pins.py"
+    asset_resolver = (
+        repository_root / "skills" / "repo-scaffold" / "scripts" / "sync_action_pins.py"
+    )
+    for current, scaffolded, label in (
+        (root_script, asset_script, "freshness checker"),
+        (root_resolver, asset_resolver, "action-pin resolver"),
+    ):
+        try:
+            current_text = current.read_text(encoding="utf-8")
+            scaffolded_text = scaffolded.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(f"freshness tracking: {label} is unreadable: {error}")
+            continue
+        if current_text != scaffolded_text:
+            problems.append(f"freshness tracking: {label} must match its scaffold copy")
+        if label == "freshness checker" and (
+            "load_trackers" not in current_text
+            or "--tracker-registry" not in current_text
+        ):
+            problems.append(
+                "freshness tracking: checker must load an explicit tracker registry"
+            )
+
+    expected_asset_registry = {
+        "schema-version": 1,
+        "workflow-directories": [".github/workflows"],
+        "release-please-configs": [],
+        "requirement-sources": [
+            {"path": "requirements-docs.txt", "locks": []},
+        ],
+    }
+    for path, expected in (
+        (asset_registry, expected_asset_registry),
+        (root_registry, None),
+    ):
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            registry = load_json(path)
+        except (OSError, UnicodeError, ValueError) as error:
+            problems.append(f"{relative}: could not verify freshness registry: {error}")
+            continue
+        if expected is not None and registry != expected:
+            problems.append(
+                f"{relative}: scaffold freshness registry must track its shipped inputs"
+            )
+        if not isinstance(registry, dict) or registry.get("schema-version") != 1:
+            problems.append(f"{relative}: freshness registry must use schema-version 1")
+    workflows = (
+        repository_root / ".github" / "workflows" / "freshness.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "freshness.yml",
+    )
+    texts: list[str] = []
+    for path in workflows:
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            workflow = load_yaml(path)
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: could not verify freshness workflow: {error}")
+            continue
+        if not isinstance(workflow, dict):
+            problems.append(f"{relative}: freshness workflow must be a mapping")
+            continue
+        texts.append(text)
+        if workflow.get("on") != {
+            "schedule": [{"cron": "17 6 * * 5"}],
+            "workflow_dispatch": "",
+        }:
+            problems.append(
+                f"{relative}: freshness workflow must use only schedule and workflow_dispatch"
+            )
+        if workflow.get("permissions") != {"contents": "read", "issues": "write"}:
+            problems.append(
+                f"{relative}: freshness workflow must use contents: read and issues: write"
+            )
+        if (
+            "python scripts/audit_freshness.py" not in text
+            or "repo-scaffold-freshness-audit" not in text
+            or "--body-file" not in text
+        ):
+            problems.append(
+                f"{relative}: freshness workflow must run the checker and reconcile one marker issue"
+            )
+    if len(texts) == 2 and texts[0] != texts[1]:
+        problems.append("freshness workflow must match its scaffold asset")
+    return problems
+
+
 def validate_scaffold_contract(repository_root: Path) -> list[str]:
     """Run the distributable rendered-document contract against this plugin."""
     script = (
@@ -4220,6 +4342,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_dependabot,
         validate_markdown_links,
         validate_community_health_tracking_contract,
+        validate_freshness_tracking_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,
@@ -4239,8 +4362,8 @@ def main() -> int:
         return 1
     print(
         "Repository metadata, multi-agent adapters, action pins, dependency locks, coverage policy, "
-        "CI policies, mutation testing, test quality, links, community-health "
-        "tracking, templates, attestations, and release archive are valid."
+        "CI policies, mutation testing, test quality, links, community-health and "
+        "freshness tracking, templates, attestations, and release archive are valid."
     )
     return 0
 
