@@ -39,6 +39,37 @@ def release(tag: str, sha: str) -> Any:
 class FreshnessTests(unittest.TestCase):
     def write_repository(self, root: Path) -> None:
         for relative, content in {
+            ".github/freshness-trackers.json": json.dumps(
+                {
+                    "schema-version": 1,
+                    "workflow-directories": [
+                        ".github/workflows",
+                        "skills/repo-scaffold/assets/workflows",
+                    ],
+                    "release-please-configs": [
+                        "release-please-config.json",
+                        "skills/repo-scaffold/assets/release-please-config.json",
+                        "skills/repo-scaffold/assets/release-please-config.vi.json",
+                    ],
+                    "requirement-sources": [
+                        {
+                            "path": "requirements-dev.in",
+                            "locks": [
+                                "requirements-dev.txt",
+                                "requirements-mutation.txt",
+                            ],
+                        },
+                        {
+                            "path": "requirements-mutation.in",
+                            "locks": ["requirements-mutation.txt"],
+                        },
+                        {
+                            "path": "skills/repo-scaffold/assets/requirements-docs.txt",
+                            "locks": [],
+                        },
+                    ],
+                }
+            ),
             ".github/workflows/ci.yml": (
                 "jobs:\n  test:\n    steps:\n      - uses: actions/checkout@"
                 + "a" * 40
@@ -138,20 +169,25 @@ class FreshnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
             calls: list[str] = []
 
             def lookup(repository: str) -> Any:
                 calls.append(repository)
                 return release("v2.0.0", "b" * 40)
 
-            findings = freshness.action_findings(root, lookup)
+            findings = freshness.action_findings(
+                root, trackers.workflow_directories, lookup
+            )
             self.assertEqual(calls, ["actions/checkout"])
             self.assertEqual(len(findings), 2)
             self.assertTrue(all(item["latest"] == "v2.0.0" for item in findings))
 
             self.assertEqual(
                 freshness.action_findings(
-                    root, lambda _repository: release("v1.0.0", "a" * 40)
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v1.0.0", "a" * 40),
                 ),
                 [],
             )
@@ -160,16 +196,28 @@ class FreshnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.write_repository(root)
-            schema = freshness.release_please_findings(root, "v17.11.1")
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            schema = freshness.release_please_findings(
+                root, trackers.release_please_configs, "v17.11.1"
+            )
             self.assertEqual(len(schema), 3)
-            self.assertEqual(freshness.release_please_findings(root, "v17.6.0"), [])
-            config = root / freshness.RELEASE_PLEASE_CONFIGS[0]
+            self.assertEqual(
+                freshness.release_please_findings(
+                    root, trackers.release_please_configs, "v17.6.0"
+                ),
+                [],
+            )
+            config = root / trackers.release_please_configs[0]
             config.write_text("{", encoding="utf-8")
             with self.assertRaisesRegex(freshness.AuditError, "could not read"):
-                freshness.release_please_findings(root, "v17.6.0")
+                freshness.release_please_findings(
+                    root, trackers.release_please_configs, "v17.6.0"
+                )
             config.write_text("[]", encoding="utf-8")
             with self.assertRaisesRegex(freshness.AuditError, "unsupported"):
-                freshness.release_please_findings(root, "v17.6.0")
+                freshness.release_please_findings(
+                    root, trackers.release_please_configs, "v17.6.0"
+                )
             config.write_text(
                 json.dumps(
                     {
@@ -179,15 +227,157 @@ class FreshnessTests(unittest.TestCase):
                 encoding="utf-8",
             )
             versions = {"ruff": "0.2.0", "mutmut": "1.0.0", "markdown-it-py": "1.0.0"}
-            findings = freshness.requirement_findings(root, versions.__getitem__)
+            findings = freshness.requirement_findings(
+                root, trackers.requirement_sources, versions.__getitem__
+            )
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0]["subject"], "ruff")
 
             (root / "requirements-dev.txt").write_text(
                 "other==1.0.0\n", encoding="utf-8"
             )
-            inconsistent = freshness.requirement_findings(root, versions.__getitem__)
+            inconsistent = freshness.requirement_findings(
+                root, trackers.requirement_sources, versions.__getitem__
+            )
             self.assertEqual(inconsistent[-1]["kind"], "lock-consistency")
+
+    def test_tracker_registry_rejects_invalid_and_unsafe_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            registry = root / freshness.DEFAULT_TRACKER_REGISTRY
+            valid = json.loads(registry.read_text(encoding="utf-8"))
+            with self.assertRaisesRegex(freshness.AuditError, "non-empty"):
+                freshness.safe_relative_path("", field="test")
+            with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
+                freshness.tracked_path(root, Path("missing"), kind="test path")
+            with mock.patch.object(Path, "is_symlink", return_value=True):
+                with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
+                    freshness.tracked_path(
+                        root, freshness.DEFAULT_TRACKER_REGISTRY, kind="test path"
+                    )
+            registry.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(freshness.AuditError, "could not read"):
+                freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            for document, message in (
+                ({"schema-version": 2}, "schema-version"),
+                (
+                    {
+                        "schema-version": 1,
+                        "workflow-directories": ["../outside"],
+                        "release-please-configs": [],
+                        "requirement-sources": [],
+                    },
+                    "safe relative",
+                ),
+                (
+                    {
+                        "schema-version": 1,
+                        "workflow-directories": [".github/workflows"],
+                        "release-please-configs": [],
+                        "requirement-sources": [{"path": "requirements.in"}],
+                    },
+                    "locks",
+                ),
+                (
+                    {
+                        **valid,
+                        "workflow-directories": "not-a-list",
+                    },
+                    "workflow-directories must be a list",
+                ),
+                (
+                    {
+                        **valid,
+                        "workflow-directories": [
+                            ".github/workflows",
+                            ".github/workflows",
+                        ],
+                    },
+                    "must not repeat",
+                ),
+                ({**valid, "requirement-sources": "not-a-list"}, "sources"),
+                ({**valid, "requirement-sources": ["not-an-object"]}, "object"),
+                (
+                    {
+                        **valid,
+                        "requirement-sources": [
+                            {"path": "requirements.in", "locks": "not-a-list"}
+                        ],
+                    },
+                    "locks",
+                ),
+                (
+                    {
+                        **valid,
+                        "requirement-sources": [
+                            {
+                                "path": "requirements.in",
+                                "locks": ["requirements.txt", "requirements.txt"],
+                            }
+                        ],
+                    },
+                    "unique",
+                ),
+            ):
+                with self.subTest(document=document):
+                    registry.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(freshness.AuditError, message):
+                        freshness.load_trackers(
+                            root, freshness.DEFAULT_TRACKER_REGISTRY
+                        )
+
+    def test_action_and_audit_registry_error_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            with self.assertRaisesRegex(freshness.AuditError, "workflow directory"):
+                freshness.action_findings(
+                    root,
+                    (Path("requirements-dev.in"),),
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                )
+            (root / "empty-workflows").mkdir()
+            with self.assertRaisesRegex(freshness.AuditError, "no workflow files"):
+                freshness.action_findings(
+                    root,
+                    (Path("empty-workflows"),),
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                )
+
+            registry = root / freshness.DEFAULT_TRACKER_REGISTRY
+            registry.write_text("{}", encoding="utf-8")
+            report = freshness.audit(root, "")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertEqual(len(report["errors"]), 1)
+
+            self.write_repository(root)
+            document = json.loads(registry.read_text(encoding="utf-8"))
+            document["release-please-configs"] = []
+            registry.write_text(json.dumps(document), encoding="utf-8")
+            client = mock.Mock()
+            client.latest_release.return_value = release("v1.0.0", "a" * 40)
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "latest_pypi_release",
+                    side_effect={
+                        "ruff": "0.1.0",
+                        "mutmut": "1.0.0",
+                        "markdown-it-py": "1.0.0",
+                    }.__getitem__,
+                ),
+            ):
+                report = freshness.audit(root, "token")
+            self.assertEqual(report["status"], "current")
+            self.assertNotIn(
+                "googleapis/release-please", client.latest_release.call_args
+            )
 
     def test_audit_markdown_and_main_statuses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -289,22 +479,30 @@ class FreshnessTests(unittest.TestCase):
             runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
 
     def test_freshness_workflow_is_scheduled_and_non_required(self) -> None:
-        workflow = (PLUGIN_ROOT / ".github" / "workflows" / "freshness.yml").read_text(
-            encoding="utf-8"
+        workflows = (
+            PLUGIN_ROOT / ".github" / "workflows" / "freshness.yml",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "freshness.yml",
         )
-        for fragment in (
-            "schedule:",
-            "workflow_dispatch:",
-            "contents: read",
-            "issues: write",
-            "cancel-in-progress: false",
-            "python scripts/audit_freshness.py",
-            "repo-scaffold-freshness-audit",
-            "--body-file",
-        ):
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, workflow)
-        self.assertNotIn("pull_request:", workflow)
+        for path in workflows:
+            workflow = path.read_text(encoding="utf-8")
+            for fragment in (
+                "schedule:",
+                "workflow_dispatch:",
+                "contents: read",
+                "issues: write",
+                "cancel-in-progress: false",
+                "python scripts/audit_freshness.py",
+                "repo-scaffold-freshness-audit",
+                "--body-file",
+            ):
+                with self.subTest(path=path, fragment=fragment):
+                    self.assertIn(fragment, workflow)
+            self.assertNotIn("pull_request:", workflow)
 
 
 if __name__ == "__main__":

@@ -189,9 +189,11 @@ repo-scaffold/
     └── repo-scaffold/
         ├── SKILL.md
         ├── scripts/
+        │   ├── audit_freshness.py      # registry-driven stale-input checker
         │   ├── check_community_health.py # versioned upstream drift checker
         │   ├── ci_toolchain.py      # centralized CI bootstrap/tool pin policy
         │   ├── codeql_preflight.py  # fail-closed CodeQL/reusable-workflow inspection
+        │   ├── sync_action_pins.py  # immutable action-release resolver
         │   └── validate_scaffold.py # rendered Markdown and template contract
         ├── references/
         │   ├── readme.md          # README structure guidance
@@ -214,7 +216,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -264,9 +266,14 @@ grouped by dependency across the root toolchain and
 `skills/repo-scaffold/assets/requirements-docs.txt`; security updates for the
 two mirrored documentation packages are grouped explicitly.
 The non-required weekly [freshness workflow](.github/workflows/freshness.yml)
-independently reports action-pin, Release Please schema, direct-PyPI-pin, and
-lock-consistency drift. It opens or updates one marker Issue when attention is
-required and closes it only after a clean scheduled/manual result.
+reads the reviewed [freshness tracker registry](.github/freshness-trackers.json)
+and independently reports action-pin, Release Please schema, direct-PyPI-pin,
+and lock-consistency drift. It opens or updates one marker Issue when attention
+is required and closes it only after a clean scheduled/manual result. The
+scaffold ships the same registry-driven checker and workflow to generated
+repositories when Issues are available. Track only sources with an
+authoritative owner and deterministic version resolver; community-health policy
+tracking remains in its separate registry.
 Mutation testing extends that toolchain through the separate, hash-verified
 `requirements-mutation.txt`. Mutmut versions are not duplicated in validators
 or tests; a compatible Dependabot bump passes the runner integration tests,
