@@ -48,6 +48,10 @@ workflows current; a weekly PR-only synchronizer mirrors reviewed releases to
 scaffold workflow assets. A separate scheduled freshness audit compares action
 pins, Release Please schemas, and direct Python pins with their authoritative
 upstreams, then maintains one reminder issue until the drift is resolved.
+An independent weekly official-documentation review validates the allowlisted
+GitHub, OpenAI, and Claude Code source pages, their claim markers, and the
+review interval recorded for each affected plugin document. It opens one
+reminder Issue for human review rather than auto-editing prose.
 Shipped workflows do not delegate execution to a mutable container tag.
 
 ## 2. Requirements
@@ -148,6 +152,7 @@ repo-scaffold/
 │   ├── ci-toolchain.json
 │   ├── dependabot.yml
 │   ├── labeler.yml
+│   ├── official-docs-trackers.json
 │   ├── python-support.json
 │   ├── release.yml
 │   └── workflows/
@@ -159,6 +164,7 @@ repo-scaffold/
 │       ├── labeler.yml
 │       ├── links.yml
 │       ├── mutation-testing.yml
+│       ├── official-docs.yml
 │       ├── release-please.yml
 │       ├── release.yml
 │       ├── scorecard.yml
@@ -182,6 +188,7 @@ repo-scaffold/
 │   ├── python_support.py
 │   ├── run_mutation_testing.py
 │   ├── audit_freshness.py
+│   ├── audit_official_docs.py
 │   ├── validate_mutation_results.py
 │   ├── validate_repository.py
 │   └── validate_workflows.py
@@ -216,7 +223,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -274,6 +281,12 @@ scaffold ships the same registry-driven checker and workflow to generated
 repositories when Issues are available. Track only sources with an
 authoritative owner and deterministic version resolver; community-health policy
 tracking remains in its separate registry.
+The non-required weekly [official-documentation workflow](.github/workflows/official-docs.yml)
+uses [its explicit tracker registry](.github/official-docs-trackers.json) to
+revalidate the authoritative source URLs and stable claim markers, then requires
+a reviewed registry-date update at least every 90 days. This mechanism is
+limited to this plugin's documented host contracts; generated repositories do
+not inherit claims about Codex or Claude Code.
 Mutation testing extends that toolchain through the separate, hash-verified
 `requirements-mutation.txt`. Mutmut versions are not duplicated in validators
 or tests; a compatible Dependabot bump passes the runner integration tests,

@@ -1,0 +1,128 @@
+{
+  "schema-version": 1,
+  "claims": [
+    {
+      "id": "codex-plugin-packaging",
+      "label": "Codex plugin packaging",
+      "url": "https://developers.openai.com/plugins/build/plugins",
+      "allowed-hosts": ["developers.openai.com"],
+      "paths": [
+        "README.md",
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": [
+        ".codex-plugin/plugin.json",
+        "shared by ChatGPT and Codex"
+      ],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "codex-agents-instructions",
+      "label": "Codex AGENTS.md instructions",
+      "url": "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
+      "allowed-hosts": ["learn.chatgpt.com"],
+      "paths": [
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["AGENTS.md"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "codex-subagents",
+      "label": "Codex subagent configuration",
+      "url": "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+      "allowed-hosts": ["learn.chatgpt.com"],
+      "paths": [
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["developer_instructions"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "claude-plugin-layout",
+      "label": "Claude Code plugin layout",
+      "url": "https://code.claude.com/docs/en/plugins",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "README.md",
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["skills/", "--plugin-dir"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "claude-memory-adapter",
+      "label": "Claude Code CLAUDE.md adapter",
+      "url": "https://code.claude.com/docs/en/memory",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["CLAUDE.md"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "claude-skills",
+      "label": "Claude Code skills",
+      "url": "https://code.claude.com/docs/en/skills",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["SKILL.md"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "claude-subagents",
+      "label": "Claude Code subagent configuration",
+      "url": "https://code.claude.com/docs/en/sub-agents",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": [".claude/agents/", "agents/"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-security",
+      "label": "GitHub Actions security guidance",
+      "url": "https://docs.github.com/en/actions/reference/security/secure-use",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "README.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/references/workflow-contracts.md"
+      ],
+      "required-markers": ["full-length commit SHA", "pull_request_target"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-dependabot",
+      "label": "GitHub Actions Dependabot configuration",
+      "url": "https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/auto-update-actions",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "README.md",
+        "skills/repo-scaffold/references/github-setup.md"
+      ],
+      "required-markers": ["github-actions", "directory"],
+      "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    }
+  ]
+}

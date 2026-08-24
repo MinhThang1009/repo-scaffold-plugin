@@ -80,6 +80,14 @@ AGENT_COMPATIBILITY_REFERENCE_PATHS = (
     Path("skills/repo-scaffold/references/agent-compatibility.md"),
     Path("skills/repo-scaffold/references/agent-compatibility.vi.md"),
 )
+OFFICIAL_DOCUMENTATION_HOSTS = frozenset(
+    {
+        "code.claude.com",
+        "developers.openai.com",
+        "docs.github.com",
+        "learn.chatgpt.com",
+    }
+)
 MULTILINGUAL_SCAFFOLD_ASSET_PAIRS = (
     (Path("AGENTS.md"), Path("AGENTS.vi.md"), Path("AGENTS.md")),
     (Path("CONTRIBUTING.md"), Path("CONTRIBUTING.vi.md"), Path("CONTRIBUTING.md")),
@@ -1394,6 +1402,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         "skills/repo-scaffold/scripts/sync_action_pins.py",
         "skills/repo-scaffold/scripts/validate_scaffold.py",
         "scripts/audit_freshness.py",
+        "scripts/audit_official_docs.py",
         "scripts/check_code_scanning_alerts.py",
         "scripts/prepare_mutation_cache.py",
         "scripts/python_support.py",
@@ -4229,6 +4238,146 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]:
+    """Require the bounded reminder for externally documented plugin claims."""
+    problems: list[str] = []
+    registry_path = repository_root / ".github" / "official-docs-trackers.json"
+    script_path = repository_root / "scripts" / "audit_official_docs.py"
+    ci_path = repository_root / ".github" / "workflows" / "ci.yml"
+    workflow_path = repository_root / ".github" / "workflows" / "official-docs.yml"
+    try:
+        registry = load_json(registry_path)
+    except (OSError, UnicodeError, ValueError) as error:
+        problems.append(
+            ".github/official-docs-trackers.json: could not verify tracker registry: "
+            f"{error}"
+        )
+    else:
+        claims = registry.get("claims") if isinstance(registry, dict) else None
+        if (
+            not isinstance(registry, dict)
+            or registry.get("schema-version") != 1
+            or not isinstance(claims, list)
+            or not claims
+        ):
+            problems.append(
+                ".github/official-docs-trackers.json: must keep a versioned non-empty official-documentation claim registry"
+            )
+        else:
+            tracked_paths_by_url: dict[str, set[str]] = {}
+            for claim in claims:
+                if not isinstance(claim, dict):
+                    continue
+                url = claim.get("url")
+                claim_paths = claim.get("paths")
+                if isinstance(url, str) and isinstance(claim_paths, list):
+                    tracked_paths_by_url.setdefault(url, set()).update(
+                        path for path in claim_paths if isinstance(path, str)
+                    )
+            for path in project_files(repository_root, ("*.md",)):
+                relative = path.relative_to(repository_root)
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as error:
+                    problems.append(
+                        f"{relative}: could not read Markdown for official-documentation tracking: {error}"
+                    )
+                    continue
+                for destination in markdown_link_destinations(text):
+                    try:
+                        parsed = urlsplit(destination)
+                        host = parsed.hostname.casefold() if parsed.hostname else ""
+                    except ValueError:
+                        continue
+                    source_url = parsed._replace(fragment="").geturl()
+                    if host not in OFFICIAL_DOCUMENTATION_HOSTS:
+                        continue
+                    tracked_paths = tracked_paths_by_url.get(source_url)
+                    if tracked_paths is None:
+                        problems.append(
+                            f"{relative}: official documentation URL is not tracked: {source_url}"
+                        )
+                    elif relative.as_posix() not in tracked_paths:
+                        problems.append(
+                            f"{relative}: official documentation URL must list this file in its tracker claim: {source_url}"
+                        )
+    try:
+        script_text = script_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"scripts/audit_official_docs.py: unreadable: {error}")
+    else:
+        for fragment in (
+            "load_trackers",
+            "required-markers",
+            "review-period-days",
+            "--tracker-registry",
+            "repo-scaffold-official-docs-audit",
+        ):
+            if fragment not in script_text:
+                problems.append(
+                    "scripts/audit_official_docs.py: must keep the registry, marker, and review-period contracts"
+                )
+                break
+    try:
+        workflow = load_yaml(workflow_path)
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        problems.append(f".github/workflows/official-docs.yml: unreadable: {error}")
+        return problems
+    if not isinstance(workflow, dict):
+        return [
+            *problems,
+            ".github/workflows/official-docs.yml: workflow must be a mapping",
+        ]
+    if workflow.get("on") != {
+        "schedule": [{"cron": "29 6 * * 4"}],
+        "workflow_dispatch": "",
+    }:
+        problems.append(
+            ".github/workflows/official-docs.yml: must use only its scheduled and manual triggers"
+        )
+    if workflow.get("permissions") != {"contents": "read", "issues": "write"}:
+        problems.append(
+            ".github/workflows/official-docs.yml: must use read-only contents and issue write permissions"
+        )
+    concurrency = workflow.get("concurrency")
+    jobs = workflow.get("jobs")
+    job = jobs.get("audit") if isinstance(jobs, dict) else None
+    if (
+        not isinstance(concurrency, dict)
+        or concurrency.get("cancel-in-progress") != "false"
+        or not isinstance(job, dict)
+        or job.get("name") != "official-docs-review"
+        or job.get("timeout-minutes") != "10"
+    ):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder concurrency or audit job contract is invalid"
+        )
+    for fragment in (
+        "python scripts/audit_official_docs.py",
+        "repo-scaffold-official-docs-audit",
+        "--body-file",
+    ):
+        if fragment not in workflow_text:
+            problems.append(
+                ".github/workflows/official-docs.yml: must run the checker and reconcile one marker issue"
+            )
+            break
+    try:
+        ci_text = ci_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f".github/workflows/ci.yml: unreadable: {error}")
+    else:
+        if (
+            "python scripts/audit_official_docs.py --repository-root . --validate-registry"
+            not in ci_text
+        ):
+            problems.append(
+                ".github/workflows/ci.yml: must validate the official-documentation tracker registry"
+            )
+    return problems
+
+
 def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
     """Require a base-trusted workflow to gate unreviewed scanning alerts."""
     problems: list[str] = []
@@ -4595,6 +4744,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_markdown_links,
         validate_community_health_tracking_contract,
         validate_freshness_tracking_contract,
+        validate_official_docs_tracking_contract,
         validate_code_scanning_gate_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
@@ -4616,7 +4766,7 @@ def main() -> int:
     print(
         "Repository metadata, multi-agent adapters, action pins, dependency locks, coverage policy, "
         "CI policies, mutation testing, test quality, links, community-health and "
-        "freshness tracking, templates, attestations, and release archive are valid."
+        "freshness tracking, official documentation, templates, attestations, and release archive are valid."
     )
     return 0
 

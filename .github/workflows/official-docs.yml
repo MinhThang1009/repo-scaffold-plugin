@@ -1,0 +1,94 @@
+name: Official documentation review
+
+on:
+  schedule:
+    - cron: "29 6 * * 4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: official-docs-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Review authoritative documentation claims
+        id: audit
+        shell: bash
+        run: |
+          set +e
+          python scripts/audit_official_docs.py \
+            --repository-root . \
+            --json-output "$RUNNER_TEMP/official-docs.json" \
+            --markdown-output "$RUNNER_TEMP/official-docs.md"
+          checker_exit=$?
+          set -e
+          if [[ ! -f "$RUNNER_TEMP/official-docs.md" ]]; then
+            printf '%s\n' \
+              '<!-- repo-scaffold-official-docs-audit -->' \
+              '# Official documentation review report' \
+              '' \
+              'The checker failed before it could produce a report. Inspect this workflow run before changing a claim.' \
+              > "$RUNNER_TEMP/official-docs.md"
+            checker_exit=2
+          fi
+          printf 'checker_exit=%s\n' "$checker_exit" >> "$GITHUB_OUTPUT"
+
+      - name: Add report to job summary
+        shell: bash
+        run: cat "$RUNNER_TEMP/official-docs.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reconcile reminder issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CHECKER_EXIT: ${{ steps.audit.outputs.checker_exit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker='<!-- repo-scaffold-official-docs-audit -->'
+          title='Official documentation review required'
+          mapfile -t issue_numbers < <(
+            gh api --hostname github.com --paginate \
+              "repos/${REPOSITORY}/issues?state=open&per_page=100" \
+              --jq '.[] | select(.pull_request == null) | select((.body // "") | contains("<!-- repo-scaffold-official-docs-audit -->")) | .number'
+          )
+          if (( ${#issue_numbers[@]} > 1 )); then
+            printf 'Found multiple open official-documentation reminder issues.\n' >&2
+            exit 1
+          fi
+          if [[ "$CHECKER_EXIT" == '0' ]]; then
+            if (( ${#issue_numbers[@]} == 1 )); then
+              gh issue close "${issue_numbers[0]}" \
+                --repo "github.com/${REPOSITORY}" \
+                --comment 'The scheduled official-documentation review is current, so this reminder is closing automatically.'
+            fi
+            exit 0
+          fi
+          grep -Fq "$marker" "$RUNNER_TEMP/official-docs.md"
+          if (( ${#issue_numbers[@]} == 1 )); then
+            gh issue edit "${issue_numbers[0]}" \
+              --repo "github.com/${REPOSITORY}" \
+              --title "$title" \
+              --body-file "$RUNNER_TEMP/official-docs.md"
+          else
+            gh issue create \
+              --repo "github.com/${REPOSITORY}" \
+              --title "$title" \
+              --body-file "$RUNNER_TEMP/official-docs.md"
+          fi
+          if [[ "$CHECKER_EXIT" != '0' ]]; then
+            exit 1
+          fi

@@ -13,6 +13,7 @@ import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import BytesIO, StringIO
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import yaml
@@ -2842,6 +2843,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_markdown_links",
             "validate_community_health_tracking_contract",
             "validate_freshness_tracking_contract",
+            "validate_official_docs_tracking_contract",
             "validate_code_scanning_gate_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
@@ -6505,6 +6507,186 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             any("workflow must match" in problem for problem in workflow_drift)
         )
+
+
+class OfficialDocumentationTrackingContractTests(unittest.TestCase):
+    def copy_contract(self, root: Path) -> None:
+        for relative in (
+            ".github/official-docs-trackers.json",
+            ".github/workflows/ci.yml",
+            ".github/workflows/official-docs.yml",
+            "scripts/audit_official_docs.py",
+        ):
+            source = PLUGIN_ROOT / relative
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+
+    def test_current_official_documentation_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_official_docs_tracking_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_and_drifted_official_documentation_contract_is_reported(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing = validate_repository.validate_official_docs_tracking_contract(root)
+            self.copy_contract(root)
+            (root / ".github/official-docs-trackers.json").write_text(
+                '{"schema-version": 1, "claims": []}\n', encoding="utf-8"
+            )
+            (root / "scripts/audit_official_docs.py").write_text(
+                "checker-drift\n", encoding="utf-8"
+            )
+            (root / ".github/workflows/official-docs.yml").write_text(
+                "name: stale\n"
+                "on:\n"
+                "  push:\n"
+                "permissions:\n"
+                "  contents: write\n"
+                "jobs: {}\n",
+                encoding="utf-8",
+            )
+            drifted = validate_repository.validate_official_docs_tracking_contract(root)
+            (root / ".github/workflows/official-docs.yml").write_text(
+                "[]\n", encoding="utf-8"
+            )
+            non_mapping = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(any("tracker registry" in problem for problem in missing))
+        self.assertTrue(any("audit_official_docs.py" in problem for problem in missing))
+        self.assertTrue(any("versioned non-empty" in problem for problem in drifted))
+        self.assertTrue(any("marker" in problem for problem in drifted))
+        self.assertTrue(any("must use only" in problem for problem in drifted))
+        self.assertTrue(any("permissions" in problem for problem in drifted))
+        self.assertTrue(any("job contract" in problem for problem in drifted))
+        self.assertTrue(any("must be a mapping" in problem for problem in non_mapping))
+
+    def test_untracked_official_documentation_link_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "untracked.md").write_text(
+                "[New Claude documentation](https://code.claude.com/docs/en/new-topic)\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any(
+                "untracked.md: official documentation URL is not tracked" in problem
+                for problem in problems
+            )
+        )
+
+    def test_tracked_link_outside_claim_paths_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "unlisted.md").write_text(
+                "[Claude skills](https://code.claude.com/docs/en/skills)\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any(
+                "unlisted.md: official documentation URL must list this file" in problem
+                for problem in problems
+            )
+        )
+
+    def test_invalid_tracker_entries_and_unreadable_markdown_are_handled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / ".github/official-docs-trackers.json").write_text(
+                json.dumps(
+                    {
+                        "schema-version": 1,
+                        "claims": [
+                            {
+                                "url": "https://code.claude.com/docs/en/skills",
+                                "paths": [],
+                            },
+                            "not an object",
+                            {"url": 7, "paths": "not a list"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unreadable = root / "unreadable.md"
+            original_read_text = Path.read_text
+
+            def read_text_or_raise(path: Path, *args: Any, **kwargs: Any) -> str:
+                if path == unreadable:
+                    raise OSError("denied")
+                return original_read_text(path, *args, **kwargs)
+
+            with (
+                mock.patch.object(
+                    validate_repository, "project_files", return_value=[unreadable]
+                ),
+                mock.patch.object(
+                    Path, "read_text", autospec=True, side_effect=read_text_or_raise
+                ),
+            ):
+                problems = validate_repository.validate_official_docs_tracking_contract(
+                    root
+                )
+        self.assertTrue(
+            any(
+                "unreadable.md: could not read Markdown" in problem
+                for problem in problems
+            )
+        )
+
+    def test_malformed_and_nonofficial_markdown_urls_do_not_break_tracking(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "links.md").write_text("# Links\n", encoding="utf-8")
+            with mock.patch.object(
+                validate_repository,
+                "markdown_link_destinations",
+                return_value=["https://[invalid", "https://example.test"],
+            ):
+                problems = validate_repository.validate_official_docs_tracking_contract(
+                    root
+                )
+        self.assertEqual(problems, [])
+
+    def test_missing_ci_registry_gate_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / ".github/workflows/ci.yml").write_text(
+                "name: CI\n", encoding="utf-8"
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(any("ci.yml: must validate" in problem for problem in problems))
+
+    def test_unreadable_ci_registry_gate_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            ci_path = root / ".github/workflows/ci.yml"
+            ci_path.unlink()
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(any("ci.yml: unreadable" in problem for problem in problems))
 
 
 if __name__ == "__main__":
