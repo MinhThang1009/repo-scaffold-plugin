@@ -103,6 +103,28 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertIn("# v9.1.2", installed.read_text(encoding="utf-8"))
             self.assertIn("# v8.7.6", asset.read_text(encoding="utf-8"))
 
+    def test_generated_project_can_scope_synchronization_to_its_workflows(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            self.assertIn("# v9.1.2", workflow.read_text(encoding="utf-8"))
+
     def test_action_repositories_rejects_unpinned_and_unallowed_references(
         self,
     ) -> None:
@@ -135,6 +157,8 @@ class ActionPinSyncTests(unittest.TestCase):
             root = Path(directory)
             with self.assertRaisesRegex(ValueError, "missing or unsafe"):
                 sync_action_pins.workflow_paths(root)
+            with self.assertRaisesRegex(ValueError, "safe relative path"):
+                sync_action_pins.workflow_paths(root, (Path("../outside"),))
             for relative in sync_action_pins.WORKFLOW_DIRECTORIES:
                 (root / relative).mkdir(parents=True)
             with self.assertRaisesRegex(ValueError, "no workflow files"):
@@ -337,6 +361,31 @@ class ActionPinSyncTests(unittest.TestCase):
         ):
             self.assertEqual(sync_action_pins.main([]), 1)
         self.assertIn("GITHUB_TOKEN", stderr.getvalue())
+
+    def test_main_accepts_a_project_workflow_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n",
+            )
+            with mock.patch.object(sync_action_pins, "GitHubReleaseClient") as client:
+                client.return_value.latest_release.side_effect = self.releases
+                self.assertEqual(
+                    sync_action_pins.main(
+                        [
+                            "--repository-root",
+                            str(root),
+                            "--workflow-directory",
+                            ".github/workflows",
+                            "--write",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertIn("# v9.1.2", workflow.read_text(encoding="utf-8"))
 
     def test_script_entrypoint_uses_main(self) -> None:
         with (
