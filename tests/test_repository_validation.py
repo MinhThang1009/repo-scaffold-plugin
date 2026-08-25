@@ -715,8 +715,8 @@ class ActionPinSyncContractTests(unittest.TestCase):
 
             workflow.write_text(
                 original.replace(
-                    "${{ secrets.VERSION_SYNC_TOKEN }}",
-                    "${{ secrets.RELEASE_PLEASE_TOKEN }}",
+                    "token: ${{ secrets.VERSION_SYNC_TOKEN }}",
+                    "token: ${{ secrets.RELEASE_PLEASE_TOKEN }}",
                     1,
                 ),
                 encoding="utf-8",
@@ -732,11 +732,23 @@ class ActionPinSyncContractTests(unittest.TestCase):
             )
 
             workflow.write_text(
-                original.replace("pull-requests: write", "pull-requests: read", 1),
+                original.replace(
+                    "permissions:\n      contents: read",
+                    "permissions:\n      contents: write",
+                    1,
+                ),
                 encoding="utf-8",
             )
             invalid_job_permissions = (
                 validate_repository.validate_action_pin_sync_contract(root)
+            )
+
+            workflow.write_text(
+                original.replace("Verify version-sync token", "Bypass token check", 1),
+                encoding="utf-8",
+            )
+            invalid_token_guard = validate_repository.validate_action_pin_sync_contract(
+                root
             )
 
         self.assertTrue(
@@ -762,9 +774,14 @@ class ActionPinSyncContractTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                "job permissions must use only contents and pull-requests write"
-                in problem
+                "job permissions must remain contents: read" in problem
                 for problem in invalid_job_permissions
+            )
+        )
+        self.assertTrue(
+            any(
+                "must fail clearly when VERSION_SYNC_TOKEN is absent" in problem
+                for problem in invalid_token_guard
             )
         )
 

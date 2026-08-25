@@ -3225,13 +3225,26 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     ):
         problems.append(f"{relative}: synchronizer job contract is invalid")
         return problems
-    if job.get("permissions") != {
-        "contents": "write",
-        "pull-requests": "write",
-    }:
+    if job.get("permissions") != {"contents": "read"}:
         problems.append(
-            f"{relative}: synchronizer job permissions must use only contents and "
-            "pull-requests write"
+            f"{relative}: synchronizer job permissions must remain contents: read; "
+            "the dedicated PAT performs writes"
+        )
+    token_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("name") == "Verify version-sync token"
+    ]
+    token_step = token_steps[0] if len(token_steps) == 1 else {}
+    if (
+        len(token_steps) != 1
+        or token_step.get("env")
+        != {"VERSION_SYNC_TOKEN": "${{ secrets.VERSION_SYNC_TOKEN }}"}
+        or not isinstance(token_step.get("run"), str)
+        or '[ -z "$VERSION_SYNC_TOKEN" ]' not in token_step["run"]
+    ):
+        problems.append(
+            f"{relative}: synchronizer must fail clearly when VERSION_SYNC_TOKEN is absent"
         )
     sync_steps = [
         step

@@ -18,13 +18,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Verify version-sync token
+        env:
+          VERSION_SYNC_TOKEN: ${{ secrets.VERSION_SYNC_TOKEN }}
+        run: |
+          if [ -z "$VERSION_SYNC_TOKEN" ]; then
+            echo "::error::VERSION_SYNC_TOKEN is required. Configure a repository-scoped fine-grained PAT with Contents, Pull requests, and Workflows write permissions."
+            exit 1
+          fi
 
       - name: Synchronize versioned maintenance inputs
         env:
