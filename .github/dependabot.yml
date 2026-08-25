@@ -18,23 +18,3 @@ updates:
           - "PyYAML"
     commit-message:
       prefix: "chore(deps)"
-
-  - package-ecosystem: "github-actions"
-    # GitHub Actions Dependabot scans only .github/workflows at repository root.
-    # template assets are synchronized by action-pin-sync.yml.
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    groups:
-      synchronized-actions:
-        # One PR keeps sub-actions such as CodeQL init/analyze/upload-sarif on
-        # the same release SHA across installed workflows and templates.
-        applies-to: "version-updates"
-        patterns:
-          - "*"
-      synchronized-actions-security:
-        applies-to: "security-updates"
-        patterns:
-          - "*"
-    commit-message:
-      prefix: "chore(deps)"

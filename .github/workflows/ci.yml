@@ -148,6 +148,7 @@ jobs:
           scripts/python_support.py
           scripts/run_mutation_testing.py
           scripts/sync_action_pins.py
+          scripts/sync_versioned_inputs.py
           scripts/validate_mutation_results.py
           scripts/validate_repository.py
           scripts/validate_workflows.py
