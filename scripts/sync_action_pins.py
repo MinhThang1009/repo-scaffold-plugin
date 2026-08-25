@@ -19,7 +19,7 @@ from urllib.request import Request, urlopen
 GITHUB_API_URL = "https://api.github.com"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 ACTION_PIN_PATTERN = re.compile(
-    r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>\s*(?:#.*)?)$"
+    r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 USES_PATTERN = re.compile(r"(?m)^\s*(?:-\s*)?uses:\s*(?P<reference>\S+)")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -302,9 +302,9 @@ def synchronize_action_pins(
     write: bool,
     workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
 ) -> list[Path]:
-    """Update all allowed action pins atomically after resolving every release."""
+    """Update all allowed action pins after resolving every release."""
     contents = {
-        path: path.read_text(encoding="utf-8")
+        path: path.read_bytes().decode("utf-8")
         for path in workflow_paths(repository_root, workflow_directories)
     }
     repositories = sorted(
@@ -334,7 +334,7 @@ def synchronize_action_pins(
     changed = [path for path in contents if replacements[path] != contents[path]]
     if write:
         for path in changed:
-            path.write_text(replacements[path], encoding="utf-8")
+            path.write_bytes(replacements[path].encode("utf-8"))
     return changed
 
 

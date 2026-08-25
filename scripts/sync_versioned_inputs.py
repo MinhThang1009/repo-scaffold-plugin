@@ -39,7 +39,7 @@ def synchronize_release_please_schemas(
             repository_root, relative, kind="Release Please config"
         )
         try:
-            content = path.read_text(encoding="utf-8")
+            content = path.read_bytes().decode("utf-8")
         except (OSError, UnicodeError) as error:
             raise ValueError(
                 f"could not read Release Please config {relative}: {error}"
@@ -65,7 +65,7 @@ def synchronize_release_please_schemas(
             + content[match.end("url") :]
         )
         if write:
-            path.write_text(updated, encoding="utf-8")
+            path.write_bytes(updated.encode("utf-8"))
         changed.append(path)
     return changed
 

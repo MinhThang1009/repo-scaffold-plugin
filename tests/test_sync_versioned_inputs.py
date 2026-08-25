@@ -118,6 +118,25 @@ class VersionedInputSyncTests(unittest.TestCase):
                 [],
             )
 
+    def test_schema_synchronizer_preserves_mixed_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            config.write_bytes(self.release_config().replace("\n", "\r\n", 1).encode())
+
+            changed = versioned_inputs.synchronize_release_please_schemas(
+                root,
+                (config.relative_to(root),),
+                "v17.11.2",
+                write=True,
+            )
+
+            self.assertEqual(changed, [config])
+            updated = config.read_bytes()
+            self.assertIn(b"release-please/v17.11.2/schemas/config.json", updated)
+            self.assertEqual(updated.count(b"\r\n"), 1)
+            self.assertEqual(updated.replace(b"\r\n", b"").count(b"\n"), 2)
+
     def test_caches_authoritative_releases_across_preflight_and_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -185,7 +204,7 @@ class VersionedInputSyncTests(unittest.TestCase):
             root = Path(directory)
             self.write_repository(root)
             config = root / "release-please-config.json"
-            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+            with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
                 with self.assertRaisesRegex(ValueError, "could not read"):
                     versioned_inputs.synchronize_release_please_schemas(
                         root,

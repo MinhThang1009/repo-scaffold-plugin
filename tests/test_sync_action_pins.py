@@ -166,6 +166,33 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertEqual(changed, [workflow])
             self.assertIn("# v9.1.2", workflow.read_text(encoding="utf-8"))
 
+    def test_synchronize_preserves_line_endings_and_adjacent_blank_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / ".github" / "workflows" / "ci.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_bytes(
+                (
+                    "jobs:\r\n"
+                    "  test:\r\n"
+                    "    steps:\r\n"
+                    "      - uses: actions/checkout@" + "a" * 40 + "\r\n\r\n"
+                ).encode()
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            updated = workflow.read_bytes()
+            self.assertIn(f"actions/checkout@{'c' * 40} # v9.1.2".encode(), updated)
+            self.assertEqual(updated.count(b"\r\n"), 5)
+            self.assertNotIn(b"\n", updated.replace(b"\r\n", b""))
+
     def test_action_repositories_rejects_unpinned_and_unallowed_references(
         self,
     ) -> None:
