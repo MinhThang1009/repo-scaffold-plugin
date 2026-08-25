@@ -103,6 +103,27 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertIn("# v9.1.2", installed.read_text(encoding="utf-8"))
             self.assertIn("# v8.7.6", asset.read_text(encoding="utf-8"))
 
+    def test_synchronize_preserves_current_pin_comment_spacing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "c" * 40 + "  # v9.1.2\n",
+            )
+            original = workflow.read_text(encoding="utf-8")
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [])
+            self.assertEqual(workflow.read_text(encoding="utf-8"), original)
+
     def test_generated_project_can_scope_synchronization_to_its_workflows(
         self,
     ) -> None:

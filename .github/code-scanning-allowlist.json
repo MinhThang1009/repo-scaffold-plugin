@@ -16,27 +16,6 @@
       "reason": "The pull_request_target workflow checks out only github.event.pull_request.base.sha with contents: read and never executes pull-request code."
     },
     {
-      "number": 16,
-      "tool": "Scorecard",
-      "rule": "TokenPermissionsID",
-      "path": ".github/workflows/action-pin-sync.yml",
-      "reason": "The scheduled job needs contents and pull-requests write permissions only to create its reviewed synchronization pull request."
-    },
-    {
-      "number": 12,
-      "tool": "Scorecard",
-      "rule": "TokenPermissionsID",
-      "path": ".github/workflows/release.yml",
-      "reason": "The publish job needs contents: write only to attach verified assets to the release selected by its reusable-workflow inputs."
-    },
-    {
-      "number": 11,
-      "tool": "Scorecard",
-      "rule": "TokenPermissionsID",
-      "path": ".github/workflows/release-please.yml",
-      "reason": "The reusable release publication job needs its explicit release and attestation write permissions."
-    },
-    {
       "number": 7,
       "tool": "Scorecard",
       "rule": "CIIBestPracticesID",
