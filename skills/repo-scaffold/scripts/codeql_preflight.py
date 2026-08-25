@@ -784,6 +784,12 @@ def _bash_shell_command_string(words: list[str]) -> bool:
 
 def _bash_dynamic_execution_is_unresolved(text: str) -> bool:
     normalized = re.sub(r"\\\r?\n", " ", text).replace("\r\n", "\n")
+    # ``shlex`` treats the ``#`` in Bash's ``${#array[@]}`` length expansion
+    # as the start of a comment. Replace the whole non-executable expansion
+    # before tokenization without changing the dynamic-command analysis.
+    normalized = re.sub(
+        r"\$\{#[^}\r\n]*\}", "REPO_SCAFFOLD_PARAMETER_LENGTH", normalized
+    )
     lexer = shlex.shlex(
         normalized.replace("\n", ";"), posix=True, punctuation_chars=";&|(){}"
     )
@@ -796,8 +802,16 @@ def _bash_dynamic_execution_is_unresolved(text: str) -> bool:
 
     segment: list[str] = []
     previous_separator = ""
+    control_condition_is_test = False
     for lexeme in [*tokens, ";"]:
         if lexeme and all(character in ";&|(){}" for character in lexeme):
+            control_word = segment[0] if segment else ""
+            if control_word in {"if", "elif", "until", "while"}:
+                control_condition_is_test = (
+                    any(word in {"[", "[["} for word in segment) or "(" in lexeme
+                )
+            elif control_word in {"then", "do"}:
+                control_condition_is_test = False
             words = _bash_unwrap_command(segment)
             if words:
                 command = _bash_command_name(words[0])
@@ -809,7 +823,8 @@ def _bash_dynamic_execution_is_unresolved(text: str) -> bool:
                     "zsh",
                 } or words[0] in {".", "source"}
                 if "$" in words[0] or "`" in words[0]:
-                    return True
+                    if not control_condition_is_test:
+                        return True
                 if (
                     lexeme == "("
                     and is_script_loader
@@ -872,6 +887,9 @@ def _bash_trap_handler(words: list[str]) -> str | None:
 
 def _bash_dynamic_execution_bodies(text: str) -> list[str]:
     normalized = re.sub(r"\\\r?\n", " ", text).replace("\r\n", "\n")
+    normalized = re.sub(
+        r"\$\{#[^}\r\n]*\}", "REPO_SCAFFOLD_PARAMETER_LENGTH", normalized
+    )
     lexer = shlex.shlex(
         normalized.replace("\n", ";"), posix=True, punctuation_chars=";&|(){}"
     )
@@ -1071,8 +1089,34 @@ def _bash_alias_state(
     return active_aliases, expand_aliases, enabled_line
 
 
+def _bash_command_segment(line: str, end: int) -> str:
+    """Return the current Bash command segment before a quoted string."""
+    start = 0
+    quote: str | None = None
+    index = 0
+    while index < end:
+        character = line[index]
+        if quote is not None:
+            if quote == '"' and character == "\\":
+                index += 2
+                continue
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character == "\\":
+            index += 2
+            continue
+        if character in "'\"":
+            quote = character
+        elif character in ";|&()":
+            start = index + 1
+        index += 1
+    return line[start:end]
+
+
 def _bash_quoted_string_role(line: str, quote_index: int) -> str:
-    segment = re.split(r"&&|\|\||[;|&()]", line[:quote_index])[-1]
+    segment = _bash_command_segment(line, quote_index)
     if re.search(r"[A-Za-z_][A-Za-z0-9_]*=$", segment.rstrip()):
         return "literal"
     try:
