@@ -620,6 +620,59 @@ class ActionReferenceValidationTests(unittest.TestCase):
             )
             self.assertFalse(any("invalid.yml" in item for item in problems))
 
+    def test_linked_workflow_boundaries_are_reported_without_dereferencing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            workflow = workflow_root / "ci.yml"
+            workflow.write_text("permissions: {}\njobs: {}\n", encoding="utf-8")
+            (workflow_root / "ignored.yml").mkdir()
+
+            self.assertTrue(
+                validate_repository.path_has_link_or_reparse(root.parent, root)
+            )
+            self.assertFalse(
+                validate_repository.path_has_link_or_reparse(workflow, root)
+            )
+            self.assertFalse(
+                validate_repository.path_has_link_or_reparse(root / "missing", root)
+            )
+            with mock.patch.object(
+                validate_repository, "is_link_or_reparse", return_value=True
+            ):
+                self.assertTrue(
+                    validate_repository.path_has_link_or_reparse(workflow, root)
+                )
+            self.assertEqual(validate_repository.validate_action_references(root), [])
+
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _repository_root: path == workflow_root,
+            ):
+                self.assertEqual(
+                    validate_repository.validate_action_references(root),
+                    [
+                        ".github/workflows: workflow directory is linked or a "
+                        "reparse point"
+                    ],
+                )
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _repository_root: path == workflow,
+            ):
+                self.assertEqual(
+                    validate_repository.validate_action_references(root),
+                    [
+                        ".github/workflows/ci.yml: workflow file is linked or a "
+                        "reparse point"
+                    ],
+                )
+
 
 class ActionPinSyncContractTests(unittest.TestCase):
     def test_repository_has_a_pr_only_template_action_synchronizer(self) -> None:

@@ -255,6 +255,25 @@ def is_link_or_reparse(path: Path) -> bool:
     return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
 
 
+def path_has_link_or_reparse(path: Path, repository_root: Path) -> bool:
+    """Return whether a repository-relative path crosses a link-like boundary."""
+    boundary = Path(os.path.abspath(repository_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError:
+        return True
+    current = boundary
+    for part in (None, *relative.parts):
+        if part is not None:
+            current /= part
+        if is_link_or_reparse(current):
+            return True
+        if not os.path.lexists(current):
+            break
+    return False
+
+
 def project_files(repository_root: Path, patterns: Iterable[str]) -> list[Path]:
     """Return matching first-party files, excluding known local artifacts."""
     repository_root = Path(os.path.abspath(repository_root))
@@ -669,17 +688,26 @@ def validate_action_references(repository_root: Path) -> list[str]:
         repository_root / ".github" / "workflows",
         repository_root / "skills" / "repo-scaffold" / "assets" / "workflows",
     )
-    paths = sorted(
-        {
-            path
-            for root in workflow_roots
-            if root.is_dir()
-            for pattern in ("*.yml", "*.yaml")
-            for path in root.glob(pattern)
-            if path.is_file()
-        }
-    )
     problems: list[str] = []
+    paths: list[Path] = []
+    for root in workflow_roots:
+        relative_root = root.relative_to(repository_root)
+        if path_has_link_or_reparse(root, repository_root):
+            problems.append(
+                f"{relative_root.as_posix()}: workflow directory is linked or a reparse point"
+            )
+            continue
+        if not root.is_dir():
+            continue
+        for pattern in ("*.yml", "*.yaml"):
+            for path in root.glob(pattern):
+                relative = path.relative_to(repository_root)
+                if path_has_link_or_reparse(path, repository_root):
+                    problems.append(
+                        f"{relative.as_posix()}: workflow file is linked or a reparse point"
+                    )
+                elif path.is_file():
+                    paths.append(path)
     action_pins: dict[str, dict[str, set[str]]] = {}
     for path in paths:
         relative = path.relative_to(repository_root)
