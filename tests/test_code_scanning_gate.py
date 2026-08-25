@@ -89,6 +89,26 @@ class CodeScanningGateTests(unittest.TestCase):
             1,
         )
 
+    def test_checked_in_allowlist_approves_reviewed_base_only_checkout(self) -> None:
+        selectors = gate.load_allowlist(
+            PLUGIN_ROOT / ".github" / "code-scanning-allowlist.json"
+        )
+
+        self.assertEqual(
+            gate.unapproved_alerts(
+                (
+                    gate.Alert(
+                        18,
+                        "Scorecard",
+                        "DangerousWorkflowID",
+                        ".github/workflows/code-scanning-gate.yml",
+                    ),
+                ),
+                selectors,
+            ),
+            [],
+        )
+
     def test_allowlist_rejects_unsafe_or_ambiguous_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
