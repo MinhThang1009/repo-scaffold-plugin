@@ -255,6 +255,25 @@ def is_link_or_reparse(path: Path) -> bool:
     return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
 
 
+def path_has_link_or_reparse(path: Path, repository_root: Path) -> bool:
+    """Return whether a repository-relative path crosses a link-like boundary."""
+    boundary = Path(os.path.abspath(repository_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError:
+        return True
+    current = boundary
+    for part in (None, *relative.parts):
+        if part is not None:
+            current /= part
+        if is_link_or_reparse(current):
+            return True
+        if not os.path.lexists(current):
+            break
+    return False
+
+
 def project_files(repository_root: Path, patterns: Iterable[str]) -> list[Path]:
     """Return matching first-party files, excluding known local artifacts."""
     repository_root = Path(os.path.abspath(repository_root))
@@ -669,17 +688,27 @@ def validate_action_references(repository_root: Path) -> list[str]:
         repository_root / ".github" / "workflows",
         repository_root / "skills" / "repo-scaffold" / "assets" / "workflows",
     )
-    paths = sorted(
-        {
-            path
-            for root in workflow_roots
-            if root.is_dir()
-            for pattern in ("*.yml", "*.yaml")
-            for path in root.glob(pattern)
-            if path.is_file()
-        }
-    )
     problems: list[str] = []
+    paths: list[Path] = []
+    for root in workflow_roots:
+        relative_root = root.relative_to(repository_root)
+        if path_has_link_or_reparse(root, repository_root):
+            problems.append(
+                f"{relative_root.as_posix()}: workflow directory is linked or a reparse point"
+            )
+            continue
+        if not root.is_dir():
+            continue
+        for pattern in ("*.yml", "*.yaml"):
+            for path in root.glob(pattern):
+                relative = path.relative_to(repository_root)
+                if path_has_link_or_reparse(path, repository_root):
+                    problems.append(
+                        f"{relative.as_posix()}: workflow file is linked or a reparse point"
+                    )
+                elif path.is_file():
+                    paths.append(path)
+    paths.sort()
     action_pins: dict[str, dict[str, set[str]]] = {}
     for path in paths:
         relative = path.relative_to(repository_root)
@@ -1449,10 +1478,29 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     mypy_arguments = (
         set(mypy_steps[0]["run"].split()) if len(mypy_steps) == 1 else set()
     )
-    if not required_mypy_paths.issubset(mypy_arguments):
+    if (
+        "--explicit-package-bases" not in mypy_arguments
+        or not required_mypy_paths.issubset(mypy_arguments)
+    ):
         problems.append(
             ".github/workflows/ci.yml: Mypy must check every production script and tests"
         )
+
+    if len(mypy_steps) == 1 and isinstance(mypy_steps[0].get("run"), str):
+        expected_mypy_command = " ".join(mypy_steps[0]["run"].split())
+        for relative in ("README.md", "CONTRIBUTING.md"):
+            path = repository_root / relative
+            try:
+                document_text = " ".join(path.read_text(encoding="utf-8").split())
+            except (OSError, UnicodeError) as error:
+                problems.append(
+                    f"{relative}: could not verify Mypy development guidance: {error}"
+                )
+                continue
+            if expected_mypy_command not in document_text:
+                problems.append(
+                    f"{relative}: development guidance must run the complete CI Mypy command"
+                )
 
     coverage_path = repository_root / ".coveragerc"
     coverage_config = configparser.ConfigParser()

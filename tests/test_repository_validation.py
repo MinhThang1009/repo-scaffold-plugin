@@ -548,12 +548,12 @@ class ActionReferenceValidationTests(unittest.TestCase):
             root = Path(directory)
             workflow_root = root / ".github" / "workflows"
             workflow_root.mkdir(parents=True)
-            (workflow_root / "missing.yml").write_text("jobs: {}\n", encoding="utf-8")
-            (workflow_root / "scalar.yml").write_text("[]\n", encoding="utf-8")
             for preset in ("read-all", "write-all"):
                 (workflow_root / f"{preset}.yml").write_text(
                     f"permissions: {preset}\njobs: {{}}\n", encoding="utf-8"
                 )
+            (workflow_root / "missing.yml").write_text("jobs: {}\n", encoding="utf-8")
+            (workflow_root / "scalar.yml").write_text("[]\n", encoding="utf-8")
 
             problems = validate_repository.validate_action_references(root)
 
@@ -619,6 +619,59 @@ class ActionReferenceValidationTests(unittest.TestCase):
                 any("container reference must use" in item for item in problems)
             )
             self.assertFalse(any("invalid.yml" in item for item in problems))
+
+    def test_linked_workflow_boundaries_are_reported_without_dereferencing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            workflow = workflow_root / "ci.yml"
+            workflow.write_text("permissions: {}\njobs: {}\n", encoding="utf-8")
+            (workflow_root / "ignored.yml").mkdir()
+
+            self.assertTrue(
+                validate_repository.path_has_link_or_reparse(root.parent, root)
+            )
+            self.assertFalse(
+                validate_repository.path_has_link_or_reparse(workflow, root)
+            )
+            self.assertFalse(
+                validate_repository.path_has_link_or_reparse(root / "missing", root)
+            )
+            with mock.patch.object(
+                validate_repository, "is_link_or_reparse", return_value=True
+            ):
+                self.assertTrue(
+                    validate_repository.path_has_link_or_reparse(workflow, root)
+                )
+            self.assertEqual(validate_repository.validate_action_references(root), [])
+
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _repository_root: path == workflow_root,
+            ):
+                self.assertEqual(
+                    validate_repository.validate_action_references(root),
+                    [
+                        ".github/workflows: workflow directory is linked or a "
+                        "reparse point"
+                    ],
+                )
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _repository_root: path == workflow,
+            ):
+                self.assertEqual(
+                    validate_repository.validate_action_references(root),
+                    [
+                        ".github/workflows/ci.yml: workflow file is linked or a "
+                        "reparse point"
+                    ],
+                )
 
 
 class ActionPinSyncContractTests(unittest.TestCase):
@@ -1344,6 +1397,42 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         self.assertIn(
             ".github/workflows/ci.yml: Mypy must check every production script and tests",
             problems,
+        )
+
+    def test_development_guidance_must_cover_the_complete_ci_mypy_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            contributing_path = root / "CONTRIBUTING.md"
+            contributing = contributing_path.read_text(encoding="utf-8").replace(
+                "scripts/audit_official_docs.py ", "", 1
+            )
+            contributing_path.write_text(contributing, encoding="utf-8")
+
+            problems = validate_repository.validate_development_dependency_contract(
+                root
+            )
+
+        self.assertIn(
+            "CONTRIBUTING.md: development guidance must run the complete CI Mypy command",
+            problems,
+        )
+
+    def test_development_guidance_mypy_contract_rejects_unreadable_document(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "README.md").write_bytes(b"\xff")
+
+            problems = validate_repository.validate_development_dependency_contract(
+                root
+            )
+
+        self.assertIn(
+            "README.md: could not verify Mypy development guidance:",
+            "\n".join(problems),
         )
 
     def test_coverage_floor_regression_is_reported(self) -> None:

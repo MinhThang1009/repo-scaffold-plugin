@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,11 +68,48 @@ def action_repository(action: str) -> str:
     return "/".join(action.split("/")[:2]).casefold()
 
 
+def _is_link_or_reparse(path: Path) -> bool:
+    """Return whether an existing path is a symlink or Windows reparse point."""
+    if path.is_symlink():
+        return True
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+def _path_has_link_or_reparse(path: Path, repository_root: Path) -> bool:
+    """Return whether a repository-relative path crosses a link-like boundary."""
+    boundary = Path(os.path.abspath(repository_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError:
+        return True
+    current = boundary
+    for part in (None, *relative.parts):
+        if part is not None:
+            current /= part
+        if _is_link_or_reparse(current):
+            return True
+        if not os.path.lexists(current):
+            break
+    return False
+
+
 def workflow_paths(
     repository_root: Path,
     workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
 ) -> list[Path]:
     """Return every tracked workflow that carries a synchronized action pin."""
+    repository_root = Path(os.path.abspath(repository_root))
+    if not repository_root.is_dir() or _path_has_link_or_reparse(
+        repository_root, repository_root
+    ):
+        raise ValueError(f"repository root is missing or unsafe: {repository_root}")
     paths: list[Path] = []
     for relative_directory in workflow_directories:
         if (
@@ -83,13 +121,16 @@ def workflow_paths(
                 f"workflow directory must be a safe relative path: {relative_directory}"
             )
         directory = repository_root / relative_directory
-        if not directory.is_dir() or directory.is_symlink():
+        if (
+            _path_has_link_or_reparse(directory, repository_root)
+            or not directory.is_dir()
+        ):
             raise ValueError(
                 f"workflow directory is missing or unsafe: {relative_directory}"
             )
         for pattern in ("*.yml", "*.yaml"):
             for path in directory.glob(pattern):
-                if path.is_symlink():
+                if _path_has_link_or_reparse(path, repository_root):
                     raise ValueError(f"workflow file is unsafe: {path}")
                 if path.is_file():
                     paths.append(path)

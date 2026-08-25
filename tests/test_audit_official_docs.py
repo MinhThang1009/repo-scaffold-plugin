@@ -121,6 +121,12 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
             self.write_repository(root)
             registry = root / official_docs.DEFAULT_TRACKER_REGISTRY
             valid = registry_document()
+            self.assertTrue(official_docs.path_has_link_or_reparse(root.parent, root))
+            with mock.patch.object(
+                official_docs, "path_has_link_or_reparse", return_value=True
+            ):
+                with self.assertRaisesRegex(official_docs.AuditError, "unsafe"):
+                    official_docs.load_trackers(root)
             for document, fragment in (
                 ({"schema-version": 2, "claims": []}, "schema-version"),
                 ({"schema-version": 1, "claims": []}, "non-empty"),
@@ -343,6 +349,13 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
 
             with (
                 mock.patch.object(Path, "is_symlink", autospec=True, return_value=True),
+                self.assertRaisesRegex(official_docs.AuditError, "unsafe"),
+            ):
+                official_docs.claim_findings(root, claim, date(2026, 8, 27))
+            with (
+                mock.patch.object(
+                    official_docs, "path_has_link_or_reparse", return_value=True
+                ),
                 self.assertRaisesRegex(official_docs.AuditError, "unsafe"),
             ):
                 official_docs.claim_findings(root, claim, date(2026, 8, 27))

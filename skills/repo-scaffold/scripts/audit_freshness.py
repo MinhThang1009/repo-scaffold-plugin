@@ -81,13 +81,13 @@ def safe_relative_path(value: object, *, field: str) -> Path:
 def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
     """Resolve a configured path only when it remains inside the repository."""
     path = root / relative
+    if sync_action_pins._path_has_link_or_reparse(path, root):
+        raise AuditError(f"{kind} is missing or unsafe: {relative}")
     try:
         resolved = path.resolve(strict=True)
         resolved.relative_to(root.resolve())
     except (OSError, RuntimeError, ValueError) as error:
         raise AuditError(f"{kind} is missing or unsafe: {relative}") from error
-    if path.is_symlink():
-        raise AuditError(f"{kind} is missing or unsafe: {relative}")
     return path
 
 
@@ -255,19 +255,11 @@ def action_findings(
     """Compare every action SHA with the exact immutable upstream release SHA."""
     findings: list[dict[str, str]] = []
     releases: dict[str, sync_action_pins.ActionRelease] = {}
-    workflow_paths: list[Path] = []
-    for relative_directory in workflow_directories:
-        directory = tracked_path(root, relative_directory, kind="workflow directory")
-        if not directory.is_dir():
-            raise AuditError(
-                f"workflow directory is missing or unsafe: {relative_directory}"
-            )
-        workflow_paths.extend(
-            path for path in directory.glob("*.yml") if path.is_file()
-        )
-    if not workflow_paths:
-        raise AuditError("freshness tracker registry found no workflow files")
-    for path in sorted(workflow_paths):
+    try:
+        workflow_paths = sync_action_pins.workflow_paths(root, workflow_directories)
+    except ValueError as error:
+        raise AuditError(str(error)) from error
+    for path in workflow_paths:
         text = path.read_text(encoding="utf-8")
         sync_action_pins.auditable_action_repositories(path, text)
         for match in sync_action_pins.ACTION_PIN_PATTERN.finditer(text):
