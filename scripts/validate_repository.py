@@ -3145,8 +3145,9 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
 
 
 def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
-    """Require the trusted PR-only synchronizer for scaffold action assets."""
+    """Require the trusted PR-only synchronizer for mechanical maintenance pins."""
     script = repository_root / "scripts" / "sync_action_pins.py"
+    versioned_inputs_script = repository_root / "scripts" / "sync_versioned_inputs.py"
     workflow_path = repository_root / ".github" / "workflows" / "action-pin-sync.yml"
     relative = workflow_path.relative_to(repository_root).as_posix()
     problems: list[str] = []
@@ -3167,6 +3168,25 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         problems.append(
             "action-pin sync: script must resolve stable releases through the "
             "allowlisted GitHub API"
+        )
+    try:
+        versioned_inputs_text = versioned_inputs_script.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"versioned-input sync: script is unreadable: {error}")
+        versioned_inputs_text = ""
+    required_versioned_input_fragments = (
+        "synchronize_action_pins",
+        "synchronize_release_please_schemas",
+        "load_trackers",
+        "googleapis/release-please",
+    )
+    if any(
+        fragment not in versioned_inputs_text
+        for fragment in required_versioned_input_fragments
+    ):
+        problems.append(
+            "versioned-input sync: script must update only registry-selected "
+            "action pins and Release Please schemas"
         )
     try:
         workflow = load_yaml(workflow_path)
@@ -3198,7 +3218,7 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     steps = job.get("steps") if isinstance(job, dict) else None
     if (
         not isinstance(job, dict)
-        or job.get("name") != "synchronize-action-pins"
+        or job.get("name") != "synchronize-versioned-inputs"
         or job.get("runs-on") != "ubuntu-latest"
         or job.get("timeout-minutes") != "15"
         or not isinstance(steps, list)
@@ -3216,13 +3236,14 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     sync_steps = [
         step
         for step in steps
-        if isinstance(step, dict) and step.get("name") == "Synchronize release pins"
+        if isinstance(step, dict)
+        and step.get("name") == "Synchronize versioned maintenance inputs"
     ]
     sync_step = sync_steps[0] if len(sync_steps) == 1 else {}
     if (
         len(sync_steps) != 1
         or sync_step.get("env") != {"GITHUB_TOKEN": "${{ github.token }}"}
-        or sync_step.get("run") != "python scripts/sync_action_pins.py --write"
+        or sync_step.get("run") != "python scripts/sync_versioned_inputs.py --write"
     ):
         problems.append(
             f"{relative}: synchronizer must update pins only through the reviewed script"
@@ -3231,29 +3252,48 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         step
         for step in steps
         if isinstance(step, dict)
-        and step.get("name") == "Create synchronization pull request"
+        and step.get("name") == "Create version-maintenance pull request"
     ]
     pr_step = pr_steps[0] if len(pr_steps) == 1 else {}
     pr_reference = pr_step.get("uses")
     expected_pr_inputs = {
-        "token": "${{ github.token }}",
-        "branch": "chore/synchronize-action-pins",
+        "token": "${{ secrets.RELEASE_PLEASE_TOKEN }}",
+        "branch": "chore/synchronize-versioned-inputs",
         "delete-branch": "true",
-        "commit-message": "chore(ci): synchronize action pins",
-        "title": "chore(ci): synchronize action pins",
-        "body": (
-            "Synchronizes immutable GitHub Action pins in repository workflows and "
-            "scaffold assets to their latest stable upstream releases.\n"
-        ),
+        "draft": "true",
+        "commit-message": "chore(ci): synchronize versioned inputs",
+        "title": "chore(ci): synchronize versioned inputs",
     }
+    body = pr_step.get("with", {}).get("body") if isinstance(pr_step, dict) else None
+    required_body_fragments = (
+        "<!-- repo-scaffold:pr-template=default -->",
+        "## Purpose",
+        "## Key changes",
+        "## Verification",
+        "<!-- repo-scaffold:required-checklist:start -->",
+        "<!-- repo-scaffold:required-checklist:end -->",
+        "## If applicable",
+        "<!-- repo-scaffold:optional-checklist:start -->",
+        "<!-- repo-scaffold:optional-checklist:end -->",
+        "## Related issue",
+    )
     if (
         len(pr_steps) != 1
         or not isinstance(pr_reference, str)
         or re.fullmatch(r"peter-evans/create-pull-request@[0-9a-f]{40}", pr_reference)
         is None
-        or pr_step.get("with") != expected_pr_inputs
+        or not isinstance(pr_step.get("with"), dict)
+        or any(
+            pr_step["with"].get(key) != value
+            for key, value in expected_pr_inputs.items()
+        )
+        or not isinstance(body, str)
+        or any(fragment not in body for fragment in required_body_fragments)
     ):
-        problems.append(f"{relative}: synchronizer must create a reviewed pull request")
+        problems.append(
+            f"{relative}: synchronizer must create a token-backed draft pull request "
+            "that follows the trusted default template"
+        )
     return problems
 
 
@@ -3737,41 +3777,11 @@ def validate_dependabot(repository_root: Path) -> list[str]:
                 if isinstance(update, dict)
                 and update.get("package-ecosystem") == "github-actions"
             ]
-            action_groups = (
-                action_updates[0].get("groups", {})
-                if len(action_updates) == 1
-                and isinstance(action_updates[0].get("groups"), dict)
-                else {}
-            )
-            synchronized = (
-                action_groups.get("synchronized-actions")
-                if isinstance(action_groups.get("synchronized-actions"), dict)
-                else None
-            )
-            synchronized_security = (
-                action_groups.get("synchronized-actions-security")
-                if isinstance(action_groups.get("synchronized-actions-security"), dict)
-                else None
-            )
-            if (
-                len(action_updates) != 1
-                or action_updates[0].get("directory") != "/"
-                or action_updates[0].get("schedule") != {"interval": "weekly"}
-                or commit_prefix(action_updates[0]) != "chore(deps)"
-                or synchronized
-                != {
-                    "applies-to": "version-updates",
-                    "patterns": ["*"],
-                }
-                or synchronized_security
-                != {
-                    "applies-to": "security-updates",
-                    "patterns": ["*"],
-                }
-            ):
+            if action_updates:
                 problems.append(
-                    f"{relative}: GitHub Actions updates must group every installed "
-                    "workflow action into one pull request"
+                    f"{relative}: GitHub Actions updates are owned by "
+                    "action-pin-sync.yml so repository and scaffold pins change "
+                    "in one pull request"
                 )
         else:
             marker_count = source.splitlines().count(template_marker)

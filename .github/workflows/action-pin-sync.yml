@@ -1,4 +1,4 @@
-name: Synchronize action pins
+name: Synchronize versioned maintenance inputs
 
 on:
   schedule:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   synchronize:
-    name: synchronize-action-pins
+    name: synchronize-versioned-inputs
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -26,18 +26,52 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Synchronize release pins
+      - name: Synchronize versioned maintenance inputs
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/sync_action_pins.py --write
+        run: python scripts/sync_versioned_inputs.py --write
 
-      - name: Create synchronization pull request
+      - name: Create version-maintenance pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          token: ${{ github.token }}
-          branch: chore/synchronize-action-pins
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          branch: chore/synchronize-versioned-inputs
           delete-branch: true
-          commit-message: "chore(ci): synchronize action pins"
-          title: "chore(ci): synchronize action pins"
+          draft: true
+          commit-message: "chore(ci): synchronize versioned inputs"
+          title: "chore(ci): synchronize versioned inputs"
           body: |
-            Synchronizes immutable GitHub Action pins in repository workflows and scaffold assets to their latest stable upstream releases.
+            <!-- repo-scaffold:pr-template=default -->
+
+            ## Purpose
+
+            Update mechanical maintenance pins in the repository and scaffold assets.
+
+            ## Key changes
+
+            - Synchronize immutable GitHub Action pins and Release Please schema URLs from their authoritative releases.
+
+            ## Verification
+
+            - The scheduled synchronizer resolved upstream releases before writing this draft PR. Full CI will validate the resulting diff.
+
+            ## Required checklist
+
+            <!-- repo-scaffold:required-checklist:start -->
+            - [ ] The change is focused and follows CONTRIBUTING.md
+            - [ ] Existing files and behavior were inspected before editing
+            - [ ] Verification evidence is recorded above
+            - [ ] No secret, credential, private data, or unresolved scaffold marker is included
+            - [ ] Security and permission-boundary effects were considered
+            <!-- repo-scaffold:required-checklist:end -->
+
+            ## If applicable
+
+            <!-- repo-scaffold:optional-checklist:start -->
+            - [ ] Tests were added or updated for behavior changes
+            - [ ] External requirements were checked against current authoritative sources
+            <!-- repo-scaffold:optional-checklist:end -->
+
+            ## Related issue
+
+            Not applicable.

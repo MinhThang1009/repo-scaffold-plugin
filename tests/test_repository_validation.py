@@ -639,6 +639,12 @@ class ActionPinSyncContractTests(unittest.TestCase):
 
         self.assertTrue(any("script is unreadable" in problem for problem in problems))
         self.assertTrue(
+            any(
+                "versioned-input sync: script is unreadable" in problem
+                for problem in problems
+            )
+        )
+        self.assertTrue(
             any("allowlisted GitHub API" in problem for problem in problems)
         )
         self.assertTrue(
@@ -678,17 +684,22 @@ class ActionPinSyncContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / "scripts" / "sync_action_pins.py"
+            versioned_inputs_script = root / "scripts" / "sync_versioned_inputs.py"
             workflow = root / ".github" / "workflows" / "action-pin-sync.yml"
             script.parent.mkdir(parents=True)
             workflow.parent.mkdir(parents=True)
             shutil.copy2(PLUGIN_ROOT / "scripts" / "sync_action_pins.py", script)
+            shutil.copy2(
+                PLUGIN_ROOT / "scripts" / "sync_versioned_inputs.py",
+                versioned_inputs_script,
+            )
             original = (
                 PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
             ).read_text(encoding="utf-8")
 
             workflow.write_text(
                 original.replace(
-                    "python scripts/sync_action_pins.py --write", "echo bypass", 1
+                    "python scripts/sync_versioned_inputs.py --write", "echo bypass", 1
                 ),
                 encoding="utf-8",
             )
@@ -696,7 +707,7 @@ class ActionPinSyncContractTests(unittest.TestCase):
 
             workflow.write_text(
                 original.replace(
-                    "branch: chore/synchronize-action-pins", "branch: unsafe", 1
+                    "branch: chore/synchronize-versioned-inputs", "branch: unsafe", 1
                 ),
                 encoding="utf-8",
             )
@@ -725,7 +736,7 @@ class ActionPinSyncContractTests(unittest.TestCase):
             )
         )
         self.assertTrue(
-            any("create a reviewed pull request" in problem for problem in invalid_pr)
+            any("token-backed draft pull request" in problem for problem in invalid_pr)
         )
         self.assertTrue(
             any(
@@ -5594,10 +5605,7 @@ class DependabotValidationTests(unittest.TestCase):
             self.assertTrue(any("nonempty unique list" in item for item in problems))
             self.assertTrue(any("not both" in item for item in problems))
             self.assertTrue(
-                any(
-                    "must group every installed workflow action" in item
-                    for item in problems
-                )
+                any("GitHub Actions updates are owned" in item for item in problems)
             )
 
     def test_dependabot_rejects_unsynchronized_python_and_incomplete_template(
@@ -5645,10 +5653,7 @@ class DependabotValidationTests(unittest.TestCase):
                 any("fixed root GitHub Actions updater" in item for item in problems)
             )
             self.assertTrue(
-                any(
-                    "must group every installed workflow action" in item
-                    for item in problems
-                )
+                any("GitHub Actions updates are owned" in item for item in problems)
             )
 
     def test_dependabot_rendering_contract_keeps_mandatory_documentation_pip(

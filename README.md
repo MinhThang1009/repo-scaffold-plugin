@@ -189,6 +189,8 @@ repo-scaffold/
 │   ├── run_mutation_testing.py
 │   ├── audit_freshness.py
 │   ├── audit_official_docs.py
+│   ├── sync_action_pins.py
+│   ├── sync_versioned_inputs.py
 │   ├── validate_mutation_results.py
 │   ├── validate_repository.py
 │   └── validate_workflows.py
@@ -223,7 +225,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -259,25 +261,27 @@ the markdownlint npm pin, and reviewed standalone-tool release metadata and
 digests. Workflows and setup guidance consume that policy instead of embedding
 those values, and a non-required scheduled/manual canary reports npm, upstream
 release, or digest drift for review through the same durable reminder Issue.
-Dependabot checks the pinned Python development tools, mirrored scaffold
-documentation dependencies, and installed GitHub Actions weekly.
+Dependabot checks the pinned Python development tools and mirrored scaffold
+documentation dependencies weekly.
 `requirements-dev.in` records reviewed direct pins; `requirements-dev.txt`
 resolves every transitive dependency and records PyPI SHA-256 hashes used by CI.
 The conventional `.in` to `.txt` pairing lets Dependabot run `pip-compile` and
 update both files in one PR. Platform-conditional packages required by the
 supported matrix are pinned directly so a lock regenerated on Linux remains
-installable with hashes on Windows. Dependabot groups installed GitHub Action
-updates into one PR. A weekly PR-only synchronizer updates scaffold workflow
-assets in lockstep, preventing sub-actions from the same release from drifting
-to different immutable SHAs. Python updates are
+installable with hashes on Windows. A weekly PR-only version-maintenance
+synchronizer creates one draft PR with immutable GitHub Action pins and Release
+Please schema URLs updated in lockstep across repository workflows,
+configuration, and scaffold assets. It uses the existing release automation
+token so normal PR CI runs; it never auto-merges. Python updates are
 grouped by dependency across the root toolchain and
 `skills/repo-scaffold/assets/requirements-docs.txt`; security updates for the
 two mirrored documentation packages are grouped explicitly.
 The non-required weekly [freshness workflow](.github/workflows/freshness.yml)
 reads the reviewed [freshness tracker registry](.github/freshness-trackers.json)
-and independently reports action-pin, Release Please schema, direct-PyPI-pin,
-and lock-consistency drift. It opens or updates one marker Issue when attention
-is required and closes it only after a clean scheduled/manual result. The
+and independently reports direct-PyPI-pin and lock-consistency drift, plus any
+versioned input the PR synchronizer could not make current. It opens or updates
+one marker Issue when attention is required and closes it only after a clean
+scheduled/manual result. The
 scaffold ships the same registry-driven checker and workflow to generated
 repositories when Issues are available. Track only sources with an
 authoritative owner and deterministic version resolver; community-health policy
