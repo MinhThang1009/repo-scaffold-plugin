@@ -34,7 +34,7 @@ jobs:
       - name: Create version-maintenance pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          token: ${{ secrets.VERSION_SYNC_TOKEN }}
           branch: chore/synchronize-versioned-inputs
           delete-branch: true
           draft: true

@@ -714,6 +714,16 @@ class ActionPinSyncContractTests(unittest.TestCase):
             invalid_pr = validate_repository.validate_action_pin_sync_contract(root)
 
             workflow.write_text(
+                original.replace(
+                    "${{ secrets.VERSION_SYNC_TOKEN }}",
+                    "${{ secrets.RELEASE_PLEASE_TOKEN }}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            invalid_token = validate_repository.validate_action_pin_sync_contract(root)
+
+            workflow.write_text(
                 original.replace("contents: read", "contents: write", 1),
                 encoding="utf-8",
             )
@@ -737,6 +747,12 @@ class ActionPinSyncContractTests(unittest.TestCase):
         )
         self.assertTrue(
             any("token-backed draft pull request" in problem for problem in invalid_pr)
+        )
+        self.assertTrue(
+            any(
+                "token-backed draft pull request" in problem
+                for problem in invalid_token
+            )
         )
         self.assertTrue(
             any(

@@ -3257,7 +3257,7 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     pr_step = pr_steps[0] if len(pr_steps) == 1 else {}
     pr_reference = pr_step.get("uses")
     expected_pr_inputs = {
-        "token": "${{ secrets.RELEASE_PLEASE_TOKEN }}",
+        "token": "${{ secrets.VERSION_SYNC_TOKEN }}",
         "branch": "chore/synchronize-versioned-inputs",
         "delete-branch": "true",
         "draft": "true",

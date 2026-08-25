@@ -271,8 +271,13 @@ supported matrix are pinned directly so a lock regenerated on Linux remains
 installable with hashes on Windows. A weekly PR-only version-maintenance
 synchronizer creates one draft PR with immutable GitHub Action pins and Release
 Please schema URLs updated in lockstep across repository workflows,
-configuration, and scaffold assets. It uses the existing release automation
-token so normal PR CI runs; it never auto-merges. Python updates are
+configuration, and scaffold assets. It uses a dedicated fine-grained PAT stored
+as `VERSION_SYNC_TOKEN`, so normal PR CI runs; it never auto-merges. Scope that
+token to this repository only, with **Contents: Read and write**, **Pull
+requests: Read and write**, and **Workflows: Read and write** because the
+synchronizer may update workflow files. Keep it separate from
+`RELEASE_PLEASE_TOKEN` to avoid granting release automation unnecessary workflow
+write access. Python updates are
 grouped by dependency across the root toolchain and
 `skills/repo-scaffold/assets/requirements-docs.txt`; security updates for the
 two mirrored documentation packages are grouped explicitly.
