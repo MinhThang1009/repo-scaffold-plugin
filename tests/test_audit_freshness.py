@@ -221,6 +221,40 @@ class FreshnessTests(unittest.TestCase):
                 any(finding["subject"] == "actions/setup-node" for finding in findings)
             )
 
+    def test_action_findings_uses_the_safe_yaml_aware_workflow_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            workflow = root / ".github/workflows/ci.yml"
+            yaml_workflow = workflow.with_suffix(".yaml")
+            workflow.rename(yaml_workflow)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            findings = freshness.action_findings(
+                root,
+                trackers.workflow_directories,
+                lambda _repository: release("v2.0.0", "b" * 40),
+            )
+
+            self.assertEqual(len(findings), 2)
+            self.assertIn(
+                ".github/workflows/ci.yaml",
+                {finding["path"] for finding in findings},
+            )
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "workflow_paths",
+                    side_effect=ValueError("workflow file is unsafe: linked.yml"),
+                ),
+                self.assertRaisesRegex(freshness.AuditError, "workflow file is unsafe"),
+            ):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
+                )
+
     def test_release_please_and_requirement_findings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

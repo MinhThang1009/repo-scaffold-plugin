@@ -196,6 +196,9 @@ class ActionPinSyncTests(unittest.TestCase):
     def test_workflow_paths_rejects_missing_unsafe_and_empty_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            self.assertTrue(
+                sync_action_pins._path_has_link_or_reparse(root.parent, root)
+            )
             with self.assertRaisesRegex(ValueError, "missing or unsafe"):
                 sync_action_pins.workflow_paths(root)
             with self.assertRaisesRegex(ValueError, "safe relative path"):
@@ -217,6 +220,27 @@ class ActionPinSyncTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ValueError, "workflow file is unsafe"):
                     sync_action_pins.workflow_paths(root)
+            ancestor = root / ".github"
+            with (
+                mock.patch.object(
+                    sync_action_pins,
+                    "_is_link_or_reparse",
+                    side_effect=lambda path: path == ancestor,
+                ),
+                self.assertRaisesRegex(
+                    ValueError, "workflow directory is missing or unsafe"
+                ),
+            ):
+                sync_action_pins.workflow_paths(root)
+            with (
+                mock.patch.object(
+                    sync_action_pins, "_is_link_or_reparse", return_value=True
+                ),
+                self.assertRaisesRegex(
+                    ValueError, "repository root is missing or unsafe"
+                ),
+            ):
+                sync_action_pins.workflow_paths(root)
             workflow.unlink()
             ignored.rmdir()
             link = root / sync_action_pins.WORKFLOW_DIRECTORIES[0]

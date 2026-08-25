@@ -255,19 +255,11 @@ def action_findings(
     """Compare every action SHA with the exact immutable upstream release SHA."""
     findings: list[dict[str, str]] = []
     releases: dict[str, sync_action_pins.ActionRelease] = {}
-    workflow_paths: list[Path] = []
-    for relative_directory in workflow_directories:
-        directory = tracked_path(root, relative_directory, kind="workflow directory")
-        if not directory.is_dir():
-            raise AuditError(
-                f"workflow directory is missing or unsafe: {relative_directory}"
-            )
-        workflow_paths.extend(
-            path for path in directory.glob("*.yml") if path.is_file()
-        )
-    if not workflow_paths:
-        raise AuditError("freshness tracker registry found no workflow files")
-    for path in sorted(workflow_paths):
+    try:
+        workflow_paths = sync_action_pins.workflow_paths(root, workflow_directories)
+    except ValueError as error:
+        raise AuditError(str(error)) from error
+    for path in workflow_paths:
         text = path.read_text(encoding="utf-8")
         sync_action_pins.auditable_action_repositories(path, text)
         for match in sync_action_pins.ACTION_PIN_PATTERN.finditer(text):
