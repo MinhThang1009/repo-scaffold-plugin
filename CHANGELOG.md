@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.8.1...v1.9.0) (2026-08-25)
+
+
+### Features
+
+* **ci:** synchronize versioned inputs ([#72](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/72)) ([9845b36](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/9845b36784fd83a3304d08abc1168a5b127d8b1a))
+
 ## [1.8.1](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.8.0...v1.8.1) (2026-08-25)
 
 
