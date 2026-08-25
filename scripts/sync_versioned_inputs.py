@@ -79,9 +79,16 @@ def synchronize_versioned_inputs(
 ) -> list[Path]:
     """Synchronize every registry-selected input with a deterministic upstream."""
     trackers = audit_freshness.load_trackers(repository_root, tracker_registry)
+    releases: dict[str, sync_action_pins.ActionRelease] = {}
+
+    def cached_release_lookup(repository: str) -> sync_action_pins.ActionRelease:
+        if repository not in releases:
+            releases[repository] = release_lookup(repository)
+        return releases[repository]
+
     action_changes = sync_action_pins.synchronize_action_pins(
         repository_root,
-        release_lookup,
+        cached_release_lookup,
         write=False,
         workflow_directories=trackers.workflow_directories,
     )
@@ -90,13 +97,13 @@ def synchronize_versioned_inputs(
         schema_changes = synchronize_release_please_schemas(
             repository_root,
             trackers.release_please_configs,
-            release_lookup("googleapis/release-please").tag,
+            cached_release_lookup("googleapis/release-please").tag,
             write=False,
         )
     if write:
         sync_action_pins.synchronize_action_pins(
             repository_root,
-            release_lookup,
+            cached_release_lookup,
             write=True,
             workflow_directories=trackers.workflow_directories,
         )
@@ -104,7 +111,7 @@ def synchronize_versioned_inputs(
             synchronize_release_please_schemas(
                 repository_root,
                 trackers.release_please_configs,
-                release_lookup("googleapis/release-please").tag,
+                cached_release_lookup("googleapis/release-please").tag,
                 write=True,
             )
     return sorted(set(action_changes + schema_changes))

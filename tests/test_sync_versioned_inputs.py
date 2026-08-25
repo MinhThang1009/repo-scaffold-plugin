@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import runpy
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +118,23 @@ class VersionedInputSyncTests(unittest.TestCase):
                 [],
             )
 
+    def test_caches_authoritative_releases_across_preflight_and_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            calls: list[str] = []
+
+            def recording_lookup(repository: str) -> object:
+                calls.append(repository)
+                return self.release_lookup(repository)
+
+            versioned_inputs.synchronize_versioned_inputs(
+                root, recording_lookup, write=True
+            )
+
+        self.assertEqual(calls.count("actions/checkout"), 1)
+        self.assertEqual(calls.count("googleapis/release-please"), 1)
+
     def test_rejects_ambiguous_release_please_schema_field(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -155,6 +177,113 @@ class VersionedInputSyncTests(unittest.TestCase):
                 "a" * 40,
                 (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
             )
+
+    def test_schema_synchronizer_rejects_unreadable_and_incompatible_schema(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            config = root / "release-please-config.json"
+            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(ValueError, "could not read"):
+                    versioned_inputs.synchronize_release_please_schemas(
+                        root,
+                        (config.relative_to(root),),
+                        "v17.11.2",
+                        write=False,
+                    )
+
+            with mock.patch.object(
+                versioned_inputs.audit_freshness,
+                "RELEASE_PLEASE_SCHEMA",
+                mock.Mock(fullmatch=mock.Mock(return_value=None)),
+            ):
+                with self.assertRaisesRegex(ValueError, "unsupported"):
+                    versioned_inputs.synchronize_release_please_schemas(
+                        root,
+                        (config.relative_to(root),),
+                        "v17.11.2",
+                        write=False,
+                    )
+
+    def test_synchronizes_action_pins_when_schema_configs_are_not_tracked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            registry_path = root / ".github/freshness-trackers.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["release-please-configs"] = []
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+            changed = versioned_inputs.synchronize_versioned_inputs(
+                root, self.release_lookup, write=True
+            )
+
+        self.assertEqual(len(changed), 2)
+
+    def test_main_reports_changes_no_changes_and_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            stdout = StringIO()
+            with (
+                mock.patch.object(
+                    versioned_inputs.sync_action_pins, "GitHubReleaseClient"
+                ) as client,
+                redirect_stdout(stdout),
+            ):
+                client.return_value.latest_release.side_effect = self.release_lookup
+                self.assertEqual(
+                    versioned_inputs.main(["--repository-root", str(root), "--write"]),
+                    0,
+                )
+            self.assertEqual(len(stdout.getvalue().splitlines()), 5)
+
+            stdout = StringIO()
+            with (
+                mock.patch.object(
+                    versioned_inputs.sync_action_pins, "GitHubReleaseClient"
+                ) as client,
+                redirect_stdout(stdout),
+            ):
+                client.return_value.latest_release.side_effect = self.release_lookup
+                self.assertEqual(
+                    versioned_inputs.main(["--repository-root", str(root), "--write"]),
+                    0,
+                )
+            self.assertEqual(
+                stdout.getvalue(), "Versioned maintenance inputs are already current.\n"
+            )
+
+        stderr = StringIO()
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_TOKEN": ""}, clear=False),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(versioned_inputs.main([]), 1)
+        self.assertIn("GITHUB_TOKEN", stderr.getvalue())
+
+    def test_parse_args_and_script_entrypoint_are_covered(self) -> None:
+        arguments = versioned_inputs.parse_args(
+            [
+                "--repository-root",
+                "repository",
+                "--tracker-registry",
+                "trackers.json",
+                "--write",
+            ]
+        )
+        self.assertEqual(arguments.repository_root, Path("repository"))
+        self.assertEqual(arguments.tracker_registry, Path("trackers.json"))
+        self.assertTrue(arguments.write)
+
+        with (
+            mock.patch.object(sys, "argv", [str(SCRIPT_PATH)]),
+            mock.patch.dict(os.environ, {"GITHUB_TOKEN": ""}, clear=False),
+            self.assertRaisesRegex(SystemExit, "1"),
+        ):
+            runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
 
 
 if __name__ == "__main__":
