@@ -925,6 +925,76 @@ jobs:
                     codeql_preflight.parse_workflow(text, name).has_advanced_setup
                 )
 
+    def test_handles_bash_pipes_inside_quoted_markdown_literals(self) -> None:
+        text = """
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          {
+            printf '%s\\n' '| Canary | Result | Required action |' '| --- | --- | --- |'
+            printf '%s\\n' '| CI toolchain | current | No action required |'
+          } > report.md
+"""
+        self.assertFalse(
+            codeql_preflight.parse_workflow(
+                text, "bash-pipes-inside-quoted-markdown"
+            ).has_advanced_setup
+        )
+
+    def test_tracks_escaped_characters_while_finding_bash_command_segments(
+        self,
+    ) -> None:
+        line = r'echo ok; printf "escaped \" pipe |" \| data'
+        self.assertEqual(
+            codeql_preflight._bash_command_segment(line, len(line)),
+            r' printf "escaped \" pipe |" \| data',
+        )
+
+    def test_handles_bash_array_length_expansion_in_conditionals(self) -> None:
+        text = """
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          mapfile -t issue_numbers < <(printf '%s\\n' 1)
+          first=success
+          second=success
+          if (( ${#issue_numbers[@]} == 1 )); then
+            printf 'one issue\\n'
+          fi
+          if [[ "$first" == success && "$second" == success ]]; then
+            printf 'both canaries are current\\n'
+          fi
+"""
+        self.assertFalse(
+            codeql_preflight.parse_workflow(
+                text, "bash-array-length-conditional"
+            ).has_advanced_setup
+        )
+
+    def test_nonliteral_dynamic_bash_condition_fails_closed(self) -> None:
+        text = """
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          command='codeql database create db'
+          if bash -c "$command"; then
+            printf 'unexpected success\\n'
+          fi
+"""
+        with self.assertRaisesRegex(
+            codeql_preflight.InspectionError, "dynamic command"
+        ):
+            codeql_preflight.parse_workflow(text, "nonliteral-dynamic-condition")
+
     def test_ignores_codeql_inside_powershell_here_strings(self) -> None:
         for quote in ("'", '"'):
             text = f"""

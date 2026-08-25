@@ -278,7 +278,13 @@ def synchronize_action_pins(
     def replace(match: re.Match[str]) -> str:
         action = match.group("action")
         release = releases[action_repository(action)]
-        return f"{match.group('prefix')}{action}@{release.sha} # {release.tag}"
+        comment = match.group("comment")
+        if match.group("sha").casefold() == release.sha and comment.strip() == (
+            f"# {release.tag}"
+        ):
+            return match.group(0)
+        prefix = comment[: comment.index("#")] if "#" in comment else " "
+        return f"{match.group('prefix')}{action}@{release.sha}{prefix}# {release.tag}"
 
     replacements = {
         path: ACTION_PIN_PATTERN.sub(replace, content)
