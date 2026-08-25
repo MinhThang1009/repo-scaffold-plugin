@@ -708,6 +708,7 @@ def validate_action_references(repository_root: Path) -> list[str]:
                     )
                 elif path.is_file():
                     paths.append(path)
+    paths.sort()
     action_pins: dict[str, dict[str, set[str]]] = {}
     for path in paths:
         relative = path.relative_to(repository_root)

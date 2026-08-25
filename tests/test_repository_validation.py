@@ -548,12 +548,12 @@ class ActionReferenceValidationTests(unittest.TestCase):
             root = Path(directory)
             workflow_root = root / ".github" / "workflows"
             workflow_root.mkdir(parents=True)
-            (workflow_root / "missing.yml").write_text("jobs: {}\n", encoding="utf-8")
-            (workflow_root / "scalar.yml").write_text("[]\n", encoding="utf-8")
             for preset in ("read-all", "write-all"):
                 (workflow_root / f"{preset}.yml").write_text(
                     f"permissions: {preset}\njobs: {{}}\n", encoding="utf-8"
                 )
+            (workflow_root / "missing.yml").write_text("jobs: {}\n", encoding="utf-8")
+            (workflow_root / "scalar.yml").write_text("[]\n", encoding="utf-8")
 
             problems = validate_repository.validate_action_references(root)
 
