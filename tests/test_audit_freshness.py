@@ -304,6 +304,28 @@ class FreshnessTests(unittest.TestCase):
             )
             self.assertEqual(inconsistent[-1]["kind"], "lock-consistency")
 
+    def test_requirement_findings_reuses_latest_lookup_for_duplicate_pins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.in"
+            second = root / "second.in"
+            first.write_text("ruff==0.1.0\n", encoding="utf-8")
+            second.write_text("ruff==0.1.0\n", encoding="utf-8")
+            sources = (
+                freshness.RequirementSource(first.relative_to(root), ()),
+                freshness.RequirementSource(second.relative_to(root), ()),
+            )
+            calls: list[str] = []
+
+            def latest_lookup(name: str) -> str:
+                calls.append(name)
+                return "0.1.0"
+
+            self.assertEqual(
+                freshness.requirement_findings(root, sources, latest_lookup), []
+            )
+            self.assertEqual(calls, ["ruff"])
+
     def test_tracker_registry_rejects_invalid_and_unsafe_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

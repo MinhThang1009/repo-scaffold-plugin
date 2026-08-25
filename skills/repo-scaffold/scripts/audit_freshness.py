@@ -336,7 +336,9 @@ def requirement_findings(
             for relative in requirement_source.locks
         }
         for key, (name, current) in pins.items():
-            latest = latest_versions.setdefault(key, latest_lookup(name))
+            if key not in latest_versions:
+                latest_versions[key] = latest_lookup(name)
+            latest = latest_versions[key]
             if current != latest:
                 findings.append(
                     {
