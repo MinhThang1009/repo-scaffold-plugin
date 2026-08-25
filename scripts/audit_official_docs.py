@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -95,6 +97,38 @@ def safe_relative_path(value: object, *, field: str) -> Path:
     return path
 
 
+def is_link_or_reparse(path: Path) -> bool:
+    """Return whether an existing path is a symlink or Windows reparse point."""
+    if path.is_symlink():
+        return True
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+def path_has_link_or_reparse(path: Path, repository_root: Path) -> bool:
+    """Return whether a repository-relative path crosses a link-like boundary."""
+    boundary = Path(os.path.abspath(repository_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError:
+        return True
+    current = boundary
+    for part in (None, *relative.parts):
+        if part is not None:
+            current /= part
+        if is_link_or_reparse(current):
+            return True
+        if not os.path.lexists(current):
+            break
+    return False
+
+
 def hostname(url: str, *, field: str) -> str:
     """Validate one fixed HTTPS documentation URL and return its host."""
     try:
@@ -129,12 +163,13 @@ def load_trackers(
     """Load a bounded, explicit official-documentation tracker registry."""
     registry_path = root / safe_relative_path(relative.as_posix(), field="registry")
     try:
+        if path_has_link_or_reparse(registry_path, root):
+            raise AuditError(
+                f"official-docs tracker registry is missing or unsafe: {relative}"
+            )
         resolved = registry_path.resolve(strict=True)
         resolved.relative_to(root.resolve())
-        if (
-            registry_path.is_symlink()
-            or registry_path.stat().st_size > MAX_REGISTRY_BYTES
-        ):
+        if registry_path.stat().st_size > MAX_REGISTRY_BYTES:
             raise AuditError(
                 f"official-docs tracker registry is missing or unsafe: {relative}"
             )
@@ -274,10 +309,10 @@ def claim_findings(
     for relative in claim.paths:
         path = root / relative
         try:
+            if path_has_link_or_reparse(path, root):
+                raise AuditError(f"claim source path is missing or unsafe: {relative}")
             resolved = path.resolve(strict=True)
             resolved.relative_to(root.resolve())
-            if path.is_symlink():
-                raise AuditError(f"claim source path is missing or unsafe: {relative}")
             path.read_text(encoding="utf-8")
         except (OSError, UnicodeError, ValueError) as error:
             raise AuditError(

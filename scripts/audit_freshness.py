@@ -81,13 +81,13 @@ def safe_relative_path(value: object, *, field: str) -> Path:
 def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
     """Resolve a configured path only when it remains inside the repository."""
     path = root / relative
+    if sync_action_pins._path_has_link_or_reparse(path, root):
+        raise AuditError(f"{kind} is missing or unsafe: {relative}")
     try:
         resolved = path.resolve(strict=True)
         resolved.relative_to(root.resolve())
     except (OSError, RuntimeError, ValueError) as error:
         raise AuditError(f"{kind} is missing or unsafe: {relative}") from error
-    if path.is_symlink():
-        raise AuditError(f"{kind} is missing or unsafe: {relative}")
     return path
 
 
