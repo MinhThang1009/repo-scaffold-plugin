@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.1](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.8.0...v1.8.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **ci:** review scorecard workflow alert ([#70](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/70)) ([4f76c43](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/4f76c4340f47ce94f4ff7c299fbe20601c14d924))
+
 ## [1.8.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.7.2...v1.8.0) (2026-08-24)
 
 

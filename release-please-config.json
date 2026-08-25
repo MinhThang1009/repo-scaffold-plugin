@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.11.1/schemas/config.json",
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.11.2/schemas/config.json",
   "release-type": "simple",
   "pull-request-title-pattern": "chore${scope}: release${component} ${version}",
   "pull-request-header": ":robot: I have created a release *beep* *boop*",
