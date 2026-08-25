@@ -1346,6 +1346,42 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             problems,
         )
 
+    def test_development_guidance_must_cover_the_complete_ci_mypy_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            contributing_path = root / "CONTRIBUTING.md"
+            contributing = contributing_path.read_text(encoding="utf-8").replace(
+                "scripts/audit_official_docs.py ", "", 1
+            )
+            contributing_path.write_text(contributing, encoding="utf-8")
+
+            problems = validate_repository.validate_development_dependency_contract(
+                root
+            )
+
+        self.assertIn(
+            "CONTRIBUTING.md: development guidance must run the complete CI Mypy command",
+            problems,
+        )
+
+    def test_development_guidance_mypy_contract_rejects_unreadable_document(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "README.md").write_bytes(b"\xff")
+
+            problems = validate_repository.validate_development_dependency_contract(
+                root
+            )
+
+        self.assertIn(
+            "README.md: could not verify Mypy development guidance:",
+            "\n".join(problems),
+        )
+
     def test_coverage_floor_regression_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

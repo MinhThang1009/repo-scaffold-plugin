@@ -1449,10 +1449,29 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     mypy_arguments = (
         set(mypy_steps[0]["run"].split()) if len(mypy_steps) == 1 else set()
     )
-    if not required_mypy_paths.issubset(mypy_arguments):
+    if (
+        "--explicit-package-bases" not in mypy_arguments
+        or not required_mypy_paths.issubset(mypy_arguments)
+    ):
         problems.append(
             ".github/workflows/ci.yml: Mypy must check every production script and tests"
         )
+
+    if len(mypy_steps) == 1 and isinstance(mypy_steps[0].get("run"), str):
+        expected_mypy_command = " ".join(mypy_steps[0]["run"].split())
+        for relative in ("README.md", "CONTRIBUTING.md"):
+            path = repository_root / relative
+            try:
+                document_text = " ".join(path.read_text(encoding="utf-8").split())
+            except (OSError, UnicodeError) as error:
+                problems.append(
+                    f"{relative}: could not verify Mypy development guidance: {error}"
+                )
+                continue
+            if expected_mypy_command not in document_text:
+                problems.append(
+                    f"{relative}: development guidance must run the complete CI Mypy command"
+                )
 
     coverage_path = repository_root / ".coveragerc"
     coverage_config = configparser.ConfigParser()
