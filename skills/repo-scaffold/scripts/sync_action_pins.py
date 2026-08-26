@@ -39,10 +39,10 @@ BLOCK_SCALAR_ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P<comment>[ \t]*)(?=\r?$)"
 )
 FLOW_USES_PATTERN = re.compile(
-    rf"(?m)^\s*(?:-\s*)?\{{[^{{}}\r\n]*?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?P<flow_suffix>[ \t]*(?:,[^{{}}\r\n]*)?\}})(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+    rf"(?m)^\s*(?:-\s*)?\{{[^{{}}]*?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?P<flow_suffix>\s*(?:,[^{{}}]*)?\}})(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 FLOW_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{[^{{}}\r\n]*?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_suffix>[ \t]*(?:,[^{{}}\r\n]*)?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{[^{{}}]*?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_suffix>\s*(?:,[^{{}}]*)?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
@@ -56,6 +56,7 @@ BLOCK_SCALAR_HEADER_PATTERN = re.compile(
 QUOTED_SCALAR_START_PATTERN = re.compile(
     rf"^(?P<indent> *)(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"])"
 )
+FLOW_MAPPING_START_PATTERN = re.compile(r"^\s*(?:-\s*)?\{")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 RELEASE_TAG_PATTERN = re.compile(
@@ -231,6 +232,24 @@ def quoted_scalar_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
     return tuple(ranges)
 
 
+def flow_mapping_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
+    """Return offsets inside multiline YAML flow mappings."""
+    ranges: list[tuple[int, int]] = []
+    flow_start: int | None = None
+    offset = 0
+    for line in content.splitlines(keepends=True):
+        if flow_start is None:
+            if FLOW_MAPPING_START_PATTERN.match(line) is not None and "}" not in line:
+                flow_start = offset + len(line)
+        elif "}" in line:
+            ranges.append((flow_start, offset + len(line)))
+            flow_start = None
+        offset += len(line)
+    if flow_start is not None:
+        ranges.append((flow_start, len(content)))
+    return tuple(ranges)
+
+
 def _matches_outside_block_scalars(
     pattern: re.Pattern[str], content: str
 ) -> tuple[re.Match[str], ...]:
@@ -238,6 +257,7 @@ def _matches_outside_block_scalars(
     ranges = (
         *block_scalar_content_ranges(content),
         *quoted_scalar_content_ranges(content),
+        *flow_mapping_content_ranges(content),
     )
     return tuple(
         match

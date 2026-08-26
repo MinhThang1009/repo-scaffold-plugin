@@ -384,6 +384,15 @@ class ActionPinSyncTests(unittest.TestCase):
                     + "      - { uses: &checkout actions/checkout@"
                     + "a" * 40
                     + " }\n      - { uses: *checkout }\n"
+                    + "      - {\n          uses: actions/checkout@"
+                    + "a" * 40
+                    + "\n        }\n"
+                    + "      - { name: Checkout,\n          uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + ",\n          name: Checkout }\n"
                 ),
             )
 
@@ -396,12 +405,16 @@ class ActionPinSyncTests(unittest.TestCase):
 
             self.assertEqual(changed, [workflow])
             content = workflow.read_text(encoding="utf-8")
-            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 5)
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 8)
             self.assertIn(
                 f"uses: actions/checkout@{'c' * 40}, name: Checkout }} # v9.1.2",
                 content,
             )
             self.assertIn("uses: *checkout }", content)
+            self.assertIn(
+                f"uses: actions/checkout@{'c' * 40}\n        }} # v9.1.2",
+                content,
+            )
             self.assertEqual(
                 sync_action_pins.auditable_action_repositories(workflow, content),
                 {"actions/checkout"},
@@ -420,6 +433,15 @@ class ActionPinSyncTests(unittest.TestCase):
                 ),
                 [],
             )
+
+    def test_flow_mapping_ranges_mask_unclosed_flow_mappings(self) -> None:
+        content = "  - {\n      uses: actions/checkout@" + "a" * 40 + "\n"
+
+        self.assertEqual(
+            sync_action_pins.flow_mapping_content_ranges(content),
+            ((6, len(content)),),
+        )
+        self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())
 
     def test_synchronize_updates_action_pin_anchored_outside_uses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
