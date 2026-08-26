@@ -389,6 +389,8 @@ class ActionPinSyncTests(unittest.TestCase):
                 + "b" * 40
                 + '\n      - "\\u0075ses": actions/checkout@'
                 + "b" * 40
+                + '\n      ? "u\\\n          ses"\n        : actions/checkout@'
+                + "b" * 40
                 + "\n",
             )
             releases = {
@@ -404,7 +406,7 @@ class ActionPinSyncTests(unittest.TestCase):
 
             self.assertEqual(changed, [workflow])
             content = workflow.read_text(encoding="utf-8")
-            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 5)
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 6)
             with self.assertRaisesRegex(ValueError, "not pinned"):
                 sync_action_pins.auditable_action_repositories(
                     workflow,
