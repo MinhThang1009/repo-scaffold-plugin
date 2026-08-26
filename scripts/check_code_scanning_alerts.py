@@ -311,6 +311,21 @@ def open_alerts(repository: str, ref: str, token: str) -> tuple[Alert, ...]:
     raise GateError(f"GitHub returned more than {MAX_PAGES * 100} open alerts")
 
 
+def wait_for_open_alerts(
+    repository: str, ref: str, token: str, attempts: int, delay: float
+) -> tuple[Alert, ...]:
+    """Retry transient alert-list failures without treating them as approved."""
+    for attempt in range(attempts):
+        try:
+            return open_alerts(repository, ref, token)
+        except TransientGateError:
+            if attempt + 1 < attempts:
+                time.sleep(delay)
+    raise GateError(
+        f"Open code-scanning alerts for {ref} were not queryable after {attempts} attempts"
+    )
+
+
 def unapproved_alerts(
     alerts: tuple[Alert, ...], selectors: tuple[AlertSelector, ...]
 ) -> list[Alert]:
@@ -387,7 +402,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.delay_seconds,
                 expected_categories,
             )
-        unexpected = unapproved_alerts(open_alerts(repository, ref, token), selectors)
+        unexpected = unapproved_alerts(
+            wait_for_open_alerts(
+                repository, ref, token, args.attempts, args.delay_seconds
+            ),
+            selectors,
+        )
     except GateError as error:
         print(f"code-scanning gate error: {error}", file=sys.stderr)
         return 2

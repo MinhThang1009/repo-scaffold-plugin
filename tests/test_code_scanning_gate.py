@@ -430,6 +430,30 @@ class CodeScanningGateTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.GateError, "more than"):
                 gate.open_alerts("owner/repo", "refs/heads/main", "token")
 
+    def test_open_alert_waiting_retries_transient_api_errors(self) -> None:
+        with (
+            mock.patch.object(
+                gate,
+                "open_alerts",
+                side_effect=[gate.TransientGateError("temporary"), ()],
+            ),
+            mock.patch.object(gate, "time") as clock,
+        ):
+            self.assertEqual(
+                gate.wait_for_open_alerts(
+                    "owner/repo", "refs/heads/main", "token", attempts=2, delay=1.5
+                ),
+                (),
+            )
+        clock.sleep.assert_called_once_with(1.5)
+        with mock.patch.object(
+            gate, "open_alerts", side_effect=gate.TransientGateError("temporary")
+        ):
+            with self.assertRaisesRegex(gate.GateError, "were not queryable"):
+                gate.wait_for_open_alerts(
+                    "owner/repo", "refs/heads/main", "token", attempts=1, delay=0
+                )
+
     def test_pull_request_merge_sha_waits_for_github_to_finish_mergeability(
         self,
     ) -> None:
@@ -584,7 +608,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 mock.patch.object(gate, "wait_for_analyses") as wait,
                 mock.patch.object(
                     gate,
-                    "open_alerts",
+                    "wait_for_open_alerts",
                     return_value=(
                         gate.Alert(1, "CodeQL", "py/example", "scripts/example.py"),
                     ),
@@ -596,7 +620,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 mock.patch.object(gate, "wait_for_analyses"),
                 mock.patch.object(
                     gate,
-                    "open_alerts",
+                    "wait_for_open_alerts",
                     return_value=(gate.Alert(2, "CodeQL", "py/new", "scripts/new.py"),),
                 ),
             ):
@@ -627,7 +651,7 @@ class CodeScanningGateTests(unittest.TestCase):
                     "wait_for_pull_request_analyses",
                     return_value=("refs/pull/42/merge", "a" * 40),
                 ) as wait,
-                mock.patch.object(gate, "open_alerts", return_value=()),
+                mock.patch.object(gate, "wait_for_open_alerts", return_value=()),
             ):
                 self.assertEqual(gate.main(arguments), 0)
             wait.assert_called_once_with(
