@@ -26,6 +26,12 @@ ACTION_PIN_PATTERN = re.compile(
 USES_PATTERN = re.compile(
     r"(?m)^\s*(?:-\s*)?uses:\s*(?:&[A-Za-z0-9_-]+\s+)?(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
+BLOCK_SCALAR_USES_PATTERN = re.compile(
+    r"(?m)^\s*(?:-\s*)?uses:\s*[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?P<reference>\S+?)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+)
+BLOCK_SCALAR_ACTION_PIN_PATTERN = re.compile(
+    r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>[ \t]*)(?=\r?$)"
+)
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     r"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*&(?P<anchor>[A-Za-z0-9_-]+)\s*)(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
@@ -234,6 +240,14 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
         (match.start(), match.end()): match
         for match in _matches_outside_block_scalars(ACTION_PIN_PATTERN, content)
     }
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(
+                BLOCK_SCALAR_ACTION_PIN_PATTERN, content
+            )
+        }
+    )
     aliases = referenced_action_aliases(content)
     for match in _matches_outside_block_scalars(ANCHORED_ACTION_PIN_PATTERN, content):
         if match.group("anchor") in aliases:
@@ -243,7 +257,20 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
 
 def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
     """Return workflow ``uses`` mappings, excluding YAML scalar content."""
-    return _matches_outside_block_scalars(USES_PATTERN, content)
+    matches = {
+        (match.start(), match.end()): match
+        for match in _matches_outside_block_scalars(USES_PATTERN, content)
+        if match.group("reference")[0] not in {"|", ">"}
+    }
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(
+                BLOCK_SCALAR_USES_PATTERN, content
+            )
+        }
+    )
+    return tuple(match for _, match in sorted(matches.items()))
 
 
 def referenced_action_aliases(content: str) -> frozenset[str]:
@@ -472,6 +499,14 @@ def synchronize_action_pins(
         action = match.group("action")
         release = releases[action_repository(action)]
         comment = match.group("comment")
+        if "\n" in match.group("prefix"):
+            if match.group("sha").casefold() == release.sha:
+                return match.group(0)
+            quote = match.group("quote")
+            # A block scalar treats a hash as part of the action reference.
+            return (
+                f"{match.group('prefix')}{quote}{action}@{release.sha}{quote}{comment}"
+            )
         if match.group("sha").casefold() == release.sha and comment.strip() == (
             f"# {release.tag}"
         ):

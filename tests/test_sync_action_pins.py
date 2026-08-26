@@ -268,6 +268,48 @@ class ActionPinSyncTests(unittest.TestCase):
                 {"actions/checkout"},
             )
 
+    def test_synchronize_updates_block_scalar_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    + "      - uses: >-\n          actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: |-\n          actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 2)
+            self.assertNotIn("# v9.1.2", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            self.assertEqual(
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=True,
+                    workflow_directories=(Path(".github/workflows"),),
+                ),
+                [],
+            )
+
     def test_synchronize_updates_action_pin_anchored_outside_uses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -315,6 +357,25 @@ class ActionPinSyncTests(unittest.TestCase):
                     workflow,
                     content.replace("c" * 40, "v9.1.2"),
                 )
+
+    def test_synchronize_ignores_unreferenced_action_anchors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "env:\n  UNUSED_ACTION: &unused actions/checkout@" + "a" * 40 + "\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [])
+            self.assertIn("a" * 40, workflow.read_text(encoding="utf-8"))
 
     def test_synchronize_ignores_uses_text_in_run_block_scalars(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
