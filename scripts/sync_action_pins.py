@@ -21,9 +21,11 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ACTION_TAG_PAGES = 20
 MAX_ANNOTATED_TAG_DEPTH = 10
 ACTION_PIN_PATTERN = re.compile(
-    r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*)(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
-USES_PATTERN = re.compile(r"(?m)^\s*(?:-\s*)?uses:\s*(?P<reference>\S+)")
+USES_PATTERN = re.compile(
+    r"(?m)^\s*(?:-\s*)?uses:\s*(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+)
 BLOCK_SCALAR_HEADER_PATTERN = re.compile(
     r"^(?P<indent> *)[^#\r\n]+:\s*[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
 )
@@ -433,7 +435,11 @@ def synchronize_action_pins(
         ):
             return match.group(0)
         prefix = comment[: comment.index("#")] if "#" in comment else " "
-        return f"{match.group('prefix')}{action}@{release.sha}{prefix}# {release.tag}"
+        quote = match.group("quote")
+        return (
+            f"{match.group('prefix')}{quote}{action}@{release.sha}{quote}"
+            f"{prefix}# {release.tag}"
+        )
 
     replacements: dict[Path, str] = {}
     for path, content in contents.items():
