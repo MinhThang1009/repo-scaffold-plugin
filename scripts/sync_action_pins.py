@@ -26,6 +26,7 @@ YAML_ANCHOR_PROPERTIES_PATTERN = (
     rf"(?:(?:{YAML_TAG_PATTERN})\s+)*&(?P<anchor>[A-Za-z0-9_-]+)\s+"
     rf"(?:(?:{YAML_TAG_PATTERN})\s+)*"
 )
+FLOW_MAPPING_CONTENT_PATTERN = r"""(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*"|\{(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*")*\}|\{\{[^{}]*\}\})*"""
 ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
@@ -39,10 +40,10 @@ BLOCK_SCALAR_ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P<comment>[ \t]*)(?=\r?$)"
 )
 FLOW_USES_PATTERN = re.compile(
-    rf"(?m)^\s*(?:-\s*)?\{{[^{{}}]*?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?P<flow_suffix>\s*(?:,[^{{}}]*)?\}})(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+    rf"(?m)^\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 FLOW_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{[^{{}}]*?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_suffix>\s*(?:,[^{{}}]*)?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
@@ -236,14 +237,19 @@ def flow_mapping_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
     """Return offsets inside multiline YAML flow mappings."""
     ranges: list[tuple[int, int]] = []
     flow_start: int | None = None
+    flow_depth = 0
     offset = 0
     for line in content.splitlines(keepends=True):
         if flow_start is None:
-            if FLOW_MAPPING_START_PATTERN.match(line) is not None and "}" not in line:
+            if FLOW_MAPPING_START_PATTERN.match(line) is not None:
+                flow_depth = line.count("{") - line.count("}")
+            if flow_depth > 0:
                 flow_start = offset + len(line)
-        elif "}" in line:
-            ranges.append((flow_start, offset + len(line)))
-            flow_start = None
+        else:
+            flow_depth += line.count("{") - line.count("}")
+            if flow_depth <= 0:
+                ranges.append((flow_start, offset + len(line)))
+                flow_start = None
         offset += len(line)
     if flow_start is not None:
         ranges.append((flow_start, len(content)))

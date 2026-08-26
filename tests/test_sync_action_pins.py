@@ -393,6 +393,18 @@ class ActionPinSyncTests(unittest.TestCase):
                     + "      - { uses: actions/checkout@"
                     + "a" * 40
                     + ",\n          name: Checkout }\n"
+                    + "      - { if: \"${{ github.ref == 'refs/heads/main' }}\", uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + ", if: \"${{ github.ref == 'refs/heads/main' }}\" }\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + ", with: { fetch-depth: 0 } }\n"
+                    + "      - { with: { fetch-depth: 0 }, uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
                 ),
             )
 
@@ -405,7 +417,7 @@ class ActionPinSyncTests(unittest.TestCase):
 
             self.assertEqual(changed, [workflow])
             content = workflow.read_text(encoding="utf-8")
-            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 8)
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 12)
             self.assertIn(
                 f"uses: actions/checkout@{'c' * 40}, name: Checkout }} # v9.1.2",
                 content,
