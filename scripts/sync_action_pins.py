@@ -27,6 +27,9 @@ USES_PATTERN = re.compile(r"(?m)^\s*(?:-\s*)?uses:\s*(?P<reference>\S+)")
 BLOCK_SCALAR_HEADER_PATTERN = re.compile(
     r"^(?P<indent> *)[^#\r\n]+:\s*[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
 )
+QUOTED_SCALAR_START_PATTERN = re.compile(
+    r"^(?P<indent> *)(?:-\s*)?[^#\r\n]+:\s*(?P<quote>['\"])"
+)
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 RELEASE_TAG_PATTERN = re.compile(
@@ -166,11 +169,50 @@ def block_scalar_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
     return tuple(ranges)
 
 
+def quoted_scalar_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
+    """Return offsets occupied by multiline YAML single- or double-quoted text."""
+    ranges: list[tuple[int, int]] = []
+    offset = 0
+    for line in content.splitlines(keepends=True):
+        match = QUOTED_SCALAR_START_PATTERN.search(line)
+        if match is None:
+            offset += len(line)
+            continue
+        quote_start = offset + match.start("quote")
+        quote = match.group("quote")
+        index = quote_start + 1
+        while index < len(content):
+            character = content[index]
+            if quote == "'" and character == "'":
+                if index + 1 < len(content) and content[index + 1] == "'":
+                    index += 2
+                    continue
+                index += 1
+                break
+            if quote == '"' and character == '"':
+                slash_count = 0
+                previous = index - 1
+                while previous >= quote_start and content[previous] == "\\":
+                    slash_count += 1
+                    previous -= 1
+                if slash_count % 2 == 0:
+                    index += 1
+                    break
+            index += 1
+        if index <= len(content) and "\n" in content[quote_start:index]:
+            ranges.append((quote_start, index))
+        offset += len(line)
+    return tuple(ranges)
+
+
 def _matches_outside_block_scalars(
     pattern: re.Pattern[str], content: str
 ) -> tuple[re.Match[str], ...]:
-    """Return regex matches that are not embedded in YAML block-scalar text."""
-    ranges = block_scalar_content_ranges(content)
+    """Return regex matches that are not embedded in YAML scalar text."""
+    ranges = (
+        *block_scalar_content_ranges(content),
+        *quoted_scalar_content_ranges(content),
+    )
     return tuple(
         match
         for match in pattern.finditer(content)

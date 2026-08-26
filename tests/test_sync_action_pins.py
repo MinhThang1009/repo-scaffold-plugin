@@ -199,11 +199,27 @@ class ActionPinSyncTests(unittest.TestCase):
             workflow = self.write_workflow(
                 root,
                 ".github/workflows/ci.yml",
-                "jobs:\n  test:\n    steps:\n"
-                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n"
-                "      - run: |\n"
-                "          uses: actions/checkout@" + "b" * 40 + " # not an action\n"
-                "      - run: echo completed\n",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    "      - uses: actions/checkout@"
+                    + "a" * 40
+                    + " # v1.0.0\n"
+                    + "      - run: |\n"
+                    + "          uses: actions/checkout@"
+                    + "b" * 40
+                    + " # not an action\n"
+                    + "      - run: echo completed\n"
+                    + '      - run: "echo started\n'
+                    + "          uses: actions/checkout@"
+                    + "d" * 40
+                    + " # not an action\n"
+                    + '          echo completed"\n'
+                    + "      - run: 'echo started\n"
+                    + "          uses: actions/checkout@"
+                    + "e" * 40
+                    + " # not an action\n"
+                    + "          echo it''s completed'\n"
+                ),
             )
 
             changed = sync_action_pins.synchronize_action_pins(
@@ -217,6 +233,8 @@ class ActionPinSyncTests(unittest.TestCase):
             content = workflow.read_text(encoding="utf-8")
             self.assertIn(f"actions/checkout@{'c' * 40} # v9.1.2", content)
             self.assertIn(f"uses: actions/checkout@{'b' * 40} # not an action", content)
+            self.assertIn(f"uses: actions/checkout@{'d' * 40} # not an action", content)
+            self.assertIn(f"uses: actions/checkout@{'e' * 40} # not an action", content)
             self.assertEqual(
                 sync_action_pins.auditable_action_repositories(
                     workflow,
@@ -225,6 +243,17 @@ class ActionPinSyncTests(unittest.TestCase):
                 ),
                 set(),
             )
+
+    def test_action_matching_ignores_multiline_quoted_scalar_edge_cases(self) -> None:
+        action = "actions/checkout@" + "a" * 40
+        for content in (
+            'run: "one line"\n',
+            'run: "echo \\"quoted\\"\n  uses: ' + action + '\n  echo done"\n',
+            "run: 'echo it''s\n  uses: " + action + "\n  echo done'\n",
+            'run: "unterminated\n  uses: ' + action + "\n",
+        ):
+            with self.subTest(content=content):
+                self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())
 
     def test_action_repositories_rejects_unpinned_and_unallowed_references(
         self,

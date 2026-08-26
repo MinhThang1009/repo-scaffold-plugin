@@ -255,7 +255,12 @@ class FreshnessTests(unittest.TestCase):
                 + "      - run: |\n"
                 + "          uses: actions/checkout@"
                 + "b" * 40
-                + " # shell text\n",
+                + " # shell text\n"
+                + '      - run: "echo started\n'
+                + "          uses: actions/checkout@"
+                + "d" * 40
+                + " # shell text\n"
+                + '          echo completed"\n',
                 encoding="utf-8",
             )
             trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
