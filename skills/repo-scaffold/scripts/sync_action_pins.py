@@ -27,7 +27,6 @@ YAML_ANCHOR_PROPERTIES_PATTERN = (
     rf"(?:(?:{YAML_TAG_PATTERN})\s+)*"
 )
 FLOW_MAPPING_CONTENT_PATTERN = r"""(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*"|\{(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*")*\}|\{\{[^{}]*\}\})*"""
-FLOW_QUOTED_TEXT_PATTERN = re.compile(r"""(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')""")
 ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
@@ -239,28 +238,53 @@ def flow_mapping_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
     ranges: list[tuple[int, int]] = []
     flow_start: int | None = None
     flow_depth = 0
+    flow_quote: str | None = None
     offset = 0
     for line in content.splitlines(keepends=True):
         if flow_start is None:
             if FLOW_MAPPING_START_PATTERN.match(line) is not None:
-                flow_depth = flow_mapping_brace_delta(line)
+                flow_depth, flow_quote = flow_mapping_brace_delta(line, flow_quote)
             if flow_depth > 0:
                 flow_start = offset + len(line)
         else:
-            flow_depth += flow_mapping_brace_delta(line)
+            brace_delta, flow_quote = flow_mapping_brace_delta(line, flow_quote)
+            flow_depth += brace_delta
             if flow_depth <= 0:
                 ranges.append((flow_start, offset + len(line)))
                 flow_start = None
+                flow_quote = None
         offset += len(line)
     if flow_start is not None:
         ranges.append((flow_start, len(content)))
     return tuple(ranges)
 
 
-def flow_mapping_brace_delta(line: str) -> int:
-    """Return a flow mapping line's brace balance outside quoted YAML text."""
-    unquoted = FLOW_QUOTED_TEXT_PATTERN.sub("", line)
-    return unquoted.count("{") - unquoted.count("}")
+def flow_mapping_brace_delta(line: str, quote: str | None) -> tuple[int, str | None]:
+    """Return a flow mapping line's brace balance and trailing quote state."""
+    brace_delta = 0
+    index = 0
+    while index < len(line):
+        character = line[index]
+        if quote == "'":
+            if character == "'":
+                if index + 1 < len(line) and line[index + 1] == "'":
+                    index += 2
+                    continue
+                quote = None
+        elif quote == '"':
+            if character == "\\":
+                index += 2
+                continue
+            if character == '"':
+                quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "{":
+            brace_delta += 1
+        elif character == "}":
+            brace_delta -= 1
+        index += 1
+    return brace_delta, quote
 
 
 def _matches_outside_block_scalars(

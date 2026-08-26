@@ -488,6 +488,51 @@ class ActionPinSyncTests(unittest.TestCase):
                 {"actions/checkout"},
             )
 
+    def test_synchronize_handles_multiline_flow_mapping_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n      - {\n"
+                    + '          name: "one line\n            } still quoted",\n'
+                    + "          uses: actions/checkout@"
+                    + "a" * 40
+                    + "\n        }\n      - {\n"
+                    + "          name: 'one line\n            } still quoted',\n"
+                    + "          uses: actions/checkout@"
+                    + "a" * 40
+                    + "\n        }\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 2)
+            self.assertEqual(content.count("} # v9.1.2"), 2)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
+    def test_flow_mapping_brace_delta_preserves_escaped_quotes(self) -> None:
+        self.assertEqual(
+            sync_action_pins.flow_mapping_brace_delta("''", "'"),
+            (0, "'"),
+        )
+        self.assertEqual(
+            sync_action_pins.flow_mapping_brace_delta("\\}", '"'),
+            (0, '"'),
+        )
+
     def test_synchronize_updates_action_pin_anchored_outside_uses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
