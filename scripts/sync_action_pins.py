@@ -26,7 +26,13 @@ YAML_ANCHOR_PROPERTIES_PATTERN = (
     rf"(?:(?:{YAML_TAG_PATTERN})\s+)*&(?P<anchor>[A-Za-z0-9_-]+)\s+"
     rf"(?:(?:{YAML_TAG_PATTERN})\s+)*"
 )
-YAML_USES_KEY_PATTERN = rf"{YAML_NODE_PROPERTIES_PATTERN}(?:uses|['\"]uses['\"])"
+YAML_DOUBLE_QUOTED_USES_KEY_PATTERN = (
+    r'"(?:u|\\x75|\\u0075|\\U00000075)'
+    r"(?:s|\\x73|\\u0073|\\U00000073)"
+    r"(?:e|\\x65|\\u0065|\\U00000065)"
+    r"(?:s|\\x73|\\u0073|\\U00000073)\""
+)
+YAML_USES_KEY_PATTERN = rf"{YAML_NODE_PROPERTIES_PATTERN}(?:uses|'uses'|{YAML_DOUBLE_QUOTED_USES_KEY_PATTERN})"
 FLOW_MAPPING_CONTENT_PATTERN = r"""(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*"|\{(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*")*\}|\{\{[^{}]*\}\})*"""
 ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
