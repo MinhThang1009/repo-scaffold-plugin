@@ -345,8 +345,44 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         self.assertEqual(
             requests,
-            ["https://api.github.com/repos/github/codeql-action/tags?per_page=100"],
+            [
+                "https://api.github.com/repos/github/codeql-action/tags?per_page=100&page=1"
+            ],
         )
+
+    def test_github_release_client_paginates_action_tags_and_fails_closed(self) -> None:
+        older = {"name": "v4.37.8", "commit": {"sha": "b" * 40}}
+        newer = {"name": "v5.0.0", "commit": {"sha": "c" * 40}}
+        responses = iter([[older] * 100, [newer]])
+        requests: list[str] = []
+
+        def opener(request: Any, *, timeout: int) -> FakeResponse:
+            requests.append(request.full_url)
+            self.assertEqual(timeout, 30)
+            return FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        client = sync_action_pins.GitHubReleaseClient("token", opener)
+        self.assertEqual(
+            client.latest_release("github/codeql-action"),
+            sync_action_pins.ActionRelease("v5.0.0", "c" * 40),
+        )
+        self.assertEqual(
+            requests,
+            [
+                "https://api.github.com/repos/github/codeql-action/tags?per_page=100&page=1",
+                "https://api.github.com/repos/github/codeql-action/tags?per_page=100&page=2",
+            ],
+        )
+
+        with mock.patch.object(sync_action_pins, "MAX_ACTION_TAG_PAGES", 1):
+            capped = sync_action_pins.GitHubReleaseClient(
+                "token",
+                lambda *_args, **_kwargs: FakeResponse(
+                    json.dumps([older] * 100).encode("utf-8")
+                ),
+            )
+            with self.assertRaisesRegex(ValueError, "inventory exceeds"):
+                capped.latest_release("github/codeql-action")
 
     def test_github_release_client_rejects_bad_inputs_and_responses(self) -> None:
         with self.assertRaisesRegex(ValueError, "GITHUB_TOKEN"):

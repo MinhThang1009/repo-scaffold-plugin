@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 GITHUB_API_URL = "https://api.github.com"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_ACTION_TAG_PAGES = 20
 ACTION_PIN_PATTERN = re.compile(
     r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
@@ -226,34 +227,43 @@ class GitHubReleaseClient:
 
     def latest_action_tag(self, repository: str) -> ActionRelease:
         """Resolve the latest stable action tag when releases contain non-action tags."""
-        tags = self.get_json_list(f"/repos/{repository}/tags?per_page=100")
         releases: list[tuple[tuple[int, int, int], ActionRelease]] = []
-        for tag_document in tags:
-            tag = tag_document.get("name")
-            commit = tag_document.get("commit")
-            match = (
-                STABLE_ACTION_TAG_PATTERN.fullmatch(tag)
-                if isinstance(tag, str)
-                else None
+        for page in range(1, MAX_ACTION_TAG_PAGES + 1):
+            tags = self.get_json_list(
+                f"/repos/{repository}/tags?per_page=100&page={page}"
             )
-            sha = commit.get("sha") if isinstance(commit, dict) else None
-            if (
-                match is not None
-                and isinstance(tag, str)
-                and isinstance(sha, str)
-                and SHA_PATTERN.fullmatch(sha)
-            ):
-                version: tuple[int, int, int] = (
-                    int(match.group(1)),
-                    int(match.group(2)),
-                    int(match.group(3)),
+            for tag_document in tags:
+                tag = tag_document.get("name")
+                commit = tag_document.get("commit")
+                match = (
+                    STABLE_ACTION_TAG_PATTERN.fullmatch(tag)
+                    if isinstance(tag, str)
+                    else None
                 )
-                releases.append(
-                    (
-                        version,
-                        ActionRelease(tag=tag, sha=sha),
+                sha = commit.get("sha") if isinstance(commit, dict) else None
+                if (
+                    match is not None
+                    and isinstance(tag, str)
+                    and isinstance(sha, str)
+                    and SHA_PATTERN.fullmatch(sha)
+                ):
+                    version: tuple[int, int, int] = (
+                        int(match.group(1)),
+                        int(match.group(2)),
+                        int(match.group(3)),
                     )
-                )
+                    releases.append(
+                        (
+                            version,
+                            ActionRelease(tag=tag, sha=sha),
+                        )
+                    )
+            if len(tags) < 100:
+                break
+        else:
+            raise ValueError(
+                f"action tag inventory exceeds {MAX_ACTION_TAG_PAGES} pages: {repository}"
+            )
         if not releases:
             raise ValueError(f"no stable action tag could be resolved: {repository}")
         return max(releases, key=lambda item: item[0])[1]
