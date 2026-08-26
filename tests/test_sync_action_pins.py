@@ -310,6 +310,57 @@ class ActionPinSyncTests(unittest.TestCase):
                 [],
             )
 
+    def test_synchronize_updates_tagged_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "env:\n  CHECKOUT_ACTION: !custom &outside actions/checkout@"
+                    + "a" * 40
+                    + "\njobs:\n  test:\n    steps:\n"
+                    + "      - uses: !!str actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: !<tag:yaml.org,2002:str> actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: ! actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: !custom actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: !!str 'actions/checkout@"
+                    + "a" * 40
+                    + "'\n"
+                    + "      - uses: !!str &checkout actions/checkout@"
+                    + "a" * 40
+                    + "\n      - uses: *checkout\n      - uses: *outside\n"
+                    + "      - uses: !!str >-\n          actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 8)
+            self.assertIn("uses: *checkout", content)
+            self.assertIn("uses: *outside", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
     def test_synchronize_updates_action_pin_anchored_outside_uses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -434,6 +485,8 @@ class ActionPinSyncTests(unittest.TestCase):
             'run: "one line"\n',
             'run: "echo \\"quoted\\"\n  uses: ' + action + '\n  echo done"\n',
             "run: 'echo it''s\n  uses: " + action + "\n  echo done'\n",
+            "run: !custom |\n  uses: " + action + "\n",
+            'run: !custom "echo started\n  uses: ' + action + '\n  echo done"\n',
             'run: "unterminated\n  uses: ' + action + "\n",
         ):
             with self.subTest(content=content):

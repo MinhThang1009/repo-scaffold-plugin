@@ -20,29 +20,35 @@ GITHUB_API_URL = "https://api.github.com"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ACTION_TAG_PAGES = 20
 MAX_ANNOTATED_TAG_DEPTH = 10
+YAML_TAG_PATTERN = r"!(?:<[^>\r\n]+>|[^\s\[\]{},#&*|>@]*)"
+YAML_NODE_PROPERTIES_PATTERN = rf"(?:(?:&[A-Za-z0-9_-]+|{YAML_TAG_PATTERN})\s+)*"
+YAML_ANCHOR_PROPERTIES_PATTERN = (
+    rf"(?:(?:{YAML_TAG_PATTERN})\s+)*&(?P<anchor>[A-Za-z0-9_-]+)\s+"
+    rf"(?:(?:{YAML_TAG_PATTERN})\s+)*"
+)
 ACTION_PIN_PATTERN = re.compile(
-    r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*(?:&[A-Za-z0-9_-]+\s+)?)(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 USES_PATTERN = re.compile(
-    r"(?m)^\s*(?:-\s*)?uses:\s*(?:&[A-Za-z0-9_-]+\s+)?(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+    rf"(?m)^\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 BLOCK_SCALAR_USES_PATTERN = re.compile(
-    r"(?m)^\s*(?:-\s*)?uses:\s*[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?P<reference>\S+?)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+    rf"(?m)^\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?P<reference>\S+?)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 BLOCK_SCALAR_ACTION_PIN_PATTERN = re.compile(
-    r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>[ \t]*)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P<comment>[ \t]*)(?=\r?$)"
 )
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
-    r"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*&(?P<anchor>[A-Za-z0-9_-]+)\s*)(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 ANCHORED_ACTION_PIN_PATTERN = re.compile(
-    r"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*&(?P<anchor>[A-Za-z0-9_-]+)\s*)(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 BLOCK_SCALAR_HEADER_PATTERN = re.compile(
-    r"^(?P<indent> *)[^#\r\n]+:\s*[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
+    rf"^(?P<indent> *)[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
 )
 QUOTED_SCALAR_START_PATTERN = re.compile(
-    r"^(?P<indent> *)(?:-\s*)?[^#\r\n]+:\s*(?P<quote>['\"])"
+    rf"^(?P<indent> *)(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"])"
 )
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
