@@ -6105,6 +6105,27 @@ jobs:
                 ],
             )
 
+    def test_workflow_parser_honors_workflow_level_default_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_workflow(
+                directory,
+                """
+defaults:
+  run:
+    shell: sh -e {0}
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: echo ok
+""",
+            )
+
+            self.assertEqual(
+                validate_workflows.workflow_shell_blocks(path),
+                [("test: step 0", "sh", b"echo ok")],
+            )
+
     def test_workflow_parser_handles_nonmapping_defaults_and_non_linux_runner(
         self,
     ) -> None:

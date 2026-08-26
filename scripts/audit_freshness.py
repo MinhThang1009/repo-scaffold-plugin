@@ -269,7 +269,7 @@ def action_findings(
             if release is None:
                 release = release_lookup(repository)
                 releases[repository] = release
-            if match.group("sha") != release.sha:
+            if match.group("sha").casefold() != release.sha:
                 findings.append(
                     {
                         "kind": "action-pin",
