@@ -245,6 +245,30 @@ class FreshnessTests(unittest.TestCase):
                 [],
             )
 
+    def test_action_findings_ignores_uses_text_in_run_block_scalars(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + "      - run: |\n"
+                + "          uses: actions/checkout@"
+                + "b" * 40
+                + " # shell text\n",
+                encoding="utf-8",
+            )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            self.assertEqual(
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                ),
+                [],
+            )
+
     def test_action_findings_uses_the_safe_yaml_aware_workflow_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

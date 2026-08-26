@@ -24,6 +24,9 @@ ACTION_PIN_PATTERN = re.compile(
     r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 USES_PATTERN = re.compile(r"(?m)^\s*(?:-\s*)?uses:\s*(?P<reference>\S+)")
+BLOCK_SCALAR_HEADER_PATTERN = re.compile(
+    r"^(?P<indent> *)[^#\r\n]+:\s*[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
+)
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 RELEASE_TAG_PATTERN = re.compile(
@@ -141,13 +144,57 @@ def workflow_paths(
     return sorted(paths)
 
 
+def block_scalar_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
+    """Return offsets occupied by YAML literal or folded scalar content."""
+    ranges: list[tuple[int, int]] = []
+    block_indent: int | None = None
+    block_start = 0
+    offset = 0
+    for line in content.splitlines(keepends=True):
+        indentation = len(line) - len(line.lstrip(" "))
+        if block_indent is not None and line.strip() and indentation <= block_indent:
+            ranges.append((block_start, offset))
+            block_indent = None
+        if block_indent is None:
+            header = BLOCK_SCALAR_HEADER_PATTERN.fullmatch(line)
+            if header is not None:
+                block_indent = len(header.group("indent"))
+                block_start = offset + len(line)
+        offset += len(line)
+    if block_indent is not None:
+        ranges.append((block_start, len(content)))
+    return tuple(ranges)
+
+
+def _matches_outside_block_scalars(
+    pattern: re.Pattern[str], content: str
+) -> tuple[re.Match[str], ...]:
+    """Return regex matches that are not embedded in YAML block-scalar text."""
+    ranges = block_scalar_content_ranges(content)
+    return tuple(
+        match
+        for match in pattern.finditer(content)
+        if not any(start <= match.start() < end for start, end in ranges)
+    )
+
+
+def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
+    """Return immutable action-pin mappings, excluding YAML scalar content."""
+    return _matches_outside_block_scalars(ACTION_PIN_PATTERN, content)
+
+
+def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
+    """Return workflow ``uses`` mappings, excluding YAML scalar content."""
+    return _matches_outside_block_scalars(USES_PATTERN, content)
+
+
 def auditable_action_repositories(path: Path, content: str) -> set[str]:
     """Collect every externally hosted action pinned to an immutable SHA."""
     repositories: set[str] = set()
-    pins = {match.group("reference") for match in USES_PATTERN.finditer(content)}
+    pins = {match.group("reference") for match in workflow_uses_matches(content)}
     pinned_references = {
         f"{match.group('action')}@{match.group('sha')}"
-        for match in ACTION_PIN_PATTERN.finditer(content)
+        for match in action_pin_matches(content)
     }
     for reference in pins:
         if reference.startswith(("./", "docker://")):
@@ -346,10 +393,17 @@ def synchronize_action_pins(
         prefix = comment[: comment.index("#")] if "#" in comment else " "
         return f"{match.group('prefix')}{action}@{release.sha}{prefix}# {release.tag}"
 
-    replacements = {
-        path: ACTION_PIN_PATTERN.sub(replace, content)
-        for path, content in contents.items()
-    }
+    replacements: dict[Path, str] = {}
+    for path, content in contents.items():
+        replacement_parts: list[str] = []
+        previous_end = 0
+        for match in action_pin_matches(content):
+            replacement_parts.extend(
+                (content[previous_end : match.start()], replace(match))
+            )
+            previous_end = match.end()
+        replacement_parts.append(content[previous_end:])
+        replacements[path] = "".join(replacement_parts)
     changed = [path for path in contents if replacements[path] != contents[path]]
     if write:
         for path in changed:

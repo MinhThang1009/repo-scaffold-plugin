@@ -262,7 +262,7 @@ def action_findings(
     for path in workflow_paths:
         text = path.read_text(encoding="utf-8")
         sync_action_pins.auditable_action_repositories(path, text)
-        for match in sync_action_pins.ACTION_PIN_PATTERN.finditer(text):
+        for match in sync_action_pins.action_pin_matches(text):
             action = match.group("action")
             repository = sync_action_pins.action_repository(action)
             release = releases.get(repository)

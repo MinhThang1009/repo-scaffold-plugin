@@ -193,6 +193,39 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertEqual(updated.count(b"\r\n"), 5)
             self.assertNotIn(b"\n", updated.replace(b"\r\n", b""))
 
+    def test_synchronize_ignores_uses_text_in_run_block_scalars(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n"
+                "      - run: |\n"
+                "          uses: actions/checkout@" + "b" * 40 + " # not an action\n"
+                "      - run: echo completed\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f"actions/checkout@{'c' * 40} # v9.1.2", content)
+            self.assertIn(f"uses: actions/checkout@{'b' * 40} # not an action", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "jobs:\n  test:\n    steps:\n      - run: |\n"
+                    + f"          uses: example/not-an-action@{'a' * 40}\n",
+                ),
+                set(),
+            )
+
     def test_action_repositories_rejects_unpinned_and_unallowed_references(
         self,
     ) -> None:
