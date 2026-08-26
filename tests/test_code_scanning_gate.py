@@ -6,10 +6,11 @@ import runpy
 import sys
 import tempfile
 import unittest
+from email.message import Message
 from io import BytesIO
 from pathlib import Path
 from unittest import mock
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -190,6 +191,24 @@ class CodeScanningGateTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.GateError, "exceeds"):
                 gate.api_json("https://api.github.com/example", "token")
         with mock.patch.object(gate, "urlopen", side_effect=URLError("offline")):
+            with self.assertRaisesRegex(gate.TransientGateError, "transiently"):
+                gate.api_json("https://api.github.com/example", "token")
+        with mock.patch.object(
+            gate,
+            "urlopen",
+            side_effect=HTTPError(
+                "https://api.github.com/example", 500, "error", Message(), None
+            ),
+        ):
+            with self.assertRaisesRegex(gate.TransientGateError, "transiently"):
+                gate.api_json("https://api.github.com/example", "token")
+        with mock.patch.object(
+            gate,
+            "urlopen",
+            side_effect=HTTPError(
+                "https://api.github.com/example", 401, "error", Message(), None
+            ),
+        ):
             with self.assertRaisesRegex(gate.GateError, "request failed"):
                 gate.api_json("https://api.github.com/example", "token")
         with mock.patch.object(gate, "urlopen", return_value=FakeResponse(b"not JSON")):
@@ -253,6 +272,24 @@ class CodeScanningGateTests(unittest.TestCase):
                 )
         with (
             mock.patch.object(gate, "analyses_ready", side_effect=[False, True]),
+            mock.patch.object(gate, "time") as clock,
+        ):
+            gate.wait_for_analyses(
+                "owner/repo",
+                "refs/pull/1/merge",
+                "a" * 40,
+                "t",
+                2,
+                1.5,
+                frozenset({"/language:python"}),
+            )
+        clock.sleep.assert_called_once_with(1.5)
+        with (
+            mock.patch.object(
+                gate,
+                "analyses_ready",
+                side_effect=[gate.TransientGateError("temporary"), True],
+            ),
             mock.patch.object(gate, "time") as clock,
         ):
             gate.wait_for_analyses(
@@ -434,6 +471,28 @@ class CodeScanningGateTests(unittest.TestCase):
         with (
             mock.patch.object(gate, "pull_request_merge_sha", return_value="a" * 40),
             mock.patch.object(gate, "analyses_ready", side_effect=[False, True]),
+            mock.patch.object(gate, "time") as clock,
+        ):
+            self.assertEqual(
+                gate.wait_for_pull_request_analyses(
+                    "owner/repo",
+                    "42",
+                    "token",
+                    attempts=2,
+                    delay=2.0,
+                    expected_categories=frozenset({"/language:python"}),
+                    expected_parents=("b" * 40, "c" * 40),
+                ),
+                ("refs/pull/42/merge", "a" * 40),
+            )
+        clock.sleep.assert_called_once_with(2.0)
+        with (
+            mock.patch.object(
+                gate,
+                "pull_request_merge_sha",
+                side_effect=[gate.TransientGateError("temporary"), "a" * 40],
+            ),
+            mock.patch.object(gate, "analyses_ready", return_value=True),
             mock.patch.object(gate, "time") as clock,
         ):
             self.assertEqual(

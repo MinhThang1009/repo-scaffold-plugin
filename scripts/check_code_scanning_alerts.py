@@ -31,6 +31,10 @@ class GateError(RuntimeError):
     """Raised when the gate cannot verify code-scanning alert state."""
 
 
+class TransientGateError(GateError):
+    """Raised when a bounded retry may recover a GitHub API request."""
+
+
 @dataclass(frozen=True)
 class AlertSelector:
     """One reviewed exception for an otherwise merge-blocking alert."""
@@ -122,8 +126,16 @@ def api_json(url: str, token: str) -> Any:
     try:
         with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed GitHub API host
             payload = response.read(MAX_RESPONSE_BYTES + 1)
-    except (HTTPError, URLError, OSError) as error:
+    except HTTPError as error:
+        if error.code in {429, 500, 502, 503, 504}:
+            raise TransientGateError(
+                f"GitHub API request failed transiently: {error}"
+            ) from error
         raise GateError(f"GitHub API request failed: {error}") from error
+    except (URLError, OSError) as error:
+        raise TransientGateError(
+            f"GitHub API request failed transiently: {error}"
+        ) from error
     if len(payload) > MAX_RESPONSE_BYTES:
         raise GateError("GitHub API response exceeds the allowed size")
     try:
@@ -220,8 +232,11 @@ def wait_for_analyses(
 ) -> None:
     """Wait briefly for the just-finished CodeQL uploads to become queryable."""
     for attempt in range(attempts):
-        if analyses_ready(repository, ref, sha, token, expected_categories):
-            return
+        try:
+            if analyses_ready(repository, ref, sha, token, expected_categories):
+                return
+        except TransientGateError:
+            pass
         if attempt + 1 < attempts:
             time.sleep(delay)
     raise GateError(
@@ -241,11 +256,14 @@ def wait_for_pull_request_analyses(
     """Wait for GitHub to create the test merge commit and receive CodeQL results."""
     ref = f"refs/pull/{number}/merge"
     for attempt in range(attempts):
-        sha = pull_request_merge_sha(repository, number, token)
-        if sha is not None and analyses_ready(
-            repository, ref, sha, token, expected_categories, expected_parents
-        ):
-            return ref, sha
+        try:
+            sha = pull_request_merge_sha(repository, number, token)
+            if sha is not None and analyses_ready(
+                repository, ref, sha, token, expected_categories, expected_parents
+            ):
+                return ref, sha
+        except TransientGateError:
+            pass
         if attempt + 1 < attempts:
             time.sleep(delay)
     raise GateError(
