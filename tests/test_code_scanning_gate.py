@@ -206,6 +206,15 @@ class CodeScanningGateTests(unittest.TestCase):
             gate,
             "urlopen",
             side_effect=HTTPError(
+                "https://api.github.com/example", 408, "error", Message(), None
+            ),
+        ):
+            with self.assertRaisesRegex(gate.TransientGateError, "transiently"):
+                gate.api_json("https://api.github.com/example", "token")
+        with mock.patch.object(
+            gate,
+            "urlopen",
+            side_effect=HTTPError(
                 "https://api.github.com/example", 401, "error", Message(), None
             ),
         ):

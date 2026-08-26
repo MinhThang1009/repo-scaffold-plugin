@@ -127,7 +127,7 @@ def api_json(url: str, token: str) -> Any:
         with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed GitHub API host
             payload = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as error:
-        if error.code in {429, 500, 502, 503, 504}:
+        if error.code in {408, 429, 500, 502, 503, 504}:
             raise TransientGateError(
                 f"GitHub API request failed transiently: {error}"
             ) from error
