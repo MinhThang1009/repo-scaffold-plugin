@@ -455,6 +455,100 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())
 
+    def test_synchronize_handles_deeply_nested_flow_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs: { verify: { runs-on: ubuntu-latest, steps: [ { uses: actions/checkout@"
+                + "a" * 40
+                + " } ] } }\n",
+            )
+
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(
+                    workflow, workflow.read_text(encoding="utf-8")
+                ),
+                {"actions/checkout"},
+            )
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f"actions/checkout@{'c' * 40}", content)
+            self.assertEqual(
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=True,
+                    workflow_directories=(Path(".github/workflows"),),
+                ),
+                [],
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "jobs: { verify: { runs-on: ubuntu-latest, steps: [ { uses: actions/checkout@v4 } ] } }\n",
+                )
+
+    def test_flow_inline_uses_ignores_quoted_text(self) -> None:
+        content = (
+            'jobs: { verify: { name: ", uses: actions/checkout@'
+            + "a" * 40
+            + '", steps: [ { uses: actions/checkout@'
+            + "b" * 40
+            + " } ] } }\n"
+        )
+
+        self.assertEqual(
+            [
+                match.group("reference")
+                for match in sync_action_pins.workflow_uses_matches(content)
+            ],
+            [f"actions/checkout@{'b' * 40}"],
+        )
+
+    def test_flow_inline_uses_handles_hash_in_plain_scalars(self) -> None:
+        content = (
+            "jobs: { verify: { name: literal#fragment, steps: [ { uses: actions/checkout@"
+            + "a" * 40
+            + " } ] } }\n"
+        )
+
+        self.assertEqual(
+            [
+                match.group("reference")
+                for match in sync_action_pins.workflow_uses_matches(content)
+            ],
+            [f"actions/checkout@{'a' * 40}"],
+        )
+
+    def test_flow_mapping_quote_tracking_handles_escapes_and_comments(self) -> None:
+        self.assertEqual(
+            sync_action_pins.flow_mapping_ranges("{ # trailing comment"), ()
+        )
+        self.assertEqual(
+            sync_action_pins.flow_mapping_quote_at(
+                "{ name: 'it''s", 0, len("{ name: 'it''s")
+            ),
+            "'",
+        )
+        self.assertEqual(
+            sync_action_pins.flow_mapping_quote_at('{ name: "\\x', 0, 11), '"'
+        )
+        self.assertEqual(
+            sync_action_pins.flow_mapping_quote_at("{ # comment", 0, 11), "#"
+        )
+        self.assertIsNone(
+            sync_action_pins.flow_mapping_quote_at("{ # comment\n", 0, 12)
+        )
+
     def test_synchronize_handles_braces_in_flow_mapping_strings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

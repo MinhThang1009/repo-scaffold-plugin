@@ -45,6 +45,12 @@ FLOW_USES_PATTERN = re.compile(
 FLOW_ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
+FLOW_INLINE_USES_PATTERN = re.compile(
+    rf"(?P<prefix>[{{,]\s*uses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?=\s*(?:[,}}]))"
+)
+FLOW_INLINE_ACTION_PIN_PATTERN = re.compile(
+    rf"(?P<prefix>[{{,]\s*uses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
+)
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
@@ -287,6 +293,93 @@ def flow_mapping_brace_delta(line: str, quote: str | None) -> tuple[int, str | N
     return brace_delta, quote
 
 
+def flow_mapping_ranges(content: str) -> tuple[tuple[int, int], ...]:
+    """Return every balanced flow-mapping range while ignoring quoted text."""
+    ranges: list[tuple[int, int]] = []
+    starts: list[int] = []
+    quote: str | None = None
+    index = 0
+    while index < len(content):
+        character = content[index]
+        if quote == "'":
+            if character == "'":
+                if index + 1 < len(content) and content[index + 1] == "'":
+                    index += 2
+                    continue
+                quote = None
+        elif quote == '"':
+            if character == "\\":
+                index += 2
+                continue
+            if character == '"':
+                quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "#" and (index == 0 or content[index - 1].isspace()):
+            newline = content.find("\n", index)
+            if newline < 0:
+                break
+            index = newline
+        elif character == "{":
+            starts.append(index)
+        elif character == "}" and starts:
+            ranges.append((starts.pop(), index + 1))
+        index += 1
+    return tuple(ranges)
+
+
+def flow_mapping_quote_at(content: str, start: int, position: int) -> str | None:
+    """Return quote state at an offset within one flow mapping."""
+    quote: str | None = None
+    index = start
+    while index < position:
+        character = content[index]
+        if quote == "'":
+            if character == "'":
+                if index + 1 < position and content[index + 1] == "'":
+                    index += 2
+                    continue
+                quote = None
+        elif quote == '"':
+            if character == "\\":
+                index += 2
+                continue
+            if character == '"':
+                quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "#" and (index == start or content[index - 1].isspace()):
+            newline = content.find("\n", index)
+            if newline < 0 or newline >= position:
+                return "#"
+            index = newline
+        index += 1
+    return quote
+
+
+def _matches_in_flow_mappings(
+    pattern: re.Pattern[str], content: str
+) -> tuple[re.Match[str], ...]:
+    """Return flow-field matches that lie in a balanced flow mapping."""
+    scalar_ranges = (
+        *block_scalar_content_ranges(content),
+        *quoted_scalar_content_ranges(content),
+    )
+    mapping_ranges = flow_mapping_ranges(content)
+    return tuple(
+        match
+        for match in pattern.finditer(content)
+        if any(
+            start <= match.start()
+            and match.end() <= end
+            and flow_mapping_quote_at(content, start, match.start()) is None
+            and (match.start() == 0 or content[match.start() - 1] != "{")
+            for start, end in mapping_ranges
+        )
+        and not any(start <= match.start() < end for start, end in scalar_ranges)
+    )
+
+
 def _matches_outside_block_scalars(
     pattern: re.Pattern[str], content: str
 ) -> tuple[re.Match[str], ...]:
@@ -317,14 +410,14 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
             )
         }
     )
-    matches.update(
-        {
-            (match.start(), match.end()): match
-            for match in _matches_outside_block_scalars(
-                FLOW_ACTION_PIN_PATTERN, content
-            )
-        }
-    )
+    flow_matches = _matches_outside_block_scalars(FLOW_ACTION_PIN_PATTERN, content)
+    matches.update({(match.start(), match.end()): match for match in flow_matches})
+    for match in _matches_in_flow_mappings(FLOW_INLINE_ACTION_PIN_PATTERN, content):
+        if not any(
+            flow_match.start() <= match.start() < flow_match.end()
+            for flow_match in flow_matches
+        ):
+            matches[(match.start(), match.end())] = match
     aliases = referenced_action_aliases(content)
     for match in _matches_outside_block_scalars(ANCHORED_ACTION_PIN_PATTERN, content):
         if match.group("anchor") in aliases:
@@ -347,12 +440,14 @@ def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
             )
         }
     )
-    matches.update(
-        {
-            (match.start(), match.end()): match
-            for match in _matches_outside_block_scalars(FLOW_USES_PATTERN, content)
-        }
-    )
+    flow_matches = _matches_outside_block_scalars(FLOW_USES_PATTERN, content)
+    matches.update({(match.start(), match.end()): match for match in flow_matches})
+    for match in _matches_in_flow_mappings(FLOW_INLINE_USES_PATTERN, content):
+        if not any(
+            flow_match.start() <= match.start() < flow_match.end()
+            for flow_match in flow_matches
+        ):
+            matches[(match.start(), match.end())] = match
     return tuple(match for _, match in sorted(matches.items()))
 
 
@@ -581,6 +676,11 @@ def synchronize_action_pins(
     def replace(match: re.Match[str]) -> str:
         action = match.group("action")
         release = releases[action_repository(action)]
+        if match.groupdict().get("flow_inline") is not None:
+            if match.group("sha").casefold() == release.sha:
+                return match.group(0)
+            quote = match.group("quote")
+            return f"{match.group('prefix')}{quote}{action}@{release.sha}{quote}"
         comment = match.group("comment")
         flow_suffix = match.groupdict().get("flow_suffix") or ""
         if flow_suffix:
