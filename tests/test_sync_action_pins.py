@@ -361,6 +361,66 @@ class ActionPinSyncTests(unittest.TestCase):
                 {"actions/checkout"},
             )
 
+    def test_synchronize_updates_flow_style_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { name: Checkout, uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + ", name: Checkout }\n"
+                    + "      - { uses: !custom actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { uses: &checkout actions/checkout@"
+                    + "a" * 40
+                    + " }\n      - { uses: *checkout }\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 5)
+            self.assertIn(
+                f"uses: actions/checkout@{'c' * 40}, name: Checkout }} # v9.1.2",
+                content,
+            )
+            self.assertIn("uses: *checkout }", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "  - { uses: actions/checkout@v4 }\n",
+                )
+            self.assertEqual(
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=True,
+                    workflow_directories=(Path(".github/workflows"),),
+                ),
+                [],
+            )
+
     def test_synchronize_updates_action_pin_anchored_outside_uses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

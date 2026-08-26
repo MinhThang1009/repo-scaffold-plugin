@@ -38,6 +38,12 @@ BLOCK_SCALAR_USES_PATTERN = re.compile(
 BLOCK_SCALAR_ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P<comment>[ \t]*)(?=\r?$)"
 )
+FLOW_USES_PATTERN = re.compile(
+    rf"(?m)^\s*(?:-\s*)?\{{[^{{}}\r\n]*?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?P<flow_suffix>[ \t]*(?:,[^{{}}\r\n]*)?\}})(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+)
+FLOW_ACTION_PIN_PATTERN = re.compile(
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{[^{{}}\r\n]*?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_suffix>[ \t]*(?:,[^{{}}\r\n]*)?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+)
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
@@ -254,6 +260,14 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
             )
         }
     )
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(
+                FLOW_ACTION_PIN_PATTERN, content
+            )
+        }
+    )
     aliases = referenced_action_aliases(content)
     for match in _matches_outside_block_scalars(ANCHORED_ACTION_PIN_PATTERN, content):
         if match.group("anchor") in aliases:
@@ -274,6 +288,12 @@ def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
             for match in _matches_outside_block_scalars(
                 BLOCK_SCALAR_USES_PATTERN, content
             )
+        }
+    )
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(FLOW_USES_PATTERN, content)
         }
     )
     return tuple(match for _, match in sorted(matches.items()))
@@ -505,6 +525,18 @@ def synchronize_action_pins(
         action = match.group("action")
         release = releases[action_repository(action)]
         comment = match.group("comment")
+        flow_suffix = match.groupdict().get("flow_suffix") or ""
+        if flow_suffix:
+            if match.group("sha").casefold() == release.sha and comment.strip() == (
+                f"# {release.tag}"
+            ):
+                return match.group(0)
+            prefix = comment[: comment.index("#")] if "#" in comment else " "
+            quote = match.group("quote")
+            return (
+                f"{match.group('prefix')}{quote}{action}@{release.sha}{quote}"
+                f"{flow_suffix}{prefix}# {release.tag}"
+            )
         if "\n" in match.group("prefix"):
             if match.group("sha").casefold() == release.sha:
                 return match.group(0)
