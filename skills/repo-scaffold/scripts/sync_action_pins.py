@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 GITHUB_API_URL = "https://api.github.com"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ACTION_TAG_PAGES = 20
+MAX_ANNOTATED_TAG_DEPTH = 10
 ACTION_PIN_PATTERN = re.compile(
     r"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
@@ -284,16 +285,24 @@ class GitHubReleaseClient:
         object_document = reference.get("object")
         if not isinstance(object_document, dict):
             raise ValueError(f"latest action release has no tag object: {repository}")
-        object_type = object_document.get("type")
-        sha = object_document.get("sha")
-        if object_type == "tag" and isinstance(sha, str):
+        tag_depth = 0
+        while object_document.get("type") == "tag":
+            if tag_depth >= MAX_ANNOTATED_TAG_DEPTH:
+                raise ValueError(
+                    f"latest action release tag nesting exceeds "
+                    f"{MAX_ANNOTATED_TAG_DEPTH}: {repository}"
+                )
+            sha = object_document.get("sha")
+            if not isinstance(sha, str) or SHA_PATTERN.fullmatch(sha) is None:
+                break
             object_document = self.get_json(f"/repos/{repository}/git/tags/{sha}").get(
                 "object"
             )
             if not isinstance(object_document, dict):
                 raise ValueError(f"latest action release tag is invalid: {repository}")
-            object_type = object_document.get("type")
-            sha = object_document.get("sha")
+            tag_depth += 1
+        object_type = object_document.get("type")
+        sha = object_document.get("sha")
         if (
             object_type != "commit"
             or not isinstance(sha, str)

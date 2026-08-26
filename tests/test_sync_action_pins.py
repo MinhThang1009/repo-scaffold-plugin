@@ -321,6 +321,69 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         self.assertTrue(any("git/tags/" in url for url, _, _ in requests))
 
+    def test_github_release_client_resolves_nested_annotated_tags(self) -> None:
+        responses = iter(
+            [
+                {"tag_name": "v1.2.3"},
+                {"object": {"type": "tag", "sha": "a" * 40}},
+                {"object": {"type": "tag", "sha": "b" * 40}},
+                {"object": {"type": "commit", "sha": "c" * 40}},
+            ]
+        )
+        requests: list[str] = []
+
+        def opener(request: Any, *, timeout: int) -> FakeResponse:
+            requests.append(request.full_url)
+            self.assertEqual(timeout, 30)
+            return FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        client = sync_action_pins.GitHubReleaseClient("token", opener)
+
+        self.assertEqual(
+            client.latest_release("actions/checkout"),
+            sync_action_pins.ActionRelease("v1.2.3", "c" * 40),
+        )
+        self.assertEqual(
+            requests,
+            [
+                "https://api.github.com/repos/actions/checkout/releases/latest",
+                "https://api.github.com/repos/actions/checkout/git/ref/tags/v1.2.3",
+                "https://api.github.com/repos/actions/checkout/git/tags/" + "a" * 40,
+                "https://api.github.com/repos/actions/checkout/git/tags/" + "b" * 40,
+            ],
+        )
+
+    def test_github_release_client_bounds_nested_annotated_tags(self) -> None:
+        nested_tag = {"object": {"type": "tag", "sha": "a" * 40}}
+        responses = iter([{"tag_name": "v1.2.3"}, nested_tag, nested_tag])
+
+        def opener(_request: Any, *, timeout: int) -> FakeResponse:
+            self.assertEqual(timeout, 30)
+            return FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        client = sync_action_pins.GitHubReleaseClient("token", opener)
+
+        with mock.patch.object(sync_action_pins, "MAX_ANNOTATED_TAG_DEPTH", 1):
+            with self.assertRaisesRegex(ValueError, "tag nesting exceeds"):
+                client.latest_release("actions/checkout")
+
+    def test_github_release_client_rejects_an_invalid_annotated_tag_sha(self) -> None:
+        responses = iter(
+            [
+                {"tag_name": "v1.2.3"},
+                {"object": {"type": "tag", "sha": "not-a-sha"}},
+            ]
+        )
+
+        def opener(_request: Any, *, timeout: int) -> FakeResponse:
+            self.assertEqual(timeout, 30)
+            return FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        client = sync_action_pins.GitHubReleaseClient("token", opener)
+
+        with self.assertRaisesRegex(ValueError, "does not resolve to a commit"):
+            client.latest_release("actions/checkout")
+
     def test_github_release_client_resolves_codeql_from_stable_action_tags(
         self,
     ) -> None:
