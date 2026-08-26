@@ -268,6 +268,54 @@ class ActionPinSyncTests(unittest.TestCase):
                 {"actions/checkout"},
             )
 
+    def test_synchronize_updates_action_pin_anchored_outside_uses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "name: Anchored action\n"
+                    "on: push\n"
+                    "env:\n"
+                    "  CHECKOUT_ACTION: &checkout actions/checkout@"
+                    + "a" * 40
+                    + " # v1.0.0\n"
+                    + "jobs:\n"
+                    "  test:\n"
+                    "    runs-on: ubuntu-latest\n"
+                    "    steps:\n"
+                    "      - uses: *checkout\n"
+                ),
+            )
+            releases = {
+                "actions/checkout": sync_action_pins.ActionRelease("v9.1.2", "c" * 40)
+            }
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                releases.__getitem__,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(
+                f"CHECKOUT_ACTION: &checkout actions/checkout@{'c' * 40} # v9.1.2",
+                content,
+            )
+            self.assertIn("uses: *checkout", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    content.replace("c" * 40, "v9.1.2"),
+                )
+
     def test_synchronize_ignores_uses_text_in_run_block_scalars(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

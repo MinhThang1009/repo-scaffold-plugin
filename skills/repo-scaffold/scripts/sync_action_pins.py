@@ -26,6 +26,12 @@ ACTION_PIN_PATTERN = re.compile(
 USES_PATTERN = re.compile(
     r"(?m)^\s*(?:-\s*)?uses:\s*(?:&[A-Za-z0-9_-]+\s+)?(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
+ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
+    r"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*&(?P<anchor>[A-Za-z0-9_-]+)\s*)(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+)
+ANCHORED_ACTION_PIN_PATTERN = re.compile(
+    r"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*&(?P<anchor>[A-Za-z0-9_-]+)\s*)(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{40})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+)
 BLOCK_SCALAR_HEADER_PATTERN = re.compile(
     r"^(?P<indent> *)[^#\r\n]+:\s*[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
 )
@@ -223,8 +229,16 @@ def _matches_outside_block_scalars(
 
 
 def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
-    """Return immutable action-pin mappings, excluding YAML scalar content."""
-    return _matches_outside_block_scalars(ACTION_PIN_PATTERN, content)
+    """Return immutable direct or alias-backed action pins outside scalar text."""
+    matches = {
+        (match.start(), match.end()): match
+        for match in _matches_outside_block_scalars(ACTION_PIN_PATTERN, content)
+    }
+    aliases = referenced_action_aliases(content)
+    for match in _matches_outside_block_scalars(ANCHORED_ACTION_PIN_PATTERN, content):
+        if match.group("anchor") in aliases:
+            matches[(match.start(), match.end())] = match
+    return tuple(match for _, match in sorted(matches.items()))
 
 
 def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
@@ -232,10 +246,38 @@ def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
     return _matches_outside_block_scalars(USES_PATTERN, content)
 
 
+def referenced_action_aliases(content: str) -> frozenset[str]:
+    """Return YAML aliases that are consumed by workflow ``uses`` mappings."""
+    return frozenset(
+        match.group("reference")[1:]
+        for match in workflow_uses_matches(content)
+        if match.group("reference").startswith("*")
+    )
+
+
+def anchored_action_reference_matches(content: str) -> tuple[re.Match[str], ...]:
+    """Return action-valued YAML anchors referenced by workflow ``uses`` mappings."""
+    aliases = referenced_action_aliases(content)
+    return tuple(
+        match
+        for match in _matches_outside_block_scalars(
+            ANCHORED_ACTION_REFERENCE_PATTERN, content
+        )
+        if match.group("anchor") in aliases
+    )
+
+
 def auditable_action_repositories(path: Path, content: str) -> set[str]:
     """Collect every externally hosted action pinned to an immutable SHA."""
     repositories: set[str] = set()
-    pins = {match.group("reference") for match in workflow_uses_matches(content)}
+    pins = {
+        match.group("reference")
+        for match in workflow_uses_matches(content)
+        if not match.group("reference").startswith("*")
+    }
+    pins.update(
+        match.group("reference") for match in anchored_action_reference_matches(content)
+    )
     pinned_references = {
         f"{match.group('action')}@{match.group('sha')}"
         for match in action_pin_matches(content)
