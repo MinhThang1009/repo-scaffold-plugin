@@ -26,30 +26,37 @@ YAML_ANCHOR_PROPERTIES_PATTERN = (
     rf"(?:(?:{YAML_TAG_PATTERN})\s+)*&(?P<anchor>[A-Za-z0-9_-]+)\s+"
     rf"(?:(?:{YAML_TAG_PATTERN})\s+)*"
 )
+YAML_USES_KEY_PATTERN = rf"{YAML_NODE_PROPERTIES_PATTERN}(?:uses|['\"]uses['\"])"
 FLOW_MAPPING_CONTENT_PATTERN = r"""(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*"|\{(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*")*\}|\{\{[^{}]*\}\})*"""
 ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 USES_PATTERN = re.compile(
-    rf"(?m)^\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+    rf"(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+)
+EXPLICIT_USES_PATTERN = re.compile(
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+)
+EXPLICIT_ACTION_PIN_PATTERN = re.compile(
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 BLOCK_SCALAR_USES_PATTERN = re.compile(
-    rf"(?m)^\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?P<reference>\S+?)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+    rf"(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?P<reference>\S+?)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 BLOCK_SCALAR_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P<comment>[ \t]*)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P<comment>[ \t]*)(?=\r?$)"
 )
 FLOW_USES_PATTERN = re.compile(
-    rf"(?m)^\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+    rf"(?m)^\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 FLOW_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?\buses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 FLOW_INLINE_USES_PATTERN = re.compile(
-    rf"(?P<prefix>[{{,]\s*uses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?=\s*(?:[,}}]))"
+    rf"(?P<prefix>[{{,]\s*{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?=\s*(?:[,}}]))"
 )
 FLOW_INLINE_ACTION_PIN_PATTERN = re.compile(
-    rf"(?P<prefix>[{{,]\s*uses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
+    rf"(?P<prefix>[{{,]\s*{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
 )
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
@@ -406,6 +413,14 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
         {
             (match.start(), match.end()): match
             for match in _matches_outside_block_scalars(
+                EXPLICIT_ACTION_PIN_PATTERN, content
+            )
+        }
+    )
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(
                 BLOCK_SCALAR_ACTION_PIN_PATTERN, content
             )
         }
@@ -432,6 +447,12 @@ def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
         for match in _matches_outside_block_scalars(USES_PATTERN, content)
         if match.group("reference")[0] not in {"|", ">"}
     }
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(EXPLICIT_USES_PATTERN, content)
+        }
+    )
     matches.update(
         {
             (match.start(), match.end()): match
@@ -694,7 +715,7 @@ def synchronize_action_pins(
                 f"{match.group('prefix')}{quote}{action}@{release.sha}{quote}"
                 f"{flow_suffix}{prefix}# {release.tag}"
             )
-        if "\n" in match.group("prefix"):
+        if "\n" in match.group("prefix") and match.groupdict().get("explicit") is None:
             if match.group("sha").casefold() == release.sha:
                 return match.group(0)
             quote = match.group("quote")
