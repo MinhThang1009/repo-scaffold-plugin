@@ -27,6 +27,7 @@ YAML_ANCHOR_PROPERTIES_PATTERN = (
     rf"(?:(?:{YAML_TAG_PATTERN})\s+)*"
 )
 FLOW_MAPPING_CONTENT_PATTERN = r"""(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*"|\{(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*")*\}|\{\{[^{}]*\}\})*"""
+FLOW_QUOTED_TEXT_PATTERN = re.compile(r"""(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')""")
 ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
@@ -242,11 +243,11 @@ def flow_mapping_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
     for line in content.splitlines(keepends=True):
         if flow_start is None:
             if FLOW_MAPPING_START_PATTERN.match(line) is not None:
-                flow_depth = line.count("{") - line.count("}")
+                flow_depth = flow_mapping_brace_delta(line)
             if flow_depth > 0:
                 flow_start = offset + len(line)
         else:
-            flow_depth += line.count("{") - line.count("}")
+            flow_depth += flow_mapping_brace_delta(line)
             if flow_depth <= 0:
                 ranges.append((flow_start, offset + len(line)))
                 flow_start = None
@@ -254,6 +255,12 @@ def flow_mapping_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
     if flow_start is not None:
         ranges.append((flow_start, len(content)))
     return tuple(ranges)
+
+
+def flow_mapping_brace_delta(line: str) -> int:
+    """Return a flow mapping line's brace balance outside quoted YAML text."""
+    unquoted = FLOW_QUOTED_TEXT_PATTERN.sub("", line)
+    return unquoted.count("{") - unquoted.count("}")
 
 
 def _matches_outside_block_scalars(

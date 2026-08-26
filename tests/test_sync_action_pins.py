@@ -455,6 +455,39 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())
 
+    def test_synchronize_handles_braces_in_flow_mapping_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n      - {\n"
+                    + '          name: "}",\n          uses: actions/checkout@'
+                    + "a" * 40
+                    + "\n        }\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 1)
+            self.assertIn(
+                f"uses: actions/checkout@{'c' * 40}\n        }} # v9.1.2",
+                content,
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
     def test_synchronize_updates_action_pin_anchored_outside_uses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
