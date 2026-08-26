@@ -341,6 +341,38 @@ class ActionPinSyncTests(unittest.TestCase):
                     "jobs:\n  test:\n    steps:\n      - ? uses\n        : actions/checkout@v4\n",
                 )
 
+    def test_synchronize_updates_explicit_block_uses_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n      - ? |-\n          uses\n        : actions/checkout@"
+                + "a" * 40
+                + "\n      - ? >-\n          uses\n        : actions/checkout@"
+                + "b" * 40
+                + "\n",
+            )
+            releases = {
+                "actions/checkout": sync_action_pins.ActionRelease("v9.1.2", "c" * 40)
+            }
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                releases.__getitem__,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 2)
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "jobs:\n  test:\n    steps:\n      - ? |-\n          uses\n        : actions/checkout@v4\n",
+                )
+
     def test_synchronize_updates_quoted_uses_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

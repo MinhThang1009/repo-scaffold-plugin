@@ -33,6 +33,7 @@ YAML_DOUBLE_QUOTED_USES_KEY_PATTERN = (
     r"(?:s|\\x73|\\u0073|\\U00000073)\""
 )
 YAML_USES_KEY_PATTERN = rf"{YAML_NODE_PROPERTIES_PATTERN}(?:uses|'uses'|{YAML_DOUBLE_QUOTED_USES_KEY_PATTERN})"
+YAML_BLOCK_SCALAR_STRIP_PATTERN = r"[>|](?:[0-9]*-|-[0-9]*)"
 FLOW_MAPPING_CONTENT_PATTERN = r"""(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*"|\{(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*")*\}|\{\{[^{}]*\}\})*"""
 ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
@@ -45,6 +46,12 @@ EXPLICIT_USES_PATTERN = re.compile(
 )
 EXPLICIT_ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+)
+EXPLICIT_BLOCK_USES_PATTERN = re.compile(
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN}{YAML_BLOCK_SCALAR_STRIP_PATTERN}[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*uses[ \t]*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+)
+EXPLICIT_BLOCK_ACTION_PIN_PATTERN = re.compile(
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN}{YAML_BLOCK_SCALAR_STRIP_PATTERN}[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*uses[ \t]*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 BLOCK_SCALAR_USES_PATTERN = re.compile(
     rf"(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?P<reference>\S+?)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
@@ -427,6 +434,14 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
         {
             (match.start(), match.end()): match
             for match in _matches_outside_block_scalars(
+                EXPLICIT_BLOCK_ACTION_PIN_PATTERN, content
+            )
+        }
+    )
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(
                 BLOCK_SCALAR_ACTION_PIN_PATTERN, content
             )
         }
@@ -457,6 +472,14 @@ def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
         {
             (match.start(), match.end()): match
             for match in _matches_outside_block_scalars(EXPLICIT_USES_PATTERN, content)
+        }
+    )
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(
+                EXPLICIT_BLOCK_USES_PATTERN, content
+            )
         }
     )
     matches.update(
