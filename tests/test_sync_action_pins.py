@@ -465,6 +465,8 @@ class ActionPinSyncTests(unittest.TestCase):
                 ".github/workflows/ci.yml",
                 "defaults: &checkout |-\n  actions/checkout@"
                 + "a" * 40
+                + "\nunused: &unused |-\n  actions/checkout@"
+                + "a" * 40
                 + "\njobs:\n  test:\n    steps:\n      - uses: *checkout\n",
             )
 
@@ -478,6 +480,7 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertEqual(changed, [workflow])
             content = workflow.read_text(encoding="utf-8")
             self.assertIn(f"actions/checkout@{'c' * 40}", content)
+            self.assertIn(f"unused: &unused |-\n  actions/checkout@{'a' * 40}", content)
             self.assertIn("uses: *checkout", content)
             self.assertEqual(
                 yaml.safe_load(content)["jobs"]["test"]["steps"][0]["uses"],
