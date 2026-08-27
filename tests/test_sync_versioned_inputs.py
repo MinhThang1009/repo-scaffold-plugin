@@ -179,6 +179,12 @@ class VersionedInputSyncTests(unittest.TestCase):
                 (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
             )
 
+            config.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "exactly one supported"):
+                versioned_inputs.synchronize_versioned_inputs(
+                    root, self.release_lookup, write=False
+                )
+
     def test_rejects_prerelease_schema_tag_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
