@@ -261,7 +261,10 @@ class ActionPinSyncTests(unittest.TestCase):
                 + '"\n'
                 + '      - uses: "actions/checkout@'
                 + "a" * 39
-                + '\\x61"\n',
+                + '\\x61"\n'
+                + '      - uses: "actions/checkout\\u0040'
+                + "a" * 40
+                + '"\n',
             )
 
             changed = sync_action_pins.synchronize_action_pins(
@@ -278,7 +281,7 @@ class ActionPinSyncTests(unittest.TestCase):
                     step["uses"]
                     for step in yaml.safe_load(content)["jobs"]["test"]["steps"]
                 ],
-                [f"actions/checkout@{'c' * 40}"] * 7,
+                [f"actions/checkout@{'c' * 40}"] * 8,
             )
             self.assertEqual(
                 sync_action_pins.auditable_action_repositories(workflow, content),
@@ -341,6 +344,34 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertEqual(changed, [workflow])
             content = workflow.read_text(encoding="utf-8")
             self.assertIn(f'uses: "actions/checkout@{"c" * 40}" # v9.1.2', content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            workflow.write_text(
+                'unused: &unused "actions/chec\\\n  kout@'
+                + "a" * 40
+                + '"\ndefaults: &checkout "actions/chec\\\n      kout@'
+                + "a" * 40
+                + '" # v1.0.0\njobs:\n  test:\n    steps:\n      - uses: *checkout\n',
+                encoding="utf-8",
+            )
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(
+                f'defaults: &checkout "actions/checkout@{"c" * 40}" # v9.1.2',
+                content,
+            )
+            self.assertIn(
+                f'unused: &unused "actions/chec\\\n  kout@{"a" * 40}"',
+                content,
+            )
             self.assertEqual(
                 sync_action_pins.auditable_action_repositories(workflow, content),
                 {"actions/checkout"},

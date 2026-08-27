@@ -290,7 +290,9 @@ class FreshnessTests(unittest.TestCase):
                 workflow.write_text(
                     workflow.read_text(encoding="utf-8").replace(
                         "actions/checkout@" + "a" * 40,
-                        '"act\\u0069ons\\u002fcheck\\x6fut@' + "a" * 39 + '\\x61"',
+                        '"act\\u0069ons\\u002fcheck\\x6fut\\u0040'
+                        + "a" * 39
+                        + '\\x61"',
                     ),
                     encoding="utf-8",
                 )

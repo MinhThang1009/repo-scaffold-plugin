@@ -35,6 +35,7 @@ YAML_ACTION_COMPONENT_PATTERN = (
     rf"(?:[A-Za-z0-9_.-]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN})+"
 )
 YAML_ACTION_PATH_SEPARATOR_PATTERN = rf"(?:/|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN})"
+YAML_ACTION_REVISION_SEPARATOR_PATTERN = r"(?:@|\\(?:x40|u0040|U00000040))"
 YAML_ACTION_SHA_PATTERN = rf"(?:[0-9a-fA-F]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN})+"
 YAML_CONTINUED_ACTION_COMPONENT_PATTERN = (
     rf"(?:[A-Za-z0-9_.-]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN}|"
@@ -56,10 +57,10 @@ YAML_USES_KEY_PATTERN = rf"{YAML_NODE_PROPERTIES_PATTERN}(?:uses|'uses'|{YAML_DO
 YAML_BLOCK_SCALAR_STRIP_PATTERN = r"[>|](?:[0-9]*-|-[0-9]*)"
 FLOW_MAPPING_CONTENT_PATTERN = r"""(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*"|\{(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*")*\}|\{\{[^{}]*\}\})*"""
 ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 CONTINUED_DOUBLE_QUOTED_ACTION_PIN_PATTERN = re.compile(
-    rf'(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>")(?=(?:[^"\r\n]|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})*{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})(?P<action>{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}(?:{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN})?)@(?P<sha>(?:[0-9a-fA-F]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN}|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})+)(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)'
+    rf'(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>")(?=(?:[^"\r\n]|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})*{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})(?P<action>{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}(?:{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN})*){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>(?:[0-9a-fA-F]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN}|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})+)(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)'
 )
 USES_PATTERN = re.compile(
     rf"(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
@@ -67,47 +68,53 @@ USES_PATTERN = re.compile(
 CONTINUED_DOUBLE_QUOTED_USES_PATTERN = re.compile(
     rf'(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>")(?P<reference>[^"\r\n]*(?:{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN}[^"\r\n]*)+)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)'
 )
+CONTINUED_ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
+    rf'(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>")(?P<reference>[^"\r\n]*(?:{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN}[^"\r\n]*)+)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)'
+)
 EXPLICIT_USES_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 EXPLICIT_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 EXPLICIT_BLOCK_USES_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN}{YAML_BLOCK_SCALAR_STRIP_PATTERN}[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*uses[ \t]*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 EXPLICIT_BLOCK_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN}{YAML_BLOCK_SCALAR_STRIP_PATTERN}[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*uses[ \t]*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN}{YAML_BLOCK_SCALAR_STRIP_PATTERN}[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*uses[ \t]*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 BLOCK_SCALAR_USES_PATTERN = re.compile(
     rf"(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?P<reference>\S+?)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 BLOCK_SCALAR_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P<comment>[ \t]*)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P<comment>[ \t]*)(?=\r?$)"
 )
 FLOW_USES_PATTERN = re.compile(
     rf"(?m)^\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 FLOW_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 FLOW_INLINE_USES_PATTERN = re.compile(
     rf"(?P<prefix>[{{,]\s*(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?=\s*(?:[,}}]))"
 )
 FLOW_INLINE_ACTION_PIN_PATTERN = re.compile(
-    rf"(?P<prefix>[{{,]\s*(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
+    rf"(?P<prefix>[{{,]\s*(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
 )
 FLOW_ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?P<prefix>&(?P<anchor>[A-Za-z0-9_-]+)\s+(?:{YAML_TAG_PATTERN}\s+)*)(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?=\s*(?:[,}}]))"
 )
 FLOW_ANCHORED_ACTION_PIN_PATTERN = re.compile(
-    rf"(?P<prefix>&(?P<anchor>[A-Za-z0-9_-]+)\s+(?:{YAML_TAG_PATTERN}\s+)*)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
+    rf"(?P<prefix>&(?P<anchor>[A-Za-z0-9_-]+)\s+(?:{YAML_TAG_PATTERN}\s+)*)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
 )
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 ANCHORED_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+)
+CONTINUED_ANCHORED_ACTION_PIN_PATTERN = re.compile(
+    rf'(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>")(?=(?:[^"\r\n]|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})*{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})(?P<action>{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}(?:{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN})*){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>(?:[0-9a-fA-F]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN}|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})+)(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)'
 )
 BLOCK_SCALAR_HEADER_PATTERN = re.compile(
     rf"^(?P<indent> *)(?:(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}|-\s*{YAML_NODE_PROPERTIES_PATTERN}|(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN})[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
@@ -607,6 +614,12 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
         ):
             matches[(match.start(), match.end())] = match
     aliases = referenced_action_aliases(content)
+    continued_anchored_matches = _matches_outside_block_scalars(
+        CONTINUED_ANCHORED_ACTION_PIN_PATTERN, content
+    )
+    for match in continued_anchored_matches:
+        if match.group("anchor") in aliases:
+            matches[(match.start(), match.end())] = match
     for match in _matches_in_flow_mappings(FLOW_ANCHORED_ACTION_PIN_PATTERN, content):
         if match.group("anchor") in aliases and not any(
             existing.start() <= match.start() < existing.end()
@@ -614,7 +627,10 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
         ):
             matches[(match.start(), match.end())] = match
     for match in _matches_outside_block_scalars(ANCHORED_ACTION_PIN_PATTERN, content):
-        if match.group("anchor") in aliases:
+        if match.group("anchor") in aliases and not any(
+            continued.start() <= match.start() < continued.end()
+            for continued in continued_anchored_matches
+        ):
             matches[(match.start(), match.end())] = match
     return tuple(
         match
@@ -683,13 +699,27 @@ def referenced_action_aliases(content: str) -> frozenset[str]:
 def anchored_action_reference_matches(content: str) -> tuple[re.Match[str], ...]:
     """Return action-valued YAML anchors referenced by workflow ``uses`` mappings."""
     aliases = referenced_action_aliases(content)
+    continued_matches = _matches_outside_block_scalars(
+        CONTINUED_ANCHORED_ACTION_REFERENCE_PATTERN, content
+    )
     matches = {
         (match.start(), match.end()): match
         for match in _matches_outside_block_scalars(
             ANCHORED_ACTION_REFERENCE_PATTERN, content
         )
         if match.group("anchor") in aliases
+        and not any(
+            continued.start() <= match.start() < continued.end()
+            for continued in continued_matches
+        )
     }
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in continued_matches
+            if match.group("anchor") in aliases
+        }
+    )
     for match in _matches_in_flow_mappings(
         FLOW_ANCHORED_ACTION_REFERENCE_PATTERN, content
     ):
