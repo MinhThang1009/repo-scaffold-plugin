@@ -4543,12 +4543,20 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("exact positive alert number" in item for item in boolean_number)
             )
 
-            source = (
-                PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
-            ).read_text(encoding="utf-8")
-            for workflow in workflow_paths:
+            source_paths = (
+                PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml",
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "workflows"
+                / "code-scanning-gate.yml",
+            )
+            for workflow, source_path in zip(workflow_paths, source_paths, strict=True):
                 workflow.write_text(
-                    source.replace('--pull-request "$PR_NUMBER"', "--ref invalid"),
+                    source_path.read_text(encoding="utf-8").replace(
+                        '--pull-request "$PR_NUMBER"', "--ref invalid"
+                    ),
                     encoding="utf-8",
                 )
             allowlist.write_text(
@@ -4609,7 +4617,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
         self.assertNotIn("merge_commit_sha", text)
         self.assertIn("github.event.pull_request.head.sha", text)
 
-    def test_validator_rejects_gate_without_a_base_branch_filter(self) -> None:
+    def test_validator_rejects_gate_with_an_incorrect_base_branch_filter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for relative in (
@@ -4628,9 +4636,10 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 path = root / relative
                 path.write_text(
                     "\n".join(
-                        line
+                        "    branches: [incorrect-base]"
+                        if line.startswith("    branches:")
+                        else line
                         for line in path.read_text(encoding="utf-8").splitlines()
-                        if not line.startswith("    branches:")
                     )
                     + "\n",
                     encoding="utf-8",

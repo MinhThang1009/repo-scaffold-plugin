@@ -4558,6 +4558,11 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         / "code-scanning-gate.yml",
     ):
         relative = path.relative_to(repository_root).as_posix()
+        expected_base_branch = (
+            "main"
+            if relative == ".github/workflows/code-scanning-gate.yml"
+            else "{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}"
+        )
         expected_categories = (
             (
                 '--expected-codeql-category "/language:actions"',
@@ -4585,12 +4590,7 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             or not isinstance(pull_request_target, dict)
             or pull_request_target.get("types")
             != ["opened", "edited", "reopened", "synchronize"]
-            or not isinstance(pull_request_target.get("branches"), list)
-            or len(pull_request_target["branches"]) != 1
-            or not all(
-                isinstance(branch, str) and branch
-                for branch in pull_request_target["branches"]
-            )
+            or pull_request_target.get("branches") != [expected_base_branch]
             or workflow.get("permissions") != expected_permissions
             or not isinstance(gate, dict)
             or gate.get("name") != "code-scanning-gate"
