@@ -153,6 +153,10 @@ class FreshnessTests(unittest.TestCase):
             self.assertEqual(
                 freshness.pinned_requirements(path), {"ruff": ("ruff", "1.0.0")}
             )
+            path.write_text("ruff==1.0.0  # retained rationale\n", encoding="utf-8")
+            self.assertEqual(
+                freshness.pinned_requirements(path), {"ruff": ("ruff", "1.0.0")}
+            )
             for content, message in (
                 ("", "no direct pins"),
                 ("ruff>=1.0.0\n", "unsupported"),

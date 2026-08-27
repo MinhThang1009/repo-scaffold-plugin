@@ -73,6 +73,12 @@ FLOW_INLINE_USES_PATTERN = re.compile(
 FLOW_INLINE_ACTION_PIN_PATTERN = re.compile(
     rf"(?P<prefix>[{{,]\s*(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
 )
+FLOW_ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
+    rf"(?P<prefix>&(?P<anchor>[A-Za-z0-9_-]+)\s+(?:{YAML_TAG_PATTERN}\s+)*)(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?=\s*(?:[,}}]))"
+)
+FLOW_ANCHORED_ACTION_PIN_PATTERN = re.compile(
+    rf"(?P<prefix>&(?P<anchor>[A-Za-z0-9_-]+)\s+(?:{YAML_TAG_PATTERN}\s+)*)(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
+)
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
@@ -457,6 +463,12 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
         ):
             matches[(match.start(), match.end())] = match
     aliases = referenced_action_aliases(content)
+    for match in _matches_in_flow_mappings(FLOW_ANCHORED_ACTION_PIN_PATTERN, content):
+        if match.group("anchor") in aliases and not any(
+            existing.start() <= match.start() < existing.end()
+            for existing in matches.values()
+        ):
+            matches[(match.start(), match.end())] = match
     for match in _matches_outside_block_scalars(ANCHORED_ACTION_PIN_PATTERN, content):
         if match.group("anchor") in aliases:
             matches[(match.start(), match.end())] = match
@@ -515,13 +527,19 @@ def referenced_action_aliases(content: str) -> frozenset[str]:
 def anchored_action_reference_matches(content: str) -> tuple[re.Match[str], ...]:
     """Return action-valued YAML anchors referenced by workflow ``uses`` mappings."""
     aliases = referenced_action_aliases(content)
-    return tuple(
-        match
+    matches = {
+        (match.start(), match.end()): match
         for match in _matches_outside_block_scalars(
             ANCHORED_ACTION_REFERENCE_PATTERN, content
         )
         if match.group("anchor") in aliases
-    )
+    }
+    for match in _matches_in_flow_mappings(
+        FLOW_ANCHORED_ACTION_REFERENCE_PATTERN, content
+    ):
+        if match.group("anchor") in aliases:
+            matches[(match.start(), match.end())] = match
+    return tuple(match for _, match in sorted(matches.items()))
 
 
 def auditable_action_repositories(path: Path, content: str) -> set[str]:

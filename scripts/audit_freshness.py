@@ -24,7 +24,8 @@ MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PINNED_REQUIREMENT = re.compile(
-    r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\]+)(?:\s+\\)?\Z"
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\#]+)"
+    r"(?:\s+\\)?(?:[ \t]+#[^\r\n]*)?\Z"
 )
 RELEASE_PLEASE_SCHEMA = re.compile(
     r"https://raw\.githubusercontent\.com/googleapis/release-please/"
