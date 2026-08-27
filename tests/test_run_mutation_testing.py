@@ -257,6 +257,31 @@ class MutationRunnerTests(unittest.TestCase):
         ):
             run_mutation_testing.load_mutmut()
 
+        with (
+            mock.patch.object(
+                run_mutation_testing.importlib.metadata,
+                "version",
+                side_effect=run_mutation_testing.importlib.metadata.PackageNotFoundError,
+            ),
+            self.assertRaisesRegex(ValueError, "but it is not installed"),
+        ):
+            run_mutation_testing.load_mutmut()
+
+        with (
+            mock.patch.object(
+                run_mutation_testing.importlib.metadata,
+                "version",
+                return_value=run_mutation_testing.MUTMUT_VERSION,
+            ),
+            mock.patch.object(
+                run_mutation_testing.importlib,
+                "import_module",
+                side_effect=ModuleNotFoundError("No module named 'mutmut.__main__'"),
+            ),
+            self.assertRaisesRegex(ValueError, "could not import mutmut"),
+        ):
+            run_mutation_testing.load_mutmut()
+
     def test_marker_loader_rejects_linked_mutants_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

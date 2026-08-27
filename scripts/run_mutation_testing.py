@@ -145,12 +145,22 @@ def _create_or_reuse_mutants(filename: Path, output_path: Path) -> Any:
 
 def load_mutmut() -> Any:
     """Load the reviewed mutmut implementation and reject version drift."""
-    installed = importlib.metadata.version("mutmut")
+    try:
+        installed = importlib.metadata.version("mutmut")
+    except importlib.metadata.PackageNotFoundError as error:
+        raise ValueError(
+            f"incremental runner requires mutmut {MUTMUT_VERSION}, but it is not installed"
+        ) from error
     if installed != MUTMUT_VERSION:
         raise ValueError(
             f"incremental runner requires mutmut {MUTMUT_VERSION}, found {installed}"
         )
-    return importlib.import_module("mutmut.__main__")
+    try:
+        return importlib.import_module("mutmut.__main__")
+    except ModuleNotFoundError as error:
+        raise ValueError(
+            f"incremental runner could not import mutmut {MUTMUT_VERSION}: {error}"
+        ) from error
 
 
 def run_mutation_testing(
