@@ -264,19 +264,24 @@ def action_findings(
         text = path.read_text(encoding="utf-8")
         sync_action_pins.auditable_action_repositories(path, text)
         for match in sync_action_pins.action_pin_matches(text):
-            action = match.group("action")
+            action = sync_action_pins.normalized_double_quoted_scalar(
+                match.group("action")
+            )
+            current_sha = sync_action_pins.normalized_double_quoted_scalar(
+                match.group("sha")
+            )
             repository = sync_action_pins.action_repository(action)
             release = releases.get(repository)
             if release is None:
                 release = release_lookup(repository)
                 releases[repository] = release
-            if match.group("sha").casefold() != release.sha:
+            if current_sha.casefold() != release.sha:
                 findings.append(
                     {
                         "kind": "action-pin",
                         "path": path.relative_to(root).as_posix(),
                         "subject": action,
-                        "current": match.group("sha"),
+                        "current": current_sha,
                         "latest": release.tag,
                         "details": f"Expected immutable SHA {release.sha}.",
                     }
