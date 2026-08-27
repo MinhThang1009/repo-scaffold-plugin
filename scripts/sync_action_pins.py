@@ -113,6 +113,12 @@ ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
 ANCHORED_ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
+ANCHORED_BLOCK_SCALAR_ACTION_REFERENCE_PATTERN = re.compile(
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<reference>\S+?)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+)
+ANCHORED_BLOCK_SCALAR_ACTION_PIN_PATTERN = re.compile(
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P<comment>[ \t]*)(?=\r?$)"
+)
 CONTINUED_ANCHORED_ACTION_PIN_PATTERN = re.compile(
     rf'(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>")(?=(?:[^"\r\n]|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})*{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})(?P<action>{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}(?:{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN})*){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>(?:[0-9a-fA-F]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN}|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})+)(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)'
 )
@@ -632,6 +638,11 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
             for continued in continued_anchored_matches
         ):
             matches[(match.start(), match.end())] = match
+    for match in _matches_outside_block_scalars(
+        ANCHORED_BLOCK_SCALAR_ACTION_PIN_PATTERN, content
+    ):
+        if match.group("anchor") in aliases:
+            matches[(match.start(), match.end())] = match
     return tuple(
         match
         for _, match in sorted(matches.items())
@@ -703,12 +714,16 @@ def anchored_action_reference_matches(content: str) -> tuple[re.Match[str], ...]
     continued_matches = _matches_outside_block_scalars(
         CONTINUED_ANCHORED_ACTION_REFERENCE_PATTERN, content
     )
+    block_matches = _matches_outside_block_scalars(
+        ANCHORED_BLOCK_SCALAR_ACTION_REFERENCE_PATTERN, content
+    )
     matches = {
         (match.start(), match.end()): match
         for match in _matches_outside_block_scalars(
             ANCHORED_ACTION_REFERENCE_PATTERN, content
         )
         if match.group("anchor") in aliases
+        and match.group("reference")[0] not in {"|", ">"}
         and not any(
             continued.start() <= match.start() < continued.end()
             for continued in continued_matches
@@ -718,6 +733,13 @@ def anchored_action_reference_matches(content: str) -> tuple[re.Match[str], ...]
         {
             (match.start(), match.end()): match
             for match in continued_matches
+            if match.group("anchor") in aliases
+        }
+    )
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in block_matches
             if match.group("anchor") in aliases
         }
     )

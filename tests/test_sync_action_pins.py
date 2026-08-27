@@ -455,6 +455,39 @@ class ActionPinSyncTests(unittest.TestCase):
                 [],
             )
 
+    def test_synchronize_updates_aliased_block_scalar_action_references(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "defaults: &checkout |-\n  actions/checkout@"
+                + "a" * 40
+                + "\njobs:\n  test:\n    steps:\n      - uses: *checkout\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f"actions/checkout@{'c' * 40}", content)
+            self.assertIn("uses: *checkout", content)
+            self.assertEqual(
+                yaml.safe_load(content)["jobs"]["test"]["steps"][0]["uses"],
+                f"actions/checkout@{'c' * 40}",
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
     def test_synchronize_updates_explicit_uses_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
