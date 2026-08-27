@@ -86,10 +86,10 @@ ANCHORED_ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 BLOCK_SCALAR_HEADER_PATTERN = re.compile(
-    rf"^(?P<indent> *)(?:(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}|-\s*{YAML_NODE_PROPERTIES_PATTERN})[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
+    rf"^(?P<indent> *)(?:(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}|-\s*{YAML_NODE_PROPERTIES_PATTERN}|(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN})[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
 )
 QUOTED_SCALAR_START_PATTERN = re.compile(
-    rf"^(?P<indent> *)(?:(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}|-\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"])"
+    rf"^(?P<indent> *)(?:(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}|-\s*{YAML_NODE_PROPERTIES_PATTERN}|(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"])"
 )
 FLOW_MAPPING_START_PATTERN = re.compile(r"^\s*(?:-\s*)?\{")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")

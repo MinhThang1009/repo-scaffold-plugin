@@ -939,6 +939,8 @@ class ActionPinSyncTests(unittest.TestCase):
             "run: 'echo it''s\n  uses: " + action + "\n  echo done'\n",
             "run: !custom |\n  uses: " + action + "\n",
             "notes:\n  - !custom &note >-\n      uses: " + action + "\n",
+            "notes:\n  ? !custom &note |\n      uses: " + action + "\n  : value\n",
+            "notes:\n  - ? >-\n        uses: " + action + "\n    : value\n",
             'run: !custom "echo started\n  uses: ' + action + '\n  echo done"\n',
             'run: "unterminated\n  uses: ' + action + "\n",
             "notes:\n  - 'example:\n      uses: " + action + "\n    end'\n",
@@ -946,6 +948,7 @@ class ActionPinSyncTests(unittest.TestCase):
             'notes:\n  - !custom &note "example:\n      uses: '
             + action
             + '\n    end"\n',
+            'notes:\n  ? "example:\n      uses: ' + action + '\n    end"\n  : value\n',
         ):
             with self.subTest(content=content):
                 self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())
