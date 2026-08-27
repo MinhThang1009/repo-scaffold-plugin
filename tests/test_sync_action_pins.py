@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import yaml
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "sync_action_pins.py"
@@ -231,6 +233,62 @@ class ActionPinSyncTests(unittest.TestCase):
                 sync_action_pins.auditable_action_repositories(workflow, content),
                 {"actions/checkout", "actions/setup-python"},
             )
+
+    def test_synchronize_updates_double_quoted_slash_escapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                + '      - uses: "actions\\/checkout@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions\\x2fcheckout@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions\\u002fcheckout@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions\\U0000002fcheckout@'
+                + "a" * 40
+                + '"\n',
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(
+                [
+                    step["uses"]
+                    for step in yaml.safe_load(content)["jobs"]["test"]["steps"]
+                ],
+                [f"actions/checkout@{'c' * 40}"] * 4,
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            workflow.write_text(
+                "jobs:\n  test:\n    steps:\n"
+                + "      - uses: actions\\u002fcheckout@"
+                + "a" * 40
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=False,
+                    workflow_directories=(Path(".github/workflows"),),
+                )
 
     def test_synchronize_updates_double_quoted_continued_action_references(
         self,

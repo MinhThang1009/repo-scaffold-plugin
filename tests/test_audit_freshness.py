@@ -278,6 +278,33 @@ class FreshnessTests(unittest.TestCase):
                 [],
             )
 
+    def test_action_findings_normalizes_double_quoted_slash_escapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            for relative in (
+                Path(".github/workflows/ci.yml"),
+                Path("skills/repo-scaffold/assets/workflows/ci.yml"),
+            ):
+                workflow = root / relative
+                workflow.write_text(
+                    workflow.read_text(encoding="utf-8").replace(
+                        "actions/checkout@" + "a" * 40,
+                        '"actions\\u002fcheckout@' + "a" * 40 + '"',
+                    ),
+                    encoding="utf-8",
+                )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            self.assertEqual(
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                ),
+                [],
+            )
+
     def test_action_findings_ignores_uses_text_in_run_block_scalars(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

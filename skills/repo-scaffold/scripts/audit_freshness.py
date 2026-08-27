@@ -264,12 +264,8 @@ def action_findings(
         text = path.read_text(encoding="utf-8")
         sync_action_pins.auditable_action_repositories(path, text)
         for match in sync_action_pins.action_pin_matches(text):
-            action = sync_action_pins.normalized_double_quoted_scalar(
-                match.group("action")
-            )
-            current_sha = sync_action_pins.normalized_double_quoted_scalar(
-                match.group("sha")
-            )
+            action = sync_action_pins.normalized_action_pin_part(match, "action")
+            current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
             repository = sync_action_pins.action_repository(action)
             release = releases.get(repository)
             if release is None:
