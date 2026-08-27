@@ -940,9 +940,12 @@ class ActionPinSyncTests(unittest.TestCase):
             "run: !custom |\n  uses: " + action + "\n",
             'run: !custom "echo started\n  uses: ' + action + '\n  echo done"\n',
             'run: "unterminated\n  uses: ' + action + "\n",
+            "notes:\n  - 'example:\n      uses: " + action + "\n    end'\n",
+            'notes:\n  - "example:\n      uses: ' + action + '\n    end"\n',
         ):
             with self.subTest(content=content):
                 self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())
+                self.assertEqual(sync_action_pins.action_pin_matches(content), ())
 
     def test_action_repositories_rejects_unpinned_and_unallowed_references(
         self,

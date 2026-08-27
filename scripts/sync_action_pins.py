@@ -89,7 +89,7 @@ BLOCK_SCALAR_HEADER_PATTERN = re.compile(
     rf"^(?P<indent> *)[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
 )
 QUOTED_SCALAR_START_PATTERN = re.compile(
-    rf"^(?P<indent> *)(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"])"
+    rf"^(?P<indent> *)(?:(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}|-\s*)(?P<quote>['\"])"
 )
 FLOW_MAPPING_START_PATTERN = re.compile(r"^\s*(?:-\s*)?\{")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")

@@ -174,6 +174,17 @@ class CodeScanningGateTests(unittest.TestCase):
                 ):
                     gate.load_allowlist(path)
 
+    def test_allowlist_rejects_duplicate_json_members(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "allowlist.json"
+            path.write_text(
+                '{"schema-version": 2, "schema-version": 2, "allowlist": []}',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(gate.GateError, "duplicate JSON member"):
+                gate.load_allowlist(path)
+
     def test_api_client_bounds_and_authenticates_requests(self) -> None:
         with mock.patch.object(
             gate, "urlopen", return_value=FakeResponse(b"[]")

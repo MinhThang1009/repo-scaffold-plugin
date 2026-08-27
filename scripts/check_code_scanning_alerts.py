@@ -35,6 +35,10 @@ class TransientGateError(GateError):
     """Raised when a bounded retry may recover a GitHub API request."""
 
 
+class DuplicateJsonMember(ValueError):
+    """Raised when a JSON document contains ambiguous duplicate members."""
+
+
 @dataclass(frozen=True)
 class AlertSelector:
     """One reviewed exception for an otherwise merge-blocking alert."""
@@ -62,11 +66,23 @@ def require_text(value: object, *, field: str) -> str:
     return value
 
 
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting ambiguous duplicate member names."""
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
+        document[key] = value
+    return document
+
+
 def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
     """Load a strict, reviewable allowlist from the checked-out base."""
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        document = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, DuplicateJsonMember) as error:
         raise GateError(
             f"could not read code-scanning allowlist {path}: {error}"
         ) from error
