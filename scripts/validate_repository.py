@@ -3118,7 +3118,7 @@ def validate_release_attestation(repository_root: Path) -> list[str]:
 
 
 def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]:
-    """Keep write permissions isolated to the jobs that require them."""
+    """Keep write permissions isolated and CodeQL PR triggers complete."""
     workflow_contracts = (
         (
             repository_root / ".github" / "workflows" / "release-please.yml",
@@ -3178,6 +3178,17 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
             continue
         if document.get("permissions") != workflow_permissions:
             problems.append(f"{relative}: top-level permissions must be read-only")
+        if job_name == "analyze":
+            pull_request = document.get("on", {}).get("pull_request")
+            if not isinstance(pull_request, dict) or pull_request.get("types") != [
+                "opened",
+                "edited",
+                "reopened",
+                "synchronize",
+            ]:
+                problems.append(
+                    f"{relative}: CodeQL pull_request trigger must include edited"
+                )
         jobs = document.get("jobs")
         job = jobs.get(job_name) if isinstance(jobs, dict) else None
         if not isinstance(job, dict):
@@ -4568,7 +4579,11 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         if (
             not isinstance(workflow, dict)
             or workflow.get("on")
-            != {"pull_request_target": {"types": ["opened", "reopened", "synchronize"]}}
+            != {
+                "pull_request_target": {
+                    "types": ["opened", "edited", "reopened", "synchronize"]
+                }
+            }
             or workflow.get("permissions") != expected_permissions
             or not isinstance(gate, dict)
             or gate.get("name") != "code-scanning-gate"

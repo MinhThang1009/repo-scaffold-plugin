@@ -2,7 +2,7 @@ name: Code scanning gate
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize]
+    types: [opened, edited, reopened, synchronize]
 
 permissions:
   contents: read

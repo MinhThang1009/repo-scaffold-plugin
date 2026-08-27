@@ -4343,6 +4343,41 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
                 2,
             )
 
+    def test_rejects_codeql_trigger_that_omits_edited_pull_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            for relative in (
+                Path(".github/workflows/release-please.yml"),
+                Path("skills/repo-scaffold/assets/workflows/release-please.yml"),
+                Path(".github/workflows/codeql.yml"),
+                Path("skills/repo-scaffold/assets/workflows/codeql.yml"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for path in (workflow_root / "codeql.yml", asset_root / "codeql.yml"):
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "types: [opened, edited, reopened, synchronize]",
+                        "types: [opened, reopened, synchronize]",
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_privileged_workflow_permissions(
+                root
+            )
+
+            self.assertEqual(
+                sum(
+                    "CodeQL pull_request trigger must include edited" in item
+                    for item in problems
+                ),
+                2,
+            )
+
     def test_reports_unreadable_scalar_and_missing_job_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4540,7 +4575,11 @@ class CodeScanningGateContractTests(unittest.TestCase):
         document = validate_repository.load_yaml(workflow)
         self.assertEqual(
             document["on"],
-            {"pull_request_target": {"types": ["opened", "reopened", "synchronize"]}},
+            {
+                "pull_request_target": {
+                    "types": ["opened", "edited", "reopened", "synchronize"]
+                }
+            },
         )
         self.assertEqual(
             document["permissions"],
