@@ -3,6 +3,7 @@ name: Code scanning gate
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
+    branches: ["{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}"]
 
 permissions:
   contents: read

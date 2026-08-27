@@ -4576,14 +4576,21 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             continue
         jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
         gate = jobs.get("code_scanning_gate") if isinstance(jobs, dict) else None
+        trigger = workflow.get("on") if isinstance(workflow, dict) else None
+        pull_request_target = (
+            trigger.get("pull_request_target") if isinstance(trigger, dict) else None
+        )
         if (
             not isinstance(workflow, dict)
-            or workflow.get("on")
-            != {
-                "pull_request_target": {
-                    "types": ["opened", "edited", "reopened", "synchronize"]
-                }
-            }
+            or not isinstance(pull_request_target, dict)
+            or pull_request_target.get("types")
+            != ["opened", "edited", "reopened", "synchronize"]
+            or not isinstance(pull_request_target.get("branches"), list)
+            or len(pull_request_target["branches"]) != 1
+            or not all(
+                isinstance(branch, str) and branch
+                for branch in pull_request_target["branches"]
+            )
             or workflow.get("permissions") != expected_permissions
             or not isinstance(gate, dict)
             or gate.get("name") != "code-scanning-gate"

@@ -4573,13 +4573,19 @@ class CodeScanningGateContractTests(unittest.TestCase):
 
         asset_text = asset.read_text(encoding="utf-8")
         document = validate_repository.load_yaml(workflow)
+        asset_document = validate_repository.load_yaml(asset)
         self.assertEqual(
             document["on"],
             {
                 "pull_request_target": {
-                    "types": ["opened", "edited", "reopened", "synchronize"]
+                    "types": ["opened", "edited", "reopened", "synchronize"],
+                    "branches": ["main"],
                 }
             },
+        )
+        self.assertEqual(
+            asset_document["on"]["pull_request_target"]["branches"],
+            ["{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}"],
         )
         self.assertEqual(
             document["permissions"],
@@ -4602,6 +4608,40 @@ class CodeScanningGateContractTests(unittest.TestCase):
         )
         self.assertNotIn("merge_commit_sha", text)
         self.assertIn("github.event.pull_request.head.sha", text)
+
+    def test_validator_rejects_gate_without_a_base_branch_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                Path(".github/code-scanning-allowlist.json"),
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+                Path("scripts/check_code_scanning_alerts.py"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for relative in (
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+            ):
+                path = root / relative
+                path.write_text(
+                    "\n".join(
+                        line
+                        for line in path.read_text(encoding="utf-8").splitlines()
+                        if not line.startswith("    branches:")
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_code_scanning_gate_contract(root)
+
+            self.assertEqual(
+                sum("trusted pull-request gate contract" in item for item in problems),
+                2,
+            )
 
 
 class PullRequestTemplateContractTests(unittest.TestCase):
