@@ -549,6 +549,46 @@ class ActionPinSyncTests(unittest.TestCase):
                 [],
             )
 
+    def test_synchronize_updates_explicit_flow_uses_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    + "      - { ? uses : actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + '      - { ? "uses" : actions/checkout@'
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { ? !!str uses : actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 3)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "  - { ? uses : actions/checkout@v4 }\n",
+                )
+
     def test_flow_mapping_ranges_mask_unclosed_flow_mappings(self) -> None:
         content = "  - {\n      uses: actions/checkout@" + "a" * 40 + "\n"
 
