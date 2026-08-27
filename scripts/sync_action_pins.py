@@ -690,9 +690,10 @@ def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
 def referenced_action_aliases(content: str) -> frozenset[str]:
     """Return YAML aliases that are consumed by workflow ``uses`` mappings."""
     return frozenset(
-        normalized_uses_reference(match)[1:]
+        match.group("reference")[1:]
         for match in workflow_uses_matches(content)
-        if normalized_uses_reference(match).startswith("*")
+        if match.groupdict().get("quote") == ""
+        and match.group("reference").startswith("*")
     )
 
 
@@ -734,7 +735,10 @@ def auditable_action_repositories(path: Path, content: str) -> set[str]:
     pins = {
         normalized_uses_reference(match)
         for match in workflow_uses_matches(content)
-        if not normalized_uses_reference(match).startswith("*")
+        if not (
+            match.groupdict().get("quote") == ""
+            and match.group("reference").startswith("*")
+        )
     }
     pins.update(
         normalized_uses_reference(match)
@@ -745,7 +749,7 @@ def auditable_action_repositories(path: Path, content: str) -> set[str]:
         for match in action_pin_matches(content)
     }
     for reference in pins:
-        if reference.startswith(("./", "docker://", "*")):
+        if reference.startswith(("./", "docker://")):
             continue
         if reference not in pinned_references:
             raise ValueError(f"workflow action is not pinned to a full SHA: {path}")

@@ -1115,6 +1115,8 @@ class ActionPinSyncTests(unittest.TestCase):
         path = Path("workflow.yml")
         for content, message in (
             ("  - uses: actions/checkout@v7\n", "not pinned"),
+            ('  - uses: "*checkout"\n', "not pinned"),
+            ("  - uses: '*checkout'\n", "not pinned"),
             ("  - uses: example/action@" + "a" * 40 + "\n", "allowlist"),
         ):
             with self.subTest(content=content):
