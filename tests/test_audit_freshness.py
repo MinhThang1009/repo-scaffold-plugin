@@ -368,6 +368,16 @@ class FreshnessTests(unittest.TestCase):
                     root, trackers.release_please_configs, "v17.6.0"
                 )
             config.write_text(
+                '{"$schema": "https://raw.githubusercontent.com/googleapis/'
+                'release-please/v17.6.0/schemas/config.json", '
+                '"$schema": "https://example.test/schema.json"}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(freshness.AuditError, "could not read"):
+                freshness.release_please_findings(
+                    root, trackers.release_please_configs, "v17.6.0"
+                )
+            config.write_text(
                 json.dumps(
                     {
                         "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.6.0/schemas/config.json"

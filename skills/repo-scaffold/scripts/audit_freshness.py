@@ -297,8 +297,16 @@ def release_please_findings(
     for relative in configs:
         path = tracked_path(root, relative, kind="Release Please config")
         try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            document = json.loads(
+                path.read_text(encoding="utf-8"),
+                object_pairs_hook=unique_json_object,
+            )
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            DuplicateJsonMember,
+        ) as error:
             raise AuditError(
                 f"could not read Release Please config {relative}: {error}"
             ) from error

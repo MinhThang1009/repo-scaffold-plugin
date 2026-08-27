@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -41,6 +42,15 @@ def synchronize_release_please_schemas(
         try:
             content = path.read_bytes().decode("utf-8")
         except (OSError, UnicodeError) as error:
+            raise ValueError(
+                f"could not read Release Please config {relative}: {error}"
+            ) from error
+        try:
+            json.loads(content, object_pairs_hook=audit_freshness.unique_json_object)
+        except (
+            json.JSONDecodeError,
+            audit_freshness.DuplicateJsonMember,
+        ) as error:
             raise ValueError(
                 f"could not read Release Please config {relative}: {error}"
             ) from error

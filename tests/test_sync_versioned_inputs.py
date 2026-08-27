@@ -160,14 +160,17 @@ class VersionedInputSyncTests(unittest.TestCase):
             self.write_repository(root)
             config = root / "release-please-config.json"
             config.write_text(
-                self.release_config() + self.release_config(), encoding="utf-8"
+                '{"$schema": "https://raw.githubusercontent.com/googleapis/'
+                'release-please/v17.11.1/schemas/config.json", '
+                '"$schema": "https://example.test/schema.json"}',
+                encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "exactly one supported"):
+            with self.assertRaisesRegex(ValueError, "could not read"):
                 versioned_inputs.synchronize_versioned_inputs(
                     root, self.release_lookup, write=False
                 )
-            with self.assertRaisesRegex(ValueError, "exactly one supported"):
+            with self.assertRaisesRegex(ValueError, "could not read"):
                 versioned_inputs.synchronize_versioned_inputs(
                     root, self.release_lookup, write=True
                 )
