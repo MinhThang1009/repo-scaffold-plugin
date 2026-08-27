@@ -252,7 +252,16 @@ class ActionPinSyncTests(unittest.TestCase):
                 + '"\n'
                 + '      - uses: "actions\\U0000002fcheckout@'
                 + "a" * 40
-                + '"\n',
+                + '"\n'
+                + '      - uses: "act\\u0069ons/checkout@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions/check\\u006fut@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions/checkout@'
+                + "a" * 39
+                + '\\x61"\n',
             )
 
             changed = sync_action_pins.synchronize_action_pins(
@@ -269,7 +278,7 @@ class ActionPinSyncTests(unittest.TestCase):
                     step["uses"]
                     for step in yaml.safe_load(content)["jobs"]["test"]["steps"]
                 ],
-                [f"actions/checkout@{'c' * 40}"] * 4,
+                [f"actions/checkout@{'c' * 40}"] * 7,
             )
             self.assertEqual(
                 sync_action_pins.auditable_action_repositories(workflow, content),
@@ -277,7 +286,7 @@ class ActionPinSyncTests(unittest.TestCase):
             )
             workflow.write_text(
                 "jobs:\n  test:\n    steps:\n"
-                + "      - uses: actions\\u002fcheckout@"
+                + "      - uses: act\\u0069ons/checkout@"
                 + "a" * 40
                 + "\n",
                 encoding="utf-8",
@@ -1085,6 +1094,15 @@ class ActionPinSyncTests(unittest.TestCase):
                 path, "  - uses: actions/setup-node@" + "a" * 40 + "\n"
             ),
             {"actions/setup-node"},
+        )
+        self.assertEqual(
+            sync_action_pins.auditable_action_repositories(
+                path,
+                "  - uses: actions/checkout/.github/actions/setup/child@"
+                + "a" * 40
+                + "\n",
+            ),
+            {"actions/checkout"},
         )
         self.assertEqual(
             sync_action_pins.action_repositories(

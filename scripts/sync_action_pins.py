@@ -28,14 +28,22 @@ YAML_ANCHOR_PROPERTIES_PATTERN = (
 )
 YAML_DOUBLE_QUOTED_LINE_CONTINUATION_PATTERN = r"(?:\\\r?\n[ \t]*)*"
 YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN = r"\\\r?\n[ \t]*"
-YAML_DOUBLE_QUOTED_SLASH_ESCAPE_PATTERN = r"\\(?:/|x2[fF]|u002[fF]|U0000002[fF])"
-YAML_ACTION_PATH_SEPARATOR_PATTERN = rf"(?:/|{YAML_DOUBLE_QUOTED_SLASH_ESCAPE_PATTERN})"
+YAML_DOUBLE_QUOTED_ESCAPE_PATTERN = (
+    r'\\(?:[0abtnvfre "/\\N_LP]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})'
+)
+YAML_ACTION_COMPONENT_PATTERN = (
+    rf"(?:[A-Za-z0-9_.-]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN})+"
+)
+YAML_ACTION_PATH_SEPARATOR_PATTERN = rf"(?:/|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN})"
+YAML_ACTION_SHA_PATTERN = rf"(?:[0-9a-fA-F]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN})+"
 YAML_CONTINUED_ACTION_COMPONENT_PATTERN = (
-    rf"[A-Za-z0-9_.-]+(?:{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN}[A-Za-z0-9_.-]+)*"
+    rf"(?:[A-Za-z0-9_.-]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN}|"
+    rf"{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})+"
 )
 YAML_ACTION_REFERENCE_PATTERN = (
-    rf"[A-Za-z0-9_.-]+{YAML_ACTION_PATH_SEPARATOR_PATTERN}[A-Za-z0-9_.-]+"
-    rf"(?:{YAML_ACTION_PATH_SEPARATOR_PATTERN}[A-Za-z0-9_.\-/]+)?"
+    rf"{YAML_ACTION_COMPONENT_PATTERN}{YAML_ACTION_PATH_SEPARATOR_PATTERN}"
+    rf"{YAML_ACTION_COMPONENT_PATTERN}(?:{YAML_ACTION_PATH_SEPARATOR_PATTERN}"
+    rf"{YAML_ACTION_COMPONENT_PATTERN})*"
 )
 YAML_DOUBLE_QUOTED_USES_KEY_PATTERN = (
     rf'"{YAML_DOUBLE_QUOTED_LINE_CONTINUATION_PATTERN}(?:u|\\x75|\\u0075|\\U00000075)'
@@ -48,10 +56,10 @@ YAML_USES_KEY_PATTERN = rf"{YAML_NODE_PROPERTIES_PATTERN}(?:uses|'uses'|{YAML_DO
 YAML_BLOCK_SCALAR_STRIP_PATTERN = r"[>|](?:[0-9]*-|-[0-9]*)"
 FLOW_MAPPING_CONTENT_PATTERN = r"""(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*"|\{(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*")*\}|\{\{[^{}]*\}\})*"""
 ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 CONTINUED_DOUBLE_QUOTED_ACTION_PIN_PATTERN = re.compile(
-    rf'(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>")(?=(?:[^"\r\n]|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})*{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})(?P<action>{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}(?:{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN})?)@(?P<sha>[0-9a-fA-F]+(?:{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN}[0-9a-fA-F]+)*)(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)'
+    rf'(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>")(?=(?:[^"\r\n]|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})*{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})(?P<action>{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}(?:{YAML_ACTION_PATH_SEPARATOR_PATTERN}{YAML_CONTINUED_ACTION_COMPONENT_PATTERN})?)@(?P<sha>(?:[0-9a-fA-F]|{YAML_DOUBLE_QUOTED_ESCAPE_PATTERN}|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})+)(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)'
 )
 USES_PATTERN = re.compile(
     rf"(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
@@ -63,43 +71,43 @@ EXPLICIT_USES_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 EXPLICIT_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 EXPLICIT_BLOCK_USES_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN}{YAML_BLOCK_SCALAR_STRIP_PATTERN}[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*uses[ \t]*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 EXPLICIT_BLOCK_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN}{YAML_BLOCK_SCALAR_STRIP_PATTERN}[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*uses[ \t]*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN}{YAML_BLOCK_SCALAR_STRIP_PATTERN}[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*uses[ \t]*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<explicit>)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 BLOCK_SCALAR_USES_PATTERN = re.compile(
     rf"(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?P<reference>\S+?)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 BLOCK_SCALAR_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>[0-9a-fA-F]{{40}})(?P<comment>[ \t]*)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}[>|][0-9+-]*[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*)(?P<quote>)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P<comment>[ \t]*)(?=\r?$)"
 )
 FLOW_USES_PATTERN = re.compile(
     rf"(?m)^\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 FLOW_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?\{{{FLOW_MAPPING_CONTENT_PATTERN}?(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_suffix>\s*(?:,{FLOW_MAPPING_CONTENT_PATTERN})?\}})(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 FLOW_INLINE_USES_PATTERN = re.compile(
     rf"(?P<prefix>[{{,]\s*(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?=\s*(?:[,}}]))"
 )
 FLOW_INLINE_ACTION_PIN_PATTERN = re.compile(
-    rf"(?P<prefix>[{{,]\s*(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
+    rf"(?P<prefix>[{{,]\s*(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
 )
 FLOW_ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?P<prefix>&(?P<anchor>[A-Za-z0-9_-]+)\s+(?:{YAML_TAG_PATTERN}\s+)*)(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?=\s*(?:[,}}]))"
 )
 FLOW_ANCHORED_ACTION_PIN_PATTERN = re.compile(
-    rf"(?P<prefix>&(?P<anchor>[A-Za-z0-9_-]+)\s+(?:{YAML_TAG_PATTERN}\s+)*)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
+    rf"(?P<prefix>&(?P<anchor>[A-Za-z0-9_-]+)\s+(?:{YAML_TAG_PATTERN}\s+)*)(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
 )
 ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
 )
 ANCHORED_ACTION_PIN_PATTERN = re.compile(
-    rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    rf"(?m)^(?P<prefix>\s*(?:-\s*)?[^#\r\n]+:\s*{YAML_ANCHOR_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN})@(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
 BLOCK_SCALAR_HEADER_PATTERN = re.compile(
     rf"^(?P<indent> *)(?:(?:-\s*)?[^#\r\n]+:\s*{YAML_NODE_PROPERTIES_PATTERN}|-\s*{YAML_NODE_PROPERTIES_PATTERN}|(?:-\s*)?\?\s*{YAML_NODE_PROPERTIES_PATTERN})[>|][0-9+-]*[ \t]*(?:#.*)?(?:\r?\n)?$"
@@ -109,6 +117,7 @@ QUOTED_SCALAR_START_PATTERN = re.compile(
 )
 FLOW_MAPPING_START_PATTERN = re.compile(r"^\s*(?:-\s*)?\{")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+ACTION_REFERENCE_VALUE_PATTERN = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 RELEASE_TAG_PATTERN = re.compile(
     r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
@@ -480,10 +489,36 @@ def _matches_outside_block_scalars(
 
 
 def normalized_double_quoted_scalar(value: str) -> str:
-    """Return the logical value of a double-quoted YAML line continuation."""
+    """Return the logical value of a double-quoted YAML scalar."""
+    escapes = {
+        "0": "\0",
+        "a": "\a",
+        "b": "\b",
+        "t": "\t",
+        "n": "\n",
+        "v": "\v",
+        "f": "\f",
+        "r": "\r",
+        "e": "\x1b",
+        " ": " ",
+        '"': '"',
+        "/": "/",
+        "\\": "\\",
+        "N": "\u0085",
+        "_": "\u00a0",
+        "L": "\u2028",
+        "P": "\u2029",
+    }
+
+    def decode_escape(match: re.Match[str]) -> str:
+        escape = match.group(0)[1:]
+        if len(escape) == 1:
+            return escapes[escape]
+        return chr(int(escape[1:], 16))
+
     return re.sub(
-        YAML_DOUBLE_QUOTED_SLASH_ESCAPE_PATTERN,
-        "/",
+        YAML_DOUBLE_QUOTED_ESCAPE_PATTERN,
+        decode_escape,
         re.sub(YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN, "", value),
     )
 
@@ -509,8 +544,18 @@ def normalized_action_pin_part(match: re.Match[str], part: str) -> str:
 
 
 def action_pin_has_valid_scalar_style(match: re.Match[str]) -> bool:
-    """Reject slash escapes unless YAML will decode them in a double-quoted scalar."""
-    return match.groupdict().get("quote") == '"' or "\\" not in match.group("action")
+    """Validate the decoded action and SHA, rejecting non-YAML escapes."""
+    quote = match.groupdict().get("quote")
+    if quote != '"' and ("\\" in match.group("action") or "\\" in match.group("sha")):
+        return False
+    return (
+        ACTION_REFERENCE_VALUE_PATTERN.fullmatch(
+            normalized_action_pin_part(match, "action")
+        )
+        is not None
+        and SHA_PATTERN.fullmatch(normalized_action_pin_part(match, "sha").casefold())
+        is not None
+    )
 
 
 def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
@@ -866,9 +911,9 @@ def synchronize_action_pins(
         comment = match.group("comment")
         flow_suffix = match.groupdict().get("flow_suffix") or ""
         if flow_suffix:
-            if match.group("sha").casefold() == release.sha and comment.strip() == (
-                f"# {release.tag}"
-            ):
+            if normalized_action_pin_part(
+                match, "sha"
+            ).casefold() == release.sha and comment.strip() == (f"# {release.tag}"):
                 return match.group(0)
             prefix = comment[: comment.index("#")] if "#" in comment else " "
             quote = match.group("quote")
@@ -877,7 +922,7 @@ def synchronize_action_pins(
                 f"{flow_suffix}{prefix}# {release.tag}"
             )
         if "\n" in match.group("prefix") and match.groupdict().get("explicit") is None:
-            if match.group("sha").casefold() == release.sha:
+            if normalized_action_pin_part(match, "sha").casefold() == release.sha:
                 return match.group(0)
             quote = match.group("quote")
             # A block scalar treats a hash as part of the action reference.
