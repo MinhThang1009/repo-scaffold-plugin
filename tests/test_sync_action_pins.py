@@ -641,6 +641,14 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())
 
+    def test_flow_collection_ranges_ignore_a_trailing_comment_in_invalid_input(
+        self,
+    ) -> None:
+        self.assertEqual(
+            sync_action_pins.flow_collection_content_ranges("notes: [ # unclosed"),
+            (),
+        )
+
     def test_synchronize_handles_deeply_nested_flow_action_references(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
