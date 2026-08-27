@@ -949,6 +949,8 @@ class ActionPinSyncTests(unittest.TestCase):
             + action
             + '\n    end"\n',
             'notes:\n  ? "example:\n      uses: ' + action + '\n    end"\n  : value\n',
+            'notes: [\n  "example:\n    uses: ' + action + '\n  end"\n]\n',
+            "notes: [\n  'example:\n    uses: " + action + "\n  end'\n]\n",
         ):
             with self.subTest(content=content):
                 self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())

@@ -293,6 +293,44 @@ def flow_mapping_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
     return tuple(ranges)
 
 
+def flow_collection_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
+    """Return ranges within multiline YAML flow collections."""
+    ranges: list[tuple[int, int]] = []
+    collections: list[tuple[str, int]] = []
+    quote: str | None = None
+    index = 0
+    closing = {"{": "}", "[": "]"}
+    while index < len(content):
+        character = content[index]
+        if quote == "'":
+            if character == "'":
+                if index + 1 < len(content) and content[index + 1] == "'":
+                    index += 2
+                    continue
+                quote = None
+        elif quote == '"':
+            if character == "\\":
+                index += 2
+                continue
+            if character == '"':
+                quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "#" and (index == 0 or content[index - 1].isspace()):
+            newline = content.find("\n", index)
+            if newline < 0:
+                break
+            index = newline
+        elif character in closing:
+            collections.append((character, index))
+        elif collections and character == closing[collections[-1][0]]:
+            _opening, start = collections.pop()
+            if "\n" in content[start : index + 1]:
+                ranges.append((start + 1, index))
+        index += 1
+    return tuple(ranges)
+
+
 def flow_mapping_brace_delta(line: str, quote: str | None) -> tuple[int, str | None]:
     """Return a flow mapping line's brace balance and trailing quote state."""
     brace_delta = 0
@@ -416,6 +454,7 @@ def _matches_outside_block_scalars(
         *block_scalar_content_ranges(content),
         *quoted_scalar_content_ranges(content),
         *flow_mapping_content_ranges(content),
+        *flow_collection_content_ranges(content),
     )
     return tuple(
         match
