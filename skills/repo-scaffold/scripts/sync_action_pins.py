@@ -662,7 +662,8 @@ def auditable_action_repositories(path: Path, content: str) -> set[str]:
         if not normalized_uses_reference(match).startswith("*")
     }
     pins.update(
-        match.group("reference") for match in anchored_action_reference_matches(content)
+        normalized_uses_reference(match)
+        for match in anchored_action_reference_matches(content)
     )
     pinned_references = {
         f"{normalized_action_pin_part(match, 'action')}@{normalized_action_pin_part(match, 'sha')}"

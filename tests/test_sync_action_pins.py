@@ -289,6 +289,25 @@ class ActionPinSyncTests(unittest.TestCase):
                     write=False,
                     workflow_directories=(Path(".github/workflows"),),
                 )
+            workflow.write_text(
+                'defaults: &checkout "actions\\u002fcheckout@'
+                + "a" * 40
+                + '"\njobs:\n  test:\n    steps:\n      - uses: *checkout\n',
+                encoding="utf-8",
+            )
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+            self.assertEqual(changed, [workflow])
+            self.assertEqual(
+                yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["test"][
+                    "steps"
+                ][0]["uses"],
+                f"actions/checkout@{'c' * 40}",
+            )
 
     def test_synchronize_updates_double_quoted_continued_action_references(
         self,
