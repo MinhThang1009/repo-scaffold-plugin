@@ -27,6 +27,10 @@ YAML_ANCHOR_PROPERTIES_PATTERN = (
     rf"(?:(?:{YAML_TAG_PATTERN})\s+)*"
 )
 YAML_DOUBLE_QUOTED_LINE_CONTINUATION_PATTERN = r"(?:\\\r?\n[ \t]*)*"
+YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN = r"\\\r?\n[ \t]*"
+YAML_CONTINUED_ACTION_COMPONENT_PATTERN = (
+    rf"[A-Za-z0-9_.-]+(?:{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN}[A-Za-z0-9_.-]+)*"
+)
 YAML_DOUBLE_QUOTED_USES_KEY_PATTERN = (
     rf'"{YAML_DOUBLE_QUOTED_LINE_CONTINUATION_PATTERN}(?:u|\\x75|\\u0075|\\U00000075)'
     rf"{YAML_DOUBLE_QUOTED_LINE_CONTINUATION_PATTERN}(?:s|\\x73|\\u0073|\\U00000073)"
@@ -40,8 +44,14 @@ FLOW_MAPPING_CONTENT_PATTERN = r"""(?:[^{}'"]|'[^']*'|"(?:[^"\\]|\\.)*"|\{(?:[^{
 ACTION_PIN_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.\-/]+)?)@(?P<sha>[0-9a-fA-F]{{40}})(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
 )
+CONTINUED_DOUBLE_QUOTED_ACTION_PIN_PATTERN = re.compile(
+    rf'(?m)^(?P<prefix>\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>")(?=(?:[^"\r\n]|{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})*{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN})(?P<action>{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}/{YAML_CONTINUED_ACTION_COMPONENT_PATTERN}(?:/{YAML_CONTINUED_ACTION_COMPONENT_PATTERN})?)@(?P<sha>[0-9a-fA-F]+(?:{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN}[0-9a-fA-F]+)*)(?P=quote)(?P<comment>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)'
+)
 USES_PATTERN = re.compile(
     rf"(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
+)
+CONTINUED_DOUBLE_QUOTED_USES_PATTERN = re.compile(
+    rf'(?m)^\s*(?:-\s*)?{YAML_USES_KEY_PATTERN}:\s*{YAML_NODE_PROPERTIES_PATTERN}(?P<quote>")(?P<reference>[^"\r\n]*(?:{YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN}[^"\r\n]*)+)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)'
 )
 EXPLICIT_USES_PATTERN = re.compile(
     rf"(?m)^(?P<prefix>\s*(?:-\s*)?\?\s*{YAML_USES_KEY_PATTERN}\s*\r?\n\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?:[ \t]*(?:#[^\r\n]*)?)?(?=\r?$)"
@@ -463,6 +473,11 @@ def _matches_outside_block_scalars(
     )
 
 
+def normalized_double_quoted_scalar(value: str) -> str:
+    """Return the logical value of a double-quoted YAML line continuation."""
+    return re.sub(YAML_DOUBLE_QUOTED_CONTINUATION_PATTERN, "", value)
+
+
 def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
     """Return immutable direct or alias-backed action pins outside scalar text."""
     matches = {
@@ -475,6 +490,18 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
             for match in _matches_outside_block_scalars(
                 EXPLICIT_ACTION_PIN_PATTERN, content
             )
+        }
+    )
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(
+                CONTINUED_DOUBLE_QUOTED_ACTION_PIN_PATTERN, content
+            )
+            if SHA_PATTERN.fullmatch(
+                normalized_double_quoted_scalar(match.group("sha"))
+            )
+            is not None
         }
     )
     matches.update(
@@ -516,11 +543,19 @@ def action_pin_matches(content: str) -> tuple[re.Match[str], ...]:
 
 def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
     """Return workflow ``uses`` mappings, excluding YAML scalar content."""
+    continued_matches = _matches_outside_block_scalars(
+        CONTINUED_DOUBLE_QUOTED_USES_PATTERN, content
+    )
     matches = {
         (match.start(), match.end()): match
         for match in _matches_outside_block_scalars(USES_PATTERN, content)
         if match.group("reference")[0] not in {"|", ">"}
+        and not any(
+            continued.start() <= match.start() < continued.end()
+            for continued in continued_matches
+        )
     }
+    matches.update({(match.start(), match.end()): match for match in continued_matches})
     matches.update(
         {
             (match.start(), match.end()): match
@@ -557,9 +592,9 @@ def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
 def referenced_action_aliases(content: str) -> frozenset[str]:
     """Return YAML aliases that are consumed by workflow ``uses`` mappings."""
     return frozenset(
-        match.group("reference")[1:]
+        normalized_double_quoted_scalar(match.group("reference"))[1:]
         for match in workflow_uses_matches(content)
-        if match.group("reference").startswith("*")
+        if normalized_double_quoted_scalar(match.group("reference")).startswith("*")
     )
 
 
@@ -585,15 +620,15 @@ def auditable_action_repositories(path: Path, content: str) -> set[str]:
     """Collect every externally hosted action pinned to an immutable SHA."""
     repositories: set[str] = set()
     pins = {
-        match.group("reference")
+        normalized_double_quoted_scalar(match.group("reference"))
         for match in workflow_uses_matches(content)
-        if not match.group("reference").startswith("*")
+        if not normalized_double_quoted_scalar(match.group("reference")).startswith("*")
     }
     pins.update(
         match.group("reference") for match in anchored_action_reference_matches(content)
     )
     pinned_references = {
-        f"{match.group('action')}@{match.group('sha')}"
+        f"{normalized_double_quoted_scalar(match.group('action'))}@{normalized_double_quoted_scalar(match.group('sha'))}"
         for match in action_pin_matches(content)
     }
     for reference in pins:
@@ -783,10 +818,13 @@ def synchronize_action_pins(
     releases = {repository: release_lookup(repository) for repository in repositories}
 
     def replace(match: re.Match[str]) -> str:
-        action = match.group("action")
+        action = normalized_double_quoted_scalar(match.group("action"))
         release = releases[action_repository(action)]
         if match.groupdict().get("flow_inline") is not None:
-            if match.group("sha").casefold() == release.sha:
+            if (
+                normalized_double_quoted_scalar(match.group("sha")).casefold()
+                == release.sha
+            ):
                 return match.group(0)
             quote = match.group("quote")
             return f"{match.group('prefix')}{quote}{action}@{release.sha}{quote}"
@@ -811,9 +849,9 @@ def synchronize_action_pins(
             return (
                 f"{match.group('prefix')}{quote}{action}@{release.sha}{quote}{comment}"
             )
-        if match.group("sha").casefold() == release.sha and comment.strip() == (
-            f"# {release.tag}"
-        ):
+        if normalized_double_quoted_scalar(
+            match.group("sha")
+        ).casefold() == release.sha and comment.strip() == (f"# {release.tag}"):
             return match.group(0)
         prefix = comment[: comment.index("#")] if "#" in comment else " "
         quote = match.group("quote")

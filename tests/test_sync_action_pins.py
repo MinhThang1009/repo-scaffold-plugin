@@ -232,6 +232,34 @@ class ActionPinSyncTests(unittest.TestCase):
                 {"actions/checkout", "actions/setup-python"},
             )
 
+    def test_synchronize_updates_double_quoted_continued_action_references(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                'jobs:\n  test:\n    steps:\n      - uses: "actions/chec\\\n          kout@'
+                + "a" * 40
+                + '" # v1.0.0\n',
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f'uses: "actions/checkout@{"c" * 40}" # v9.1.2', content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
     def test_synchronize_updates_anchored_action_references(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
