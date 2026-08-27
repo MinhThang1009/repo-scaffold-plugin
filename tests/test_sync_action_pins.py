@@ -596,7 +596,9 @@ class ActionPinSyncTests(unittest.TestCase):
                 root,
                 ".github/workflows/ci.yml",
                 (
-                    "env: { CHECKOUT_ACTION: &checkout actions/checkout@"
+                    "env: { UNUSED_ACTION: &unused actions/checkout@"
+                    + "a" * 40
+                    + ", CHECKOUT_ACTION: &checkout actions/checkout@"
                     + "a" * 40
                     + " }\njobs:\n  test:\n    steps:\n      - uses: *checkout\n"
                 ),
@@ -613,6 +615,10 @@ class ActionPinSyncTests(unittest.TestCase):
             content = workflow.read_text(encoding="utf-8")
             self.assertIn(
                 f"&checkout actions/checkout@{'c' * 40}",
+                content,
+            )
+            self.assertIn(
+                f"&unused actions/checkout@{'a' * 40}",
                 content,
             )
             self.assertEqual(
