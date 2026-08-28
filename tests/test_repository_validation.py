@@ -4729,6 +4729,40 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 2,
             )
 
+    def test_validator_rejects_gate_with_untrusted_merge_queue_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                Path(".github/code-scanning-allowlist.json"),
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+                Path("scripts/check_code_scanning_alerts.py"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for relative in (
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        '--sha "$MERGE_GROUP_SHA"', '--sha "$UNTRUSTED_SHA"'
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_code_scanning_gate_contract(root)
+
+            self.assertEqual(
+                sum(
+                    "must execute trusted merge-queue alert-gate code" in item
+                    for item in problems
+                ),
+                2,
+            )
+
     def test_validator_rejects_gate_with_an_incorrect_base_branch_filter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
