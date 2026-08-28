@@ -832,8 +832,8 @@ def _bash_dynamic_execution_is_unresolved(text: str) -> bool:
                 ):
                     return True
                 trap_handler = _bash_trap_handler(words)
-                if trap_handler is not None and any(
-                    marker in trap_handler for marker in ("$", "`")
+                if trap_handler is not None and _bash_dynamic_execution_is_unresolved(
+                    trap_handler
                 ):
                     return True
                 if command == "eval":
@@ -1162,7 +1162,9 @@ def _bash_opens_array_assignment(line: str, parenthesis_index: int) -> bool:
     return cursor < 0 or line[cursor] in " \t;&|"
 
 
-def _bash_executable_text(text: str) -> str:
+def _bash_executable_text(
+    text: str, *, mask_nonexecuted_heredocs_only: bool = False
+) -> str:
     """Mask Bash heredoc bodies and multiline string literals."""
     output: list[str] = []
     pending: list[tuple[str, bool, bool]] = []
@@ -1216,7 +1218,8 @@ def _bash_executable_text(text: str) -> str:
                     index += 2
                     continue
                 elif character == "`" and not _is_escaped(line, index):
-                    masked[index] = "\n"
+                    if not mask_nonexecuted_heredocs_only:
+                        masked[index] = "\n"
                     backtick_substitution = False
                 index += 1
                 continue
@@ -1267,11 +1270,14 @@ def _bash_executable_text(text: str) -> str:
                         and not quote_executes_content
                         and quote_start is not None
                     ):
-                        _mask(masked, quote_start, index + 1)
+                        if not mask_nonexecuted_heredocs_only:
+                            _mask(masked, quote_start, index + 1)
                     if quote_is_command_string:
-                        masked[index] = "\n"
+                        if not mask_nonexecuted_heredocs_only:
+                            masked[index] = "\n"
                     elif quote_is_multiline and not quote_executes_content:
-                        _mask(masked, index, index + 1)
+                        if not mask_nonexecuted_heredocs_only:
+                            _mask(masked, index, index + 1)
                     quote_character = None
                     quote_is_multiline = False
                     quote_executes_content = False
@@ -1280,7 +1286,8 @@ def _bash_executable_text(text: str) -> str:
                 elif (quote_character == '"' and not quote_executes_content) or (
                     quote_is_multiline and not quote_executes_content
                 ):
-                    _mask(masked, index, index + 1)
+                    if not mask_nonexecuted_heredocs_only:
+                        _mask(masked, index, index + 1)
                 index += 1
                 continue
 
@@ -1300,7 +1307,8 @@ def _bash_executable_text(text: str) -> str:
                 and (index == 0 or line[index - 1] in " \t;|&()")
                 and not _is_escaped(line, index)
             ):
-                _mask(masked, index, content_end)
+                if not mask_nonexecuted_heredocs_only:
+                    _mask(masked, index, content_end)
                 break
             if (
                 array_literal_depth
@@ -1356,11 +1364,13 @@ def _bash_executable_text(text: str) -> str:
                 quote_executes_content = quote_role != "literal"
                 quote_is_command_string = quote_role in {"eval", "shell-command"}
                 if quote_is_command_string:
-                    masked[index] = "\n"
+                    if not mask_nonexecuted_heredocs_only:
+                        masked[index] = "\n"
                 index += 1
                 continue
             if character == "`" and not _is_escaped(line, index):
-                masked[index] = "\n"
+                if not mask_nonexecuted_heredocs_only:
+                    masked[index] = "\n"
                 backtick_substitution = True
                 backtick_substitution_quote = None
                 index += 1
@@ -1389,7 +1399,8 @@ def _bash_executable_text(text: str) -> str:
                 )
                 continue
             if array_literal_depth and not array_command_substitution_depth:
-                _mask(masked, index, index + 1)
+                if not mask_nonexecuted_heredocs_only:
+                    _mask(masked, index, index + 1)
             index += 1
 
         if quote_character is not None:
@@ -1398,7 +1409,8 @@ def _bash_executable_text(text: str) -> str:
                 and not quote_is_multiline
                 and not quote_executes_content
             ):
-                _mask(masked, quote_start, content_end)
+                if not mask_nonexecuted_heredocs_only:
+                    _mask(masked, quote_start, content_end)
             quote_is_multiline = True
         output.append("".join(masked))
 
@@ -2491,7 +2503,14 @@ def contains_codeql_cli(
     if shell_kind == "bash":
         if _bash_contains_wrapped_codeql(executable_text, dynamic_execution_depth):
             return True
-        dynamic_text = _mask_uninvoked_functions(text, "bash")
+        # Do not parse data passed to a non-shell interpreter (for example
+        # ``python <<'PY'``) as Bash. Retain all shell command strings so
+        # dynamic execution remains fail-closed and CodeQL invocations remain
+        # detectable.
+        dynamic_text = _bash_executable_text(
+            _mask_uninvoked_functions(text, "bash"),
+            mask_nonexecuted_heredocs_only=True,
+        )
         if _bash_dynamic_execution_is_unresolved(dynamic_text):
             raise InspectionError("Shell dynamic command has a non-literal payload.")
         if any(
