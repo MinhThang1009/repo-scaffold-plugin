@@ -22,6 +22,7 @@ API_VERSION = "2026-03-10"
 DEFAULT_ALLOWLIST = Path(".github/code-scanning-allowlist.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_PAGES = 20
+MAX_ANALYSIS_PAGES = 20
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 PULL_REQUEST = re.compile(r"[1-9][0-9]*\Z")
@@ -188,24 +189,34 @@ def analyses_ready(
     expected_parents: tuple[str, str] | None = None,
 ) -> bool:
     """Return whether every configured CodeQL category is uploaded for this commit."""
-    url = f"{API_ROOT}/repos/{repository}/code-scanning/analyses?ref={quote(ref, safe='')}&per_page=100"
-    document = api_json(url, token)
-    if not isinstance(document, list):
-        raise GateError("GitHub analyses response must be a list")
     categories_by_sha: dict[str, set[str]] = {}
-    for item in document:
-        if not isinstance(item, dict) or not isinstance(item.get("tool"), dict):
-            continue
-        analysis_sha = item.get("commit_sha")
-        category = item.get("category")
-        if (
-            item["tool"].get("name") != "CodeQL"
-            or not isinstance(analysis_sha, str)
-            or COMMIT_SHA.fullmatch(analysis_sha) is None
-            or not isinstance(category, str)
-        ):
-            continue
-        categories_by_sha.setdefault(analysis_sha, set()).add(category)
+    for page in range(1, MAX_ANALYSIS_PAGES + 1):
+        url = (
+            f"{API_ROOT}/repos/{repository}/code-scanning/analyses?"
+            f"ref={quote(ref, safe='')}&per_page=100&page={page}"
+        )
+        document = api_json(url, token)
+        if not isinstance(document, list):
+            raise GateError("GitHub analyses response must be a list")
+        for item in document:
+            if not isinstance(item, dict) or not isinstance(item.get("tool"), dict):
+                continue
+            analysis_sha = item.get("commit_sha")
+            category = item.get("category")
+            if (
+                item["tool"].get("name") != "CodeQL"
+                or not isinstance(analysis_sha, str)
+                or COMMIT_SHA.fullmatch(analysis_sha) is None
+                or not isinstance(category, str)
+            ):
+                continue
+            categories_by_sha.setdefault(analysis_sha, set()).add(category)
+        if len(document) < 100:
+            break
+    else:
+        raise GateError(
+            f"GitHub returned more than {MAX_ANALYSIS_PAGES * 100} analyses for {ref}"
+        )
     if expected_parents is None:
         return expected_categories <= categories_by_sha.get(sha, set())
     return any(

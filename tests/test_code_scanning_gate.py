@@ -375,6 +375,61 @@ class CodeScanningGateTests(unittest.TestCase):
             )
         self.assertEqual(matches.call_count, 2)
 
+    def test_analyses_paginates_before_declaring_a_commit_unavailable(self) -> None:
+        first_page = [
+            {
+                "commit_sha": f"{index:040x}",
+                "tool": {"name": "CodeQL"},
+                "category": "/language:python",
+            }
+            for index in range(100)
+        ]
+        target = "a" * 40
+        second_page = [
+            {
+                "commit_sha": target,
+                "tool": {"name": "CodeQL"},
+                "category": "/language:python",
+            }
+        ]
+        with mock.patch.object(
+            gate, "api_json", side_effect=[first_page, second_page]
+        ) as api_json:
+            self.assertTrue(
+                gate.analyses_ready(
+                    "owner/repo",
+                    "refs/heads/main",
+                    target,
+                    "token",
+                    frozenset({"/language:python"}),
+                )
+            )
+
+        self.assertIn("page=1", api_json.call_args_list[0].args[0])
+        self.assertIn("page=2", api_json.call_args_list[1].args[0])
+
+    def test_analyses_rejects_unbounded_pagination(self) -> None:
+        page = [
+            {
+                "commit_sha": f"{index:040x}",
+                "tool": {"name": "CodeQL"},
+                "category": "/language:python",
+            }
+            for index in range(100)
+        ]
+        with (
+            mock.patch.object(gate, "MAX_ANALYSIS_PAGES", 1),
+            mock.patch.object(gate, "api_json", return_value=page),
+            self.assertRaisesRegex(gate.GateError, "more than"),
+        ):
+            gate.analyses_ready(
+                "owner/repo",
+                "refs/heads/main",
+                "a" * 40,
+                "token",
+                frozenset({"/language:python"}),
+            )
+
     def test_merge_commit_parent_validation_rejects_malformed_responses(self) -> None:
         with mock.patch.object(
             gate,
