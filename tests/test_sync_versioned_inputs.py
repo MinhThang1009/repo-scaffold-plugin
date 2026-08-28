@@ -137,6 +137,39 @@ class VersionedInputSyncTests(unittest.TestCase):
             self.assertEqual(updated.count(b"\r\n"), 1)
             self.assertEqual(updated.replace(b"\r\n", b"").count(b"\n"), 2)
 
+    def test_schema_synchronizer_revalidates_path_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            original = self.release_config()
+            config.write_text(original, encoding="utf-8")
+            original_tracked_path = versioned_inputs.audit_freshness.tracked_path
+            checks = 0
+
+            def becomes_unsafe(*args: object, **kwargs: object) -> Path:
+                nonlocal checks
+                checks += 1
+                if checks == 2:
+                    raise versioned_inputs.audit_freshness.AuditError("unsafe path")
+                return original_tracked_path(*args, **kwargs)
+
+            with mock.patch.object(
+                versioned_inputs.audit_freshness,
+                "tracked_path",
+                side_effect=becomes_unsafe,
+            ):
+                with self.assertRaisesRegex(
+                    versioned_inputs.audit_freshness.AuditError, "unsafe path"
+                ):
+                    versioned_inputs.synchronize_release_please_schemas(
+                        root,
+                        (config.relative_to(root),),
+                        "v17.11.2",
+                        write=True,
+                    )
+
+            self.assertEqual(config.read_text(encoding="utf-8"), original)
+
     def test_caches_authoritative_releases_across_preflight_and_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

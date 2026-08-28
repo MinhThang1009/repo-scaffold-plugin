@@ -105,6 +105,40 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertIn("# v9.1.2", installed.read_text(encoding="utf-8"))
             self.assertIn("# v8.7.6", asset.read_text(encoding="utf-8"))
 
+    def test_synchronize_revalidates_workflow_path_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n",
+            )
+            original_check = sync_action_pins._path_has_link_or_reparse
+            workflow_checks = 0
+
+            def becomes_unsafe(path: Path, repository_root: Path) -> bool:
+                nonlocal workflow_checks
+                if path == workflow:
+                    workflow_checks += 1
+                    return workflow_checks == 2
+                return original_check(path, repository_root)
+
+            with mock.patch.object(
+                sync_action_pins,
+                "_path_has_link_or_reparse",
+                side_effect=becomes_unsafe,
+            ):
+                with self.assertRaisesRegex(ValueError, "workflow file is unsafe"):
+                    sync_action_pins.synchronize_action_pins(
+                        root,
+                        self.releases,
+                        write=True,
+                        workflow_directories=(Path(".github/workflows"),),
+                    )
+
+            self.assertIn("a" * 40, workflow.read_text(encoding="utf-8"))
+
     def test_synchronize_preserves_current_pin_comment_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

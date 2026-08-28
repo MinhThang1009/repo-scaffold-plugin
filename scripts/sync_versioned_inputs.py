@@ -75,6 +75,9 @@ def synchronize_release_please_schemas(
             + content[match.end("url") :]
         )
         if write:
+            audit_freshness.tracked_path(
+                repository_root, relative, kind="Release Please config"
+            )
             path.write_bytes(updated.encode("utf-8"))
         changed.append(path)
     return changed

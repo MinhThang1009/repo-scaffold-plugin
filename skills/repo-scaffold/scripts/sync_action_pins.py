@@ -259,6 +259,13 @@ def workflow_paths(
     return sorted(paths)
 
 
+def write_workflow_bytes(repository_root: Path, path: Path, content: str) -> None:
+    """Write one workflow only after rechecking its link-safe containment."""
+    if _path_has_link_or_reparse(path, repository_root):
+        raise ValueError(f"workflow file is unsafe: {path}")
+    path.write_bytes(content.encode("utf-8"))
+
+
 def block_scalar_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
     """Return offsets occupied by YAML literal or folded scalar content."""
     ranges: list[tuple[int, int]] = []
@@ -1049,7 +1056,7 @@ def synchronize_action_pins(
     changed = [path for path in contents if replacements[path] != contents[path]]
     if write:
         for path in changed:
-            path.write_bytes(replacements[path].encode("utf-8"))
+            write_workflow_bytes(repository_root, path, replacements[path])
     return changed
 
 
