@@ -3118,7 +3118,7 @@ def validate_release_attestation(repository_root: Path) -> list[str]:
 
 
 def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]:
-    """Keep write permissions isolated and CodeQL PR triggers complete."""
+    """Keep write permissions isolated and CodeQL pull-request/queue triggers complete."""
     workflow_contracts = (
         (
             repository_root / ".github" / "workflows" / "release-please.yml",
@@ -3188,6 +3188,11 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
             ]:
                 problems.append(
                     f"{relative}: CodeQL pull_request trigger must include edited"
+                )
+            merge_group = document.get("on", {}).get("merge_group")
+            if merge_group != {"types": ["checks_requested"]}:
+                problems.append(
+                    f"{relative}: CodeQL merge_group trigger must request checks"
                 )
         jobs = document.get("jobs")
         job = jobs.get(job_name) if isinstance(jobs, dict) else None

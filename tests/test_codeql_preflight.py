@@ -3936,7 +3936,11 @@ class PlaceholderContractTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(
-                    set(document["on"]), {"push", "pull_request", "schedule"}
+                    set(document["on"]),
+                    {"push", "pull_request", "merge_group", "schedule"},
+                )
+                self.assertEqual(
+                    document["on"]["merge_group"], {"types": ["checks_requested"]}
                 )
                 codeql_uses = re.findall(
                     r"github/codeql-action/(init|autobuild|analyze)@([0-9a-f]{40})",

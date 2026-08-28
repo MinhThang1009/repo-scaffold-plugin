@@ -8,6 +8,8 @@ on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
     branches: ["{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}"]
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: "17 3 * * 4"
 
