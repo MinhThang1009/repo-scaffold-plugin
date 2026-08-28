@@ -169,6 +169,14 @@ def _is_link_or_reparse(path: Path) -> bool:
     return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
 
 
+def _remove_link_or_reparse(path: Path) -> None:
+    """Remove a link-like cache entry without following a directory junction."""
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+    else:
+        path.rmdir()
+
+
 def _assert_safe_cache_path(mutation_root: Path, path: Path) -> None:
     """Reject a cache path with a symlink or reparse point in any component."""
     boundary = Path(os.path.abspath(mutation_root))
@@ -357,7 +365,9 @@ def _clear_mutation_state(mutation_root: Path) -> None:
     mutation_root.mkdir(parents=True, exist_ok=True)
     _assert_safe_cache_path(mutation_root, mutation_root)
     for child in mutation_root.iterdir():
-        if _is_link_or_reparse(child) or child.is_file():
+        if _is_link_or_reparse(child):
+            _remove_link_or_reparse(child)
+        elif child.is_file():
             child.unlink()
         elif child.is_dir():
             shutil.rmtree(child)
@@ -409,7 +419,7 @@ def _sanitize_restored_state(mutation_root: Path, state_hashes: dict[str, str]) 
         for name in child_directories:
             path = current / name
             if _is_link_or_reparse(path):
-                path.unlink()
+                _remove_link_or_reparse(path)
             elif not any(path.iterdir()):
                 path.rmdir()
 
