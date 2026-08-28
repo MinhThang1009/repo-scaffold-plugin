@@ -104,6 +104,15 @@ FLOW_INLINE_USES_PATTERN = re.compile(
 FLOW_INLINE_ACTION_PIN_PATTERN = re.compile(
     rf"(?P<prefix>[{{,]\s*(?:\?\s*)?{YAML_USES_KEY_PATTERN}\s*:\s*{YAML_NODE_PROPERTIES_PATTERN})(?P<quote>['\"]?)(?P<action>{YAML_ACTION_REFERENCE_PATTERN}){YAML_ACTION_REVISION_SEPARATOR_PATTERN}(?P<sha>{YAML_ACTION_SHA_PATTERN})(?P=quote)(?P<flow_inline>)(?=\s*(?:[,}}]))"
 )
+ALIAS_MAPPING_KEY_PATTERN = re.compile(
+    r"(?m)^\s*(?:-\s*)?(?:\?\s*)?\*(?P<alias>[A-Za-z0-9_-]+)\s*:"
+)
+EXPLICIT_ALIAS_MAPPING_KEY_PATTERN = re.compile(
+    r"(?m)^\s*(?:-\s*)?\?\s*\*(?P<alias>[A-Za-z0-9_-]+)\s*\r?\n\s*:"
+)
+FLOW_ALIAS_MAPPING_KEY_PATTERN = re.compile(
+    r"(?P<prefix>[{,]\s*(?:\?\s*)?)\*(?P<alias>[A-Za-z0-9_-]+)\s*:"
+)
 FLOW_ANCHORED_ACTION_REFERENCE_PATTERN = re.compile(
     rf"(?P<prefix>&(?P<anchor>[A-Za-z0-9_-]+)\s+(?:{YAML_TAG_PATTERN}\s+)*)(?P<quote>['\"]?)(?P<reference>\S+?)(?P=quote)(?=\s*(?:[,}}]))"
 )
@@ -701,6 +710,31 @@ def workflow_uses_matches(content: str) -> tuple[re.Match[str], ...]:
     return tuple(match for _, match in sorted(matches.items()))
 
 
+def aliased_mapping_key_matches(content: str) -> tuple[re.Match[str], ...]:
+    """Return mapping keys that rely on a YAML alias rather than literal text."""
+    matches = {
+        (match.start(), match.end()): match
+        for match in _matches_outside_block_scalars(ALIAS_MAPPING_KEY_PATTERN, content)
+    }
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_outside_block_scalars(
+                EXPLICIT_ALIAS_MAPPING_KEY_PATTERN, content
+            )
+        }
+    )
+    matches.update(
+        {
+            (match.start(), match.end()): match
+            for match in _matches_in_flow_mappings(
+                FLOW_ALIAS_MAPPING_KEY_PATTERN, content
+            )
+        }
+    )
+    return tuple(match for _, match in sorted(matches.items()))
+
+
 def referenced_action_aliases(content: str) -> frozenset[str]:
     """Return YAML aliases that are consumed by workflow ``uses`` mappings."""
     return frozenset(
@@ -756,6 +790,8 @@ def anchored_action_reference_matches(content: str) -> tuple[re.Match[str], ...]
 
 def auditable_action_repositories(path: Path, content: str) -> set[str]:
     """Collect every externally hosted action pinned to an immutable SHA."""
+    if aliased_mapping_key_matches(content):
+        raise ValueError(f"workflow mapping keys must not use YAML aliases: {path}")
     repositories: set[str] = set()
     pins = {
         normalized_uses_reference(match)

@@ -1219,6 +1219,34 @@ class ActionPinSyncTests(unittest.TestCase):
             set(),
         )
 
+    def test_action_repositories_reject_alias_mapping_keys(self) -> None:
+        path = Path("workflow.yml")
+        cases = (
+            "keys:\n"
+            "  uses_key: &uses uses\n"
+            "jobs:\n"
+            "  test:\n"
+            "    steps:\n"
+            "      - *uses: actions/checkout@v4\n",
+            "keys:\n"
+            "  uses_key: &uses uses\n"
+            "jobs:\n"
+            "  test:\n"
+            "    steps:\n"
+            "      - ? *uses\n"
+            "        : actions/checkout@v4\n",
+            "keys: { uses_key: &uses uses }\n"
+            "jobs: { test: { steps: [ { *uses: actions/checkout@v4 } ] } }\n",
+        )
+        for content in cases:
+            with self.subTest(content=content):
+                self.assertEqual(
+                    yaml.safe_load(content)["jobs"]["test"]["steps"][0],
+                    {"uses": "actions/checkout@v4"},
+                )
+                with self.assertRaisesRegex(ValueError, "mapping keys"):
+                    sync_action_pins.auditable_action_repositories(path, content)
+
     def test_workflow_paths_rejects_missing_unsafe_and_empty_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
