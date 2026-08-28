@@ -4658,7 +4658,8 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 "pull_request_target": {
                     "types": ["opened", "edited", "reopened", "synchronize"],
                     "branches": ["main"],
-                }
+                },
+                "merge_group": {"types": ["checks_requested"]},
             },
         )
         self.assertEqual(
@@ -4674,10 +4675,13 @@ class CodeScanningGateContractTests(unittest.TestCase):
             },
         )
         self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
+        self.assertIn("ref: ${{ github.event.merge_group.base_sha }}", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn('--pull-request "$PR_NUMBER"', text)
         self.assertIn('--base-sha "$PR_BASE_SHA"', text)
         self.assertIn('--head-sha "$PR_HEAD_SHA"', text)
+        self.assertIn('--ref "$MERGE_GROUP_REF"', text)
+        self.assertIn('--sha "$MERGE_GROUP_SHA"', text)
         self.assertIn('--expected-codeql-category "/language:actions"', text)
         self.assertIn('--expected-codeql-category "/language:python"', text)
         self.assertIn(
@@ -4686,6 +4690,44 @@ class CodeScanningGateContractTests(unittest.TestCase):
         )
         self.assertNotIn("merge_commit_sha", text)
         self.assertIn("github.event.pull_request.head.sha", text)
+        self.assertIn("github.event_name == 'pull_request_target'", text)
+        self.assertIn("github.event_name == 'merge_group'", text)
+
+    def test_validator_rejects_gate_missing_merge_queue_alert_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                Path(".github/code-scanning-allowlist.json"),
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+                Path("scripts/check_code_scanning_alerts.py"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for relative in (
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "  merge_group_code_scanning_gate:\n",
+                        "  renamed_merge_group_code_scanning_gate:\n",
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_code_scanning_gate_contract(root)
+
+            self.assertEqual(
+                sum(
+                    "trusted pull-request gate contract and merge-queue contract"
+                    in item
+                    for item in problems
+                ),
+                2,
+            )
 
     def test_validator_rejects_gate_with_an_incorrect_base_branch_filter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

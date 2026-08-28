@@ -4598,23 +4598,35 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             continue
         jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
         gate = jobs.get("code_scanning_gate") if isinstance(jobs, dict) else None
+        merge_gate = (
+            jobs.get("merge_group_code_scanning_gate")
+            if isinstance(jobs, dict)
+            else None
+        )
         trigger = workflow.get("on") if isinstance(workflow, dict) else None
         pull_request_target = (
             trigger.get("pull_request_target") if isinstance(trigger, dict) else None
         )
+        merge_group = trigger.get("merge_group") if isinstance(trigger, dict) else None
         if (
             not isinstance(workflow, dict)
             or not isinstance(pull_request_target, dict)
             or pull_request_target.get("types")
             != ["opened", "edited", "reopened", "synchronize"]
             or pull_request_target.get("branches") != [expected_base_branch]
+            or merge_group != {"types": ["checks_requested"]}
             or workflow.get("permissions") != expected_permissions
             or not isinstance(gate, dict)
             or gate.get("name") != "code-scanning-gate"
+            or gate.get("if") != "${{ github.event_name == 'pull_request_target' }}"
             or gate.get("timeout-minutes") != "25"
+            or not isinstance(merge_gate, dict)
+            or merge_gate.get("name") != "code-scanning-gate"
+            or merge_gate.get("if") != "${{ github.event_name == 'merge_group' }}"
+            or merge_gate.get("timeout-minutes") != "25"
         ):
             problems.append(
-                f"{relative}: must use the trusted pull-request gate contract"
+                f"{relative}: must use the trusted pull-request gate contract and merge-queue contract"
             )
             continue
         steps = gate.get("steps")
@@ -4646,6 +4658,43 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         ):
             problems.append(
                 f"{relative}: must execute only base-branch alert-gate code"
+            )
+            continue
+        merge_steps = merge_gate.get("steps")
+        merge_checkout = (
+            merge_steps[0] if isinstance(merge_steps, list) and merge_steps else None
+        )
+        merge_run_step = (
+            merge_steps[1]
+            if isinstance(merge_steps, list) and len(merge_steps) == 2
+            else None
+        )
+        if (
+            not isinstance(merge_checkout, dict)
+            or merge_checkout.get("with")
+            != {
+                "ref": "${{ github.event.merge_group.base_sha }}",
+                "persist-credentials": "false",
+            }
+            or not isinstance(merge_run_step, dict)
+            or merge_run_step.get("env")
+            != {
+                "GITHUB_TOKEN": "${{ github.token }}",
+                "MERGE_GROUP_REF": "${{ github.ref }}",
+                "MERGE_GROUP_SHA": "${{ github.sha }}",
+            }
+            or "scripts/check_code_scanning_alerts.py"
+            not in str(merge_run_step.get("run"))
+            or '--ref "$MERGE_GROUP_REF"' not in str(merge_run_step.get("run"))
+            or '--sha "$MERGE_GROUP_SHA"' not in str(merge_run_step.get("run"))
+            or not all(
+                category in str(merge_run_step.get("run"))
+                for category in expected_categories
+            )
+            or "pull-request" in str(merge_run_step.get("run"))
+        ):
+            problems.append(
+                f"{relative}: must execute trusted merge-queue alert-gate code"
             )
     if not (repository_root / "scripts" / "check_code_scanning_alerts.py").is_file():
         problems.append(
