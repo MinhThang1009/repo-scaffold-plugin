@@ -1297,10 +1297,11 @@ def normalize_package_name(name: str) -> str:
 
 
 def validate_development_dependency_contract(repository_root: Path) -> list[str]:
-    """Validate the hashed development lock and its CI coverage consumers."""
+    """Validate development pins and every lock that installs them in CI."""
     problems: list[str] = []
     direct_path = repository_root / "requirements-dev.in"
     lock_path = repository_root / "requirements-dev.txt"
+    mutation_lock_path = repository_root / "requirements-mutation.txt"
     try:
         direct_text = direct_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
@@ -1309,6 +1310,12 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         lock_text = lock_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         return [f"requirements-dev.txt: could not verify hashed lock: {error}"]
+    try:
+        mutation_lock_text = mutation_lock_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        return [
+            f"requirements-mutation.txt: could not verify inherited development pins: {error}"
+        ]
 
     direct_pins: dict[str, str] = {}
     for line_number, raw_line in enumerate(direct_text.splitlines(), start=1):
@@ -1379,6 +1386,22 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
             problems.append(
                 f"requirements-dev.txt: {name} pin {locked_version} does not match "
                 f"requirements-dev.in pin {version}"
+            )
+
+    mutation_lock_pins = {
+        normalize_package_name(match.group(1)): match.group(2)
+        for match in entry_pattern.finditer(mutation_lock_text)
+    }
+    for name, version in direct_pins.items():
+        locked_version = mutation_lock_pins.get(name)
+        if locked_version is None:
+            problems.append(
+                f"requirements-mutation.txt: inherited package {name} is missing"
+            )
+        elif locked_version != version:
+            problems.append(
+                f"requirements-mutation.txt: {name} pin {locked_version} does not "
+                f"match requirements-dev.in pin {version}"
             )
 
     workflow_path = repository_root / ".github" / "workflows" / "ci.yml"

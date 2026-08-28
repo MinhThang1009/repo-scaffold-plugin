@@ -1254,6 +1254,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         "README.md",
         "requirements-dev.txt",
         "requirements-dev.in",
+        "requirements-mutation.txt",
     )
 
     def copy_contract(self, root: Path) -> None:
@@ -1301,6 +1302,29 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 problems,
             )
 
+    def test_mutation_lock_dependency_version_drift_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            ruff_version = self.direct_version(root, "ruff")
+            mutation_lock_path = root / "requirements-mutation.txt"
+            mutation_lock_path.write_text(
+                mutation_lock_path.read_text(encoding="utf-8").replace(
+                    f"ruff=={ruff_version}", "ruff==0.0.0", 1
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_development_dependency_contract(
+                root
+            )
+
+            self.assertIn(
+                "requirements-mutation.txt: ruff pin 0.0.0 does not match "
+                f"requirements-dev.in pin {ruff_version}",
+                problems,
+            )
+
     def test_automated_dependency_versions_are_not_hardcoded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1309,6 +1333,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             replacement_version = "999.0.0"
             direct_path = root / "requirements-dev.in"
             lock_path = root / "requirements-dev.txt"
+            mutation_lock_path = root / "requirements-mutation.txt"
             direct_path.write_text(
                 direct_path.read_text(encoding="utf-8").replace(
                     f"coverage=={current_version}",
@@ -1321,6 +1346,14 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 lock_path.read_text(encoding="utf-8").replace(
                     f"coverage=={current_version} \\",
                     f"coverage=={replacement_version} \\",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            mutation_lock_path.write_text(
+                mutation_lock_path.read_text(encoding="utf-8").replace(
+                    f"coverage=={current_version}",
+                    f"coverage=={replacement_version}",
                     1,
                 ),
                 encoding="utf-8",
@@ -1488,6 +1521,20 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 validate_repository.validate_development_dependency_contract(root)[
                     0
                 ].startswith("requirements-dev.txt: could not verify hashed lock")
+            )
+
+    def test_missing_mutation_lock_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "requirements-mutation.txt").unlink()
+
+            self.assertTrue(
+                validate_repository.validate_development_dependency_contract(root)[
+                    0
+                ].startswith(
+                    "requirements-mutation.txt: could not verify inherited development pins"
+                )
             )
 
     def test_invalid_direct_and_lock_shapes_are_reported(self) -> None:
