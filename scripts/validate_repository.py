@@ -3375,11 +3375,12 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
 
 
 def validate_required_check_concurrency(repository_root: Path) -> list[str]:
-    """Prevent cancelled duplicate runs from poisoning required check contexts."""
+    """Keep required checks non-cancelling and available to merge queues."""
     paths = (
         repository_root / ".github" / "workflows" / "ci.yml",
         repository_root / ".github" / "workflows" / "commitlint.yml",
         repository_root / ".github" / "workflows" / "dependency-review.yml",
+        repository_root / ".github" / "workflows" / "pr-template.yml",
         repository_root
         / "skills"
         / "repo-scaffold"
@@ -3398,6 +3399,12 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
         / "assets"
         / "workflows"
         / "dependency-review.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "pr-template.yml",
         repository_root
         / "skills"
         / "repo-scaffold"
@@ -3425,6 +3432,11 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
             problems.append(
                 f"{relative}: required-check runs must serialize with "
                 "cancel-in-progress: false"
+            )
+        merge_group = document.get("on", {}).get("merge_group")
+        if merge_group != {"types": ["checks_requested"]}:
+            problems.append(
+                f"{relative}: required-check workflow must run for merge_group"
             )
     return problems
 

@@ -4508,6 +4508,42 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
                 4,
             )
 
+    def test_required_check_contract_rejects_missing_merge_group_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                Path(".github/workflows/ci.yml"),
+                Path(".github/workflows/commitlint.yml"),
+                Path(".github/workflows/dependency-review.yml"),
+                Path(".github/workflows/pr-template.yml"),
+                Path("skills/repo-scaffold/assets/workflows/ci.yml"),
+                Path("skills/repo-scaffold/assets/workflows/commitlint.yml"),
+                Path("skills/repo-scaffold/assets/workflows/dependency-review.yml"),
+                Path("skills/repo-scaffold/assets/workflows/pr-template.yml"),
+                Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for relative in (
+                Path(".github/workflows/pr-template.yml"),
+                Path("skills/repo-scaffold/assets/workflows/pr-template.yml"),
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "  merge_group:\n    types: [checks_requested]\n", ""
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_required_check_concurrency(root)
+
+            self.assertEqual(
+                sum("must run for merge_group" in item for item in problems),
+                2,
+            )
+
 
 class CodeScanningGateContractTests(unittest.TestCase):
     def test_validator_reports_missing_malformed_and_unsafe_gate_contracts(
@@ -4713,12 +4749,20 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                         "reopened",
                         "synchronize",
                     ]
-                }
+                },
+                "merge_group": {"types": ["checks_requested"]},
             },
         )
         self.assertEqual(document["permissions"], {"contents": "read"})
         self.assertEqual(document["concurrency"]["cancel-in-progress"], "false")
         self.assertEqual(document["jobs"]["pr_template"]["name"], "pr-template")
+        self.assertEqual(
+            document["jobs"]["merge_group_pr_template"]["name"], "pr-template"
+        )
+        self.assertEqual(
+            document["jobs"]["merge_group_pr_template"]["if"],
+            "${{ github.event_name == 'merge_group' }}",
+        )
 
         for fragment in (
             "ref: ${{ github.event.pull_request.base.sha }}",
@@ -4734,7 +4778,10 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "Pull request body must preserve every required heading and checklist",
             "Mark each required checklist item only after it is complete",
             "github.event.pull_request.user.login != 'dependabot[bot]'",
+            "github.event_name == 'pull_request_target'",
             "release-please--branches--",
+            "github.event.merge_group.head_sha",
+            "Pull request template requirements were checked before merge-queue admission.",
         ):
             self.assertIn(fragment, workflow_text)
 
