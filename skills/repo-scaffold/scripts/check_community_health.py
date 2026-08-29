@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 API_ROOT = "https://api.github.com"
@@ -47,6 +47,24 @@ class AuditError(RuntimeError):
 
 class DuplicateJsonMember(ValueError):
     """Raised when a registry uses ambiguous duplicate JSON members."""
+
+
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so an optional workflow token stays on the API host."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        raise AuditError("GitHub API redirects are not allowed")
+
+
+GITHUB_API_OPENER = build_opener(RejectRedirectHandler())
 
 
 @dataclass(frozen=True)
@@ -91,7 +109,7 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {self.token}"
         request = Request(f"{API_ROOT}/{endpoint}", headers=headers)
         try:
-            with urlopen(request, timeout=self.timeout) as response:  # noqa: S310
+            with GITHUB_API_OPENER.open(request, timeout=self.timeout) as response:
                 payload = response.read(MAX_RESPONSE_BYTES + 1)
         except HTTPError as error:
             raise AuditError(

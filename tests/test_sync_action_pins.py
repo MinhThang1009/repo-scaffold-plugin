@@ -8,10 +8,12 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from email.message import Message
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from urllib.request import Request
 
 import yaml
 
@@ -1630,6 +1632,23 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "request failed"):
             failing.get_json("/test")
+
+    def test_github_release_client_rejects_redirects_before_following_them(
+        self,
+    ) -> None:
+        handler = sync_action_pins.RejectRedirectHandler()
+
+        with self.assertRaisesRegex(ValueError, "redirects are not allowed"):
+            handler.redirect_request(
+                Request(
+                    "https://api.github.com/repos/actions/checkout/releases/latest"
+                ),
+                None,
+                302,
+                "Found",
+                Message(),
+                "https://example.test/receive-token",
+            )
 
     def test_github_release_client_rejects_unresolvable_release_tags(self) -> None:
         cases = (

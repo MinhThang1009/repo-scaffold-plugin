@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -184,7 +185,7 @@ class GitHubClientTests(unittest.TestCase):
     def test_get_json_uses_bounded_authenticated_request(self) -> None:
         response = FakeResponse(b'{"ok": true}')
         with mock.patch.object(
-            community_health, "urlopen", return_value=response
+            community_health.GITHUB_API_OPENER, "open", return_value=response
         ) as open_url:
             result = community_health.GitHubClient("token", timeout=4).get_json(
                 "repos/owner/repository"
@@ -212,7 +213,9 @@ class GitHubClientTests(unittest.TestCase):
         for failure in failures:
             with (
                 self.subTest(failure=failure),
-                mock.patch.object(community_health, "urlopen", side_effect=failure),
+                mock.patch.object(
+                    community_health.GITHUB_API_OPENER, "open", side_effect=failure
+                ),
                 self.assertRaises(community_health.AuditError),
             ):
                 community_health.GitHubClient().get_json("repos/owner/repository")
@@ -226,11 +229,28 @@ class GitHubClientTests(unittest.TestCase):
             with (
                 self.subTest(size=len(payload)),
                 mock.patch.object(
-                    community_health, "urlopen", return_value=FakeResponse(payload)
+                    community_health.GITHUB_API_OPENER,
+                    "open",
+                    return_value=FakeResponse(payload),
                 ),
                 self.assertRaises(community_health.AuditError),
             ):
                 community_health.GitHubClient().get_json("repos/owner/repository")
+
+    def test_get_json_rejects_redirects_before_following_them(self) -> None:
+        handler = community_health.RejectRedirectHandler()
+
+        with self.assertRaisesRegex(
+            community_health.AuditError, "redirects are not allowed"
+        ):
+            handler.redirect_request(
+                Request("https://api.github.com/repos/owner/repository"),
+                None,
+                302,
+                "Found",
+                Message(),
+                "https://example.test/receive-token",
+            )
 
 
 class InventoryTests(unittest.TestCase):

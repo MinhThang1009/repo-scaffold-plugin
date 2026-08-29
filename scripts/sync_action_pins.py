@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 GITHUB_API_URL = "https://api.github.com"
@@ -864,14 +864,32 @@ def action_repositories(path: Path, content: str) -> set[str]:
     return repositories
 
 
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so the workflow token never leaves GitHub's API host."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        raise ValueError("GitHub API redirects are not allowed")
+
+
+GITHUB_API_OPENER = build_opener(RejectRedirectHandler())
+
+
 class GitHubReleaseClient:
     """Load stable release tags and immutable commits from GitHub's REST API."""
 
-    def __init__(self, token: str, opener: Callable[..., Any] = urlopen) -> None:
+    def __init__(self, token: str, opener: Callable[..., Any] | None = None) -> None:
         if not token:
             raise ValueError("GITHUB_TOKEN is required to synchronize action pins")
         self.token = token
-        self.opener = opener
+        self.opener = opener or GITHUB_API_OPENER.open
 
     def _get_document(self, path: str) -> Any:
         """Fetch one JSON document with the workflow token and an explicit timeout."""

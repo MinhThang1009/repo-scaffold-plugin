@@ -11,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -187,7 +188,7 @@ class CodeScanningGateTests(unittest.TestCase):
 
     def test_api_client_bounds_and_authenticates_requests(self) -> None:
         with mock.patch.object(
-            gate, "urlopen", return_value=FakeResponse(b"[]")
+            gate.GITHUB_API_OPENER, "open", return_value=FakeResponse(b"[]")
         ) as open_url:
             self.assertEqual(
                 gate.api_json("https://api.github.com/example", "token"), []
@@ -195,18 +196,20 @@ class CodeScanningGateTests(unittest.TestCase):
         request = open_url.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer token")
         with mock.patch.object(
-            gate,
-            "urlopen",
+            gate.GITHUB_API_OPENER,
+            "open",
             return_value=FakeResponse(b"x" * (gate.MAX_RESPONSE_BYTES + 1)),
         ):
             with self.assertRaisesRegex(gate.GateError, "exceeds"):
                 gate.api_json("https://api.github.com/example", "token")
-        with mock.patch.object(gate, "urlopen", side_effect=URLError("offline")):
+        with mock.patch.object(
+            gate.GITHUB_API_OPENER, "open", side_effect=URLError("offline")
+        ):
             with self.assertRaisesRegex(gate.TransientGateError, "transiently"):
                 gate.api_json("https://api.github.com/example", "token")
         with mock.patch.object(
-            gate,
-            "urlopen",
+            gate.GITHUB_API_OPENER,
+            "open",
             side_effect=HTTPError(
                 "https://api.github.com/example", 500, "error", Message(), None
             ),
@@ -214,8 +217,8 @@ class CodeScanningGateTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.TransientGateError, "transiently"):
                 gate.api_json("https://api.github.com/example", "token")
         with mock.patch.object(
-            gate,
-            "urlopen",
+            gate.GITHUB_API_OPENER,
+            "open",
             side_effect=HTTPError(
                 "https://api.github.com/example", 408, "error", Message(), None
             ),
@@ -223,8 +226,8 @@ class CodeScanningGateTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.TransientGateError, "transiently"):
                 gate.api_json("https://api.github.com/example", "token")
         with mock.patch.object(
-            gate,
-            "urlopen",
+            gate.GITHUB_API_OPENER,
+            "open",
             side_effect=HTTPError(
                 "https://api.github.com/example", 401, "error", Message(), None
             ),
@@ -234,10 +237,25 @@ class CodeScanningGateTests(unittest.TestCase):
         for payload in (b"not JSON", b'{"name":"first","name":"second"}'):
             with (
                 self.subTest(payload=payload),
-                mock.patch.object(gate, "urlopen", return_value=FakeResponse(payload)),
+                mock.patch.object(
+                    gate.GITHUB_API_OPENER, "open", return_value=FakeResponse(payload)
+                ),
             ):
                 with self.assertRaisesRegex(gate.GateError, "not valid JSON"):
                     gate.api_json("https://api.github.com/example", "token")
+
+    def test_api_client_rejects_redirects_before_following_them(self) -> None:
+        handler = gate.RejectRedirectHandler()
+
+        with self.assertRaisesRegex(gate.GateError, "redirects are not allowed"):
+            handler.redirect_request(
+                Request("https://api.github.com/example"),
+                None,
+                302,
+                "Found",
+                Message(),
+                "https://example.test/receive-token",
+            )
 
     def test_analyses_and_waiting_handle_invalid_retry_and_timeout_states(self) -> None:
         with mock.patch.object(

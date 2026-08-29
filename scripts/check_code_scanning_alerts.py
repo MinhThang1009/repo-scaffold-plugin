@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 API_ROOT = "https://api.github.com"
@@ -36,8 +36,26 @@ class TransientGateError(GateError):
     """Raised when a bounded retry may recover a GitHub API request."""
 
 
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so the workflow token never leaves GitHub's API host."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        raise GateError("GitHub API redirects are not allowed")
+
+
 class DuplicateJsonMember(ValueError):
     """Raised when a JSON document contains ambiguous duplicate members."""
+
+
+GITHUB_API_OPENER = build_opener(RejectRedirectHandler())
 
 
 @dataclass(frozen=True)
@@ -141,7 +159,7 @@ def api_json(url: str, token: str) -> Any:
         },
     )
     try:
-        with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed GitHub API host
+        with GITHUB_API_OPENER.open(request, timeout=30) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as error:
         if error.code in {408, 429, 500, 502, 503, 504}:
