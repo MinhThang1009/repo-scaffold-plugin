@@ -231,9 +231,13 @@ class CodeScanningGateTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(gate.GateError, "request failed"):
                 gate.api_json("https://api.github.com/example", "token")
-        with mock.patch.object(gate, "urlopen", return_value=FakeResponse(b"not JSON")):
-            with self.assertRaisesRegex(gate.GateError, "not valid JSON"):
-                gate.api_json("https://api.github.com/example", "token")
+        for payload in (b"not JSON", b'{"name":"first","name":"second"}'):
+            with (
+                self.subTest(payload=payload),
+                mock.patch.object(gate, "urlopen", return_value=FakeResponse(payload)),
+            ):
+                with self.assertRaisesRegex(gate.GateError, "not valid JSON"):
+                    gate.api_json("https://api.github.com/example", "token")
 
     def test_analyses_and_waiting_handle_invalid_retry_and_timeout_states(self) -> None:
         with mock.patch.object(

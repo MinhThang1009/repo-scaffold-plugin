@@ -217,7 +217,11 @@ class GitHubClientTests(unittest.TestCase):
             ):
                 community_health.GitHubClient().get_json("repos/owner/repository")
 
-        payloads = [b"x" * (community_health.MAX_RESPONSE_BYTES + 1), b"{"]
+        payloads = [
+            b"x" * (community_health.MAX_RESPONSE_BYTES + 1),
+            b"{",
+            b'{"name":"first","name":"second"}',
+        ]
         for payload in payloads:
             with (
                 self.subTest(size=len(payload)),

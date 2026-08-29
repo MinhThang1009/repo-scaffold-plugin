@@ -156,8 +156,13 @@ def api_json(url: str, token: str) -> Any:
     if len(payload) > MAX_RESPONSE_BYTES:
         raise GateError("GitHub API response exceeds the allowed size")
     try:
-        return json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
+        return json.loads(payload.decode("utf-8"), object_pairs_hook=unique_json_object)
+    except (
+        UnicodeError,
+        json.JSONDecodeError,
+        DuplicateJsonMember,
+        RecursionError,
+    ) as error:
         raise GateError(f"GitHub API response is not valid JSON: {error}") from error
 
 

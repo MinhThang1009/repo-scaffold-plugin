@@ -1605,11 +1605,13 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "exceeds the size limit"):
             oversized.get_json("/test")
-        malformed = sync_action_pins.GitHubReleaseClient(
-            "token", lambda *_args, **_kwargs: FakeResponse(b"{")
-        )
-        with self.assertRaisesRegex(ValueError, "request failed"):
-            malformed.get_json("/test")
+        for response_payload in (b"{", b'{"name":"first","name":"second"}'):
+            with self.subTest(payload=response_payload):
+                malformed = sync_action_pins.GitHubReleaseClient(
+                    "token", lambda *_args, **_kwargs: FakeResponse(response_payload)
+                )
+                with self.assertRaisesRegex(ValueError, "request failed"):
+                    malformed.get_json("/test")
         for payload, message in (
             ({"tag_name": "main"}, "invalid tag"),
             ({"tag_name": "v1.2.3"}, "no tag object"),

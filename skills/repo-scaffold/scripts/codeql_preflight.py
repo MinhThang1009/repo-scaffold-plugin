@@ -103,6 +103,20 @@ class InspectionError(RuntimeError):
     """Raised when the preflight cannot prove that mutation is safe."""
 
 
+class DuplicateJsonMember(ValueError):
+    """Raised when a GitHub API response contains ambiguous duplicate members."""
+
+
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting duplicate member names."""
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
+        document[key] = value
+    return document
+
+
 def resolve_path_executable(name: str, *, forbidden_root: Path) -> str | None:
     """Resolve a tool only from absolute PATH entries outside the target repository."""
     forbidden = forbidden_root.resolve(strict=True)
@@ -320,7 +334,7 @@ class GitHubClient:
         payload = self._run(endpoint)
         _require_json_nesting_within_limit(payload)
         try:
-            return json.loads(payload)
+            return json.loads(payload, object_pairs_hook=unique_json_object)
         except (ValueError, RecursionError) as exc:
             raise InspectionError(
                 f"GitHub API returned invalid JSON for {endpoint!r}."

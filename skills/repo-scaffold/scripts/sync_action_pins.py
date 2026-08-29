@@ -175,6 +175,20 @@ ALLOWED_ACTION_REPOSITORIES = frozenset(
 TAG_LIST_ACTION_REPOSITORIES = frozenset({"github/codeql-action"})
 
 
+class DuplicateJsonMember(ValueError):
+    """Raised when a GitHub API response contains ambiguous duplicate members."""
+
+
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting duplicate member names."""
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
+        document[key] = value
+    return document
+
+
 @dataclass(frozen=True)
 class ActionRelease:
     """An immutable commit resolved from an action's stable release tag."""
@@ -879,8 +893,15 @@ class GitHubReleaseClient:
         if len(payload) > MAX_RESPONSE_BYTES:
             raise ValueError(f"GitHub API response exceeds the size limit for {path}")
         try:
-            return json.loads(payload.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as error:
+            return json.loads(
+                payload.decode("utf-8"), object_pairs_hook=unique_json_object
+            )
+        except (
+            UnicodeError,
+            json.JSONDecodeError,
+            DuplicateJsonMember,
+            RecursionError,
+        ) as error:
             raise ValueError(
                 f"GitHub API request failed for {path}: {error}"
             ) from error

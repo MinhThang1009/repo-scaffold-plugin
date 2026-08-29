@@ -3120,11 +3120,15 @@ class GitHubClientTests(unittest.TestCase):
             codeql_preflight.GitHubClient("github.com")
 
         client = cast(GitHubClientProtocol, self.client())
-        with (
-            mock.patch.object(client, "_run", return_value="{"),
-            self.assertRaisesRegex(codeql_preflight.InspectionError, "invalid JSON"),
-        ):
-            client.json("repos/octo/repo")
+        for payload in ("{", '{"name":"first","name":"second"}'):
+            with (
+                self.subTest(payload=payload),
+                mock.patch.object(client, "_run", return_value=payload),
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "invalid JSON"
+                ),
+            ):
+                client.json("repos/octo/repo")
 
     def test_api_request_and_deadline_caps_fail_before_process_start(self) -> None:
         client = cast(GitHubClientProtocol, self.client())
