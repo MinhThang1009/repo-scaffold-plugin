@@ -133,7 +133,12 @@ class FreshnessTests(unittest.TestCase):
                 freshness.read_json("https://example.test/data"), {"ok": True}
             )
         self.assertEqual(open_url.call_args.kwargs["timeout"], 30)
-        for payload in (b"[1]", b"{", b"x" * (freshness.MAX_RESPONSE_BYTES + 1)):
+        for payload in (
+            b"[1]",
+            b"{",
+            b'{"info":{"version":"1.0.0"},"info":{"version":"2.0.0"}}',
+            b"x" * (freshness.MAX_RESPONSE_BYTES + 1),
+        ):
             with self.subTest(payload_size=len(payload)):
                 with mock.patch.object(
                     freshness, "urlopen", return_value=FakeResponse(payload)

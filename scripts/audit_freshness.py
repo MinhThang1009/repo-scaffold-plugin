@@ -202,8 +202,15 @@ def read_json(url: str) -> dict[str, Any]:
     if len(payload) > MAX_RESPONSE_BYTES:
         raise AuditError(f"upstream response is too large for {url}")
     try:
-        document = json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
+        document = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=unique_json_object
+        )
+    except (
+        UnicodeError,
+        json.JSONDecodeError,
+        DuplicateJsonMember,
+        RecursionError,
+    ) as error:
         raise AuditError(f"upstream response is not valid JSON for {url}") from error
     if not isinstance(document, dict):
         raise AuditError(f"upstream response is not an object for {url}")
