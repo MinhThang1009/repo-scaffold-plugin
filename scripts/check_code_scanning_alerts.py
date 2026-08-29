@@ -103,7 +103,7 @@ def safe_alert_path(value: str) -> str:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
-        or PureWindowsPath(value).drive
+        or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
     ):
         raise GateError("code-scanning allowlist path must be canonical POSIX")

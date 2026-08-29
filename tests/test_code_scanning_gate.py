@@ -120,6 +120,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 "scripts/./example.py",
                 "scripts//example.py",
                 "C:/example.py",
+                "scripts/C:example.py",
             ):
                 path_entries = [
                     {

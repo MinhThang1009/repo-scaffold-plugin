@@ -12,7 +12,7 @@ import shutil
 import stat
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -89,6 +89,8 @@ def _validate_relative_path(value: str, *, kind: str) -> PurePosixPath:
         not value
         or path.is_absolute()
         or ".." in path.parts
+        or "\\" in value
+        or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
         or any(part in ("", ".") for part in path.parts)
     ):

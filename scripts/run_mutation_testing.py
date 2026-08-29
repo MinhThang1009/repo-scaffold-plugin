@@ -11,7 +11,7 @@ import multiprocessing
 import os
 import stat
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 
@@ -49,6 +49,8 @@ def _validate_source_path(value: str) -> str:
         not value
         or path.is_absolute()
         or ".." in path.parts
+        or "\\" in value
+        or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
         or path.suffix != ".py"
         or not any(path == root or root in path.parents for root in source_roots)

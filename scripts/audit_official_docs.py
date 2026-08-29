@@ -97,7 +97,7 @@ def safe_relative_path(value: object, *, field: str) -> Path:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
-        or PureWindowsPath(value).drive
+        or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
     ):
         raise AuditError(f"{field} must be a safe relative path: {value!r}")

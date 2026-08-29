@@ -291,6 +291,9 @@ class MutationCacheTests(unittest.TestCase):
             lambda: prepare_mutation_cache._validate_digest_map(
                 {"scripts/alpha.py": "invalid"}, field="source_hashes"
             ),
+            lambda: prepare_mutation_cache._validate_relative_path(
+                "scripts/C:alpha.py", kind="source"
+            ),
             lambda: prepare_mutation_cache._validate_test_sources([]),
             lambda: prepare_mutation_cache._validate_test_sources({1: "source"}),
             lambda: prepare_mutation_cache._validate_test_sources(

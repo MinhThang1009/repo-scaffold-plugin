@@ -485,6 +485,7 @@ class FreshnessTests(unittest.TestCase):
                 "docs/./README.md",
                 "docs//README.md",
                 "C:/README.md",
+                "docs/C:README.md",
             ):
                 with (
                     self.subTest(value=value),
