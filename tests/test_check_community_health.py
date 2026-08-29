@@ -584,6 +584,30 @@ class AuditAndCliTests(unittest.TestCase):
             "outdated.\n",
         )
 
+    def test_markdown_report_escapes_every_table_cell(self) -> None:
+        report: dict[str, Any] = {
+            "repository": "owner/repository",
+            "checked-at": "now",
+            "summary": {"status": "attention"},
+            "community-profile": {"status": "attention"},
+            "files": [
+                {
+                    "label": "Policy|extra\nrow",
+                    "paths": ["docs/a|b\n.md"],
+                    "tracker": "tracker|name\nnext",
+                    "status": "stale|status\nnext",
+                    "details": "detail|text\nnext",
+                }
+            ],
+            "errors": [],
+        }
+
+        self.assertIn(
+            "| Policy\\|extra row | `docs/a\\|b .md` | tracker\\|name next | "
+            "stale\\|status next | detail\\|text next |",
+            community_health.markdown_report(report),
+        )
+
     def test_write_text_and_parse_args(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "nested" / "report.md"

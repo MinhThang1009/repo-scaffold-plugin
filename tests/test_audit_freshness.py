@@ -685,6 +685,21 @@ class FreshnessTests(unittest.TestCase):
                 }
             ]
             self.assertIn("| Check |", freshness.markdown_report(report))
+            report["findings"] = [
+                {
+                    "kind": "python|package\nnext",
+                    "path": "requirements|dev.in\nnext",
+                    "subject": "package|name\nnext",
+                    "current": "1|0\nnext",
+                    "latest": "2|0\nnext",
+                    "details": "outdated",
+                }
+            ]
+            self.assertIn(
+                "| python\\|package next | `requirements\\|dev.in next` | "
+                "`package\\|name next` | `1\\|0 next` | `2\\|0 next` |",
+                freshness.markdown_report(report),
+            )
             report["errors"] = ["offline"]
             report["status"] = "indeterminate"
             self.assertIn("## Indeterminate", freshness.markdown_report(report))

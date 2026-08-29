@@ -457,6 +457,11 @@ def audit(
     }
 
 
+def markdown_table_cell(value: object) -> str:
+    """Render one value without permitting it to add Markdown table cells/rows."""
+    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
 def markdown_report(report: dict[str, Any]) -> str:
     summary = report["summary"]
     profile = report["community-profile"]
@@ -479,11 +484,20 @@ def markdown_report(report: dict[str, Any]) -> str:
     ]
     for result in report["files"]:
         paths = result["paths"]
-        path_text = ", ".join(f"`{path}`" for path in paths) if paths else "_absent_"
+        path_text = (
+            ", ".join(f"`{markdown_table_cell(path)}`" for path in paths)
+            if paths
+            else "_absent_"
+        )
         tracker = result["tracker"] if result["tracker"] != "none" else "not versioned"
-        details = str(result["details"]).replace("|", "\\|").replace("\n", " ")
         lines.append(
-            f"| {result['label']} | {path_text} | {tracker} | {result['status']} | {details} |"
+            "| {label} | {paths} | {tracker} | {status} | {details} |".format(
+                label=markdown_table_cell(result["label"]),
+                paths=path_text,
+                tracker=markdown_table_cell(tracker),
+                status=markdown_table_cell(result["status"]),
+                details=markdown_table_cell(result["details"]),
+            )
         )
     errors = report["errors"]
     if errors:

@@ -451,6 +451,11 @@ def audit(
     }
 
 
+def markdown_table_cell(value: object) -> str:
+    """Render one value without permitting it to add Markdown table cells/rows."""
+    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
 def markdown_report(report: dict[str, Any]) -> str:
     """Render a concise, issue-safe Markdown representation of an audit report."""
     lines = [
@@ -469,7 +474,10 @@ def markdown_report(report: dict[str, Any]) -> str:
                 "| --- | --- | --- | --- | --- |",
                 *[
                     "| {kind} | `{path}` | `{subject}` | `{current}` | `{latest}` |".format(
-                        **finding
+                        **{
+                            key: markdown_table_cell(value)
+                            for key, value in finding.items()
+                        }
                     )
                     for finding in findings
                 ],

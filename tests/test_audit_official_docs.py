@@ -372,6 +372,21 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 report = official_docs.audit(root, today=date(2026, 8, 25))
             self.assertEqual(report["status"], "attention")
             self.assertIn("official-docs-review", official_docs.markdown_report(report))
+            report["findings"] = [
+                {
+                    "kind": "official|docs\nnext",
+                    "path": "README|guide.md\nnext",
+                    "subject": "Claim|text\nnext",
+                    "current": "old|value\nnext",
+                    "latest": "new|value\nnext",
+                    "details": "outdated",
+                }
+            ]
+            self.assertIn(
+                "| official\\|docs next | `README\\|guide.md next` | "
+                "Claim\\|text next | `old\\|value next` | `new\\|value next` |",
+                official_docs.markdown_report(report),
+            )
             with mock.patch.object(
                 official_docs,
                 "read_document",
