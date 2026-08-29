@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import sync_action_pins
 
@@ -40,6 +40,24 @@ class AuditError(RuntimeError):
 
 class DuplicateJsonMember(ValueError):
     """Raised when a tracker registry uses duplicate JSON members."""
+
+
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so a fixed upstream cannot become an arbitrary target."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        raise AuditError("upstream redirects are not allowed")
+
+
+PYPI_OPENER = build_opener(RejectRedirectHandler())
 
 
 @dataclass(frozen=True)
@@ -195,7 +213,7 @@ def read_json(url: str) -> dict[str, Any]:
         },
     )
     try:
-        with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed host
+        with PYPI_OPENER.open(request, timeout=30) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
     except (HTTPError, URLError, OSError) as error:
         raise AuditError(f"upstream request failed for {url}: {error}") from error

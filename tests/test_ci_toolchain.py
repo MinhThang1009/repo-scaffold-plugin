@@ -12,6 +12,7 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
+from urllib.request import Request
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -416,6 +417,21 @@ class CiToolchainPolicyTests(unittest.TestCase):
                     ci_toolchain.ToolchainError, "invalid JSON"
                 ):
                     fetcher(tool, opener=invalid_json_opener)
+
+    def test_release_fetchers_reject_redirects_before_following_them(self) -> None:
+        handler = ci_toolchain.RejectRedirectHandler()
+
+        with self.assertRaisesRegex(
+            ci_toolchain.ToolchainError, "redirects are not allowed"
+        ):
+            handler.redirect_request(
+                Request("https://api.github.com/repos/owner/example/releases/latest"),
+                None,
+                302,
+                "Found",
+                None,
+                "https://example.test/redirected",
+            )
 
     def test_all_release_pins_are_verified(self) -> None:
         policy = ci_toolchain.parse_policy(policy_document())

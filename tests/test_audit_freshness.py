@@ -11,6 +11,7 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from urllib.request import Request
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -125,8 +126,8 @@ class FreshnessTests(unittest.TestCase):
 
     def test_read_json_validates_network_size_shape_and_encoding(self) -> None:
         with mock.patch.object(
-            freshness,
-            "urlopen",
+            freshness.PYPI_OPENER,
+            "open",
             return_value=FakeResponse(b'{"ok": true}'),
         ) as open_url:
             self.assertEqual(
@@ -141,13 +142,28 @@ class FreshnessTests(unittest.TestCase):
         ):
             with self.subTest(payload_size=len(payload)):
                 with mock.patch.object(
-                    freshness, "urlopen", return_value=FakeResponse(payload)
+                    freshness.PYPI_OPENER, "open", return_value=FakeResponse(payload)
                 ):
                     with self.assertRaises(freshness.AuditError):
                         freshness.read_json("https://example.test/data")
-        with mock.patch.object(freshness, "urlopen", side_effect=OSError("offline")):
+        with mock.patch.object(
+            freshness.PYPI_OPENER, "open", side_effect=OSError("offline")
+        ):
             with self.assertRaisesRegex(freshness.AuditError, "request failed"):
                 freshness.read_json("https://example.test/data")
+
+    def test_read_json_rejects_redirects_before_following_them(self) -> None:
+        handler = freshness.RejectRedirectHandler()
+
+        with self.assertRaisesRegex(freshness.AuditError, "redirects are not allowed"):
+            handler.redirect_request(
+                Request("https://pypi.org/pypi/example/json"),
+                None,
+                302,
+                "Found",
+                None,
+                "https://example.test/redirected",
+            )
 
     def test_pinned_requirements_rejects_invalid_empty_and_conflicting_pins(
         self,
