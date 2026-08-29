@@ -147,7 +147,13 @@ def _safe_relative_path(value: object, location: str) -> str:
     if not isinstance(value, str) or not value:
         raise AuditError(f"{location} must be a non-empty relative path")
     path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts or "\\" in value:
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in value
+        or path.as_posix() != value
+    ):
         raise AuditError(f"{location} must be a safe POSIX repository path")
     return value
 
