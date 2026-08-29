@@ -480,6 +480,17 @@ class FreshnessTests(unittest.TestCase):
             valid = json.loads(registry.read_text(encoding="utf-8"))
             with self.assertRaisesRegex(freshness.AuditError, "non-empty"):
                 freshness.safe_relative_path("", field="test")
+            for value in (
+                r"docs\README.md",
+                "docs/./README.md",
+                "docs//README.md",
+                "C:/README.md",
+            ):
+                with (
+                    self.subTest(value=value),
+                    self.assertRaisesRegex(freshness.AuditError, "safe relative"),
+                ):
+                    freshness.safe_relative_path(value, field="test")
             with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
                 freshness.tracked_path(root, Path("missing"), kind="test path")
             with mock.patch.object(Path, "is_symlink", return_value=True):

@@ -112,6 +112,17 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
         for value in (None, "", 3):
             with self.subTest(value=value), self.assertRaises(official_docs.AuditError):
                 official_docs.safe_relative_path(value, field="path")
+        for value in (
+            r"docs\README.md",
+            "docs/./README.md",
+            "docs//README.md",
+            "C:/README.md",
+        ):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(official_docs.AuditError, "safe relative"),
+            ):
+                official_docs.safe_relative_path(value, field="path")
         with self.assertRaisesRegex(official_docs.AuditError, "non-empty string"):
             official_docs.require_string({}, "label", "claim")
 

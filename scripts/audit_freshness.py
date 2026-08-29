@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -88,13 +88,20 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def safe_relative_path(value: object, *, field: str) -> Path:
-    """Parse one registry path without allowing it to escape the repository."""
+    """Parse one canonical, cross-platform registry path within the repository."""
     if not isinstance(value, str) or not value:
         raise AuditError(f"{field} must be a non-empty relative path")
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts or not path.parts:
+    path = PurePosixPath(value)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in value
+        or PureWindowsPath(value).drive
+        or path.as_posix() != value
+    ):
         raise AuditError(f"{field} must be a safe relative path: {value!r}")
-    return path
+    return Path(value)
 
 
 def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
