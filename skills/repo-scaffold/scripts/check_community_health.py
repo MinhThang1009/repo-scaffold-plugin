@@ -300,10 +300,12 @@ def inventory_entry(root: Path, entry: RegistryEntry) -> dict[str, Any]:
     }
 
 
-def version_tuple(value: str) -> tuple[int, ...]:
+def version_tuple(value: str) -> tuple[int, int, int]:
     if not VERSION_PATTERN.fullmatch(value):
         raise AuditError(f"invalid semantic version: {value!r}")
-    return tuple(int(component) for component in value.split("."))
+    components = [int(component) for component in value.split(".")]
+    major, minor, patch = (components + [0, 0])[:3]
+    return major, minor, patch
 
 
 def local_contributor_covenant_version(path: Path) -> str | None:

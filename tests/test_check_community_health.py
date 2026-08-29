@@ -394,7 +394,8 @@ def stat_value() -> int:
 
 class CovenantTests(unittest.TestCase):
     def test_versions_and_local_policy_parsing(self) -> None:
-        self.assertEqual(community_health.version_tuple("3.0"), (3, 0))
+        self.assertEqual(community_health.version_tuple("3.0"), (3, 0, 0))
+        self.assertEqual(community_health.version_tuple("3.0.0"), (3, 0, 0))
         with self.assertRaisesRegex(community_health.AuditError, "invalid semantic"):
             community_health.version_tuple("v3")
         with tempfile.TemporaryDirectory() as directory:
@@ -458,6 +459,7 @@ class CovenantTests(unittest.TestCase):
             for version, expected in (
                 ("2.1", "outdated"),
                 ("3.0", "current"),
+                ("3.0.0", "current"),
                 ("4.0", "indeterminate"),
             ):
                 path.write_text(covenant_text(version), encoding="utf-8")
