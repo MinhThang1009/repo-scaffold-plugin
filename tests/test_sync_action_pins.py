@@ -179,6 +179,43 @@ class ActionPinSyncTests(unittest.TestCase):
 
             self.assertEqual(workflow.read_text(encoding="utf-8"), concurrent_content)
 
+    def test_write_rejects_workflow_that_becomes_unsafe_after_reread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root, ".github/workflows/ci.yml", "name: validated\n"
+            )
+            expected_content = workflow.read_bytes().decode("utf-8")
+
+            with mock.patch.object(
+                sync_action_pins,
+                "_path_has_link_or_reparse",
+                side_effect=(False, True),
+            ):
+                with self.assertRaisesRegex(ValueError, "workflow file is unsafe"):
+                    sync_action_pins.write_workflow_bytes(
+                        root, workflow, "name: updated\n", expected_content
+                    )
+
+            self.assertEqual(workflow.read_text(encoding="utf-8"), "name: validated\n")
+
+    def test_write_reports_workflow_reread_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root, ".github/workflows/ci.yml", "name: validated\n"
+            )
+
+            with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(
+                    ValueError, "could not reread workflow file before writing"
+                ):
+                    sync_action_pins.write_workflow_bytes(
+                        root, workflow, "name: updated\n", "name: validated\n"
+                    )
+
+            self.assertEqual(workflow.read_text(encoding="utf-8"), "name: validated\n")
+
     def test_synchronize_preserves_current_pin_comment_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

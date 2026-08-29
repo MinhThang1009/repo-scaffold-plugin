@@ -203,6 +203,30 @@ class VersionedInputSyncTests(unittest.TestCase):
 
             self.assertEqual(config.read_text(encoding="utf-8"), concurrent_content)
 
+    def test_schema_synchronizer_reports_config_reread_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            original = self.release_config()
+            config.write_text(original, encoding="utf-8")
+
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=(original.encode("utf-8"), OSError("denied")),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "could not reread Release Please config"
+                ):
+                    versioned_inputs.synchronize_release_please_schemas(
+                        root,
+                        (config.relative_to(root),),
+                        "v17.11.2",
+                        write=True,
+                    )
+
+            self.assertEqual(config.read_text(encoding="utf-8"), original)
+
     def test_caches_authoritative_releases_across_preflight_and_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
