@@ -139,6 +139,46 @@ class ActionPinSyncTests(unittest.TestCase):
 
             self.assertIn("a" * 40, workflow.read_text(encoding="utf-8"))
 
+    def test_synchronize_rejects_concurrent_workflow_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n",
+            )
+            concurrent_content = "# Maintainer edit\n" + workflow.read_text(
+                encoding="utf-8"
+            )
+            original_write = sync_action_pins.write_workflow_bytes
+
+            def write_after_concurrent_edit(
+                repository_root: Path,
+                path: Path,
+                content: str,
+                expected_content: str,
+            ) -> None:
+                path.write_text(concurrent_content, encoding="utf-8")
+                original_write(repository_root, path, content, expected_content)
+
+            with mock.patch.object(
+                sync_action_pins,
+                "write_workflow_bytes",
+                side_effect=write_after_concurrent_edit,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "workflow file changed during synchronization"
+                ):
+                    sync_action_pins.synchronize_action_pins(
+                        root,
+                        self.releases,
+                        write=True,
+                        workflow_directories=(Path(".github/workflows"),),
+                    )
+
+            self.assertEqual(workflow.read_text(encoding="utf-8"), concurrent_content)
+
     def test_synchronize_preserves_current_pin_comment_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -259,8 +259,20 @@ def workflow_paths(
     return sorted(paths)
 
 
-def write_workflow_bytes(repository_root: Path, path: Path, content: str) -> None:
-    """Write one workflow only after rechecking its link-safe containment."""
+def write_workflow_bytes(
+    repository_root: Path, path: Path, content: str, expected_content: str
+) -> None:
+    """Write one workflow only when its validated source has not changed."""
+    if _path_has_link_or_reparse(path, repository_root):
+        raise ValueError(f"workflow file is unsafe: {path}")
+    try:
+        current_content = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError(
+            f"could not reread workflow file before writing: {path}"
+        ) from error
+    if current_content != expected_content:
+        raise ValueError(f"workflow file changed during synchronization: {path}")
     if _path_has_link_or_reparse(path, repository_root):
         raise ValueError(f"workflow file is unsafe: {path}")
     path.write_bytes(content.encode("utf-8"))
@@ -1056,7 +1068,9 @@ def synchronize_action_pins(
     changed = [path for path in contents if replacements[path] != contents[path]]
     if write:
         for path in changed:
-            write_workflow_bytes(repository_root, path, replacements[path])
+            write_workflow_bytes(
+                repository_root, path, replacements[path], contents[path]
+            )
     return changed
 
 

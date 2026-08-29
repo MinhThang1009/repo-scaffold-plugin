@@ -78,6 +78,19 @@ def synchronize_release_please_schemas(
             audit_freshness.tracked_path(
                 repository_root, relative, kind="Release Please config"
             )
+            try:
+                current_content = path.read_bytes().decode("utf-8")
+            except (OSError, UnicodeError) as error:
+                raise ValueError(
+                    f"could not reread Release Please config {relative}: {error}"
+                ) from error
+            if current_content != content:
+                raise ValueError(
+                    f"Release Please config changed during synchronization: {relative}"
+                )
+            audit_freshness.tracked_path(
+                repository_root, relative, kind="Release Please config"
+            )
             path.write_bytes(updated.encode("utf-8"))
         changed.append(path)
     return changed
