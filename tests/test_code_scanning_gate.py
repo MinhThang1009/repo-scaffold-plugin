@@ -114,16 +114,26 @@ class CodeScanningGateTests(unittest.TestCase):
     def test_allowlist_rejects_unsafe_or_ambiguous_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for entries in (
-                [
+            for path_value in (
+                "../escape",
+                r"scripts\example.py",
+                "scripts/./example.py",
+                "scripts//example.py",
+                "C:/example.py",
+            ):
+                path_entries = [
                     {
                         "number": 1,
                         "tool": "CodeQL",
                         "rule": "x",
-                        "path": "../escape",
+                        "path": path_value,
                         "reason": "x",
                     }
-                ],
+                ]
+                with self.subTest(path_value=path_value):
+                    with self.assertRaisesRegex(gate.GateError, "allowlist path"):
+                        gate.load_allowlist(self.write_allowlist(root, path_entries))
+            for entries in (
                 [
                     {
                         "number": 1,

@@ -10,7 +10,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -95,6 +95,21 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return document
 
 
+def safe_alert_path(value: str) -> str:
+    """Validate the canonical POSIX path emitted by GitHub code scanning."""
+    path = PurePosixPath(value)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in value
+        or PureWindowsPath(value).drive
+        or path.as_posix() != value
+    ):
+        raise GateError("code-scanning allowlist path must be canonical POSIX")
+    return value
+
+
 def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
     """Load a strict, reviewable allowlist from the checked-out base."""
     try:
@@ -129,10 +144,7 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
         path_value = entry["path"]
         if path_value is not None:
             path_value = require_text(path_value, field="code-scanning allowlist path")
-            if Path(path_value).is_absolute() or ".." in Path(path_value).parts:
-                raise GateError(
-                    "code-scanning allowlist path must be repository-relative"
-                )
+            path_value = safe_alert_path(path_value)
         selector = AlertSelector(
             number,
             require_text(entry["tool"], field="code-scanning allowlist tool"),
