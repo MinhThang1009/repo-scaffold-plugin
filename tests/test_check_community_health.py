@@ -132,6 +132,7 @@ class RegistryTests(unittest.TestCase):
             ("candidates", ["../outside"]),
             ("candidates", ["docs/./file.md"]),
             ("candidates", [r"docs\file.md"]),
+            ("candidates", ["C:/README.md"]),
             ("candidates", ["README.md", "README.md"]),
             ("allow_multiple", "true"),
         ]

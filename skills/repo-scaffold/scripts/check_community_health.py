@@ -11,7 +11,7 @@ import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -152,6 +152,7 @@ def _safe_relative_path(value: object, location: str) -> str:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or PureWindowsPath(value).drive
         or path.as_posix() != value
     ):
         raise AuditError(f"{location} must be a safe POSIX repository path")
