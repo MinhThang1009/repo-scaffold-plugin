@@ -58,6 +58,29 @@ class SerializedFileValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate JSON member"):
                 validate_repository.load_json(path)
 
+    def test_parser_helpers_convert_recursive_input_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            yaml_path = root / "recursive.yml"
+            json_path = root / "recursive.json"
+            yaml_path.write_text("name: value\n", encoding="utf-8")
+            json_path.write_text("{}", encoding="utf-8")
+
+            with mock.patch.object(
+                validate_repository.yaml,
+                "load",
+                side_effect=RecursionError("too deep"),
+            ):
+                with self.assertRaisesRegex(yaml.YAMLError, "nesting exceeds"):
+                    validate_repository.load_yaml(yaml_path)
+            with mock.patch.object(
+                validate_repository.json,
+                "loads",
+                side_effect=RecursionError("too deep"),
+            ):
+                with self.assertRaisesRegex(ValueError, "nesting exceeds"):
+                    validate_repository.load_json(json_path)
+
     def test_helpers_identify_project_files_and_basic_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -6466,6 +6489,18 @@ class WorkflowShellValidationTests(unittest.TestCase):
             blocks = validate_workflows.workflow_shell_blocks(path)
 
             self.assertEqual(blocks, [("test: Test", "bash", b"echo ok\n")])
+
+    def test_workflow_parser_converts_recursive_yaml_failures(self) -> None:
+        path = mock.Mock(spec=Path)
+        path.read_text.return_value = "jobs: {}\n"
+
+        with mock.patch.object(
+            validate_workflows.yaml,
+            "load",
+            side_effect=RecursionError("too deep"),
+        ):
+            with self.assertRaisesRegex(yaml.YAMLError, "nesting exceeds"):
+                validate_workflows.workflow_shell_blocks(path)
 
     def test_unknown_shell_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

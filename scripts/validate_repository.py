@@ -384,9 +384,17 @@ def project_files(repository_root: Path, patterns: Iterable[str]) -> list[Path]:
     return sorted(files)
 
 
+def load_yaml_text(text: str) -> Any:
+    """Parse YAML without YAML 1.1 scalar coercion or recursive tracebacks."""
+    try:
+        return yaml.load(text, Loader=UniqueKeyBaseLoader)
+    except RecursionError as error:
+        raise yaml.YAMLError("YAML nesting exceeds parser limit") from error
+
+
 def load_yaml(path: Path) -> Any:
     """Load a YAML document without YAML 1.1 scalar coercion."""
-    return yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyBaseLoader)
+    return load_yaml_text(path.read_text(encoding="utf-8"))
 
 
 def reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -401,10 +409,13 @@ def reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def load_json(path: Path) -> Any:
     """Load a JSON document and reject duplicate member names."""
-    return json.loads(
-        path.read_text(encoding="utf-8"),
-        object_pairs_hook=reject_duplicate_json_pairs,
-    )
+    try:
+        return json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicate_json_pairs,
+        )
+    except RecursionError as error:
+        raise ValueError("JSON nesting exceeds parser limit") from error
 
 
 def nonempty_string(value: Any) -> bool:
@@ -3611,9 +3622,7 @@ def read_front_matter(path: Path) -> tuple[Any, str]:
     except ValueError as error:
         raise ValueError("missing closing YAML front matter delimiter") from error
     front_matter = "\n".join(lines[1:closing])
-    return yaml.load(front_matter, Loader=UniqueKeyBaseLoader), "\n".join(
-        lines[closing + 1 :]
-    )
+    return load_yaml_text(front_matter), "\n".join(lines[closing + 1 :])
 
 
 def validate_issue_form_body(relative: Path, form_body: list[Any]) -> list[str]:

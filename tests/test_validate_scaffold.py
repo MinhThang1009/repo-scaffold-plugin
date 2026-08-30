@@ -872,6 +872,17 @@ class TemplateContractTests(unittest.TestCase):
 
             self.assertIn("front matter must contain", problems[0])
 
+    def test_yaml_loader_converts_recursive_parser_failures(self) -> None:
+        with mock.patch.object(
+            validate_scaffold.yaml,
+            "load",
+            side_effect=RecursionError("too deep"),
+        ):
+            with self.assertRaisesRegex(
+                validate_scaffold.yaml.YAMLError, "nesting exceeds"
+            ):
+                validate_scaffold.load_yaml_text("name: value\n")
+
     def test_issue_templates_report_front_matter_value_and_body_errors(self) -> None:
         cases = {
             "missing.md": "No front matter\n",
