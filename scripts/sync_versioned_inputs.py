@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -39,8 +40,17 @@ def synchronize_release_please_schemas(
             repository_root, relative, kind="Release Please config"
         )
         try:
-            content = path.read_text(encoding="utf-8")
+            content = path.read_bytes().decode("utf-8")
         except (OSError, UnicodeError) as error:
+            raise ValueError(
+                f"could not read Release Please config {relative}: {error}"
+            ) from error
+        try:
+            json.loads(content, object_pairs_hook=audit_freshness.unique_json_object)
+        except (
+            json.JSONDecodeError,
+            audit_freshness.DuplicateJsonMember,
+        ) as error:
             raise ValueError(
                 f"could not read Release Please config {relative}: {error}"
             ) from error
@@ -65,7 +75,23 @@ def synchronize_release_please_schemas(
             + content[match.end("url") :]
         )
         if write:
-            path.write_text(updated, encoding="utf-8")
+            audit_freshness.tracked_path(
+                repository_root, relative, kind="Release Please config"
+            )
+            try:
+                current_content = path.read_bytes().decode("utf-8")
+            except (OSError, UnicodeError) as error:
+                raise ValueError(
+                    f"could not reread Release Please config {relative}: {error}"
+                ) from error
+            if current_content != content:
+                raise ValueError(
+                    f"Release Please config changed during synchronization: {relative}"
+                )
+            audit_freshness.tracked_path(
+                repository_root, relative, kind="Release Please config"
+            )
+            path.write_bytes(updated.encode("utf-8"))
         changed.append(path)
     return changed
 

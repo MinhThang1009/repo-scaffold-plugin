@@ -1949,6 +1949,29 @@ class BashParserHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(codeql_preflight.InspectionError, "malformed"):
             codeql_preflight._bash_dynamic_execution_bodies("'unterminated")
 
+    def test_non_shell_heredocs_and_static_trap_cleanup_do_not_block_preflight(
+        self,
+    ) -> None:
+        for command in (
+            "python - <<'PY'\nvalue = '${UNRELATED_VALUE}'\nPY\n",
+            "node <<'NODE'\nconsole.log('${UNRELATED_VALUE}');\nNODE\n",
+            "heartbeat_pid=123\n"
+            'trap \'kill "$heartbeat_pid" 2>/dev/null || true; '
+            'wait "$heartbeat_pid" 2>/dev/null || true\' EXIT\n',
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(codeql_preflight.contains_codeql_cli(command, "bash"))
+
+        with self.assertRaisesRegex(
+            codeql_preflight.InspectionError, "non-literal payload"
+        ):
+            codeql_preflight.contains_codeql_cli("trap '$HANDLER' EXIT\n", "bash")
+
+        dynamic_text = codeql_preflight._bash_executable_text(
+            "value=`printf safe`\n", mask_nonexecuted_heredocs_only=True
+        )
+        self.assertIn("`printf safe`", dynamic_text)
+
         aliases = codeql_preflight._bash_alias_expansions(
             "shopt -s expand_aliases\n"
             "alias scan='codeql database create db'\n"
@@ -3097,11 +3120,15 @@ class GitHubClientTests(unittest.TestCase):
             codeql_preflight.GitHubClient("github.com")
 
         client = cast(GitHubClientProtocol, self.client())
-        with (
-            mock.patch.object(client, "_run", return_value="{"),
-            self.assertRaisesRegex(codeql_preflight.InspectionError, "invalid JSON"),
-        ):
-            client.json("repos/octo/repo")
+        for payload in ("{", '{"name":"first","name":"second"}'):
+            with (
+                self.subTest(payload=payload),
+                mock.patch.object(client, "_run", return_value=payload),
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "invalid JSON"
+                ),
+            ):
+                client.json("repos/octo/repo")
 
     def test_api_request_and_deadline_caps_fail_before_process_start(self) -> None:
         client = cast(GitHubClientProtocol, self.client())
@@ -3936,7 +3963,11 @@ class PlaceholderContractTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(
-                    set(document["on"]), {"push", "pull_request", "schedule"}
+                    set(document["on"]),
+                    {"push", "pull_request", "merge_group", "schedule"},
+                )
+                self.assertEqual(
+                    document["on"]["merge_group"], {"types": ["checks_requested"]}
                 )
                 codeql_uses = re.findall(
                     r"github/codeql-action/(init|autobuild|analyze)@([0-9a-f]{40})",

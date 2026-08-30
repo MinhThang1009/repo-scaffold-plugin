@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 POLICY_FIELDS = {
@@ -47,6 +47,25 @@ MARKDOWNLINT_GLOBS = ("**/*.md",)
 
 class ToolchainError(ValueError):
     """Raised when a CI toolchain policy or upstream release is invalid."""
+
+
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so reviewed upstreams remain fixed destinations."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        raise ToolchainError("upstream redirects are not allowed")
+
+
+GITHUB_API_OPENER = build_opener(RejectRedirectHandler())
+NPM_REGISTRY_OPENER = build_opener(RejectRedirectHandler())
 
 
 @dataclass(frozen=True)
@@ -310,7 +329,7 @@ def github_output_lines(policy: CiToolchainPolicy) -> list[str]:
     return lines
 
 
-def fetch_latest_release(tool: ToolPin, *, opener: Any = urlopen) -> Any:
+def fetch_latest_release(tool: ToolPin, *, opener: Any | None = None) -> Any:
     """Fetch one bounded public GitHub release document without credentials."""
     url = f"https://api.github.com/repos/{tool.repository}/releases/latest"
     request = Request(
@@ -321,7 +340,7 @@ def fetch_latest_release(tool: ToolPin, *, opener: Any = urlopen) -> Any:
         },
     )
     try:
-        with opener(request, timeout=15) as response:
+        with (opener or GITHUB_API_OPENER.open)(request, timeout=15) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
     except (HTTPError, URLError, OSError) as error:
         raise ToolchainError(
@@ -337,7 +356,7 @@ def fetch_latest_release(tool: ToolPin, *, opener: Any = urlopen) -> Any:
         ) from error
 
 
-def fetch_latest_npm_tool(tool: NpmToolPin, *, opener: Any = urlopen) -> Any:
+def fetch_latest_npm_tool(tool: NpmToolPin, *, opener: Any | None = None) -> Any:
     """Fetch one bounded latest-version document from the public npm registry."""
     url = f"https://registry.npmjs.org/{quote(tool.package, safe='')}/latest"
     request = Request(
@@ -348,7 +367,7 @@ def fetch_latest_npm_tool(tool: NpmToolPin, *, opener: Any = urlopen) -> Any:
         },
     )
     try:
-        with opener(request, timeout=15) as response:
+        with (opener or NPM_REGISTRY_OPENER.open)(request, timeout=15) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
     except (HTTPError, URLError, OSError) as error:
         raise ToolchainError(

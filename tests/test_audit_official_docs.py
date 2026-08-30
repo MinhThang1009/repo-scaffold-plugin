@@ -112,6 +112,18 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
         for value in (None, "", 3):
             with self.subTest(value=value), self.assertRaises(official_docs.AuditError):
                 official_docs.safe_relative_path(value, field="path")
+        for value in (
+            r"docs\README.md",
+            "docs/./README.md",
+            "docs//README.md",
+            "C:/README.md",
+            "docs/C:README.md",
+        ):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(official_docs.AuditError, "safe relative"),
+            ):
+                official_docs.safe_relative_path(value, field="path")
         with self.assertRaisesRegex(official_docs.AuditError, "non-empty string"):
             official_docs.require_string({}, "label", "claim")
 
@@ -372,6 +384,21 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 report = official_docs.audit(root, today=date(2026, 8, 25))
             self.assertEqual(report["status"], "attention")
             self.assertIn("official-docs-review", official_docs.markdown_report(report))
+            report["findings"] = [
+                {
+                    "kind": "official|docs\nnext",
+                    "path": "README|guide.md\nnext",
+                    "subject": "Claim|text\nnext",
+                    "current": "old|value\nnext",
+                    "latest": "new|value\nnext",
+                    "details": "outdated",
+                }
+            ]
+            self.assertIn(
+                "| official\\|docs next | `README\\|guide.md next` | "
+                "Claim\\|text next | `old\\|value next` | `new\\|value next` |",
+                official_docs.markdown_report(report),
+            )
             with mock.patch.object(
                 official_docs,
                 "read_document",

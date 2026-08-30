@@ -8,10 +8,14 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from email.message import Message
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from urllib.request import Request
+
+import yaml
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +107,117 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertIn("# v9.1.2", installed.read_text(encoding="utf-8"))
             self.assertIn("# v8.7.6", asset.read_text(encoding="utf-8"))
 
+    def test_synchronize_revalidates_workflow_path_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n",
+            )
+            original_check = sync_action_pins._path_has_link_or_reparse
+            workflow_checks = 0
+
+            def becomes_unsafe(path: Path, repository_root: Path) -> bool:
+                nonlocal workflow_checks
+                if path == workflow:
+                    workflow_checks += 1
+                    return workflow_checks == 2
+                return original_check(path, repository_root)
+
+            with mock.patch.object(
+                sync_action_pins,
+                "_path_has_link_or_reparse",
+                side_effect=becomes_unsafe,
+            ):
+                with self.assertRaisesRegex(ValueError, "workflow file is unsafe"):
+                    sync_action_pins.synchronize_action_pins(
+                        root,
+                        self.releases,
+                        write=True,
+                        workflow_directories=(Path(".github/workflows"),),
+                    )
+
+            self.assertIn("a" * 40, workflow.read_text(encoding="utf-8"))
+
+    def test_synchronize_rejects_concurrent_workflow_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + " # v1.0.0\n",
+            )
+            concurrent_content = "# Maintainer edit\n" + workflow.read_text(
+                encoding="utf-8"
+            )
+            original_write = sync_action_pins.write_workflow_bytes
+
+            def write_after_concurrent_edit(
+                repository_root: Path,
+                path: Path,
+                content: str,
+                expected_content: str,
+            ) -> None:
+                path.write_text(concurrent_content, encoding="utf-8")
+                original_write(repository_root, path, content, expected_content)
+
+            with mock.patch.object(
+                sync_action_pins,
+                "write_workflow_bytes",
+                side_effect=write_after_concurrent_edit,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "workflow file changed during synchronization"
+                ):
+                    sync_action_pins.synchronize_action_pins(
+                        root,
+                        self.releases,
+                        write=True,
+                        workflow_directories=(Path(".github/workflows"),),
+                    )
+
+            self.assertEqual(workflow.read_text(encoding="utf-8"), concurrent_content)
+
+    def test_write_rejects_workflow_that_becomes_unsafe_after_reread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root, ".github/workflows/ci.yml", "name: validated\n"
+            )
+            expected_content = workflow.read_bytes().decode("utf-8")
+
+            with mock.patch.object(
+                sync_action_pins,
+                "_path_has_link_or_reparse",
+                side_effect=(False, True),
+            ):
+                with self.assertRaisesRegex(ValueError, "workflow file is unsafe"):
+                    sync_action_pins.write_workflow_bytes(
+                        root, workflow, "name: updated\n", expected_content
+                    )
+
+            self.assertEqual(workflow.read_text(encoding="utf-8"), "name: validated\n")
+
+    def test_write_reports_workflow_reread_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root, ".github/workflows/ci.yml", "name: validated\n"
+            )
+
+            with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(
+                    ValueError, "could not reread workflow file before writing"
+                ):
+                    sync_action_pins.write_workflow_bytes(
+                        root, workflow, "name: updated\n", "name: validated\n"
+                    )
+
+            self.assertEqual(workflow.read_text(encoding="utf-8"), "name: validated\n")
+
     def test_synchronize_preserves_current_pin_comment_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -166,12 +281,1027 @@ class ActionPinSyncTests(unittest.TestCase):
             self.assertEqual(changed, [workflow])
             self.assertIn("# v9.1.2", workflow.read_text(encoding="utf-8"))
 
+    def test_synchronize_preserves_line_endings_and_adjacent_blank_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / ".github" / "workflows" / "ci.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_bytes(
+                (
+                    "jobs:\r\n"
+                    "  test:\r\n"
+                    "    steps:\r\n"
+                    "      - uses: actions/checkout@" + "a" * 40 + "\r\n\r\n"
+                ).encode()
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            updated = workflow.read_bytes()
+            self.assertIn(f"actions/checkout@{'c' * 40} # v9.1.2".encode(), updated)
+            self.assertEqual(updated.count(b"\r\n"), 5)
+            self.assertNotIn(b"\n", updated.replace(b"\r\n", b""))
+
+    def test_synchronize_updates_quoted_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    + '      - uses: "actions/checkout@'
+                    + "a" * 40
+                    + '" # v1.0.0\n'
+                    + "      - uses: 'actions/setup-python@"
+                    + "b" * 40
+                    + "' # v1.0.0\n"
+                ),
+            )
+            releases = {
+                "actions/checkout": sync_action_pins.ActionRelease("v9.1.2", "c" * 40),
+                "actions/setup-python": sync_action_pins.ActionRelease(
+                    "v6.0.0", "d" * 40
+                ),
+            }
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                releases.__getitem__,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f'uses: "actions/checkout@{"c" * 40}" # v9.1.2', content)
+            self.assertIn(f"uses: 'actions/setup-python@{'d' * 40}' # v6.0.0", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout", "actions/setup-python"},
+            )
+
+    def test_synchronize_updates_double_quoted_slash_escapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n"
+                + '      - uses: "actions\\/checkout@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions\\x2fcheckout@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions\\u002fcheckout@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions\\U0000002fcheckout@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "act\\u0069ons/checkout@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions/check\\u006fut@'
+                + "a" * 40
+                + '"\n'
+                + '      - uses: "actions/checkout@'
+                + "a" * 39
+                + '\\x61"\n'
+                + '      - uses: "actions/checkout\\u0040'
+                + "a" * 40
+                + '"\n',
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(
+                [
+                    step["uses"]
+                    for step in yaml.safe_load(content)["jobs"]["test"]["steps"]
+                ],
+                [f"actions/checkout@{'c' * 40}"] * 8,
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            workflow.write_text(
+                "jobs:\n  test:\n    steps:\n"
+                + "      - uses: act\\u0069ons/checkout@"
+                + "a" * 40
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=False,
+                    workflow_directories=(Path(".github/workflows"),),
+                )
+            workflow.write_text(
+                'defaults: &checkout "actions\\u002fcheckout@'
+                + "a" * 40
+                + '"\njobs:\n  test:\n    steps:\n      - uses: *checkout\n',
+                encoding="utf-8",
+            )
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+            self.assertEqual(changed, [workflow])
+            self.assertEqual(
+                yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["test"][
+                    "steps"
+                ][0]["uses"],
+                f"actions/checkout@{'c' * 40}",
+            )
+
+    def test_synchronize_updates_double_quoted_continued_action_references(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                'jobs:\n  test:\n    steps:\n      - uses: "actions/chec\\\n          kout@'
+                + "a" * 40
+                + '" # v1.0.0\n',
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f'uses: "actions/checkout@{"c" * 40}" # v9.1.2', content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            workflow.write_text(
+                'unused: &unused "actions/chec\\\n  kout@'
+                + "a" * 40
+                + '"\ndefaults: &checkout "actions/chec\\\n      kout@'
+                + "a" * 40
+                + '" # v1.0.0\njobs:\n  test:\n    steps:\n      - uses: *checkout\n',
+                encoding="utf-8",
+            )
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(
+                f'defaults: &checkout "actions/checkout@{"c" * 40}" # v9.1.2',
+                content,
+            )
+            self.assertIn(
+                f'unused: &unused "actions/chec\\\n  kout@{"a" * 40}"',
+                content,
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
+    def test_synchronize_updates_anchored_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    + "      - uses: &checkout-pin actions/checkout@"
+                    + "a" * 40
+                    + " # v1.0.0\n"
+                    + "      - uses: *checkout-pin\n"
+                ),
+            )
+            releases = {
+                "actions/checkout": sync_action_pins.ActionRelease("v9.1.2", "c" * 40)
+            }
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                releases.__getitem__,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(
+                f"uses: &checkout-pin actions/checkout@{'c' * 40} # v9.1.2", content
+            )
+            self.assertIn("uses: *checkout-pin", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
+    def test_synchronize_updates_block_scalar_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    + "      - uses: >-\n          actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: |-\n          actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 2)
+            self.assertNotIn("# v9.1.2", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            self.assertEqual(
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=True,
+                    workflow_directories=(Path(".github/workflows"),),
+                ),
+                [],
+            )
+
+    def test_synchronize_updates_aliased_block_scalar_action_references(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "defaults: &checkout |-\n  actions/checkout@"
+                + "a" * 40
+                + "\nunused: &unused |-\n  actions/checkout@"
+                + "a" * 40
+                + "\njobs:\n  test:\n    steps:\n      - uses: *checkout\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f"actions/checkout@{'c' * 40}", content)
+            self.assertIn(f"unused: &unused |-\n  actions/checkout@{'a' * 40}", content)
+            self.assertIn("uses: *checkout", content)
+            self.assertEqual(
+                yaml.safe_load(content)["jobs"]["test"]["steps"][0]["uses"],
+                f"actions/checkout@{'c' * 40}",
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
+    def test_synchronize_updates_aliased_sequence_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "action-values:\n  - &direct actions/checkout@"
+                + "a" * 40
+                + "\n  - &block |-\n      actions/checkout@"
+                + "a" * 40
+                + "\njobs:\n  test:\n    steps:\n      - uses: *direct\n"
+                "      - uses: *block\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 2)
+            self.assertEqual(
+                [
+                    step["uses"]
+                    for step in yaml.safe_load(content)["jobs"]["test"]["steps"]
+                ],
+                [f"actions/checkout@{'c' * 40}"] * 2,
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
+    def test_synchronize_updates_explicit_uses_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n      - ? uses\n        : actions/checkout@"
+                + "a" * 40
+                + " # v1.0.0\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f": actions/checkout@{'c' * 40} # v9.1.2", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "jobs:\n  test:\n    steps:\n      - ? uses\n        : actions/checkout@v4\n",
+                )
+
+    def test_synchronize_updates_explicit_block_uses_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    steps:\n      - ? |-\n          uses\n        : actions/checkout@"
+                + "a" * 40
+                + "\n      - ? >-\n          uses\n        : actions/checkout@"
+                + "b" * 40
+                + "\n",
+            )
+            releases = {
+                "actions/checkout": sync_action_pins.ActionRelease("v9.1.2", "c" * 40)
+            }
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                releases.__getitem__,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 2)
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "jobs:\n  test:\n    steps:\n      - ? |-\n          uses\n        : actions/checkout@v4\n",
+                )
+
+    def test_synchronize_updates_quoted_uses_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                'jobs:\n  test:\n    steps:\n      - "uses": actions/checkout@'
+                + "a" * 40
+                + "\n      - { 'uses': actions/checkout@"
+                + "b" * 40
+                + ' }\n      - "uses": >-\n          actions/checkout@'
+                + "b" * 40
+                + "\n      - !!str uses: actions/checkout@"
+                + "b" * 40
+                + '\n      - "\\u0075ses": actions/checkout@'
+                + "b" * 40
+                + '\n      ? "u\\\n          ses"\n        : actions/checkout@'
+                + "b" * 40
+                + "\n",
+            )
+            releases = {
+                "actions/checkout": sync_action_pins.ActionRelease("v9.1.2", "c" * 40)
+            }
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                releases.__getitem__,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 6)
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    'jobs:\n  test:\n    steps:\n      - "uses": actions/checkout@v4\n',
+                )
+
+    def test_synchronize_updates_tagged_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "env:\n  CHECKOUT_ACTION: !custom &outside actions/checkout@"
+                    + "a" * 40
+                    + "\njobs:\n  test:\n    steps:\n"
+                    + "      - uses: !!str actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: !<tag:yaml.org,2002:str> actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: ! actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: !custom actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                    + "      - uses: !!str 'actions/checkout@"
+                    + "a" * 40
+                    + "'\n"
+                    + "      - uses: !!str &checkout actions/checkout@"
+                    + "a" * 40
+                    + "\n      - uses: *checkout\n      - uses: *outside\n"
+                    + "      - uses: !!str >-\n          actions/checkout@"
+                    + "a" * 40
+                    + "\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 8)
+            self.assertIn("uses: *checkout", content)
+            self.assertIn("uses: *outside", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
+    def test_synchronize_updates_flow_style_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { name: Checkout, uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + ", name: Checkout }\n"
+                    + "      - { uses: !custom actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { uses: &checkout actions/checkout@"
+                    + "a" * 40
+                    + " }\n      - { uses: *checkout }\n"
+                    + "      - {\n          uses: actions/checkout@"
+                    + "a" * 40
+                    + "\n        }\n"
+                    + "      - { name: Checkout,\n          uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + ",\n          name: Checkout }\n"
+                    + "      - { if: \"${{ github.ref == 'refs/heads/main' }}\", uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + ", if: \"${{ github.ref == 'refs/heads/main' }}\" }\n"
+                    + "      - { uses: actions/checkout@"
+                    + "a" * 40
+                    + ", with: { fetch-depth: 0 } }\n"
+                    + "      - { with: { fetch-depth: 0 }, uses: actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 12)
+            self.assertIn(
+                f"uses: actions/checkout@{'c' * 40}, name: Checkout }} # v9.1.2",
+                content,
+            )
+            self.assertIn("uses: *checkout }", content)
+            self.assertIn(
+                f"uses: actions/checkout@{'c' * 40}\n        }} # v9.1.2",
+                content,
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "  - { uses: actions/checkout@v4 }\n",
+                )
+            self.assertEqual(
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=True,
+                    workflow_directories=(Path(".github/workflows"),),
+                ),
+                [],
+            )
+
+    def test_synchronize_updates_explicit_flow_uses_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    + "      - { ? uses : actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                    + '      - { ? "uses" : actions/checkout@'
+                    + "a" * 40
+                    + " }\n"
+                    + "      - { ? !!str uses : actions/checkout@"
+                    + "a" * 40
+                    + " }\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 3)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "  - { ? uses : actions/checkout@v4 }\n",
+                )
+
+    def test_synchronize_updates_flow_mapping_action_anchors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "env: { UNUSED_ACTION: &unused actions/checkout@"
+                    + "a" * 40
+                    + ", CHECKOUT_ACTION: &checkout actions/checkout@"
+                    + "a" * 40
+                    + " }\njobs:\n  test:\n    steps:\n      - uses: *checkout\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(
+                f"&checkout actions/checkout@{'c' * 40}",
+                content,
+            )
+            self.assertIn(
+                f"&unused actions/checkout@{'a' * 40}",
+                content,
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "env: { CHECKOUT_ACTION: &checkout actions/checkout@v4 }\n"
+                    "jobs:\n  test:\n    steps:\n      - uses: *checkout\n",
+                )
+
+    def test_flow_mapping_ranges_mask_unclosed_flow_mappings(self) -> None:
+        content = "  - {\n      uses: actions/checkout@" + "a" * 40 + "\n"
+
+        self.assertEqual(
+            sync_action_pins.flow_mapping_content_ranges(content),
+            ((6, len(content)),),
+        )
+        self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())
+
+    def test_flow_collection_ranges_ignore_a_trailing_comment_in_invalid_input(
+        self,
+    ) -> None:
+        self.assertEqual(
+            sync_action_pins.flow_collection_content_ranges("notes: [ # unclosed"),
+            (),
+        )
+
+    def test_synchronize_handles_deeply_nested_flow_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs: { verify: { runs-on: ubuntu-latest, steps: [ { uses: actions/checkout@"
+                + "a" * 40
+                + " } ] } }\n",
+            )
+
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(
+                    workflow, workflow.read_text(encoding="utf-8")
+                ),
+                {"actions/checkout"},
+            )
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f"actions/checkout@{'c' * 40}", content)
+            self.assertEqual(
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=True,
+                    workflow_directories=(Path(".github/workflows"),),
+                ),
+                [],
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "jobs: { verify: { runs-on: ubuntu-latest, steps: [ { uses: actions/checkout@v4 } ] } }\n",
+                )
+
+    def test_flow_inline_uses_ignores_quoted_text(self) -> None:
+        content = (
+            'jobs: { verify: { name: ", uses: actions/checkout@'
+            + "a" * 40
+            + '", steps: [ { uses: actions/checkout@'
+            + "b" * 40
+            + " } ] } }\n"
+        )
+
+        self.assertEqual(
+            [
+                match.group("reference")
+                for match in sync_action_pins.workflow_uses_matches(content)
+            ],
+            [f"actions/checkout@{'b' * 40}"],
+        )
+
+    def test_flow_inline_uses_handles_hash_in_plain_scalars(self) -> None:
+        content = (
+            "jobs: { verify: { name: literal#fragment, steps: [ { uses: actions/checkout@"
+            + "a" * 40
+            + " } ] } }\n"
+        )
+
+        self.assertEqual(
+            [
+                match.group("reference")
+                for match in sync_action_pins.workflow_uses_matches(content)
+            ],
+            [f"actions/checkout@{'a' * 40}"],
+        )
+
+    def test_flow_mapping_quote_tracking_handles_escapes_and_comments(self) -> None:
+        self.assertEqual(
+            sync_action_pins.flow_mapping_ranges("{ # trailing comment"), ()
+        )
+        self.assertEqual(
+            sync_action_pins.flow_mapping_quote_at(
+                "{ name: 'it''s", 0, len("{ name: 'it''s")
+            ),
+            "'",
+        )
+        self.assertEqual(
+            sync_action_pins.flow_mapping_quote_at('{ name: "\\x', 0, 11), '"'
+        )
+        self.assertEqual(
+            sync_action_pins.flow_mapping_quote_at("{ # comment", 0, 11), "#"
+        )
+        self.assertIsNone(
+            sync_action_pins.flow_mapping_quote_at("{ # comment\n", 0, 12)
+        )
+
+    def test_synchronize_handles_braces_in_flow_mapping_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n      - {\n"
+                    + '          name: "}",\n          uses: actions/checkout@'
+                    + "a" * 40
+                    + "\n        }\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 1)
+            self.assertIn(
+                f"uses: actions/checkout@{'c' * 40}\n        }} # v9.1.2",
+                content,
+            )
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
+    def test_synchronize_handles_multiline_flow_mapping_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n      - {\n"
+                    + '          name: "one line\n            } still quoted",\n'
+                    + "          uses: actions/checkout@"
+                    + "a" * 40
+                    + "\n        }\n      - {\n"
+                    + "          name: 'one line\n            } still quoted',\n"
+                    + "          uses: actions/checkout@"
+                    + "a" * 40
+                    + "\n        }\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertEqual(content.count(f"actions/checkout@{'c' * 40}"), 2)
+            self.assertEqual(content.count("} # v9.1.2"), 2)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+
+    def test_flow_mapping_brace_delta_preserves_escaped_quotes(self) -> None:
+        self.assertEqual(
+            sync_action_pins.flow_mapping_brace_delta("''", "'"),
+            (0, "'"),
+        )
+        self.assertEqual(
+            sync_action_pins.flow_mapping_brace_delta("\\}", '"'),
+            (0, '"'),
+        )
+
+    def test_synchronize_updates_action_pin_anchored_outside_uses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "name: Anchored action\n"
+                    "on: push\n"
+                    "env:\n"
+                    "  CHECKOUT_ACTION: &checkout actions/checkout@"
+                    + "a" * 40
+                    + " # v1.0.0\n"
+                    + "jobs:\n"
+                    "  test:\n"
+                    "    runs-on: ubuntu-latest\n"
+                    "    steps:\n"
+                    "      - uses: *checkout\n"
+                ),
+            )
+            releases = {
+                "actions/checkout": sync_action_pins.ActionRelease("v9.1.2", "c" * 40)
+            }
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                releases.__getitem__,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(
+                f"CHECKOUT_ACTION: &checkout actions/checkout@{'c' * 40} # v9.1.2",
+                content,
+            )
+            self.assertIn("uses: *checkout", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(workflow, content),
+                {"actions/checkout"},
+            )
+            with self.assertRaisesRegex(ValueError, "not pinned"):
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    content.replace("c" * 40, "v9.1.2"),
+                )
+
+    def test_synchronize_ignores_unreferenced_action_anchors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                "env:\n  UNUSED_ACTION: &unused actions/checkout@" + "a" * 40 + "\n",
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [])
+            self.assertIn("a" * 40, workflow.read_text(encoding="utf-8"))
+
+    def test_synchronize_ignores_uses_text_in_run_block_scalars(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root,
+                ".github/workflows/ci.yml",
+                (
+                    "jobs:\n  test:\n    steps:\n"
+                    "      - uses: actions/checkout@"
+                    + "a" * 40
+                    + " # v1.0.0\n"
+                    + "      - run: |\n"
+                    + "          uses: actions/checkout@"
+                    + "b" * 40
+                    + " # not an action\n"
+                    + "      - run: echo completed\n"
+                    + '      - run: "echo started\n'
+                    + "          uses: actions/checkout@"
+                    + "d" * 40
+                    + " # not an action\n"
+                    + '          echo completed"\n'
+                    + "      - run: 'echo started\n"
+                    + "          uses: actions/checkout@"
+                    + "e" * 40
+                    + " # not an action\n"
+                    + "          echo it''s completed'\n"
+                ),
+            )
+
+            changed = sync_action_pins.synchronize_action_pins(
+                root,
+                self.releases,
+                write=True,
+                workflow_directories=(Path(".github/workflows"),),
+            )
+
+            self.assertEqual(changed, [workflow])
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(f"actions/checkout@{'c' * 40} # v9.1.2", content)
+            self.assertIn(f"uses: actions/checkout@{'b' * 40} # not an action", content)
+            self.assertIn(f"uses: actions/checkout@{'d' * 40} # not an action", content)
+            self.assertIn(f"uses: actions/checkout@{'e' * 40} # not an action", content)
+            self.assertEqual(
+                sync_action_pins.auditable_action_repositories(
+                    workflow,
+                    "jobs:\n  test:\n    steps:\n      - run: |\n"
+                    + f"          uses: example/not-an-action@{'a' * 40}\n",
+                ),
+                set(),
+            )
+
+    def test_action_matching_ignores_multiline_quoted_scalar_edge_cases(self) -> None:
+        action = "actions/checkout@" + "a" * 40
+        for content in (
+            'run: "one line"\n',
+            'run: "echo \\"quoted\\"\n  uses: ' + action + '\n  echo done"\n',
+            "run: 'echo it''s\n  uses: " + action + "\n  echo done'\n",
+            "run: !custom |\n  uses: " + action + "\n",
+            "notes:\n  - !custom &note >-\n      uses: " + action + "\n",
+            "notes:\n  ? !custom &note |\n      uses: " + action + "\n  : value\n",
+            "notes:\n  - ? >-\n        uses: " + action + "\n    : value\n",
+            'run: !custom "echo started\n  uses: ' + action + '\n  echo done"\n',
+            'run: "unterminated\n  uses: ' + action + "\n",
+            "notes:\n  - 'example:\n      uses: " + action + "\n    end'\n",
+            'notes:\n  - "example:\n      uses: ' + action + '\n    end"\n',
+            'notes:\n  - !custom &note "example:\n      uses: '
+            + action
+            + '\n    end"\n',
+            'notes:\n  ? "example:\n      uses: ' + action + '\n    end"\n  : value\n',
+            'notes: [\n  "example:\n    uses: ' + action + '\n  end"\n]\n',
+            "notes: [\n  'example:\n    uses: " + action + "\n  end'\n]\n",
+        ):
+            with self.subTest(content=content):
+                self.assertEqual(sync_action_pins.workflow_uses_matches(content), ())
+                self.assertEqual(sync_action_pins.action_pin_matches(content), ())
+
     def test_action_repositories_rejects_unpinned_and_unallowed_references(
         self,
     ) -> None:
         path = Path("workflow.yml")
         for content, message in (
             ("  - uses: actions/checkout@v7\n", "not pinned"),
+            ('  - uses: "*checkout"\n', "not pinned"),
+            ("  - uses: '*checkout'\n", "not pinned"),
             ("  - uses: example/action@" + "a" * 40 + "\n", "allowlist"),
         ):
             with self.subTest(content=content):
@@ -184,6 +1314,15 @@ class ActionPinSyncTests(unittest.TestCase):
             {"actions/setup-node"},
         )
         self.assertEqual(
+            sync_action_pins.auditable_action_repositories(
+                path,
+                "  - uses: actions/checkout/.github/actions/setup/child@"
+                + "a" * 40
+                + "\n",
+            ),
+            {"actions/checkout"},
+        )
+        self.assertEqual(
             sync_action_pins.action_repositories(
                 path,
                 "  - uses: ./local-action\n  - uses: docker://alpine@sha256:"
@@ -192,6 +1331,34 @@ class ActionPinSyncTests(unittest.TestCase):
             ),
             set(),
         )
+
+    def test_action_repositories_reject_alias_mapping_keys(self) -> None:
+        path = Path("workflow.yml")
+        cases = (
+            "keys:\n"
+            "  uses_key: &uses uses\n"
+            "jobs:\n"
+            "  test:\n"
+            "    steps:\n"
+            "      - *uses: actions/checkout@v4\n",
+            "keys:\n"
+            "  uses_key: &uses uses\n"
+            "jobs:\n"
+            "  test:\n"
+            "    steps:\n"
+            "      - ? *uses\n"
+            "        : actions/checkout@v4\n",
+            "keys: { uses_key: &uses uses }\n"
+            "jobs: { test: { steps: [ { *uses: actions/checkout@v4 } ] } }\n",
+        )
+        for content in cases:
+            with self.subTest(content=content):
+                self.assertEqual(
+                    yaml.safe_load(content)["jobs"]["test"]["steps"][0],
+                    {"uses": "actions/checkout@v4"},
+                )
+                with self.assertRaisesRegex(ValueError, "mapping keys"):
+                    sync_action_pins.auditable_action_repositories(path, content)
 
     def test_workflow_paths_rejects_missing_unsafe_and_empty_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -294,6 +1461,69 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         self.assertTrue(any("git/tags/" in url for url, _, _ in requests))
 
+    def test_github_release_client_resolves_nested_annotated_tags(self) -> None:
+        responses = iter(
+            [
+                {"tag_name": "v1.2.3"},
+                {"object": {"type": "tag", "sha": "a" * 40}},
+                {"object": {"type": "tag", "sha": "b" * 40}},
+                {"object": {"type": "commit", "sha": "c" * 40}},
+            ]
+        )
+        requests: list[str] = []
+
+        def opener(request: Any, *, timeout: int) -> FakeResponse:
+            requests.append(request.full_url)
+            self.assertEqual(timeout, 30)
+            return FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        client = sync_action_pins.GitHubReleaseClient("token", opener)
+
+        self.assertEqual(
+            client.latest_release("actions/checkout"),
+            sync_action_pins.ActionRelease("v1.2.3", "c" * 40),
+        )
+        self.assertEqual(
+            requests,
+            [
+                "https://api.github.com/repos/actions/checkout/releases/latest",
+                "https://api.github.com/repos/actions/checkout/git/ref/tags/v1.2.3",
+                "https://api.github.com/repos/actions/checkout/git/tags/" + "a" * 40,
+                "https://api.github.com/repos/actions/checkout/git/tags/" + "b" * 40,
+            ],
+        )
+
+    def test_github_release_client_bounds_nested_annotated_tags(self) -> None:
+        nested_tag = {"object": {"type": "tag", "sha": "a" * 40}}
+        responses = iter([{"tag_name": "v1.2.3"}, nested_tag, nested_tag])
+
+        def opener(_request: Any, *, timeout: int) -> FakeResponse:
+            self.assertEqual(timeout, 30)
+            return FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        client = sync_action_pins.GitHubReleaseClient("token", opener)
+
+        with mock.patch.object(sync_action_pins, "MAX_ANNOTATED_TAG_DEPTH", 1):
+            with self.assertRaisesRegex(ValueError, "tag nesting exceeds"):
+                client.latest_release("actions/checkout")
+
+    def test_github_release_client_rejects_an_invalid_annotated_tag_sha(self) -> None:
+        responses = iter(
+            [
+                {"tag_name": "v1.2.3"},
+                {"object": {"type": "tag", "sha": "not-a-sha"}},
+            ]
+        )
+
+        def opener(_request: Any, *, timeout: int) -> FakeResponse:
+            self.assertEqual(timeout, 30)
+            return FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        client = sync_action_pins.GitHubReleaseClient("token", opener)
+
+        with self.assertRaisesRegex(ValueError, "does not resolve to a commit"):
+            client.latest_release("actions/checkout")
+
     def test_github_release_client_resolves_codeql_from_stable_action_tags(
         self,
     ) -> None:
@@ -318,8 +1548,44 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         self.assertEqual(
             requests,
-            ["https://api.github.com/repos/github/codeql-action/tags?per_page=100"],
+            [
+                "https://api.github.com/repos/github/codeql-action/tags?per_page=100&page=1"
+            ],
         )
+
+    def test_github_release_client_paginates_action_tags_and_fails_closed(self) -> None:
+        older = {"name": "v4.37.8", "commit": {"sha": "b" * 40}}
+        newer = {"name": "v5.0.0", "commit": {"sha": "c" * 40}}
+        responses = iter([[older] * 100, [newer]])
+        requests: list[str] = []
+
+        def opener(request: Any, *, timeout: int) -> FakeResponse:
+            requests.append(request.full_url)
+            self.assertEqual(timeout, 30)
+            return FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        client = sync_action_pins.GitHubReleaseClient("token", opener)
+        self.assertEqual(
+            client.latest_release("github/codeql-action"),
+            sync_action_pins.ActionRelease("v5.0.0", "c" * 40),
+        )
+        self.assertEqual(
+            requests,
+            [
+                "https://api.github.com/repos/github/codeql-action/tags?per_page=100&page=1",
+                "https://api.github.com/repos/github/codeql-action/tags?per_page=100&page=2",
+            ],
+        )
+
+        with mock.patch.object(sync_action_pins, "MAX_ACTION_TAG_PAGES", 1):
+            capped = sync_action_pins.GitHubReleaseClient(
+                "token",
+                lambda *_args, **_kwargs: FakeResponse(
+                    json.dumps([older] * 100).encode("utf-8")
+                ),
+            )
+            with self.assertRaisesRegex(ValueError, "inventory exceeds"):
+                capped.latest_release("github/codeql-action")
 
     def test_github_release_client_rejects_bad_inputs_and_responses(self) -> None:
         with self.assertRaisesRegex(ValueError, "GITHUB_TOKEN"):
@@ -341,11 +1607,13 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "exceeds the size limit"):
             oversized.get_json("/test")
-        malformed = sync_action_pins.GitHubReleaseClient(
-            "token", lambda *_args, **_kwargs: FakeResponse(b"{")
-        )
-        with self.assertRaisesRegex(ValueError, "request failed"):
-            malformed.get_json("/test")
+        for response_payload in (b"{", b'{"name":"first","name":"second"}'):
+            with self.subTest(payload=response_payload):
+                malformed = sync_action_pins.GitHubReleaseClient(
+                    "token", lambda *_args, **_kwargs: FakeResponse(response_payload)
+                )
+                with self.assertRaisesRegex(ValueError, "request failed"):
+                    malformed.get_json("/test")
         for payload, message in (
             ({"tag_name": "main"}, "invalid tag"),
             ({"tag_name": "v1.2.3"}, "no tag object"),
@@ -364,6 +1632,23 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "request failed"):
             failing.get_json("/test")
+
+    def test_github_release_client_rejects_redirects_before_following_them(
+        self,
+    ) -> None:
+        handler = sync_action_pins.RejectRedirectHandler()
+
+        with self.assertRaisesRegex(ValueError, "redirects are not allowed"):
+            handler.redirect_request(
+                Request(
+                    "https://api.github.com/repos/actions/checkout/releases/latest"
+                ),
+                None,
+                302,
+                "Found",
+                Message(),
+                "https://example.test/receive-token",
+            )
 
     def test_github_release_client_rejects_unresolvable_release_tags(self) -> None:
         cases = (

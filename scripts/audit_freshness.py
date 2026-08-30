@@ -10,10 +10,10 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import sync_action_pins
 
@@ -24,7 +24,8 @@ MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PINNED_REQUIREMENT = re.compile(
-    r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\]+)(?:\s+\\)?\Z"
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\#]+)"
+    r"(?:\s+\\)?(?:[ \t]+#[^\r\n]*)?\Z"
 )
 RELEASE_PLEASE_SCHEMA = re.compile(
     r"https://raw\.githubusercontent\.com/googleapis/release-please/"
@@ -39,6 +40,24 @@ class AuditError(RuntimeError):
 
 class DuplicateJsonMember(ValueError):
     """Raised when a tracker registry uses duplicate JSON members."""
+
+
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so a fixed upstream cannot become an arbitrary target."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        raise AuditError("upstream redirects are not allowed")
+
+
+PYPI_OPENER = build_opener(RejectRedirectHandler())
 
 
 @dataclass(frozen=True)
@@ -69,13 +88,20 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def safe_relative_path(value: object, *, field: str) -> Path:
-    """Parse one registry path without allowing it to escape the repository."""
+    """Parse one canonical, cross-platform registry path within the repository."""
     if not isinstance(value, str) or not value:
         raise AuditError(f"{field} must be a non-empty relative path")
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts or not path.parts:
+    path = PurePosixPath(value)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in value
+        or any(PureWindowsPath(part).drive for part in path.parts)
+        or path.as_posix() != value
+    ):
         raise AuditError(f"{field} must be a safe relative path: {value!r}")
-    return path
+    return Path(value)
 
 
 def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
@@ -194,15 +220,22 @@ def read_json(url: str) -> dict[str, Any]:
         },
     )
     try:
-        with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed host
+        with PYPI_OPENER.open(request, timeout=30) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
     except (HTTPError, URLError, OSError) as error:
         raise AuditError(f"upstream request failed for {url}: {error}") from error
     if len(payload) > MAX_RESPONSE_BYTES:
         raise AuditError(f"upstream response is too large for {url}")
     try:
-        document = json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
+        document = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=unique_json_object
+        )
+    except (
+        UnicodeError,
+        json.JSONDecodeError,
+        DuplicateJsonMember,
+        RecursionError,
+    ) as error:
         raise AuditError(f"upstream response is not valid JSON for {url}") from error
     if not isinstance(document, dict):
         raise AuditError(f"upstream response is not an object for {url}")
@@ -262,20 +295,21 @@ def action_findings(
     for path in workflow_paths:
         text = path.read_text(encoding="utf-8")
         sync_action_pins.auditable_action_repositories(path, text)
-        for match in sync_action_pins.ACTION_PIN_PATTERN.finditer(text):
-            action = match.group("action")
+        for match in sync_action_pins.action_pin_matches(text):
+            action = sync_action_pins.normalized_action_pin_part(match, "action")
+            current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
             repository = sync_action_pins.action_repository(action)
             release = releases.get(repository)
             if release is None:
                 release = release_lookup(repository)
                 releases[repository] = release
-            if match.group("sha") != release.sha:
+            if current_sha.casefold() != release.sha:
                 findings.append(
                     {
                         "kind": "action-pin",
                         "path": path.relative_to(root).as_posix(),
                         "subject": action,
-                        "current": match.group("sha"),
+                        "current": current_sha,
                         "latest": release.tag,
                         "details": f"Expected immutable SHA {release.sha}.",
                     }
@@ -291,8 +325,16 @@ def release_please_findings(
     for relative in configs:
         path = tracked_path(root, relative, kind="Release Please config")
         try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            document = json.loads(
+                path.read_text(encoding="utf-8"),
+                object_pairs_hook=unique_json_object,
+            )
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            DuplicateJsonMember,
+        ) as error:
             raise AuditError(
                 f"could not read Release Please config {relative}: {error}"
             ) from error
@@ -336,7 +378,9 @@ def requirement_findings(
             for relative in requirement_source.locks
         }
         for key, (name, current) in pins.items():
-            latest = latest_versions.setdefault(key, latest_lookup(name))
+            if key not in latest_versions:
+                latest_versions[key] = latest_lookup(name)
+            latest = latest_versions[key]
             if current != latest:
                 findings.append(
                     {
@@ -414,6 +458,11 @@ def audit(
     }
 
 
+def markdown_table_cell(value: object) -> str:
+    """Render one value without permitting it to add Markdown table cells/rows."""
+    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
 def markdown_report(report: dict[str, Any]) -> str:
     """Render a concise, issue-safe Markdown representation of an audit report."""
     lines = [
@@ -432,7 +481,10 @@ def markdown_report(report: dict[str, Any]) -> str:
                 "| --- | --- | --- | --- | --- |",
                 *[
                     "| {kind} | `{path}` | `{subject}` | `{current}` | `{latest}` |".format(
-                        **finding
+                        **{
+                            key: markdown_table_cell(value)
+                            for key, value in finding.items()
+                        }
                     )
                     for finding in findings
                 ],

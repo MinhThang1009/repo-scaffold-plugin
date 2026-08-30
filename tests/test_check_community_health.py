@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -127,8 +128,12 @@ class RegistryTests(unittest.TestCase):
             ("tracker", "unknown"),
             ("candidates", []),
             ("candidates", [None]),
+            ("candidates", ["."]),
             ("candidates", ["../outside"]),
+            ("candidates", ["docs/./file.md"]),
             ("candidates", [r"docs\file.md"]),
+            ("candidates", ["C:/README.md"]),
+            ("candidates", ["docs/C:README.md"]),
             ("candidates", ["README.md", "README.md"]),
             ("allow_multiple", "true"),
         ]
@@ -184,7 +189,7 @@ class GitHubClientTests(unittest.TestCase):
     def test_get_json_uses_bounded_authenticated_request(self) -> None:
         response = FakeResponse(b'{"ok": true}')
         with mock.patch.object(
-            community_health, "urlopen", return_value=response
+            community_health.GITHUB_API_OPENER, "open", return_value=response
         ) as open_url:
             result = community_health.GitHubClient("token", timeout=4).get_json(
                 "repos/owner/repository"
@@ -212,21 +217,44 @@ class GitHubClientTests(unittest.TestCase):
         for failure in failures:
             with (
                 self.subTest(failure=failure),
-                mock.patch.object(community_health, "urlopen", side_effect=failure),
-                self.assertRaises(community_health.AuditError),
-            ):
-                community_health.GitHubClient().get_json("repos/owner/repository")
-
-        payloads = [b"x" * (community_health.MAX_RESPONSE_BYTES + 1), b"{"]
-        for payload in payloads:
-            with (
-                self.subTest(size=len(payload)),
                 mock.patch.object(
-                    community_health, "urlopen", return_value=FakeResponse(payload)
+                    community_health.GITHUB_API_OPENER, "open", side_effect=failure
                 ),
                 self.assertRaises(community_health.AuditError),
             ):
                 community_health.GitHubClient().get_json("repos/owner/repository")
+
+        payloads = [
+            b"x" * (community_health.MAX_RESPONSE_BYTES + 1),
+            b"{",
+            b'{"name":"first","name":"second"}',
+        ]
+        for payload in payloads:
+            with (
+                self.subTest(size=len(payload)),
+                mock.patch.object(
+                    community_health.GITHUB_API_OPENER,
+                    "open",
+                    return_value=FakeResponse(payload),
+                ),
+                self.assertRaises(community_health.AuditError),
+            ):
+                community_health.GitHubClient().get_json("repos/owner/repository")
+
+    def test_get_json_rejects_redirects_before_following_them(self) -> None:
+        handler = community_health.RejectRedirectHandler()
+
+        with self.assertRaisesRegex(
+            community_health.AuditError, "redirects are not allowed"
+        ):
+            handler.redirect_request(
+                Request("https://api.github.com/repos/owner/repository"),
+                None,
+                302,
+                "Found",
+                Message(),
+                "https://example.test/receive-token",
+            )
 
 
 class InventoryTests(unittest.TestCase):
@@ -368,7 +396,8 @@ def stat_value() -> int:
 
 class CovenantTests(unittest.TestCase):
     def test_versions_and_local_policy_parsing(self) -> None:
-        self.assertEqual(community_health.version_tuple("3.0"), (3, 0))
+        self.assertEqual(community_health.version_tuple("3.0"), (3, 0, 0))
+        self.assertEqual(community_health.version_tuple("3.0.0"), (3, 0, 0))
         with self.assertRaisesRegex(community_health.AuditError, "invalid semantic"):
             community_health.version_tuple("v3")
         with tempfile.TemporaryDirectory() as directory:
@@ -432,6 +461,7 @@ class CovenantTests(unittest.TestCase):
             for version, expected in (
                 ("2.1", "outdated"),
                 ("3.0", "current"),
+                ("3.0.0", "current"),
                 ("4.0", "indeterminate"),
             ):
                 path.write_text(covenant_text(version), encoding="utf-8")
@@ -554,6 +584,30 @@ class AuditAndCliTests(unittest.TestCase):
             "Project-authored policies without a versioned canonical upstream are "
             "inventoried as `not versioned`; they are not falsely treated as "
             "outdated.\n",
+        )
+
+    def test_markdown_report_escapes_every_table_cell(self) -> None:
+        report: dict[str, Any] = {
+            "repository": "owner/repository",
+            "checked-at": "now",
+            "summary": {"status": "attention"},
+            "community-profile": {"status": "attention"},
+            "files": [
+                {
+                    "label": "Policy|extra\nrow",
+                    "paths": ["docs/a|b\n.md"],
+                    "tracker": "tracker|name\nnext",
+                    "status": "stale|status\nnext",
+                    "details": "detail|text\nnext",
+                }
+            ],
+            "errors": [],
+        }
+
+        self.assertIn(
+            "| Policy\\|extra row | `docs/a\\|b .md` | tracker\\|name next | "
+            "stale\\|status next | detail\\|text next |",
+            community_health.markdown_report(report),
         )
 
     def test_write_text_and_parse_args(self) -> None:

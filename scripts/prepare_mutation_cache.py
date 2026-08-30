@@ -12,7 +12,7 @@ import shutil
 import stat
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -89,6 +89,8 @@ def _validate_relative_path(value: str, *, kind: str) -> PurePosixPath:
         not value
         or path.is_absolute()
         or ".." in path.parts
+        or "\\" in value
+        or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
         or any(part in ("", ".") for part in path.parts)
     ):
@@ -167,6 +169,14 @@ def _is_link_or_reparse(path: Path) -> bool:
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     attributes = getattr(metadata, "st_file_attributes", 0)
     return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+def _remove_link_or_reparse(path: Path) -> None:
+    """Remove a link-like cache entry without following a directory junction."""
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+    else:
+        path.rmdir()
 
 
 def _assert_safe_cache_path(mutation_root: Path, path: Path) -> None:
@@ -357,7 +367,9 @@ def _clear_mutation_state(mutation_root: Path) -> None:
     mutation_root.mkdir(parents=True, exist_ok=True)
     _assert_safe_cache_path(mutation_root, mutation_root)
     for child in mutation_root.iterdir():
-        if _is_link_or_reparse(child) or child.is_file():
+        if _is_link_or_reparse(child):
+            _remove_link_or_reparse(child)
+        elif child.is_file():
             child.unlink()
         elif child.is_dir():
             shutil.rmtree(child)
@@ -409,7 +421,7 @@ def _sanitize_restored_state(mutation_root: Path, state_hashes: dict[str, str]) 
         for name in child_directories:
             path = current / name
             if _is_link_or_reparse(path):
-                path.unlink()
+                _remove_link_or_reparse(path)
             elif not any(path.iterdir()):
                 path.rmdir()
 

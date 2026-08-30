@@ -181,6 +181,88 @@ if find dist ! -type d ! -type f -print -quit | grep -q .; then
   exit 1
 fi
 """
+WORKFLOW_SCRIPT_COPY_CONTRACT = (
+    (
+        Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+        Path("scripts/check_code_scanning_alerts.py"),
+        "../../../scripts/check_code_scanning_alerts.py",
+        Path("scripts/check_code_scanning_alerts.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/community-health.yml"),
+        Path("skills/repo-scaffold/scripts/check_community_health.py"),
+        "../scripts/check_community_health.py",
+        Path("scripts/check_community_health.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/community-health.yml"),
+        Path("skills/repo-scaffold/assets/community-health-trackers.json"),
+        "assets/community-health-trackers.json",
+        Path(".github/community-health-trackers.json"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/scripts/ci_toolchain.py"),
+        "../scripts/ci_toolchain.py",
+        Path("scripts/ci_toolchain.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/assets/ci-toolchain.json"),
+        "assets/ci-toolchain.json",
+        Path(".github/ci-toolchain.json"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/scripts/validate_scaffold.py"),
+        "../scripts/validate_scaffold.py",
+        Path("scripts/validate_scaffold.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/assets/requirements-docs.txt"),
+        "assets/requirements-docs.txt",
+        Path("requirements-docs.txt"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/scripts/audit_freshness.py"),
+        "../scripts/audit_freshness.py",
+        Path("scripts/audit_freshness.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/assets/freshness-trackers.json"),
+        "assets/freshness-trackers.json",
+        Path(".github/freshness-trackers.json"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/scripts/sync_action_pins.py"),
+        "../scripts/sync_action_pins.py",
+        Path("scripts/sync_action_pins.py"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/labeler.yml"),
+        Path("skills/repo-scaffold/assets/labeler.yml"),
+        "assets/labeler.yml",
+        Path(".github/labeler.yml"),
+        False,
+    ),
+)
+SCAFFOLD_GENERATION_REFERENCE = Path(
+    "skills/repo-scaffold/references/scaffold-generation.md"
+)
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -1297,10 +1379,11 @@ def normalize_package_name(name: str) -> str:
 
 
 def validate_development_dependency_contract(repository_root: Path) -> list[str]:
-    """Validate the hashed development lock and its CI coverage consumers."""
+    """Validate development pins and every lock that installs them in CI."""
     problems: list[str] = []
     direct_path = repository_root / "requirements-dev.in"
     lock_path = repository_root / "requirements-dev.txt"
+    mutation_lock_path = repository_root / "requirements-mutation.txt"
     try:
         direct_text = direct_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
@@ -1309,6 +1392,12 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         lock_text = lock_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         return [f"requirements-dev.txt: could not verify hashed lock: {error}"]
+    try:
+        mutation_lock_text = mutation_lock_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        return [
+            f"requirements-mutation.txt: could not verify inherited development pins: {error}"
+        ]
 
     direct_pins: dict[str, str] = {}
     for line_number, raw_line in enumerate(direct_text.splitlines(), start=1):
@@ -1379,6 +1468,22 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
             problems.append(
                 f"requirements-dev.txt: {name} pin {locked_version} does not match "
                 f"requirements-dev.in pin {version}"
+            )
+
+    mutation_lock_pins = {
+        normalize_package_name(match.group(1)): match.group(2)
+        for match in entry_pattern.finditer(mutation_lock_text)
+    }
+    for name, version in direct_pins.items():
+        locked_version = mutation_lock_pins.get(name)
+        if locked_version is None:
+            problems.append(
+                f"requirements-mutation.txt: inherited package {name} is missing"
+            )
+        elif locked_version != version:
+            problems.append(
+                f"requirements-mutation.txt: {name} pin {locked_version} does not "
+                f"match requirements-dev.in pin {version}"
             )
 
     workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
@@ -3118,7 +3223,7 @@ def validate_release_attestation(repository_root: Path) -> list[str]:
 
 
 def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]:
-    """Keep write permissions isolated to the jobs that require them."""
+    """Keep write permissions isolated and CodeQL pull-request/queue triggers complete."""
     workflow_contracts = (
         (
             repository_root / ".github" / "workflows" / "release-please.yml",
@@ -3178,6 +3283,22 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
             continue
         if document.get("permissions") != workflow_permissions:
             problems.append(f"{relative}: top-level permissions must be read-only")
+        if job_name == "analyze":
+            pull_request = document.get("on", {}).get("pull_request")
+            if not isinstance(pull_request, dict) or pull_request.get("types") != [
+                "opened",
+                "edited",
+                "reopened",
+                "synchronize",
+            ]:
+                problems.append(
+                    f"{relative}: CodeQL pull_request trigger must include edited"
+                )
+            merge_group = document.get("on", {}).get("merge_group")
+            if merge_group != {"types": ["checks_requested"]}:
+                problems.append(
+                    f"{relative}: CodeQL merge_group trigger must request checks"
+                )
         jobs = document.get("jobs")
         job = jobs.get(job_name) if isinstance(jobs, dict) else None
         if not isinstance(job, dict):
@@ -3359,11 +3480,12 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
 
 
 def validate_required_check_concurrency(repository_root: Path) -> list[str]:
-    """Prevent cancelled duplicate runs from poisoning required check contexts."""
+    """Keep required checks non-cancelling and available to merge queues."""
     paths = (
         repository_root / ".github" / "workflows" / "ci.yml",
         repository_root / ".github" / "workflows" / "commitlint.yml",
         repository_root / ".github" / "workflows" / "dependency-review.yml",
+        repository_root / ".github" / "workflows" / "pr-template.yml",
         repository_root
         / "skills"
         / "repo-scaffold"
@@ -3382,6 +3504,12 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
         / "assets"
         / "workflows"
         / "dependency-review.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "pr-template.yml",
         repository_root
         / "skills"
         / "repo-scaffold"
@@ -3409,6 +3537,11 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
             problems.append(
                 f"{relative}: required-check runs must serialize with "
                 "cancel-in-progress: false"
+            )
+        merge_group = document.get("on", {}).get("merge_group")
+        if merge_group != {"types": ["checks_requested"]}:
+            problems.append(
+                f"{relative}: required-check workflow must run for merge_group"
             )
     return problems
 
@@ -4547,6 +4680,11 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         / "code-scanning-gate.yml",
     ):
         relative = path.relative_to(repository_root).as_posix()
+        expected_base_branch = (
+            "main"
+            if relative == ".github/workflows/code-scanning-gate.yml"
+            else "{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}"
+        )
         expected_categories = (
             (
                 '--expected-codeql-category "/language:actions"',
@@ -4565,17 +4703,35 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             continue
         jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
         gate = jobs.get("code_scanning_gate") if isinstance(jobs, dict) else None
+        merge_gate = (
+            jobs.get("merge_group_code_scanning_gate")
+            if isinstance(jobs, dict)
+            else None
+        )
+        trigger = workflow.get("on") if isinstance(workflow, dict) else None
+        pull_request_target = (
+            trigger.get("pull_request_target") if isinstance(trigger, dict) else None
+        )
+        merge_group = trigger.get("merge_group") if isinstance(trigger, dict) else None
         if (
             not isinstance(workflow, dict)
-            or workflow.get("on")
-            != {"pull_request_target": {"types": ["opened", "reopened", "synchronize"]}}
+            or not isinstance(pull_request_target, dict)
+            or pull_request_target.get("types")
+            != ["opened", "edited", "reopened", "synchronize"]
+            or pull_request_target.get("branches") != [expected_base_branch]
+            or merge_group != {"types": ["checks_requested"]}
             or workflow.get("permissions") != expected_permissions
             or not isinstance(gate, dict)
             or gate.get("name") != "code-scanning-gate"
+            or gate.get("if") != "${{ github.event_name == 'pull_request_target' }}"
             or gate.get("timeout-minutes") != "25"
+            or not isinstance(merge_gate, dict)
+            or merge_gate.get("name") != "code-scanning-gate"
+            or merge_gate.get("if") != "${{ github.event_name == 'merge_group' }}"
+            or merge_gate.get("timeout-minutes") != "25"
         ):
             problems.append(
-                f"{relative}: must use the trusted pull-request gate contract"
+                f"{relative}: must use the trusted pull-request gate contract and merge-queue contract"
             )
             continue
         steps = gate.get("steps")
@@ -4607,6 +4763,43 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         ):
             problems.append(
                 f"{relative}: must execute only base-branch alert-gate code"
+            )
+            continue
+        merge_steps = merge_gate.get("steps")
+        merge_checkout = (
+            merge_steps[0] if isinstance(merge_steps, list) and merge_steps else None
+        )
+        merge_run_step = (
+            merge_steps[1]
+            if isinstance(merge_steps, list) and len(merge_steps) == 2
+            else None
+        )
+        if (
+            not isinstance(merge_checkout, dict)
+            or merge_checkout.get("with")
+            != {
+                "ref": "${{ github.event.merge_group.base_sha }}",
+                "persist-credentials": "false",
+            }
+            or not isinstance(merge_run_step, dict)
+            or merge_run_step.get("env")
+            != {
+                "GITHUB_TOKEN": "${{ github.token }}",
+                "MERGE_GROUP_REF": "${{ github.ref }}",
+                "MERGE_GROUP_SHA": "${{ github.sha }}",
+            }
+            or "scripts/check_code_scanning_alerts.py"
+            not in str(merge_run_step.get("run"))
+            or '--ref "$MERGE_GROUP_REF"' not in str(merge_run_step.get("run"))
+            or '--sha "$MERGE_GROUP_SHA"' not in str(merge_run_step.get("run"))
+            or not all(
+                category in str(merge_run_step.get("run"))
+                for category in expected_categories
+            )
+            or "pull-request" in str(merge_run_step.get("run"))
+        ):
+            problems.append(
+                f"{relative}: must execute trusted merge-queue alert-gate code"
             )
     if not (repository_root / "scripts" / "check_code_scanning_alerts.py").is_file():
         problems.append(
@@ -4788,6 +4981,62 @@ def validate_release_archive(repository_root: Path) -> list[str]:
         return problems
 
 
+def validate_workflow_script_copy_contract(repository_root: Path) -> list[str]:
+    """Require documented generated copies for workflow dependencies."""
+    reference = repository_root / SCAFFOLD_GENERATION_REFERENCE
+    try:
+        reference_text = reference.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        return [
+            f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: could not read workflow "
+            f"script copy contract: {error}"
+        ]
+
+    problems: list[str] = []
+    for (
+        workflow_relative,
+        source_relative,
+        source_reference,
+        destination,
+        invoked,
+    ) in WORKFLOW_SCRIPT_COPY_CONTRACT:
+        source = repository_root / source_relative
+        workflow = repository_root / workflow_relative
+        asset_relative = workflow_relative.as_posix().removeprefix(
+            "skills/repo-scaffold/"
+        )
+        row = re.compile(
+            rf"^\| `{re.escape(asset_relative)}` \| "
+            rf"`{re.escape(source_reference)}` \| "
+            rf"`{re.escape(destination.as_posix())}` \|$",
+            re.MULTILINE,
+        )
+        if not source.is_file():
+            problems.append(
+                f"{source_relative.as_posix()}: bundled workflow dependency is missing"
+            )
+        if row.search(reference_text) is None:
+            problems.append(
+                f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: must document copying "
+                f"{asset_relative} dependency {destination.as_posix()}"
+            )
+        if invoked:
+            try:
+                workflow_text = workflow.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as error:
+                problems.append(
+                    f"{workflow_relative.as_posix()}: could not read workflow script "
+                    f"dependency: {error}"
+                )
+                continue
+            if f"python {destination.as_posix()}" not in workflow_text:
+                problems.append(
+                    f"{workflow_relative.as_posix()}: must invoke "
+                    f"{destination.as_posix()}"
+                )
+    return problems
+
+
 def validate_test_quality_contract(repository_root: Path) -> list[str]:
     """Reject structurally weak or duplicated test cases."""
     test_root = repository_root / "tests"
@@ -4871,6 +5120,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_freshness_tracking_contract,
         validate_official_docs_tracking_contract,
         validate_code_scanning_gate_contract,
+        validate_workflow_script_copy_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,

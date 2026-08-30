@@ -10,11 +10,11 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 API_ROOT = "https://api.github.com"
@@ -22,6 +22,7 @@ API_VERSION = "2026-03-10"
 DEFAULT_ALLOWLIST = Path(".github/code-scanning-allowlist.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_PAGES = 20
+MAX_ANALYSIS_PAGES = 20
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 PULL_REQUEST = re.compile(r"[1-9][0-9]*\Z")
@@ -29,6 +30,32 @@ PULL_REQUEST = re.compile(r"[1-9][0-9]*\Z")
 
 class GateError(RuntimeError):
     """Raised when the gate cannot verify code-scanning alert state."""
+
+
+class TransientGateError(GateError):
+    """Raised when a bounded retry may recover a GitHub API request."""
+
+
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so the workflow token never leaves GitHub's API host."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        raise GateError("GitHub API redirects are not allowed")
+
+
+class DuplicateJsonMember(ValueError):
+    """Raised when a JSON document contains ambiguous duplicate members."""
+
+
+GITHUB_API_OPENER = build_opener(RejectRedirectHandler())
 
 
 @dataclass(frozen=True)
@@ -58,11 +85,38 @@ def require_text(value: object, *, field: str) -> str:
     return value
 
 
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting ambiguous duplicate member names."""
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
+        document[key] = value
+    return document
+
+
+def safe_alert_path(value: str) -> str:
+    """Validate the canonical POSIX path emitted by GitHub code scanning."""
+    path = PurePosixPath(value)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in value
+        or any(PureWindowsPath(part).drive for part in path.parts)
+        or path.as_posix() != value
+    ):
+        raise GateError("code-scanning allowlist path must be canonical POSIX")
+    return value
+
+
 def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
     """Load a strict, reviewable allowlist from the checked-out base."""
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        document = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, DuplicateJsonMember) as error:
         raise GateError(
             f"could not read code-scanning allowlist {path}: {error}"
         ) from error
@@ -90,10 +144,7 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
         path_value = entry["path"]
         if path_value is not None:
             path_value = require_text(path_value, field="code-scanning allowlist path")
-            if Path(path_value).is_absolute() or ".." in Path(path_value).parts:
-                raise GateError(
-                    "code-scanning allowlist path must be repository-relative"
-                )
+            path_value = safe_alert_path(path_value)
         selector = AlertSelector(
             number,
             require_text(entry["tool"], field="code-scanning allowlist tool"),
@@ -120,15 +171,28 @@ def api_json(url: str, token: str) -> Any:
         },
     )
     try:
-        with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed GitHub API host
+        with GITHUB_API_OPENER.open(request, timeout=30) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
-    except (HTTPError, URLError, OSError) as error:
+    except HTTPError as error:
+        if error.code in {408, 429, 500, 502, 503, 504}:
+            raise TransientGateError(
+                f"GitHub API request failed transiently: {error}"
+            ) from error
         raise GateError(f"GitHub API request failed: {error}") from error
+    except (URLError, OSError) as error:
+        raise TransientGateError(
+            f"GitHub API request failed transiently: {error}"
+        ) from error
     if len(payload) > MAX_RESPONSE_BYTES:
         raise GateError("GitHub API response exceeds the allowed size")
     try:
-        return json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
+        return json.loads(payload.decode("utf-8"), object_pairs_hook=unique_json_object)
+    except (
+        UnicodeError,
+        json.JSONDecodeError,
+        DuplicateJsonMember,
+        RecursionError,
+    ) as error:
         raise GateError(f"GitHub API response is not valid JSON: {error}") from error
 
 
@@ -160,24 +224,34 @@ def analyses_ready(
     expected_parents: tuple[str, str] | None = None,
 ) -> bool:
     """Return whether every configured CodeQL category is uploaded for this commit."""
-    url = f"{API_ROOT}/repos/{repository}/code-scanning/analyses?ref={quote(ref, safe='')}&per_page=100"
-    document = api_json(url, token)
-    if not isinstance(document, list):
-        raise GateError("GitHub analyses response must be a list")
     categories_by_sha: dict[str, set[str]] = {}
-    for item in document:
-        if not isinstance(item, dict) or not isinstance(item.get("tool"), dict):
-            continue
-        analysis_sha = item.get("commit_sha")
-        category = item.get("category")
-        if (
-            item["tool"].get("name") != "CodeQL"
-            or not isinstance(analysis_sha, str)
-            or COMMIT_SHA.fullmatch(analysis_sha) is None
-            or not isinstance(category, str)
-        ):
-            continue
-        categories_by_sha.setdefault(analysis_sha, set()).add(category)
+    for page in range(1, MAX_ANALYSIS_PAGES + 1):
+        url = (
+            f"{API_ROOT}/repos/{repository}/code-scanning/analyses?"
+            f"ref={quote(ref, safe='')}&per_page=100&page={page}"
+        )
+        document = api_json(url, token)
+        if not isinstance(document, list):
+            raise GateError("GitHub analyses response must be a list")
+        for item in document:
+            if not isinstance(item, dict) or not isinstance(item.get("tool"), dict):
+                continue
+            analysis_sha = item.get("commit_sha")
+            category = item.get("category")
+            if (
+                item["tool"].get("name") != "CodeQL"
+                or not isinstance(analysis_sha, str)
+                or COMMIT_SHA.fullmatch(analysis_sha) is None
+                or not isinstance(category, str)
+            ):
+                continue
+            categories_by_sha.setdefault(analysis_sha, set()).add(category)
+        if len(document) < 100:
+            break
+    else:
+        raise GateError(
+            f"GitHub returned more than {MAX_ANALYSIS_PAGES * 100} analyses for {ref}"
+        )
     if expected_parents is None:
         return expected_categories <= categories_by_sha.get(sha, set())
     return any(
@@ -220,8 +294,11 @@ def wait_for_analyses(
 ) -> None:
     """Wait briefly for the just-finished CodeQL uploads to become queryable."""
     for attempt in range(attempts):
-        if analyses_ready(repository, ref, sha, token, expected_categories):
-            return
+        try:
+            if analyses_ready(repository, ref, sha, token, expected_categories):
+                return
+        except TransientGateError:
+            pass
         if attempt + 1 < attempts:
             time.sleep(delay)
     raise GateError(
@@ -241,11 +318,14 @@ def wait_for_pull_request_analyses(
     """Wait for GitHub to create the test merge commit and receive CodeQL results."""
     ref = f"refs/pull/{number}/merge"
     for attempt in range(attempts):
-        sha = pull_request_merge_sha(repository, number, token)
-        if sha is not None and analyses_ready(
-            repository, ref, sha, token, expected_categories, expected_parents
-        ):
-            return ref, sha
+        try:
+            sha = pull_request_merge_sha(repository, number, token)
+            if sha is not None and analyses_ready(
+                repository, ref, sha, token, expected_categories, expected_parents
+            ):
+                return ref, sha
+        except TransientGateError:
+            pass
         if attempt + 1 < attempts:
             time.sleep(delay)
     raise GateError(
@@ -291,6 +371,21 @@ def open_alerts(repository: str, ref: str, token: str) -> tuple[Alert, ...]:
         if len(document) < 100:
             return tuple(alerts)
     raise GateError(f"GitHub returned more than {MAX_PAGES * 100} open alerts")
+
+
+def wait_for_open_alerts(
+    repository: str, ref: str, token: str, attempts: int, delay: float
+) -> tuple[Alert, ...]:
+    """Retry transient alert-list failures without treating them as approved."""
+    for attempt in range(attempts):
+        try:
+            return open_alerts(repository, ref, token)
+        except TransientGateError:
+            if attempt + 1 < attempts:
+                time.sleep(delay)
+    raise GateError(
+        f"Open code-scanning alerts for {ref} were not queryable after {attempts} attempts"
+    )
 
 
 def unapproved_alerts(
@@ -369,7 +464,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.delay_seconds,
                 expected_categories,
             )
-        unexpected = unapproved_alerts(open_alerts(repository, ref, token), selectors)
+        unexpected = unapproved_alerts(
+            wait_for_open_alerts(
+                repository, ref, token, args.attempts, args.delay_seconds
+            ),
+            selectors,
+        )
     except GateError as error:
         print(f"code-scanning gate error: {error}", file=sys.stderr)
         return 2

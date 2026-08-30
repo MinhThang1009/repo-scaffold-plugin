@@ -11,10 +11,10 @@ import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 API_ROOT = "https://api.github.com"
@@ -47,6 +47,24 @@ class AuditError(RuntimeError):
 
 class DuplicateJsonMember(ValueError):
     """Raised when a registry uses ambiguous duplicate JSON members."""
+
+
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so an optional workflow token stays on the API host."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        raise AuditError("GitHub API redirects are not allowed")
+
+
+GITHUB_API_OPENER = build_opener(RejectRedirectHandler())
 
 
 @dataclass(frozen=True)
@@ -91,7 +109,7 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {self.token}"
         request = Request(f"{API_ROOT}/{endpoint}", headers=headers)
         try:
-            with urlopen(request, timeout=self.timeout) as response:  # noqa: S310
+            with GITHUB_API_OPENER.open(request, timeout=self.timeout) as response:
                 payload = response.read(MAX_RESPONSE_BYTES + 1)
         except HTTPError as error:
             raise AuditError(
@@ -104,8 +122,15 @@ class GitHubClient:
         if len(payload) > MAX_RESPONSE_BYTES:
             raise AuditError(f"GitHub API response is too large for {endpoint}")
         try:
-            return json.loads(payload.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as error:
+            return json.loads(
+                payload.decode("utf-8"), object_pairs_hook=unique_json_object
+            )
+        except (
+            UnicodeError,
+            json.JSONDecodeError,
+            DuplicateJsonMember,
+            RecursionError,
+        ) as error:
             raise AuditError(
                 f"GitHub API returned invalid JSON for {endpoint}"
             ) from error
@@ -122,7 +147,14 @@ def _safe_relative_path(value: object, location: str) -> str:
     if not isinstance(value, str) or not value:
         raise AuditError(f"{location} must be a non-empty relative path")
     path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts or "\\" in value:
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in value
+        or any(PureWindowsPath(part).drive for part in path.parts)
+        or path.as_posix() != value
+    ):
         raise AuditError(f"{location} must be a safe POSIX repository path")
     return value
 
@@ -269,10 +301,12 @@ def inventory_entry(root: Path, entry: RegistryEntry) -> dict[str, Any]:
     }
 
 
-def version_tuple(value: str) -> tuple[int, ...]:
+def version_tuple(value: str) -> tuple[int, int, int]:
     if not VERSION_PATTERN.fullmatch(value):
         raise AuditError(f"invalid semantic version: {value!r}")
-    return tuple(int(component) for component in value.split("."))
+    components = [int(component) for component in value.split(".")]
+    major, minor, patch = (components + [0, 0])[:3]
+    return major, minor, patch
 
 
 def local_contributor_covenant_version(path: Path) -> str | None:
@@ -424,6 +458,11 @@ def audit(
     }
 
 
+def markdown_table_cell(value: object) -> str:
+    """Render one value without permitting it to add Markdown table cells/rows."""
+    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
 def markdown_report(report: dict[str, Any]) -> str:
     summary = report["summary"]
     profile = report["community-profile"]
@@ -446,11 +485,20 @@ def markdown_report(report: dict[str, Any]) -> str:
     ]
     for result in report["files"]:
         paths = result["paths"]
-        path_text = ", ".join(f"`{path}`" for path in paths) if paths else "_absent_"
+        path_text = (
+            ", ".join(f"`{markdown_table_cell(path)}`" for path in paths)
+            if paths
+            else "_absent_"
+        )
         tracker = result["tracker"] if result["tracker"] != "none" else "not versioned"
-        details = str(result["details"]).replace("|", "\\|").replace("\n", " ")
         lines.append(
-            f"| {result['label']} | {path_text} | {tracker} | {result['status']} | {details} |"
+            "| {label} | {paths} | {tracker} | {status} | {details} |".format(
+                label=markdown_table_cell(result["label"]),
+                paths=path_text,
+                tracker=markdown_table_cell(tracker),
+                status=markdown_table_cell(result["status"]),
+                details=markdown_table_cell(result["details"]),
+            )
         )
     errors = report["errors"]
     if errors:

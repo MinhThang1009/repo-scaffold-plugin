@@ -10,7 +10,7 @@ import re
 import stat
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -88,13 +88,20 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def safe_relative_path(value: object, *, field: str) -> Path:
-    """Parse a repository-relative path without allowing an escape."""
+    """Parse one canonical, cross-platform path within the repository."""
     if not isinstance(value, str) or not value:
         raise AuditError(f"{field} must be a non-empty relative path")
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts or not path.parts:
+    path = PurePosixPath(value)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in value
+        or any(PureWindowsPath(part).drive for part in path.parts)
+        or path.as_posix() != value
+    ):
         raise AuditError(f"{field} must be a safe relative path: {value!r}")
-    return path
+    return Path(value)
 
 
 def is_link_or_reparse(path: Path) -> bool:
@@ -386,6 +393,11 @@ def audit(
     }
 
 
+def markdown_table_cell(value: object) -> str:
+    """Render one value without permitting it to add Markdown table cells/rows."""
+    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
 def markdown_report(report: dict[str, Any]) -> str:
     """Render an issue-safe report for a scheduled reminder workflow."""
     lines = [
@@ -406,7 +418,7 @@ def markdown_report(report: dict[str, Any]) -> str:
         )
         lines.extend(
             "| {kind} | `{path}` | {subject} | `{current}` | `{latest}` |".format(
-                **finding
+                **{key: markdown_table_cell(value) for key, value in finding.items()}
             )
             for finding in findings
         )

@@ -291,6 +291,9 @@ class MutationCacheTests(unittest.TestCase):
             lambda: prepare_mutation_cache._validate_digest_map(
                 {"scripts/alpha.py": "invalid"}, field="source_hashes"
             ),
+            lambda: prepare_mutation_cache._validate_relative_path(
+                "scripts/C:alpha.py", kind="source"
+            ),
             lambda: prepare_mutation_cache._validate_test_sources([]),
             lambda: prepare_mutation_cache._validate_test_sources({1: "source"}),
             lambda: prepare_mutation_cache._validate_test_sources(
@@ -499,6 +502,28 @@ class MutationCacheTests(unittest.TestCase):
                 prepare_mutation_cache._sanitize_restored_state(root, {})
 
             unlink.assert_called_once_with(linked)
+
+    def test_cache_cleanup_removes_directory_reparse_points_with_rmdir(self) -> None:
+        mutation_root = mock.Mock(spec=Path)
+        mutation_root.mkdir.return_value = None
+        junction = mock.Mock(spec=Path)
+        junction.name = "junction"
+        junction.is_symlink.return_value = False
+        junction.is_dir.return_value = True
+        mutation_root.iterdir.return_value = [junction]
+
+        with (
+            mock.patch.object(prepare_mutation_cache, "_assert_safe_cache_path"),
+            mock.patch.object(
+                prepare_mutation_cache,
+                "_is_link_or_reparse",
+                return_value=True,
+            ),
+        ):
+            prepare_mutation_cache._clear_mutation_state(mutation_root)
+
+        junction.rmdir.assert_called_once_with()
+        junction.unlink.assert_not_called()
 
     def test_cache_paths_reject_symlink_directories_and_special_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

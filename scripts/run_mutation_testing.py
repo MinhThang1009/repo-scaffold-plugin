@@ -11,7 +11,7 @@ import multiprocessing
 import os
 import stat
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 
@@ -49,6 +49,8 @@ def _validate_source_path(value: str) -> str:
         not value
         or path.is_absolute()
         or ".." in path.parts
+        or "\\" in value
+        or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
         or path.suffix != ".py"
         or not any(path == root or root in path.parents for root in source_roots)
@@ -145,12 +147,22 @@ def _create_or_reuse_mutants(filename: Path, output_path: Path) -> Any:
 
 def load_mutmut() -> Any:
     """Load the reviewed mutmut implementation and reject version drift."""
-    installed = importlib.metadata.version("mutmut")
+    try:
+        installed = importlib.metadata.version("mutmut")
+    except importlib.metadata.PackageNotFoundError as error:
+        raise ValueError(
+            f"incremental runner requires mutmut {MUTMUT_VERSION}, but it is not installed"
+        ) from error
     if installed != MUTMUT_VERSION:
         raise ValueError(
             f"incremental runner requires mutmut {MUTMUT_VERSION}, found {installed}"
         )
-    return importlib.import_module("mutmut.__main__")
+    try:
+        return importlib.import_module("mutmut.__main__")
+    except ModuleNotFoundError as error:
+        raise ValueError(
+            f"incremental runner could not import mutmut {MUTMUT_VERSION}: {error}"
+        ) from error
 
 
 def run_mutation_testing(

@@ -118,6 +118,115 @@ class VersionedInputSyncTests(unittest.TestCase):
                 [],
             )
 
+    def test_schema_synchronizer_preserves_mixed_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            config.write_bytes(self.release_config().replace("\n", "\r\n", 1).encode())
+
+            changed = versioned_inputs.synchronize_release_please_schemas(
+                root,
+                (config.relative_to(root),),
+                "v17.11.2",
+                write=True,
+            )
+
+            self.assertEqual(changed, [config])
+            updated = config.read_bytes()
+            self.assertIn(b"release-please/v17.11.2/schemas/config.json", updated)
+            self.assertEqual(updated.count(b"\r\n"), 1)
+            self.assertEqual(updated.replace(b"\r\n", b"").count(b"\n"), 2)
+
+    def test_schema_synchronizer_revalidates_path_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            original = self.release_config()
+            config.write_text(original, encoding="utf-8")
+            original_tracked_path = versioned_inputs.audit_freshness.tracked_path
+            checks = 0
+
+            def becomes_unsafe(*args: object, **kwargs: object) -> Path:
+                nonlocal checks
+                checks += 1
+                if checks == 2:
+                    raise versioned_inputs.audit_freshness.AuditError("unsafe path")
+                return original_tracked_path(*args, **kwargs)
+
+            with mock.patch.object(
+                versioned_inputs.audit_freshness,
+                "tracked_path",
+                side_effect=becomes_unsafe,
+            ):
+                with self.assertRaisesRegex(
+                    versioned_inputs.audit_freshness.AuditError, "unsafe path"
+                ):
+                    versioned_inputs.synchronize_release_please_schemas(
+                        root,
+                        (config.relative_to(root),),
+                        "v17.11.2",
+                        write=True,
+                    )
+
+            self.assertEqual(config.read_text(encoding="utf-8"), original)
+
+    def test_schema_synchronizer_rejects_concurrent_config_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            concurrent_content = '{\n  "maintainer": true\n}\n'
+            config.write_text(self.release_config(), encoding="utf-8")
+            original_tracked_path = versioned_inputs.audit_freshness.tracked_path
+            checks = 0
+
+            def edit_before_write(*args: object, **kwargs: object) -> Path:
+                nonlocal checks
+                checks += 1
+                if checks == 2:
+                    config.write_text(concurrent_content, encoding="utf-8")
+                return original_tracked_path(*args, **kwargs)
+
+            with mock.patch.object(
+                versioned_inputs.audit_freshness,
+                "tracked_path",
+                side_effect=edit_before_write,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "config changed during synchronization"
+                ):
+                    versioned_inputs.synchronize_release_please_schemas(
+                        root,
+                        (config.relative_to(root),),
+                        "v17.11.2",
+                        write=True,
+                    )
+
+            self.assertEqual(config.read_text(encoding="utf-8"), concurrent_content)
+
+    def test_schema_synchronizer_reports_config_reread_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            original = self.release_config()
+            config.write_text(original, encoding="utf-8")
+
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=(original.encode("utf-8"), OSError("denied")),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "could not reread Release Please config"
+                ):
+                    versioned_inputs.synchronize_release_please_schemas(
+                        root,
+                        (config.relative_to(root),),
+                        "v17.11.2",
+                        write=True,
+                    )
+
+            self.assertEqual(config.read_text(encoding="utf-8"), original)
+
     def test_caches_authoritative_releases_across_preflight_and_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -141,14 +250,17 @@ class VersionedInputSyncTests(unittest.TestCase):
             self.write_repository(root)
             config = root / "release-please-config.json"
             config.write_text(
-                self.release_config() + self.release_config(), encoding="utf-8"
+                '{"$schema": "https://raw.githubusercontent.com/googleapis/'
+                'release-please/v17.11.1/schemas/config.json", '
+                '"$schema": "https://example.test/schema.json"}',
+                encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "exactly one supported"):
+            with self.assertRaisesRegex(ValueError, "could not read"):
                 versioned_inputs.synchronize_versioned_inputs(
                     root, self.release_lookup, write=False
                 )
-            with self.assertRaisesRegex(ValueError, "exactly one supported"):
+            with self.assertRaisesRegex(ValueError, "could not read"):
                 versioned_inputs.synchronize_versioned_inputs(
                     root, self.release_lookup, write=True
                 )
@@ -156,6 +268,12 @@ class VersionedInputSyncTests(unittest.TestCase):
                 "a" * 40,
                 (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
             )
+
+            config.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "exactly one supported"):
+                versioned_inputs.synchronize_versioned_inputs(
+                    root, self.release_lookup, write=False
+                )
 
     def test_rejects_prerelease_schema_tag_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -185,7 +303,7 @@ class VersionedInputSyncTests(unittest.TestCase):
             root = Path(directory)
             self.write_repository(root)
             config = root / "release-please-config.json"
-            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+            with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
                 with self.assertRaisesRegex(ValueError, "could not read"):
                     versioned_inputs.synchronize_release_please_schemas(
                         root,

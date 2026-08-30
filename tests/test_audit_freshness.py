@@ -11,6 +11,7 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from urllib.request import Request
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -125,24 +126,44 @@ class FreshnessTests(unittest.TestCase):
 
     def test_read_json_validates_network_size_shape_and_encoding(self) -> None:
         with mock.patch.object(
-            freshness,
-            "urlopen",
+            freshness.PYPI_OPENER,
+            "open",
             return_value=FakeResponse(b'{"ok": true}'),
         ) as open_url:
             self.assertEqual(
                 freshness.read_json("https://example.test/data"), {"ok": True}
             )
         self.assertEqual(open_url.call_args.kwargs["timeout"], 30)
-        for payload in (b"[1]", b"{", b"x" * (freshness.MAX_RESPONSE_BYTES + 1)):
+        for payload in (
+            b"[1]",
+            b"{",
+            b'{"info":{"version":"1.0.0"},"info":{"version":"2.0.0"}}',
+            b"x" * (freshness.MAX_RESPONSE_BYTES + 1),
+        ):
             with self.subTest(payload_size=len(payload)):
                 with mock.patch.object(
-                    freshness, "urlopen", return_value=FakeResponse(payload)
+                    freshness.PYPI_OPENER, "open", return_value=FakeResponse(payload)
                 ):
                     with self.assertRaises(freshness.AuditError):
                         freshness.read_json("https://example.test/data")
-        with mock.patch.object(freshness, "urlopen", side_effect=OSError("offline")):
+        with mock.patch.object(
+            freshness.PYPI_OPENER, "open", side_effect=OSError("offline")
+        ):
             with self.assertRaisesRegex(freshness.AuditError, "request failed"):
                 freshness.read_json("https://example.test/data")
+
+    def test_read_json_rejects_redirects_before_following_them(self) -> None:
+        handler = freshness.RejectRedirectHandler()
+
+        with self.assertRaisesRegex(freshness.AuditError, "redirects are not allowed"):
+            handler.redirect_request(
+                Request("https://pypi.org/pypi/example/json"),
+                None,
+                302,
+                "Found",
+                None,
+                "https://example.test/redirected",
+            )
 
     def test_pinned_requirements_rejects_invalid_empty_and_conflicting_pins(
         self,
@@ -150,6 +171,10 @@ class FreshnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "requirements.in"
             path.write_text("ruff==1.0.0\n", encoding="utf-8")
+            self.assertEqual(
+                freshness.pinned_requirements(path), {"ruff": ("ruff", "1.0.0")}
+            )
+            path.write_text("ruff==1.0.0  # retained rationale\n", encoding="utf-8")
             self.assertEqual(
                 freshness.pinned_requirements(path), {"ruff": ("ruff", "1.0.0")}
             )
@@ -221,6 +246,117 @@ class FreshnessTests(unittest.TestCase):
                 any(finding["subject"] == "actions/setup-node" for finding in findings)
             )
 
+    def test_action_findings_accepts_equivalent_uppercase_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            for relative in (
+                Path(".github/workflows/ci.yml"),
+                Path("skills/repo-scaffold/assets/workflows/ci.yml"),
+            ):
+                workflow = root / relative
+                workflow.write_text(
+                    workflow.read_text(encoding="utf-8").replace("a" * 40, "A" * 40),
+                    encoding="utf-8",
+                )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            self.assertEqual(
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                ),
+                [],
+            )
+
+    def test_action_findings_normalizes_double_quoted_continued_references(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            for relative in (
+                Path(".github/workflows/ci.yml"),
+                Path("skills/repo-scaffold/assets/workflows/ci.yml"),
+            ):
+                workflow = root / relative
+                workflow.write_text(
+                    workflow.read_text(encoding="utf-8").replace(
+                        "actions/checkout@" + "a" * 40,
+                        '"actions/chec\\\n          kout@' + "a" * 40 + '"',
+                    ),
+                    encoding="utf-8",
+                )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            self.assertEqual(
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                ),
+                [],
+            )
+
+    def test_action_findings_normalizes_double_quoted_slash_escapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            for relative in (
+                Path(".github/workflows/ci.yml"),
+                Path("skills/repo-scaffold/assets/workflows/ci.yml"),
+            ):
+                workflow = root / relative
+                workflow.write_text(
+                    workflow.read_text(encoding="utf-8").replace(
+                        "actions/checkout@" + "a" * 40,
+                        '"act\\u0069ons\\u002fcheck\\x6fut\\u0040'
+                        + "a" * 39
+                        + '\\x61"',
+                    ),
+                    encoding="utf-8",
+                )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            self.assertEqual(
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                ),
+                [],
+            )
+
+    def test_action_findings_ignores_uses_text_in_run_block_scalars(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + "      - run: |\n"
+                + "          uses: actions/checkout@"
+                + "b" * 40
+                + " # shell text\n"
+                + '      - run: "echo started\n'
+                + "          uses: actions/checkout@"
+                + "d" * 40
+                + " # shell text\n"
+                + '          echo completed"\n',
+                encoding="utf-8",
+            )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            self.assertEqual(
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                ),
+                [],
+            )
+
     def test_action_findings_uses_the_safe_yaml_aware_workflow_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -282,6 +418,16 @@ class FreshnessTests(unittest.TestCase):
                     root, trackers.release_please_configs, "v17.6.0"
                 )
             config.write_text(
+                '{"$schema": "https://raw.githubusercontent.com/googleapis/'
+                'release-please/v17.6.0/schemas/config.json", '
+                '"$schema": "https://example.test/schema.json"}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(freshness.AuditError, "could not read"):
+                freshness.release_please_findings(
+                    root, trackers.release_please_configs, "v17.6.0"
+                )
+            config.write_text(
                 json.dumps(
                     {
                         "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.6.0/schemas/config.json"
@@ -304,6 +450,28 @@ class FreshnessTests(unittest.TestCase):
             )
             self.assertEqual(inconsistent[-1]["kind"], "lock-consistency")
 
+    def test_requirement_findings_reuses_latest_lookup_for_duplicate_pins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.in"
+            second = root / "second.in"
+            first.write_text("ruff==0.1.0\n", encoding="utf-8")
+            second.write_text("ruff==0.1.0\n", encoding="utf-8")
+            sources = (
+                freshness.RequirementSource(first.relative_to(root), ()),
+                freshness.RequirementSource(second.relative_to(root), ()),
+            )
+            calls: list[str] = []
+
+            def latest_lookup(name: str) -> str:
+                calls.append(name)
+                return "0.1.0"
+
+            self.assertEqual(
+                freshness.requirement_findings(root, sources, latest_lookup), []
+            )
+            self.assertEqual(calls, ["ruff"])
+
     def test_tracker_registry_rejects_invalid_and_unsafe_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -312,6 +480,18 @@ class FreshnessTests(unittest.TestCase):
             valid = json.loads(registry.read_text(encoding="utf-8"))
             with self.assertRaisesRegex(freshness.AuditError, "non-empty"):
                 freshness.safe_relative_path("", field="test")
+            for value in (
+                r"docs\README.md",
+                "docs/./README.md",
+                "docs//README.md",
+                "C:/README.md",
+                "docs/C:README.md",
+            ):
+                with (
+                    self.subTest(value=value),
+                    self.assertRaisesRegex(freshness.AuditError, "safe relative"),
+                ):
+                    freshness.safe_relative_path(value, field="test")
             with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
                 freshness.tracked_path(root, Path("missing"), kind="test path")
             with mock.patch.object(Path, "is_symlink", return_value=True):
@@ -517,6 +697,21 @@ class FreshnessTests(unittest.TestCase):
                 }
             ]
             self.assertIn("| Check |", freshness.markdown_report(report))
+            report["findings"] = [
+                {
+                    "kind": "python|package\nnext",
+                    "path": "requirements|dev.in\nnext",
+                    "subject": "package|name\nnext",
+                    "current": "1|0\nnext",
+                    "latest": "2|0\nnext",
+                    "details": "outdated",
+                }
+            ]
+            self.assertIn(
+                "| python\\|package next | `requirements\\|dev.in next` | "
+                "`package\\|name next` | `1\\|0 next` | `2\\|0 next` |",
+                freshness.markdown_report(report),
+            )
             report["errors"] = ["offline"]
             report["status"] = "indeterminate"
             self.assertIn("## Indeterminate", freshness.markdown_report(report))

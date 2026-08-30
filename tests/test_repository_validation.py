@@ -1254,6 +1254,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         "README.md",
         "requirements-dev.txt",
         "requirements-dev.in",
+        "requirements-mutation.txt",
     )
 
     def copy_contract(self, root: Path) -> None:
@@ -1301,6 +1302,29 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 problems,
             )
 
+    def test_mutation_lock_dependency_version_drift_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            ruff_version = self.direct_version(root, "ruff")
+            mutation_lock_path = root / "requirements-mutation.txt"
+            mutation_lock_path.write_text(
+                mutation_lock_path.read_text(encoding="utf-8").replace(
+                    f"ruff=={ruff_version}", "ruff==0.0.0", 1
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_development_dependency_contract(
+                root
+            )
+
+            self.assertIn(
+                "requirements-mutation.txt: ruff pin 0.0.0 does not match "
+                f"requirements-dev.in pin {ruff_version}",
+                problems,
+            )
+
     def test_automated_dependency_versions_are_not_hardcoded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1309,6 +1333,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             replacement_version = "999.0.0"
             direct_path = root / "requirements-dev.in"
             lock_path = root / "requirements-dev.txt"
+            mutation_lock_path = root / "requirements-mutation.txt"
             direct_path.write_text(
                 direct_path.read_text(encoding="utf-8").replace(
                     f"coverage=={current_version}",
@@ -1321,6 +1346,14 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 lock_path.read_text(encoding="utf-8").replace(
                     f"coverage=={current_version} \\",
                     f"coverage=={replacement_version} \\",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            mutation_lock_path.write_text(
+                mutation_lock_path.read_text(encoding="utf-8").replace(
+                    f"coverage=={current_version}",
+                    f"coverage=={replacement_version}",
                     1,
                 ),
                 encoding="utf-8",
@@ -1488,6 +1521,20 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 validate_repository.validate_development_dependency_contract(root)[
                     0
                 ].startswith("requirements-dev.txt: could not verify hashed lock")
+            )
+
+    def test_missing_mutation_lock_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "requirements-mutation.txt").unlink()
+
+            self.assertTrue(
+                validate_repository.validate_development_dependency_contract(root)[
+                    0
+                ].startswith(
+                    "requirements-mutation.txt: could not verify inherited development pins"
+                )
             )
 
     def test_invalid_direct_and_lock_shapes_are_reported(self) -> None:
@@ -3011,6 +3058,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_freshness_tracking_contract",
             "validate_official_docs_tracking_contract",
             "validate_code_scanning_gate_contract",
+            "validate_workflow_script_copy_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
             "validate_release_archive",
@@ -4343,6 +4391,75 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
                 2,
             )
 
+    def test_rejects_codeql_trigger_that_omits_edited_pull_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            for relative in (
+                Path(".github/workflows/release-please.yml"),
+                Path("skills/repo-scaffold/assets/workflows/release-please.yml"),
+                Path(".github/workflows/codeql.yml"),
+                Path("skills/repo-scaffold/assets/workflows/codeql.yml"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for path in (workflow_root / "codeql.yml", asset_root / "codeql.yml"):
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "types: [opened, edited, reopened, synchronize]",
+                        "types: [opened, reopened, synchronize]",
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_privileged_workflow_permissions(
+                root
+            )
+
+            self.assertEqual(
+                sum(
+                    "CodeQL pull_request trigger must include edited" in item
+                    for item in problems
+                ),
+                2,
+            )
+
+    def test_rejects_codeql_trigger_that_omits_merge_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            for relative in (
+                Path(".github/workflows/release-please.yml"),
+                Path("skills/repo-scaffold/assets/workflows/release-please.yml"),
+                Path(".github/workflows/codeql.yml"),
+                Path("skills/repo-scaffold/assets/workflows/codeql.yml"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for path in (workflow_root / "codeql.yml", asset_root / "codeql.yml"):
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "  merge_group:\n    types: [checks_requested]\n", ""
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_privileged_workflow_permissions(
+                root
+            )
+
+            self.assertEqual(
+                sum(
+                    "CodeQL merge_group trigger must request checks" in item
+                    for item in problems
+                ),
+                2,
+            )
+
     def test_reports_unreadable_scalar_and_missing_job_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4439,6 +4556,42 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
                 4,
             )
 
+    def test_required_check_contract_rejects_missing_merge_group_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                Path(".github/workflows/ci.yml"),
+                Path(".github/workflows/commitlint.yml"),
+                Path(".github/workflows/dependency-review.yml"),
+                Path(".github/workflows/pr-template.yml"),
+                Path("skills/repo-scaffold/assets/workflows/ci.yml"),
+                Path("skills/repo-scaffold/assets/workflows/commitlint.yml"),
+                Path("skills/repo-scaffold/assets/workflows/dependency-review.yml"),
+                Path("skills/repo-scaffold/assets/workflows/pr-template.yml"),
+                Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for relative in (
+                Path(".github/workflows/pr-template.yml"),
+                Path("skills/repo-scaffold/assets/workflows/pr-template.yml"),
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "  merge_group:\n    types: [checks_requested]\n", ""
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_required_check_concurrency(root)
+
+            self.assertEqual(
+                sum("must run for merge_group" in item for item in problems),
+                2,
+            )
+
 
 class CodeScanningGateContractTests(unittest.TestCase):
     def test_validator_reports_missing_malformed_and_unsafe_gate_contracts(
@@ -4508,12 +4661,20 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("exact positive alert number" in item for item in boolean_number)
             )
 
-            source = (
-                PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
-            ).read_text(encoding="utf-8")
-            for workflow in workflow_paths:
+            source_paths = (
+                PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml",
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "workflows"
+                / "code-scanning-gate.yml",
+            )
+            for workflow, source_path in zip(workflow_paths, source_paths, strict=True):
                 workflow.write_text(
-                    source.replace('--pull-request "$PR_NUMBER"', "--ref invalid"),
+                    source_path.read_text(encoding="utf-8").replace(
+                        '--pull-request "$PR_NUMBER"', "--ref invalid"
+                    ),
                     encoding="utf-8",
                 )
             allowlist.write_text(
@@ -4538,9 +4699,20 @@ class CodeScanningGateContractTests(unittest.TestCase):
 
         asset_text = asset.read_text(encoding="utf-8")
         document = validate_repository.load_yaml(workflow)
+        asset_document = validate_repository.load_yaml(asset)
         self.assertEqual(
             document["on"],
-            {"pull_request_target": {"types": ["opened", "reopened", "synchronize"]}},
+            {
+                "pull_request_target": {
+                    "types": ["opened", "edited", "reopened", "synchronize"],
+                    "branches": ["main"],
+                },
+                "merge_group": {"types": ["checks_requested"]},
+            },
+        )
+        self.assertEqual(
+            asset_document["on"]["pull_request_target"]["branches"],
+            ["{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}"],
         )
         self.assertEqual(
             document["permissions"],
@@ -4551,10 +4723,13 @@ class CodeScanningGateContractTests(unittest.TestCase):
             },
         )
         self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
+        self.assertIn("ref: ${{ github.event.merge_group.base_sha }}", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn('--pull-request "$PR_NUMBER"', text)
         self.assertIn('--base-sha "$PR_BASE_SHA"', text)
         self.assertIn('--head-sha "$PR_HEAD_SHA"', text)
+        self.assertIn('--ref "$MERGE_GROUP_REF"', text)
+        self.assertIn('--sha "$MERGE_GROUP_SHA"', text)
         self.assertIn('--expected-codeql-category "/language:actions"', text)
         self.assertIn('--expected-codeql-category "/language:python"', text)
         self.assertIn(
@@ -4563,6 +4738,113 @@ class CodeScanningGateContractTests(unittest.TestCase):
         )
         self.assertNotIn("merge_commit_sha", text)
         self.assertIn("github.event.pull_request.head.sha", text)
+        self.assertIn("github.event_name == 'pull_request_target'", text)
+        self.assertIn("github.event_name == 'merge_group'", text)
+
+    def test_validator_rejects_gate_missing_merge_queue_alert_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                Path(".github/code-scanning-allowlist.json"),
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+                Path("scripts/check_code_scanning_alerts.py"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for relative in (
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "  merge_group_code_scanning_gate:\n",
+                        "  renamed_merge_group_code_scanning_gate:\n",
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_code_scanning_gate_contract(root)
+
+            self.assertEqual(
+                sum(
+                    "trusted pull-request gate contract and merge-queue contract"
+                    in item
+                    for item in problems
+                ),
+                2,
+            )
+
+    def test_validator_rejects_gate_with_untrusted_merge_queue_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                Path(".github/code-scanning-allowlist.json"),
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+                Path("scripts/check_code_scanning_alerts.py"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for relative in (
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        '--sha "$MERGE_GROUP_SHA"', '--sha "$UNTRUSTED_SHA"'
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_code_scanning_gate_contract(root)
+
+            self.assertEqual(
+                sum(
+                    "must execute trusted merge-queue alert-gate code" in item
+                    for item in problems
+                ),
+                2,
+            )
+
+    def test_validator_rejects_gate_with_an_incorrect_base_branch_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                Path(".github/code-scanning-allowlist.json"),
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+                Path("scripts/check_code_scanning_alerts.py"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for relative in (
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+            ):
+                path = root / relative
+                path.write_text(
+                    "\n".join(
+                        "    branches: [incorrect-base]"
+                        if line.startswith("    branches:")
+                        else line
+                        for line in path.read_text(encoding="utf-8").splitlines()
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_code_scanning_gate_contract(root)
+
+            self.assertEqual(
+                sum("trusted pull-request gate contract" in item for item in problems),
+                2,
+            )
 
 
 class PullRequestTemplateContractTests(unittest.TestCase):
@@ -4591,12 +4873,20 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                         "reopened",
                         "synchronize",
                     ]
-                }
+                },
+                "merge_group": {"types": ["checks_requested"]},
             },
         )
         self.assertEqual(document["permissions"], {"contents": "read"})
         self.assertEqual(document["concurrency"]["cancel-in-progress"], "false")
         self.assertEqual(document["jobs"]["pr_template"]["name"], "pr-template")
+        self.assertEqual(
+            document["jobs"]["merge_group_pr_template"]["name"], "pr-template"
+        )
+        self.assertEqual(
+            document["jobs"]["merge_group_pr_template"]["if"],
+            "${{ github.event_name == 'merge_group' }}",
+        )
 
         for fragment in (
             "ref: ${{ github.event.pull_request.base.sha }}",
@@ -4612,7 +4902,10 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "Pull request body must preserve every required heading and checklist",
             "Mark each required checklist item only after it is complete",
             "github.event.pull_request.user.login != 'dependabot[bot]'",
+            "github.event_name == 'pull_request_target'",
             "release-please--branches--",
+            "github.event.merge_group.head_sha",
+            "Pull request template requirements were checked before merge-queue admission.",
         ):
             self.assertIn(fragment, workflow_text)
 
@@ -6105,6 +6398,27 @@ jobs:
                 ],
             )
 
+    def test_workflow_parser_honors_workflow_level_default_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_workflow(
+                directory,
+                """
+defaults:
+  run:
+    shell: sh -e {0}
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: echo ok
+""",
+            )
+
+            self.assertEqual(
+                validate_workflows.workflow_shell_blocks(path),
+                [("test: step 0", "sh", b"echo ok")],
+            )
+
     def test_workflow_parser_handles_nonmapping_defaults_and_non_linux_runner(
         self,
     ) -> None:
@@ -6885,6 +7199,173 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 root
             )
         self.assertTrue(any("ci.yml: unreadable" in problem for problem in problems))
+
+
+class WorkflowScriptCopyContractTests(unittest.TestCase):
+    def test_current_workflow_script_copy_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_workflow_script_copy_contract(PLUGIN_ROOT), []
+        )
+
+    def test_missing_documented_workflow_script_copy_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / "assets" / "workflows" / "documentation.yml"
+            source = root / "scripts" / "validate_scaffold.py"
+            reference = root / "references" / "scaffold-generation.md"
+            workflow.parent.mkdir(parents=True)
+            source.parent.mkdir(parents=True)
+            reference.parent.mkdir(parents=True)
+            workflow.write_text(
+                "run: python scripts/validate_scaffold.py --repository-root .\n",
+                encoding="utf-8",
+            )
+            source.write_text("# source\n", encoding="utf-8")
+            reference.write_text("# Scaffold generation contract\n", encoding="utf-8")
+            contract = (
+                (
+                    Path("assets/workflows/documentation.yml"),
+                    Path("scripts/validate_scaffold.py"),
+                    "../scripts/validate_scaffold.py",
+                    Path("scripts/validate_scaffold.py"),
+                    True,
+                ),
+            )
+            with (
+                mock.patch.object(
+                    validate_repository,
+                    "WORKFLOW_SCRIPT_COPY_CONTRACT",
+                    contract,
+                ),
+                mock.patch.object(
+                    validate_repository,
+                    "SCAFFOLD_GENERATION_REFERENCE",
+                    Path("references/scaffold-generation.md"),
+                ),
+            ):
+                problems = validate_repository.validate_workflow_script_copy_contract(
+                    root
+                )
+
+        self.assertEqual(
+            problems,
+            [
+                "references/scaffold-generation.md: must document copying "
+                "assets/workflows/documentation.yml dependency "
+                "scripts/validate_scaffold.py"
+            ],
+        )
+
+    def test_missing_bundled_source_or_workflow_invocation_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / "assets" / "workflows" / "documentation.yml"
+            reference = root / "references" / "scaffold-generation.md"
+            workflow.parent.mkdir(parents=True)
+            reference.parent.mkdir(parents=True)
+            workflow.write_text("run: echo unavailable\n", encoding="utf-8")
+            reference.write_text(
+                "| Workflow asset | Bundled source | Generated destination |\n"
+                "| --- | --- | --- |\n"
+                "| `assets/workflows/documentation.yml` | "
+                "`../scripts/validate_scaffold.py` | "
+                "`scripts/validate_scaffold.py` |\n",
+                encoding="utf-8",
+            )
+            contract = (
+                (
+                    Path("assets/workflows/documentation.yml"),
+                    Path("scripts/validate_scaffold.py"),
+                    "../scripts/validate_scaffold.py",
+                    Path("scripts/validate_scaffold.py"),
+                    True,
+                ),
+            )
+            with (
+                mock.patch.object(
+                    validate_repository,
+                    "WORKFLOW_SCRIPT_COPY_CONTRACT",
+                    contract,
+                ),
+                mock.patch.object(
+                    validate_repository,
+                    "SCAFFOLD_GENERATION_REFERENCE",
+                    Path("references/scaffold-generation.md"),
+                ),
+            ):
+                problems = validate_repository.validate_workflow_script_copy_contract(
+                    root
+                )
+
+        self.assertEqual(
+            problems,
+            [
+                "scripts/validate_scaffold.py: bundled workflow dependency is missing",
+                "assets/workflows/documentation.yml: must invoke "
+                "scripts/validate_scaffold.py",
+            ],
+        )
+
+    def test_unreadable_workflow_or_reference_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "scripts" / "validate_scaffold.py"
+            reference = root / "references" / "scaffold-generation.md"
+            source.parent.mkdir(parents=True)
+            reference.parent.mkdir(parents=True)
+            source.write_text("# source\n", encoding="utf-8")
+            reference.write_text(
+                "| Workflow asset | Bundled source | Generated destination |\n"
+                "| --- | --- | --- |\n"
+                "| `assets/workflows/documentation.yml` | "
+                "`../scripts/validate_scaffold.py` | "
+                "`scripts/validate_scaffold.py` |\n",
+                encoding="utf-8",
+            )
+            contract = (
+                (
+                    Path("assets/workflows/documentation.yml"),
+                    Path("scripts/validate_scaffold.py"),
+                    "../scripts/validate_scaffold.py",
+                    Path("scripts/validate_scaffold.py"),
+                    True,
+                ),
+            )
+            with (
+                mock.patch.object(
+                    validate_repository,
+                    "WORKFLOW_SCRIPT_COPY_CONTRACT",
+                    contract,
+                ),
+                mock.patch.object(
+                    validate_repository,
+                    "SCAFFOLD_GENERATION_REFERENCE",
+                    Path("references/scaffold-generation.md"),
+                ),
+            ):
+                unreadable_workflow = (
+                    validate_repository.validate_workflow_script_copy_contract(root)
+                )
+            reference.unlink()
+            with mock.patch.object(
+                validate_repository,
+                "SCAFFOLD_GENERATION_REFERENCE",
+                Path("references/scaffold-generation.md"),
+            ):
+                unreadable_reference = (
+                    validate_repository.validate_workflow_script_copy_contract(root)
+                )
+
+        self.assertTrue(
+            unreadable_workflow[0].startswith(
+                "assets/workflows/documentation.yml: could not read workflow script "
+            )
+        )
+        self.assertTrue(
+            unreadable_reference[0].startswith(
+                "references/scaffold-generation.md: could not read workflow script "
+            )
+        )
 
 
 class PolicyDriftReminderContractTests(unittest.TestCase):

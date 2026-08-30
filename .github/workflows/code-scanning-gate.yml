@@ -2,7 +2,10 @@ name: Code scanning gate
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize]
+    types: [opened, edited, reopened, synchronize]
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -10,12 +13,13 @@ permissions:
   security-events: read
 
 concurrency:
-  group: code-scanning-gate-${{ github.event.pull_request.number }}
+  group: code-scanning-gate-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: false
 
 jobs:
   code_scanning_gate:
     name: code-scanning-gate
+    if: ${{ github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -38,6 +42,35 @@ jobs:
           --pull-request "$PR_NUMBER"
           --base-sha "$PR_BASE_SHA"
           --head-sha "$PR_HEAD_SHA"
+          --expected-codeql-category "/language:actions"
+          --expected-codeql-category "/language:python"
+          --attempts 120
+          --delay-seconds 10
+
+  merge_group_code_scanning_gate:
+    name: code-scanning-gate
+    if: ${{ github.event_name == 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # The merge-group ref contains untrusted PR code. Execute only the gate
+      # script from the trusted target branch while querying the group SHA.
+      - name: Checkout trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
+          persist-credentials: false
+
+      - name: Require an explicit disposition for every merge-group alert
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MERGE_GROUP_REF: ${{ github.ref }}
+          MERGE_GROUP_SHA: ${{ github.sha }}
+        shell: bash
+        run: >-
+          python scripts/check_code_scanning_alerts.py
+          --ref "$MERGE_GROUP_REF"
+          --sha "$MERGE_GROUP_SHA"
           --expected-codeql-category "/language:actions"
           --expected-codeql-category "/language:python"
           --attempts 120

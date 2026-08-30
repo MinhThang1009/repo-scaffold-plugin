@@ -74,14 +74,28 @@ def workflow_shell_blocks(path: Path) -> list[tuple[str, str, bytes]]:
     if not isinstance(jobs, dict):
         raise ValueError("workflow jobs must be a mapping")
 
+    workflow_defaults = document.get("defaults")
+    workflow_default_run = (
+        workflow_defaults.get("run") if isinstance(workflow_defaults, dict) else None
+    )
+    workflow_default_shell = (
+        workflow_default_run.get("shell")
+        if isinstance(workflow_default_run, dict)
+        else None
+    )
     blocks: list[tuple[str, str, bytes]] = []
     for job_name, job in jobs.items():
         if not isinstance(job, dict) or "runs-on" not in job:
             continue
         defaults = job.get("defaults")
         default_run = defaults.get("run") if isinstance(defaults, dict) else None
-        default_shell = (
+        job_default_shell = (
             default_run.get("shell") if isinstance(default_run, dict) else None
+        )
+        default_shell = (
+            job_default_shell
+            if job_default_shell is not None
+            else workflow_default_shell
         )
         runner = job.get("runs-on")
         runner_has_ubuntu = (

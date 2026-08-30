@@ -6,10 +6,12 @@ import runpy
 import sys
 import tempfile
 import unittest
+from email.message import Message
 from io import BytesIO
 from pathlib import Path
 from unittest import mock
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -112,16 +114,27 @@ class CodeScanningGateTests(unittest.TestCase):
     def test_allowlist_rejects_unsafe_or_ambiguous_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for entries in (
-                [
+            for path_value in (
+                "../escape",
+                r"scripts\example.py",
+                "scripts/./example.py",
+                "scripts//example.py",
+                "C:/example.py",
+                "scripts/C:example.py",
+            ):
+                path_entries = [
                     {
                         "number": 1,
                         "tool": "CodeQL",
                         "rule": "x",
-                        "path": "../escape",
+                        "path": path_value,
                         "reason": "x",
                     }
-                ],
+                ]
+                with self.subTest(path_value=path_value):
+                    with self.assertRaisesRegex(gate.GateError, "allowlist path"):
+                        gate.load_allowlist(self.write_allowlist(root, path_entries))
+            for entries in (
                 [
                     {
                         "number": 1,
@@ -173,9 +186,20 @@ class CodeScanningGateTests(unittest.TestCase):
                 ):
                     gate.load_allowlist(path)
 
+    def test_allowlist_rejects_duplicate_json_members(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "allowlist.json"
+            path.write_text(
+                '{"schema-version": 2, "schema-version": 2, "allowlist": []}',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(gate.GateError, "duplicate JSON member"):
+                gate.load_allowlist(path)
+
     def test_api_client_bounds_and_authenticates_requests(self) -> None:
         with mock.patch.object(
-            gate, "urlopen", return_value=FakeResponse(b"[]")
+            gate.GITHUB_API_OPENER, "open", return_value=FakeResponse(b"[]")
         ) as open_url:
             self.assertEqual(
                 gate.api_json("https://api.github.com/example", "token"), []
@@ -183,18 +207,66 @@ class CodeScanningGateTests(unittest.TestCase):
         request = open_url.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer token")
         with mock.patch.object(
-            gate,
-            "urlopen",
+            gate.GITHUB_API_OPENER,
+            "open",
             return_value=FakeResponse(b"x" * (gate.MAX_RESPONSE_BYTES + 1)),
         ):
             with self.assertRaisesRegex(gate.GateError, "exceeds"):
                 gate.api_json("https://api.github.com/example", "token")
-        with mock.patch.object(gate, "urlopen", side_effect=URLError("offline")):
+        with mock.patch.object(
+            gate.GITHUB_API_OPENER, "open", side_effect=URLError("offline")
+        ):
+            with self.assertRaisesRegex(gate.TransientGateError, "transiently"):
+                gate.api_json("https://api.github.com/example", "token")
+        with mock.patch.object(
+            gate.GITHUB_API_OPENER,
+            "open",
+            side_effect=HTTPError(
+                "https://api.github.com/example", 500, "error", Message(), None
+            ),
+        ):
+            with self.assertRaisesRegex(gate.TransientGateError, "transiently"):
+                gate.api_json("https://api.github.com/example", "token")
+        with mock.patch.object(
+            gate.GITHUB_API_OPENER,
+            "open",
+            side_effect=HTTPError(
+                "https://api.github.com/example", 408, "error", Message(), None
+            ),
+        ):
+            with self.assertRaisesRegex(gate.TransientGateError, "transiently"):
+                gate.api_json("https://api.github.com/example", "token")
+        with mock.patch.object(
+            gate.GITHUB_API_OPENER,
+            "open",
+            side_effect=HTTPError(
+                "https://api.github.com/example", 401, "error", Message(), None
+            ),
+        ):
             with self.assertRaisesRegex(gate.GateError, "request failed"):
                 gate.api_json("https://api.github.com/example", "token")
-        with mock.patch.object(gate, "urlopen", return_value=FakeResponse(b"not JSON")):
-            with self.assertRaisesRegex(gate.GateError, "not valid JSON"):
-                gate.api_json("https://api.github.com/example", "token")
+        for payload in (b"not JSON", b'{"name":"first","name":"second"}'):
+            with (
+                self.subTest(payload=payload),
+                mock.patch.object(
+                    gate.GITHUB_API_OPENER, "open", return_value=FakeResponse(payload)
+                ),
+            ):
+                with self.assertRaisesRegex(gate.GateError, "not valid JSON"):
+                    gate.api_json("https://api.github.com/example", "token")
+
+    def test_api_client_rejects_redirects_before_following_them(self) -> None:
+        handler = gate.RejectRedirectHandler()
+
+        with self.assertRaisesRegex(gate.GateError, "redirects are not allowed"):
+            handler.redirect_request(
+                Request("https://api.github.com/example"),
+                None,
+                302,
+                "Found",
+                Message(),
+                "https://example.test/receive-token",
+            )
 
     def test_analyses_and_waiting_handle_invalid_retry_and_timeout_states(self) -> None:
         with mock.patch.object(
@@ -265,6 +337,24 @@ class CodeScanningGateTests(unittest.TestCase):
                 frozenset({"/language:python"}),
             )
         clock.sleep.assert_called_once_with(1.5)
+        with (
+            mock.patch.object(
+                gate,
+                "analyses_ready",
+                side_effect=[gate.TransientGateError("temporary"), True],
+            ),
+            mock.patch.object(gate, "time") as clock,
+        ):
+            gate.wait_for_analyses(
+                "owner/repo",
+                "refs/pull/1/merge",
+                "a" * 40,
+                "t",
+                2,
+                1.5,
+                frozenset({"/language:python"}),
+            )
+        clock.sleep.assert_called_once_with(1.5)
         with mock.patch.object(gate, "analyses_ready", return_value=False):
             with self.assertRaisesRegex(gate.GateError, "were not queryable"):
                 gate.wait_for_analyses(
@@ -317,6 +407,61 @@ class CodeScanningGateTests(unittest.TestCase):
                 )
             )
         self.assertEqual(matches.call_count, 2)
+
+    def test_analyses_paginates_before_declaring_a_commit_unavailable(self) -> None:
+        first_page = [
+            {
+                "commit_sha": f"{index:040x}",
+                "tool": {"name": "CodeQL"},
+                "category": "/language:python",
+            }
+            for index in range(100)
+        ]
+        target = "a" * 40
+        second_page = [
+            {
+                "commit_sha": target,
+                "tool": {"name": "CodeQL"},
+                "category": "/language:python",
+            }
+        ]
+        with mock.patch.object(
+            gate, "api_json", side_effect=[first_page, second_page]
+        ) as api_json:
+            self.assertTrue(
+                gate.analyses_ready(
+                    "owner/repo",
+                    "refs/heads/main",
+                    target,
+                    "token",
+                    frozenset({"/language:python"}),
+                )
+            )
+
+        self.assertIn("page=1", api_json.call_args_list[0].args[0])
+        self.assertIn("page=2", api_json.call_args_list[1].args[0])
+
+    def test_analyses_rejects_unbounded_pagination(self) -> None:
+        page = [
+            {
+                "commit_sha": f"{index:040x}",
+                "tool": {"name": "CodeQL"},
+                "category": "/language:python",
+            }
+            for index in range(100)
+        ]
+        with (
+            mock.patch.object(gate, "MAX_ANALYSIS_PAGES", 1),
+            mock.patch.object(gate, "api_json", return_value=page),
+            self.assertRaisesRegex(gate.GateError, "more than"),
+        ):
+            gate.analyses_ready(
+                "owner/repo",
+                "refs/heads/main",
+                "a" * 40,
+                "token",
+                frozenset({"/language:python"}),
+            )
 
     def test_merge_commit_parent_validation_rejects_malformed_responses(self) -> None:
         with mock.patch.object(
@@ -393,6 +538,30 @@ class CodeScanningGateTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.GateError, "more than"):
                 gate.open_alerts("owner/repo", "refs/heads/main", "token")
 
+    def test_open_alert_waiting_retries_transient_api_errors(self) -> None:
+        with (
+            mock.patch.object(
+                gate,
+                "open_alerts",
+                side_effect=[gate.TransientGateError("temporary"), ()],
+            ),
+            mock.patch.object(gate, "time") as clock,
+        ):
+            self.assertEqual(
+                gate.wait_for_open_alerts(
+                    "owner/repo", "refs/heads/main", "token", attempts=2, delay=1.5
+                ),
+                (),
+            )
+        clock.sleep.assert_called_once_with(1.5)
+        with mock.patch.object(
+            gate, "open_alerts", side_effect=gate.TransientGateError("temporary")
+        ):
+            with self.assertRaisesRegex(gate.GateError, "were not queryable"):
+                gate.wait_for_open_alerts(
+                    "owner/repo", "refs/heads/main", "token", attempts=1, delay=0
+                )
+
     def test_pull_request_merge_sha_waits_for_github_to_finish_mergeability(
         self,
     ) -> None:
@@ -434,6 +603,28 @@ class CodeScanningGateTests(unittest.TestCase):
         with (
             mock.patch.object(gate, "pull_request_merge_sha", return_value="a" * 40),
             mock.patch.object(gate, "analyses_ready", side_effect=[False, True]),
+            mock.patch.object(gate, "time") as clock,
+        ):
+            self.assertEqual(
+                gate.wait_for_pull_request_analyses(
+                    "owner/repo",
+                    "42",
+                    "token",
+                    attempts=2,
+                    delay=2.0,
+                    expected_categories=frozenset({"/language:python"}),
+                    expected_parents=("b" * 40, "c" * 40),
+                ),
+                ("refs/pull/42/merge", "a" * 40),
+            )
+        clock.sleep.assert_called_once_with(2.0)
+        with (
+            mock.patch.object(
+                gate,
+                "pull_request_merge_sha",
+                side_effect=[gate.TransientGateError("temporary"), "a" * 40],
+            ),
+            mock.patch.object(gate, "analyses_ready", return_value=True),
             mock.patch.object(gate, "time") as clock,
         ):
             self.assertEqual(
@@ -525,7 +716,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 mock.patch.object(gate, "wait_for_analyses") as wait,
                 mock.patch.object(
                     gate,
-                    "open_alerts",
+                    "wait_for_open_alerts",
                     return_value=(
                         gate.Alert(1, "CodeQL", "py/example", "scripts/example.py"),
                     ),
@@ -537,7 +728,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 mock.patch.object(gate, "wait_for_analyses"),
                 mock.patch.object(
                     gate,
-                    "open_alerts",
+                    "wait_for_open_alerts",
                     return_value=(gate.Alert(2, "CodeQL", "py/new", "scripts/new.py"),),
                 ),
             ):
@@ -568,7 +759,7 @@ class CodeScanningGateTests(unittest.TestCase):
                     "wait_for_pull_request_analyses",
                     return_value=("refs/pull/42/merge", "a" * 40),
                 ) as wait,
-                mock.patch.object(gate, "open_alerts", return_value=()),
+                mock.patch.object(gate, "wait_for_open_alerts", return_value=()),
             ):
                 self.assertEqual(gate.main(arguments), 0)
             wait.assert_called_once_with(

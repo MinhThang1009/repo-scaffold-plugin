@@ -3,19 +3,22 @@ name: Pull Request Template
 on:
   pull_request_target:
     types: [opened, edited, ready_for_review, reopened, synchronize]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-pr-template-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-pr-template-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
   cancel-in-progress: false
 
 jobs:
   pr_template:
     name: pr-template
     if: >-
-      ${{ github.event.pull_request.user.login != 'dependabot[bot]' &&
+      ${{ github.event_name == 'pull_request_target' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
       !startsWith(github.event.pull_request.head.ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -173,3 +176,13 @@ jobs:
                       "or keep the pull request as a draft."
                   )
           PY
+
+  merge_group_pr_template:
+    name: pr-template
+    if: ${{ github.event_name == 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm merge-queue compatibility
+        run: >-
+          echo "Pull request template requirements were checked before merge-queue admission."
