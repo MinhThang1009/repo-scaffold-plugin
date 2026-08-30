@@ -48,8 +48,8 @@ def synchronize_release_please_schemas(
         try:
             json.loads(content, object_pairs_hook=audit_freshness.unique_json_object)
         except (
-            json.JSONDecodeError,
-            audit_freshness.DuplicateJsonMember,
+            ValueError,
+            RecursionError,
         ) as error:
             raise ValueError(
                 f"could not read Release Please config {relative}: {error}"

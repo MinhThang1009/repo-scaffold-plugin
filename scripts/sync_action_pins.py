@@ -916,8 +916,7 @@ class GitHubReleaseClient:
             )
         except (
             UnicodeError,
-            json.JSONDecodeError,
-            DuplicateJsonMember,
+            ValueError,
             RecursionError,
         ) as error:
             raise ValueError(

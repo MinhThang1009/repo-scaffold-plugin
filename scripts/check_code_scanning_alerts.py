@@ -129,8 +129,7 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
     except (
         OSError,
         UnicodeError,
-        json.JSONDecodeError,
-        DuplicateJsonMember,
+        ValueError,
         RecursionError,
     ) as error:
         raise GateError(
@@ -209,8 +208,7 @@ def api_json(url: str, token: str) -> Any:
         return json.loads(payload.decode("utf-8"), object_pairs_hook=unique_json_object)
     except (
         UnicodeError,
-        json.JSONDecodeError,
-        DuplicateJsonMember,
+        ValueError,
         RecursionError,
     ) as error:
         raise GateError(f"GitHub API response is not valid JSON: {error}") from error

@@ -51,7 +51,7 @@ def load_statistics(path: Path) -> dict[str, int]:
         document = json.loads(
             path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, DuplicateJsonMember) as error:
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation statistics: {error}") from error
     if not isinstance(document, dict):
         raise ValueError("mutation statistics root must be a JSON object")

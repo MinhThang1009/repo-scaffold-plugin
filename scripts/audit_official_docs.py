@@ -187,8 +187,7 @@ def load_trackers(
     except (
         OSError,
         UnicodeError,
-        json.JSONDecodeError,
-        DuplicateJsonMember,
+        ValueError,
         RecursionError,
     ) as error:
         raise AuditError(

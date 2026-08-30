@@ -368,7 +368,7 @@ def fetch_latest_release(tool: ToolPin, *, opener: Any | None = None) -> Any:
         raise ToolchainError(f"release response for {tool.repository} is too large")
     try:
         return json.loads(payload, object_pairs_hook=reject_duplicate_json_pairs)
-    except (UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, ValueError, RecursionError) as error:
         raise ToolchainError(
             f"latest release for {tool.repository} returned invalid JSON: {error}"
         ) from error
@@ -395,7 +395,7 @@ def fetch_latest_npm_tool(tool: NpmToolPin, *, opener: Any | None = None) -> Any
         raise ToolchainError(f"npm response for {tool.package} is too large")
     try:
         return json.loads(payload, object_pairs_hook=reject_duplicate_json_pairs)
-    except (UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, ValueError, RecursionError) as error:
         raise ToolchainError(
             f"latest npm release for {tool.package} returned invalid JSON: {error}"
         ) from error

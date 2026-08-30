@@ -309,7 +309,7 @@ def load_manifest(path: Path) -> ProjectSnapshot:
         document = json.loads(
             path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, DuplicateJsonMember) as error:
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation cache manifest: {error}") from error
     expected_fields = {
         "schema_version",
@@ -457,7 +457,7 @@ def _load_meta(path: Path) -> dict[str, Any]:
         document = json.loads(
             path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, DuplicateJsonMember) as error:
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation metadata: {error}") from error
     required = {
         "exit_code_by_key",
