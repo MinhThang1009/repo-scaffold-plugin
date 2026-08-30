@@ -132,6 +132,17 @@ class CiToolchainPolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(ci_toolchain.ToolchainError, message):
                     ci_toolchain.parse_policy(document)
 
+    def test_policy_rejects_excessive_tool_entries(self) -> None:
+        for field in ("npm-tools", "standalone-tools"):
+            document = policy_document()
+            document[field] = {
+                f"tool-{index}": {}
+                for index in range(ci_toolchain.MAX_POLICY_TOOLS + 1)
+            }
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ci_toolchain.ToolchainError, "more than"):
+                    ci_toolchain.parse_policy(document)
+
     def test_npm_tool_rejects_invalid_names_shapes_fields_and_values(self) -> None:
         valid = {"package": "markdownlint-cli2", "version": "0.23.2"}
         cases = [
@@ -271,6 +282,25 @@ class CiToolchainPolicyTests(unittest.TestCase):
                         ci_toolchain.ToolchainError, "could not read"
                     ):
                         ci_toolchain.load_policy(path)
+
+    def test_policy_loader_rejects_oversized_and_recursive_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "policy.json"
+            path.write_bytes(b" " * (ci_toolchain.MAX_POLICY_BYTES + 1))
+
+            with self.assertRaisesRegex(ci_toolchain.ToolchainError, "size limit"):
+                ci_toolchain.load_policy(path)
+
+            path.write_text(json.dumps(policy_document()), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    ci_toolchain.json,
+                    "loads",
+                    side_effect=RecursionError("too deep"),
+                ),
+                self.assertRaisesRegex(ci_toolchain.ToolchainError, "could not read"),
+            ):
+                ci_toolchain.load_policy(path)
 
     def test_latest_release_verifies_tag_asset_and_digest(self) -> None:
         policy = ci_toolchain.parse_policy(policy_document())

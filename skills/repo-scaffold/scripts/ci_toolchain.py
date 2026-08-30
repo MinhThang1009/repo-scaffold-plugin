@@ -42,6 +42,8 @@ PYTHON_FEATURE = re.compile(r"^3\.(0|[1-9]\d*)$")
 STABLE_SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 MAX_RESPONSE_BYTES = 1_000_000
+MAX_POLICY_BYTES = 64 * 1024
+MAX_POLICY_TOOLS = 32
 MARKDOWNLINT_GLOBS = ("**/*.md",)
 
 
@@ -283,6 +285,14 @@ def parse_policy(document: Any) -> CiToolchainPolicy:
         raise ToolchainError("npm-tools must be an object")
     if not isinstance(raw_tools, dict):
         raise ToolchainError("standalone-tools must be an object")
+    if len(raw_npm_tools) > MAX_POLICY_TOOLS:
+        raise ToolchainError(
+            f"npm-tools must not contain more than {MAX_POLICY_TOOLS} entries"
+        )
+    if len(raw_tools) > MAX_POLICY_TOOLS:
+        raise ToolchainError(
+            f"standalone-tools must not contain more than {MAX_POLICY_TOOLS} entries"
+        )
     npm_tools = tuple(
         parse_npm_tool(name, raw_npm_tools[name]) for name in sorted(raw_npm_tools)
     )
@@ -298,11 +308,19 @@ def parse_policy(document: Any) -> CiToolchainPolicy:
 def load_policy(path: Path) -> CiToolchainPolicy:
     """Read a UTF-8 JSON policy with duplicate-member rejection."""
     try:
+        with path.open("rb") as policy_file:
+            payload = policy_file.read(MAX_POLICY_BYTES + 1)
+        if len(payload) > MAX_POLICY_BYTES:
+            raise ToolchainError(
+                f"policy exceeds the {MAX_POLICY_BYTES}-byte size limit"
+            )
         document = json.loads(
-            path.read_text(encoding="utf-8"),
+            payload.decode("utf-8"),
             object_pairs_hook=reject_duplicate_json_pairs,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except ToolchainError:
+        raise
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ToolchainError(f"could not read {path}: {error}") from error
     return parse_policy(document)
 
