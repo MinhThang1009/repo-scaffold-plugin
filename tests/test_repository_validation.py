@@ -5326,6 +5326,35 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 "must select exactly one trusted template", missing_marker.stderr
             )
 
+            feature_payload = feature_body.replace(
+                "<!-- repo-scaffold:pr-template=feature -->\n\n", "", 1
+            )
+            hidden_content_bodies = {
+                "fenced code": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    f"```markdown\n{feature_payload}\n```\n"
+                ),
+                "HTML comment": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    f"<!--\n{feature_payload}\n-->\n"
+                ),
+            }
+            for hiding_method, hidden_body in hidden_content_bodies.items():
+                with self.subTest(hiding_method=hiding_method):
+                    hidden_result = subprocess.run(
+                        [sys.executable, "-c", script],
+                        cwd=root,
+                        env={**os.environ, "PR_BODY": hidden_body},
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                    )
+                    self.assertNotEqual(hidden_result.returncode, 0)
+                    self.assertIn(
+                        "must contain exactly one required checklist section",
+                        hidden_result.stderr,
+                    )
+
     def test_workflow_never_checks_out_or_executes_the_pull_request_head(self) -> None:
         workflow = (
             PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
