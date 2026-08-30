@@ -18,9 +18,13 @@ destination:
 | --- | --- | --- |
 | `assets/workflows/code-scanning-gate.yml` | `../../../scripts/check_code_scanning_alerts.py` | `scripts/check_code_scanning_alerts.py` |
 | `assets/workflows/community-health.yml` | `../scripts/check_community_health.py` | `scripts/check_community_health.py` |
+| `assets/workflows/community-health.yml` | `assets/community-health-trackers.json` | `.github/community-health-trackers.json` |
 | `assets/workflows/documentation.yml` | `../scripts/ci_toolchain.py` | `scripts/ci_toolchain.py` |
+| `assets/workflows/documentation.yml` | `assets/ci-toolchain.json` | `.github/ci-toolchain.json` |
 | `assets/workflows/documentation.yml` | `../scripts/validate_scaffold.py` | `scripts/validate_scaffold.py` |
+| `assets/workflows/documentation.yml` | `assets/requirements-docs.txt` | `requirements-docs.txt` |
 | `assets/workflows/freshness.yml` | `../scripts/audit_freshness.py` | `scripts/audit_freshness.py` |
+| `assets/workflows/freshness.yml` | `assets/freshness-trackers.json` | `.github/freshness-trackers.json` |
 | `assets/workflows/freshness.yml` | `../scripts/sync_action_pins.py` | `scripts/sync_action_pins.py` |
 
 When installing the CodeQL asset, also copy

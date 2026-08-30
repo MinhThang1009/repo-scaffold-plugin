@@ -7300,7 +7300,7 @@ class WorkflowScriptCopyContractTests(unittest.TestCase):
         self.assertEqual(
             problems,
             [
-                "scripts/validate_scaffold.py: bundled workflow script is missing",
+                "scripts/validate_scaffold.py: bundled workflow dependency is missing",
                 "assets/workflows/documentation.yml: must invoke "
                 "scripts/validate_scaffold.py",
             ],

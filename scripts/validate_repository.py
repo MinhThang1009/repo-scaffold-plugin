@@ -197,11 +197,25 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
         True,
     ),
     (
+        Path("skills/repo-scaffold/assets/workflows/community-health.yml"),
+        Path("skills/repo-scaffold/assets/community-health-trackers.json"),
+        "assets/community-health-trackers.json",
+        Path(".github/community-health-trackers.json"),
+        False,
+    ),
+    (
         Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
         Path("skills/repo-scaffold/scripts/ci_toolchain.py"),
         "../scripts/ci_toolchain.py",
         Path("scripts/ci_toolchain.py"),
         True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/assets/ci-toolchain.json"),
+        "assets/ci-toolchain.json",
+        Path(".github/ci-toolchain.json"),
+        False,
     ),
     (
         Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
@@ -211,11 +225,25 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
         True,
     ),
     (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/assets/requirements-docs.txt"),
+        "assets/requirements-docs.txt",
+        Path("requirements-docs.txt"),
+        False,
+    ),
+    (
         Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
         Path("skills/repo-scaffold/scripts/audit_freshness.py"),
         "../scripts/audit_freshness.py",
         Path("scripts/audit_freshness.py"),
         True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/assets/freshness-trackers.json"),
+        "assets/freshness-trackers.json",
+        Path(".github/freshness-trackers.json"),
+        False,
     ),
     (
         Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
@@ -4947,7 +4975,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
 
 
 def validate_workflow_script_copy_contract(repository_root: Path) -> list[str]:
-    """Require documented generated copies for every workflow-bundled script."""
+    """Require documented generated copies for workflow dependencies."""
     reference = repository_root / SCAFFOLD_GENERATION_REFERENCE
     try:
         reference_text = reference.read_text(encoding="utf-8")
@@ -4978,7 +5006,7 @@ def validate_workflow_script_copy_contract(repository_root: Path) -> list[str]:
         )
         if not source.is_file():
             problems.append(
-                f"{source_relative.as_posix()}: bundled workflow script is missing"
+                f"{source_relative.as_posix()}: bundled workflow dependency is missing"
             )
         if row.search(reference_text) is None:
             problems.append(
