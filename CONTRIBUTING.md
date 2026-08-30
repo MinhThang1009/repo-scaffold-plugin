@@ -172,9 +172,16 @@ only when its review workflow applies:
 
 - `feature.md` for a new or materially expanded capability;
 - `bugfix.md` for a confirmed defect and its regression coverage;
-- `documentation.md` for documentation-only or documentation-led changes; or
+- `documentation.md` for documentation-only or documentation-led changes;
 - `security.md` for a safely disclosable security change. Follow `SECURITY.md`
   instead of opening a public PR for an undisclosed vulnerability.
+- `deployment.md` for a deployment, rollout, or rollback plan; or
+- the default template for ordinary changes.
+
+For a Conventional Commit PR title beginning with `feat`, `fix`, or `docs`, use
+`feature.md`, `bugfix.md`, or `documentation.md`, respectively. The
+`pr-template` gate enforces these mappings. Other supported title types use the
+default template unless the change needs a focused security or deployment review.
 
 Preserve the selected `repo-scaffold:pr-template` marker, all required
 headings, and the required checklist. Add only applicable items from `If

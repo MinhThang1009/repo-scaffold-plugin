@@ -34,6 +34,7 @@ jobs:
       - name: Validate pull request body against its template
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
           PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
         shell: bash
         run: |
@@ -43,10 +44,19 @@ jobs:
           from pathlib import Path
 
           body = os.environ.get("PR_BODY", "")
+          title = os.environ.get("PR_TITLE", "")
           is_draft = os.environ.get("PR_IS_DRAFT", "true").lower() == "true"
           heading_pattern = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
           checklist_pattern = re.compile(r"^- \[[ xX]\] (.+?)\s*$", re.MULTILINE)
           checked_checklist_pattern = re.compile(r"^- \[[xX]\] (.+?)\s*$", re.MULTILINE)
+          title_type_pattern = re.compile(
+              r"^(?P<type>feat|fix|docs)(?:\([^()\r\n]+\))?!?: "
+          )
+          required_template_by_title_type = {
+              "feat": "feature",
+              "fix": "bugfix",
+              "docs": "documentation",
+          }
           template_marker_pattern = re.compile(
               r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",
               re.MULTILINE,
@@ -130,6 +140,16 @@ jobs:
               raise SystemExit(
                   f"Pull request body selects unknown template {selected_template_id!r}."
               )
+
+          title_type_match = title_type_pattern.match(title)
+          if title_type_match is not None:
+              title_type = title_type_match.group("type")
+              required_template_id = required_template_by_title_type[title_type]
+              if selected_template_id != required_template_id:
+                  raise SystemExit(
+                      f"Pull request title type {title_type!r} must use the "
+                      f"{required_template_id!r} template, not {selected_template_id!r}."
+                  )
 
           required_headings, required_checklist_items = trusted_templates[
               selected_template_id

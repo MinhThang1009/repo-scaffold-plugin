@@ -4892,6 +4892,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "ref: ${{ github.event.pull_request.base.sha }}",
             "persist-credentials: false",
             "PR_BODY: ${{ github.event.pull_request.body }}",
+            "PR_TITLE: ${{ github.event.pull_request.title }}",
             "PR_IS_DRAFT: ${{ github.event.pull_request.draft }}",
             'Path(".github/PULL_REQUEST_TEMPLATE.md")',
             'Path(".github/PULL_REQUEST_TEMPLATE")',
@@ -4899,6 +4900,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "repo-scaffold:required-checklist:start",
             "repo-scaffold:optional-checklist:start",
             "Pull request body must select exactly one trusted template",
+            "Pull request title type",
             "Pull request body must preserve every required heading and checklist",
             "Mark each required checklist item only after it is complete",
             "github.event.pull_request.user.login != 'dependabot[bot]'",
@@ -5034,6 +5036,67 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(deployment_result.returncode, 0, deployment_result.stderr)
+
+            default_body = (template_root / "PULL_REQUEST_TEMPLATE.md").read_text(
+                encoding="utf-8"
+            )
+            for title, template_id in (
+                ("feat: require the focused template", "feature"),
+                ("fix(ci)!: require the focused template", "bugfix"),
+                ("docs: require the focused template", "documentation"),
+            ):
+                selected_body = (
+                    template_root / "PULL_REQUEST_TEMPLATE" / f"{template_id}.md"
+                ).read_text(encoding="utf-8")
+                with self.subTest(title=title, template_id=template_id):
+                    selected_result = subprocess.run(
+                        [sys.executable, "-c", script],
+                        cwd=root,
+                        env={
+                            **os.environ,
+                            "PR_BODY": selected_body,
+                            "PR_TITLE": title,
+                        },
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                    )
+                    self.assertEqual(
+                        selected_result.returncode, 0, selected_result.stderr
+                    )
+                    default_result = subprocess.run(
+                        [sys.executable, "-c", script],
+                        cwd=root,
+                        env={
+                            **os.environ,
+                            "PR_BODY": default_body,
+                            "PR_TITLE": title,
+                        },
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                    )
+                    self.assertNotEqual(default_result.returncode, 0)
+                    self.assertIn(
+                        f"must use the {template_id!r} template",
+                        default_result.stderr,
+                    )
+
+            maintenance_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": default_body,
+                    "PR_TITLE": "ci: retain the default template",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(
+                maintenance_result.returncode, 0, maintenance_result.stderr
+            )
 
             ready_incomplete = subprocess.run(
                 [sys.executable, "-c", script],
