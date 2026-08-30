@@ -252,6 +252,13 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
         Path("scripts/sync_action_pins.py"),
         False,
     ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/labeler.yml"),
+        Path("skills/repo-scaffold/assets/labeler.yml"),
+        "assets/labeler.yml",
+        Path(".github/labeler.yml"),
+        False,
+    ),
 )
 SCAFFOLD_GENERATION_REFERENCE = Path(
     "skills/repo-scaffold/references/scaffold-generation.md"
