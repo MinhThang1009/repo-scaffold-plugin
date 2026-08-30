@@ -20,7 +20,7 @@ the target base branch. For a Conventional Commit PR title beginning with
 `feat`, `fix`, or `docs`, use `feature`, `bugfix`, or `documentation`,
 respectively. The `pr-template` gate enforces those mappings. For other title
 types, use the default template unless the change genuinely needs security or
-deployment review. Preserve exactly one matching
+deployment or dependency-update review. Preserve exactly one matching
 `<!-- repo-scaffold:pr-template=<id> -->` marker, every required heading, and
 every required-checklist item from the selected template. Include an `If
 applicable` item only when it applies, and omit that section when none apply. A

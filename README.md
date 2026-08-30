@@ -31,7 +31,7 @@ to production GitHub.com standard.
 Provides one shared `repo-scaffold` skill, which Codex and Claude Code can use
 when you ask to set up a new repository's standard files. It:
 
-- Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue templates, a default PR template plus focused feature, bugfix, documentation, and security PR templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
+- Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue templates, a default PR template plus focused `feature.md`, `bugfix.md`, `documentation.md`, `security.md`, `deployment.md`, and `dependency-update.md` templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
 - For a verified GitHub.com remote, adds deterministic documentation checks, weekly community-health upstream reminders, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow with provenance attestations when the repository is eligible, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
 - Produces either English or Vietnamese project-facing content. An explicit request wins, followed by active project instructions and the established documentation convention; English is the default when no preference exists.
@@ -53,6 +53,9 @@ GitHub, OpenAI, and Claude Code source pages, their claim markers, and the
 review interval recorded for each affected plugin document. It opens one
 reminder Issue for human review rather than auto-editing prose.
 Shipped workflows do not delegate execution to a mutable container tag.
+CodeQL and Scorecard also support `workflow_dispatch` for an on-demand security
+scan; run Scorecard from the default branch because it evaluates default-branch
+repository policy.
 
 ## 2. Requirements
 

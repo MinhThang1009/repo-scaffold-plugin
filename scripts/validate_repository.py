@@ -117,6 +117,11 @@ MULTILINGUAL_SCAFFOLD_ASSET_PAIRS = (
         Path("PULL_REQUEST_TEMPLATE.vi/deployment.md"),
         Path(".github/PULL_REQUEST_TEMPLATE/deployment.md"),
     ),
+    (
+        Path("PULL_REQUEST_TEMPLATE/dependency-update.md"),
+        Path("PULL_REQUEST_TEMPLATE.vi/dependency-update.md"),
+        Path(".github/PULL_REQUEST_TEMPLATE/dependency-update.md"),
+    ),
     (Path("CITATION.cff"), Path("CITATION.vi.cff"), Path("CITATION.cff")),
     (
         Path("release-config.yml"),
@@ -3299,6 +3304,10 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
                 problems.append(
                     f"{relative}: CodeQL merge_group trigger must request checks"
                 )
+            if document.get("on", {}).get("workflow_dispatch") != "":
+                problems.append(
+                    f"{relative}: CodeQL must support manual security scans"
+                )
         jobs = document.get("jobs")
         job = jobs.get(job_name) if isinstance(jobs, dict) else None
         if not isinstance(job, dict):
@@ -3311,6 +3320,51 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
             )
             problems.append(f"{relative}: {job_name} must {expectation}")
     return problems
+
+
+def validate_scorecard_manual_dispatch(repository_root: Path) -> list[str]:
+    """Require manual runs for the root and scaffold Scorecard scans."""
+    paths = (
+        repository_root / ".github" / "workflows" / "scorecard.yml",
+        repository_root
+        / "skills"
+        / "repo-scaffold"
+        / "assets"
+        / "workflows"
+        / "scorecard.yml",
+    )
+    problems: list[str] = []
+    for path in paths:
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            workflow = load_yaml(path)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            problems.append(f"{relative}: Scorecard workflow is unreadable: {error}")
+            continue
+        triggers = workflow.get("on") if isinstance(workflow, dict) else None
+        if not isinstance(triggers, dict) or triggers.get("workflow_dispatch") != "":
+            problems.append(f"{relative}: Scorecard must support manual security scans")
+    return problems
+
+
+def validate_pr_template_catalog_documentation(repository_root: Path) -> list[str]:
+    """Keep the README catalog aligned with focused pull-request templates."""
+    readme_path = repository_root / "README.md"
+    template_directory = repository_root / ".github" / "PULL_REQUEST_TEMPLATE"
+    try:
+        readme = readme_path.read_text(encoding="utf-8")
+        template_names = sorted(
+            path.stem for path in template_directory.glob("*.md") if path.is_file()
+        )
+    except (OSError, UnicodeError) as error:
+        return [f"README PR-template catalog is unreadable: {error}"]
+    if not template_names:
+        return ["README PR-template catalog has no focused templates to document"]
+    return [
+        f"README.md: must document focused PR template `{template_name}.md`"
+        for template_name in template_names
+        if f"`{template_name}.md`" not in readme
+    ]
 
 
 def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
@@ -5110,12 +5164,14 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_release_please,
         validate_release_attestation,
         validate_privileged_workflow_permissions,
+        validate_scorecard_manual_dispatch,
         validate_action_pin_sync_contract,
         validate_required_check_concurrency,
         validate_issue_templates,
         validate_release_notes_config,
         validate_dependabot,
         validate_markdown_links,
+        validate_pr_template_catalog_documentation,
         validate_community_health_tracking_contract,
         validate_freshness_tracking_contract,
         validate_official_docs_tracking_contract,

@@ -20,8 +20,8 @@ Trước khi tạo hoặc cập nhật pull request, đọc tập template tin c
 branch đích. Khi title Conventional Commit bắt đầu bằng `feat`, `fix` hoặc
 `docs`, lần lượt dùng `feature`, `bugfix` hoặc `documentation`. Gate
 `pr-template` bắt buộc các mapping này. Với các loại title khác, dùng template
-mặc định trừ khi thay đổi thực sự cần review security hoặc deployment. Giữ đúng
-một marker `<!-- repo-scaffold:pr-template=<id> -->` phù hợp, mọi heading bắt
+mặc định trừ khi thay đổi thực sự cần review security, deployment hoặc
+dependency-update. Giữ đúng một marker `<!-- repo-scaffold:pr-template=<id> -->` phù hợp, mọi heading bắt
 buộc và mọi mục của danh sách bắt buộc trong template đã chọn. Chỉ thêm mục
 `Khi phù hợp` khi áp dụng, và bỏ cả phần này khi không có mục nào áp dụng. Dùng
 tệp body UTF-8. PR ở trạng thái draft có thể để các mục bắt buộc chưa tick;

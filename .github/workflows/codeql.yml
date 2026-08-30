@@ -10,6 +10,7 @@ on:
     types: [checks_requested]
   schedule:
     - cron: "17 3 * * 4"
+  workflow_dispatch:
 
 permissions:
   actions: read

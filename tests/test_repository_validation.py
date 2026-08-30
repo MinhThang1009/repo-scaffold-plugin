@@ -3048,12 +3048,14 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_release_please",
             "validate_release_attestation",
             "validate_privileged_workflow_permissions",
+            "validate_scorecard_manual_dispatch",
             "validate_action_pin_sync_contract",
             "validate_required_check_concurrency",
             "validate_issue_templates",
             "validate_release_notes_config",
             "validate_dependabot",
             "validate_markdown_links",
+            "validate_pr_template_catalog_documentation",
             "validate_community_health_tracking_contract",
             "validate_freshness_tracking_contract",
             "validate_official_docs_tracking_contract",
@@ -4460,6 +4462,40 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
                 2,
             )
 
+    def test_rejects_codeql_trigger_that_omits_manual_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            for relative in (
+                Path(".github/workflows/release-please.yml"),
+                Path("skills/repo-scaffold/assets/workflows/release-please.yml"),
+                Path(".github/workflows/codeql.yml"),
+                Path("skills/repo-scaffold/assets/workflows/codeql.yml"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for path in (workflow_root / "codeql.yml", asset_root / "codeql.yml"):
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "  workflow_dispatch:\n", "", 1
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_privileged_workflow_permissions(
+                root
+            )
+
+            self.assertEqual(
+                sum(
+                    "CodeQL must support manual security scans" in item
+                    for item in problems
+                ),
+                2,
+            )
+
     def test_reports_unreadable_scalar_and_missing_job_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4498,6 +4534,57 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
             self.assertEqual(
                 sum("analyze job is missing" in item for item in problems), 2
             )
+
+
+class SecurityManualDispatchTests(unittest.TestCase):
+    def test_scorecard_workflows_support_manual_security_scans(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_scorecard_manual_dispatch(PLUGIN_ROOT), []
+        )
+
+    def test_scorecard_workflows_reject_missing_manual_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = (
+                Path(".github/workflows/scorecard.yml"),
+                Path("skills/repo-scaffold/assets/workflows/scorecard.yml"),
+            )
+            for relative in paths:
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    (PLUGIN_ROOT / relative)
+                    .read_text(encoding="utf-8")
+                    .replace("  workflow_dispatch:\n", "", 1),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_scorecard_manual_dispatch(root)
+
+            self.assertEqual(
+                sum(
+                    "Scorecard must support manual security scans" in item
+                    for item in problems
+                ),
+                2,
+            )
+
+    def test_scorecard_workflows_report_unreadable_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            workflow_root.mkdir(parents=True)
+            asset_root.mkdir(parents=True)
+            (workflow_root / "scorecard.yml").write_text("on: [\n", encoding="utf-8")
+            (asset_root / "scorecard.yml").write_text(
+                "on:\n  workflow_dispatch:\n", encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_scorecard_manual_dispatch(root)
+
+            self.assertEqual(len(problems), 1)
+            self.assertIn("Scorecard workflow is unreadable", problems[0])
 
 
 class RequiredCheckConcurrencyTests(unittest.TestCase):
@@ -4918,6 +5005,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "documentation",
             "security",
             "deployment",
+            "dependency-update",
         )
         template_paths = {
             "default": (
@@ -5036,6 +5124,21 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(deployment_result.returncode, 0, deployment_result.stderr)
+
+            dependency_update_body = (
+                template_root / "PULL_REQUEST_TEMPLATE" / "dependency-update.md"
+            ).read_text(encoding="utf-8")
+            dependency_update_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": dependency_update_body},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(
+                dependency_update_result.returncode, 0, dependency_update_result.stderr
+            )
 
             default_body = (template_root / "PULL_REQUEST_TEMPLATE.md").read_text(
                 encoding="utf-8"

@@ -3964,7 +3964,13 @@ class PlaceholderContractTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     set(document["on"]),
-                    {"push", "pull_request", "merge_group", "schedule"},
+                    {
+                        "push",
+                        "pull_request",
+                        "merge_group",
+                        "schedule",
+                        "workflow_dispatch",
+                    },
                 )
                 self.assertEqual(
                     document["on"]["merge_group"], {"types": ["checks_requested"]}
@@ -4036,7 +4042,12 @@ class PlaceholderContractTests(unittest.TestCase):
                 self.assertEqual(document["permissions"], {})
                 self.assertEqual(
                     set(document["on"]),
-                    {"branch_protection_rule", "push", "schedule"},
+                    {
+                        "branch_protection_rule",
+                        "push",
+                        "schedule",
+                        "workflow_dispatch",
+                    },
                 )
                 self.assertEqual(job["permissions"]["contents"], "read")
                 self.assertEqual(job["permissions"]["id-token"], "write")
