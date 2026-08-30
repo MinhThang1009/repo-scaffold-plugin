@@ -181,6 +181,53 @@ if find dist ! -type d ! -type f -print -quit | grep -q .; then
   exit 1
 fi
 """
+WORKFLOW_SCRIPT_COPY_CONTRACT = (
+    (
+        Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+        Path("scripts/check_code_scanning_alerts.py"),
+        "../../../scripts/check_code_scanning_alerts.py",
+        Path("scripts/check_code_scanning_alerts.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/community-health.yml"),
+        Path("skills/repo-scaffold/scripts/check_community_health.py"),
+        "../scripts/check_community_health.py",
+        Path("scripts/check_community_health.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/scripts/ci_toolchain.py"),
+        "../scripts/ci_toolchain.py",
+        Path("scripts/ci_toolchain.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/scripts/validate_scaffold.py"),
+        "../scripts/validate_scaffold.py",
+        Path("scripts/validate_scaffold.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/scripts/audit_freshness.py"),
+        "../scripts/audit_freshness.py",
+        Path("scripts/audit_freshness.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/scripts/sync_action_pins.py"),
+        "../scripts/sync_action_pins.py",
+        Path("scripts/sync_action_pins.py"),
+        False,
+    ),
+)
+SCAFFOLD_GENERATION_REFERENCE = Path(
+    "skills/repo-scaffold/references/scaffold-generation.md"
+)
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -4899,6 +4946,62 @@ def validate_release_archive(repository_root: Path) -> list[str]:
         return problems
 
 
+def validate_workflow_script_copy_contract(repository_root: Path) -> list[str]:
+    """Require documented generated copies for every workflow-bundled script."""
+    reference = repository_root / SCAFFOLD_GENERATION_REFERENCE
+    try:
+        reference_text = reference.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        return [
+            f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: could not read workflow "
+            f"script copy contract: {error}"
+        ]
+
+    problems: list[str] = []
+    for (
+        workflow_relative,
+        source_relative,
+        source_reference,
+        destination,
+        invoked,
+    ) in WORKFLOW_SCRIPT_COPY_CONTRACT:
+        source = repository_root / source_relative
+        workflow = repository_root / workflow_relative
+        asset_relative = workflow_relative.as_posix().removeprefix(
+            "skills/repo-scaffold/"
+        )
+        row = re.compile(
+            rf"^\| `{re.escape(asset_relative)}` \| "
+            rf"`{re.escape(source_reference)}` \| "
+            rf"`{re.escape(destination.as_posix())}` \|$",
+            re.MULTILINE,
+        )
+        if not source.is_file():
+            problems.append(
+                f"{source_relative.as_posix()}: bundled workflow script is missing"
+            )
+        if row.search(reference_text) is None:
+            problems.append(
+                f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: must document copying "
+                f"{asset_relative} dependency {destination.as_posix()}"
+            )
+        if invoked:
+            try:
+                workflow_text = workflow.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as error:
+                problems.append(
+                    f"{workflow_relative.as_posix()}: could not read workflow script "
+                    f"dependency: {error}"
+                )
+                continue
+            if f"python {destination.as_posix()}" not in workflow_text:
+                problems.append(
+                    f"{workflow_relative.as_posix()}: must invoke "
+                    f"{destination.as_posix()}"
+                )
+    return problems
+
+
 def validate_test_quality_contract(repository_root: Path) -> list[str]:
     """Reject structurally weak or duplicated test cases."""
     test_root = repository_root / "tests"
@@ -4982,6 +5085,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_freshness_tracking_contract,
         validate_official_docs_tracking_contract,
         validate_code_scanning_gate_contract,
+        validate_workflow_script_copy_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,

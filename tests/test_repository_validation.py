@@ -3058,6 +3058,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_freshness_tracking_contract",
             "validate_official_docs_tracking_contract",
             "validate_code_scanning_gate_contract",
+            "validate_workflow_script_copy_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
             "validate_release_archive",
@@ -7198,6 +7199,173 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 root
             )
         self.assertTrue(any("ci.yml: unreadable" in problem for problem in problems))
+
+
+class WorkflowScriptCopyContractTests(unittest.TestCase):
+    def test_current_workflow_script_copy_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_workflow_script_copy_contract(PLUGIN_ROOT), []
+        )
+
+    def test_missing_documented_workflow_script_copy_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / "assets" / "workflows" / "documentation.yml"
+            source = root / "scripts" / "validate_scaffold.py"
+            reference = root / "references" / "scaffold-generation.md"
+            workflow.parent.mkdir(parents=True)
+            source.parent.mkdir(parents=True)
+            reference.parent.mkdir(parents=True)
+            workflow.write_text(
+                "run: python scripts/validate_scaffold.py --repository-root .\n",
+                encoding="utf-8",
+            )
+            source.write_text("# source\n", encoding="utf-8")
+            reference.write_text("# Scaffold generation contract\n", encoding="utf-8")
+            contract = (
+                (
+                    Path("assets/workflows/documentation.yml"),
+                    Path("scripts/validate_scaffold.py"),
+                    "../scripts/validate_scaffold.py",
+                    Path("scripts/validate_scaffold.py"),
+                    True,
+                ),
+            )
+            with (
+                mock.patch.object(
+                    validate_repository,
+                    "WORKFLOW_SCRIPT_COPY_CONTRACT",
+                    contract,
+                ),
+                mock.patch.object(
+                    validate_repository,
+                    "SCAFFOLD_GENERATION_REFERENCE",
+                    Path("references/scaffold-generation.md"),
+                ),
+            ):
+                problems = validate_repository.validate_workflow_script_copy_contract(
+                    root
+                )
+
+        self.assertEqual(
+            problems,
+            [
+                "references/scaffold-generation.md: must document copying "
+                "assets/workflows/documentation.yml dependency "
+                "scripts/validate_scaffold.py"
+            ],
+        )
+
+    def test_missing_bundled_source_or_workflow_invocation_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / "assets" / "workflows" / "documentation.yml"
+            reference = root / "references" / "scaffold-generation.md"
+            workflow.parent.mkdir(parents=True)
+            reference.parent.mkdir(parents=True)
+            workflow.write_text("run: echo unavailable\n", encoding="utf-8")
+            reference.write_text(
+                "| Workflow asset | Bundled source | Generated destination |\n"
+                "| --- | --- | --- |\n"
+                "| `assets/workflows/documentation.yml` | "
+                "`../scripts/validate_scaffold.py` | "
+                "`scripts/validate_scaffold.py` |\n",
+                encoding="utf-8",
+            )
+            contract = (
+                (
+                    Path("assets/workflows/documentation.yml"),
+                    Path("scripts/validate_scaffold.py"),
+                    "../scripts/validate_scaffold.py",
+                    Path("scripts/validate_scaffold.py"),
+                    True,
+                ),
+            )
+            with (
+                mock.patch.object(
+                    validate_repository,
+                    "WORKFLOW_SCRIPT_COPY_CONTRACT",
+                    contract,
+                ),
+                mock.patch.object(
+                    validate_repository,
+                    "SCAFFOLD_GENERATION_REFERENCE",
+                    Path("references/scaffold-generation.md"),
+                ),
+            ):
+                problems = validate_repository.validate_workflow_script_copy_contract(
+                    root
+                )
+
+        self.assertEqual(
+            problems,
+            [
+                "scripts/validate_scaffold.py: bundled workflow script is missing",
+                "assets/workflows/documentation.yml: must invoke "
+                "scripts/validate_scaffold.py",
+            ],
+        )
+
+    def test_unreadable_workflow_or_reference_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "scripts" / "validate_scaffold.py"
+            reference = root / "references" / "scaffold-generation.md"
+            source.parent.mkdir(parents=True)
+            reference.parent.mkdir(parents=True)
+            source.write_text("# source\n", encoding="utf-8")
+            reference.write_text(
+                "| Workflow asset | Bundled source | Generated destination |\n"
+                "| --- | --- | --- |\n"
+                "| `assets/workflows/documentation.yml` | "
+                "`../scripts/validate_scaffold.py` | "
+                "`scripts/validate_scaffold.py` |\n",
+                encoding="utf-8",
+            )
+            contract = (
+                (
+                    Path("assets/workflows/documentation.yml"),
+                    Path("scripts/validate_scaffold.py"),
+                    "../scripts/validate_scaffold.py",
+                    Path("scripts/validate_scaffold.py"),
+                    True,
+                ),
+            )
+            with (
+                mock.patch.object(
+                    validate_repository,
+                    "WORKFLOW_SCRIPT_COPY_CONTRACT",
+                    contract,
+                ),
+                mock.patch.object(
+                    validate_repository,
+                    "SCAFFOLD_GENERATION_REFERENCE",
+                    Path("references/scaffold-generation.md"),
+                ),
+            ):
+                unreadable_workflow = (
+                    validate_repository.validate_workflow_script_copy_contract(root)
+                )
+            reference.unlink()
+            with mock.patch.object(
+                validate_repository,
+                "SCAFFOLD_GENERATION_REFERENCE",
+                Path("references/scaffold-generation.md"),
+            ):
+                unreadable_reference = (
+                    validate_repository.validate_workflow_script_copy_contract(root)
+                )
+
+        self.assertTrue(
+            unreadable_workflow[0].startswith(
+                "assets/workflows/documentation.yml: could not read workflow script "
+            )
+        )
+        self.assertTrue(
+            unreadable_reference[0].startswith(
+                "references/scaffold-generation.md: could not read workflow script "
+            )
+        )
 
 
 class PolicyDriftReminderContractTests(unittest.TestCase):

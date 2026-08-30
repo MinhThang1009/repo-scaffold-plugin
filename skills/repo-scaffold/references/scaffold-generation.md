@@ -10,9 +10,20 @@ commit. Use an official Vietnamese source only when it exists for that exact
 version; otherwise retain canonical English and report the gap.
 
 Copy assets and bundled scripts from this skill byte-for-byte where applicable.
-When installing the CodeQL asset, also copy the bundled plugin-root script
-`../../../scripts/check_code_scanning_alerts.py` to the generated repository at
-`scripts/check_code_scanning_alerts.py` and copy
+Every installed workflow that requires a bundled script, including an imported
+helper, must also receive the corresponding script at its repository-root
+destination:
+
+| Workflow asset | Bundled source | Generated destination |
+| --- | --- | --- |
+| `assets/workflows/code-scanning-gate.yml` | `../../../scripts/check_code_scanning_alerts.py` | `scripts/check_code_scanning_alerts.py` |
+| `assets/workflows/community-health.yml` | `../scripts/check_community_health.py` | `scripts/check_community_health.py` |
+| `assets/workflows/documentation.yml` | `../scripts/ci_toolchain.py` | `scripts/ci_toolchain.py` |
+| `assets/workflows/documentation.yml` | `../scripts/validate_scaffold.py` | `scripts/validate_scaffold.py` |
+| `assets/workflows/freshness.yml` | `../scripts/audit_freshness.py` | `scripts/audit_freshness.py` |
+| `assets/workflows/freshness.yml` | `../scripts/sync_action_pins.py` | `scripts/sync_action_pins.py` |
+
+When installing the CodeQL asset, also copy
 `assets/code-scanning-allowlist.json` to
 `.github/code-scanning-allowlist.json`. Keep the scaffold allowlist empty unless
 the target repository has independently reviewed a specific alert and recorded
