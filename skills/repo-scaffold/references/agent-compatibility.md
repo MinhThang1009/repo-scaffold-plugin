@@ -20,21 +20,24 @@ around it. See the [official AGENTS.md documentation](https://learn.chatgpt.com/
 
 The Claude Code adapter is `.claude-plugin/plugin.json`. Claude Code discovers
 the standard `skills/` directory in a plugin, so it loads the same core skill
-without a copied wrapper. For local verification from this repository root:
+without a copied wrapper. The repository also ships a Claude Code marketplace
+catalog at `.claude-plugin/marketplace.json`, so users can install the release
+through the documented marketplace flow:
 
 ```bash
 claude plugin validate --strict .
-claude --plugin-dir .
+claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
+claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-In the resulting session, invoke `/repo-scaffold:repo-scaffold` or ask Claude
-to scaffold the repository. Claude Code documents both the plugin layout and
-the shared `SKILL.md` format in its [plugin guide](https://code.claude.com/docs/en/plugins)
-and [skills guide](https://code.claude.com/docs/en/skills).
+Restart Claude Code, then invoke `/repo-scaffold:repo-scaffold` or ask Claude
+to scaffold the repository. For local verification without installation, run
+`claude --plugin-dir .`. Claude Code documents the marketplace contract, plugin
+layout, and shared `SKILL.md` format in its [marketplace guide](https://code.claude.com/docs/en/plugin-marketplaces), [plugin guide](https://code.claude.com/docs/en/plugins), and [skills guide](https://code.claude.com/docs/en/skills).
 
 Release assets contain both manifests under `repo-scaffold/`. Pass the ZIP
-directly to `claude --plugin-dir`, or extract it and pass the extracted
-directory.
+directly to `claude --plugin-dir` for an ephemeral local check, or extract it
+and add the extracted directory as a local marketplace.
 
 ## Other agents
 

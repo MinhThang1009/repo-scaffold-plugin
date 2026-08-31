@@ -122,6 +122,19 @@
       "review-period-days": 90
     },
     {
+      "id": "claude-plugin-marketplace",
+      "label": "Claude Code plugin marketplace",
+      "url": "https://code.claude.com/docs/en/plugin-marketplaces",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["marketplace.json", "claude plugin marketplace add"],
+      "reviewed-on": "2026-08-31",
+      "review-period-days": 90
+    },
+    {
       "id": "claude-memory-adapter",
       "label": "Claude Code CLAUDE.md adapter",
       "url": "https://code.claude.com/docs/en/memory",

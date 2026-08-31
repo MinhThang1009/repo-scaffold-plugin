@@ -3662,7 +3662,10 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         shared = {
             "name": "repo-scaffold",
             "version": "1.2.3",
-            "description": "Shared Agent Skills plugin",
+            "description": (
+                "Agent Skills plugin for Codex and Claude Code that scaffolds "
+                "repositories to production GitHub.com standards."
+            ),
             "author": {"name": "Maintainer"},
             "homepage": "https://example.test/readme",
             "repository": "https://example.test",
@@ -3680,6 +3683,22 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             **shared,
         }
         (claude_root / "plugin.json").write_text(json.dumps(claude), encoding="utf-8")
+        marketplace = {
+            "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+            "name": validate_repository.CLAUDE_MARKETPLACE_NAME,
+            "owner": validate_repository.CLAUDE_MARKETPLACE_OWNER,
+            "description": "Repo Scaffold plugins for Claude Code.",
+            "plugins": [
+                {
+                    "name": "repo-scaffold",
+                    "source": "./",
+                    "description": shared["description"],
+                }
+            ],
+        }
+        (claude_root / "marketplace.json").write_text(
+            json.dumps(marketplace), encoding="utf-8"
+        )
         skill = root / "skills" / "repo-scaffold" / "SKILL.md"
         skill.parent.mkdir(parents=True)
         language_mappings = "".join(
@@ -3701,6 +3720,7 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "https://developers.openai.com/plugins/build/plugins\n"
             "https://learn.chatgpt.com/docs/agent-configuration/agents-md\n"
             "https://learn.chatgpt.com/docs/agent-configuration/subagents\n"
+            "https://code.claude.com/docs/en/plugin-marketplaces\n"
             "https://code.claude.com/docs/en/plugins\n"
             "https://code.claude.com/docs/en/skills\n"
             "https://code.claude.com/docs/en/memory\n"
@@ -3889,6 +3909,57 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "skills/repo-scaffold/assets/AGENTS.vi.md: must not duplicate the "
             "English source",
             problems,
+        )
+
+    def test_rejects_missing_or_drifted_claude_marketplace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            marketplace_path = root / validate_repository.CLAUDE_MARKETPLACE_PATH
+            marketplace_path.unlink()
+
+            missing = validate_repository.validate_multi_agent_plugin_contract(root)
+
+            self.assertTrue(
+                any(
+                    problem.startswith(".claude-plugin/marketplace.json: invalid JSON:")
+                    for problem in missing
+                )
+            )
+
+            marketplace_path.write_text("[]", encoding="utf-8")
+            non_object = validate_repository.validate_multi_agent_plugin_contract(root)
+
+            self.assertIn(
+                ".claude-plugin/marketplace.json: root must be an object",
+                non_object,
+            )
+
+            marketplace_path.write_text(
+                json.dumps(
+                    {
+                        "name": "wrong",
+                        "owner": {},
+                        "plugins": [{"name": "repo-scaffold", "source": "../"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            drifted = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        self.assertIn(
+            ".claude-plugin/marketplace.json: name must be repo-scaffold-plugins",
+            drifted,
+        )
+        self.assertIn(
+            ".claude-plugin/marketplace.json: owner must identify the plugin "
+            "maintainer",
+            drifted,
+        )
+        self.assertIn(
+            ".claude-plugin/marketplace.json: plugins must expose only the root "
+            "repo-scaffold plugin through source ./",
+            drifted,
         )
 
     def test_rejects_reference_without_current_subagent_documentation(self) -> None:

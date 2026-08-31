@@ -76,6 +76,12 @@ RELEASE_PLUGIN_VERSION_PATHS = (
     Path(".codex-plugin/plugin.json"),
     Path(".claude-plugin/plugin.json"),
 )
+CLAUDE_MARKETPLACE_PATH = Path(".claude-plugin/marketplace.json")
+CLAUDE_MARKETPLACE_NAME = "repo-scaffold-plugins"
+CLAUDE_MARKETPLACE_OWNER = {
+    "name": "Minh Thang",
+    "url": "https://github.com/MinhThang1009",
+}
 AGENT_COMPATIBILITY_REFERENCE_PATHS = (
     Path("skills/repo-scaffold/references/agent-compatibility.md"),
     Path("skills/repo-scaffold/references/agent-compatibility.vi.md"),
@@ -2798,6 +2804,42 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
                 ".claude-plugin/plugin.json: displayName must be Repo Scaffold"
             )
 
+    marketplace_path = repository_root / CLAUDE_MARKETPLACE_PATH
+    try:
+        marketplace = load_json(marketplace_path)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        problems.append(f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: invalid JSON: {error}")
+    else:
+        if not isinstance(marketplace, dict):
+            problems.append(
+                f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: root must be an object"
+            )
+        else:
+            if marketplace.get("name") != CLAUDE_MARKETPLACE_NAME:
+                problems.append(
+                    f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: name must be "
+                    f"{CLAUDE_MARKETPLACE_NAME}"
+                )
+            if marketplace.get("owner") != CLAUDE_MARKETPLACE_OWNER:
+                problems.append(
+                    f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: owner must identify "
+                    "the plugin maintainer"
+                )
+            plugins = marketplace.get("plugins")
+            expected_entry = {
+                "name": "repo-scaffold",
+                "source": "./",
+                "description": (
+                    "Agent Skills plugin for Codex and Claude Code that scaffolds "
+                    "repositories to production GitHub.com standards."
+                ),
+            }
+            if not isinstance(plugins, list) or plugins != [expected_entry]:
+                problems.append(
+                    f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: plugins must expose "
+                    "only the root repo-scaffold plugin through source ./"
+                )
+
     skill_path = repository_root / "skills" / "repo-scaffold" / "SKILL.md"
     try:
         skill_text = skill_path.read_text(encoding="utf-8")
@@ -2910,6 +2952,7 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
         "https://developers.openai.com/plugins/build/plugins",
         "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
         "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+        "https://code.claude.com/docs/en/plugin-marketplaces",
         "https://code.claude.com/docs/en/plugins",
         "https://code.claude.com/docs/en/skills",
         "https://code.claude.com/docs/en/memory",

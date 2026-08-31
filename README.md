@@ -105,17 +105,19 @@ codex plugin add repo-scaffold@personal
 
 `personal` is a local marketplace name, not a global default. A personal marketplace catalog lives at `~/.agents/plugins/marketplace.json`; its plugin source path must point to this checkout.
 
-For Claude Code, validate and load the same checkout directly:
+For Claude Code, add this repository as a marketplace and install the plugin:
 
 ```powershell
 claude plugin validate --strict .
-claude --plugin-dir .
+claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
+claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-Then invoke `/repo-scaffold:repo-scaffold`, or ask Claude to scaffold the
-current repository. The release archive contains both `.codex-plugin/` and
-`.claude-plugin/`; pass the ZIP directly to `claude --plugin-dir`, or extract
-it and pass the resulting `repo-scaffold/` directory.
+Restart Claude Code, then invoke `/repo-scaffold:repo-scaffold`, or ask Claude
+to scaffold the current repository. For local development only, validate and
+load the checkout directly with `claude --plugin-dir .`. The release archive
+contains both manifests and the Claude marketplace catalog; extract it before
+adding it as a local marketplace.
 
 ## 7. Update
 
@@ -124,9 +126,12 @@ After the local marketplace source and plugin version have been updated, reinsta
 ```powershell
 codex plugin remove repo-scaffold@personal
 codex plugin add repo-scaffold@personal
+claude plugin marketplace update repo-scaffold-plugins
+claude plugin update repo-scaffold@repo-scaffold-plugins
 ```
 
-The current thread keeps the skill version that it loaded when the thread started.
+Restart Codex or Claude Code after updating. Existing sessions keep the skill
+version they loaded when the session started.
 
 ## 8. Uninstall
 
@@ -147,6 +152,7 @@ repo-scaffold/
 ├── .release-please-manifest.json
 ├── .markdownlint-cli2.jsonc
 ├── .claude-plugin/
+│   ├── marketplace.json
 │   └── plugin.json
 ├── .codex-plugin/
 │   └── plugin.json
