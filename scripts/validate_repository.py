@@ -1874,6 +1874,13 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: use only scheduled and manual "
             "trusted triggers"
         )
+    if not isinstance(triggers, dict) or triggers.get("schedule") != [
+        {"cron": "41 5 * * *"}
+    ]:
+        problems.append(
+            ".github/workflows/mutation-testing.yml: schedule daily continuation "
+            "of interrupted mutation runs"
+        )
     dispatch = triggers.get("workflow_dispatch") if isinstance(triggers, dict) else None
     expected_dispatch = {
         "inputs": {
@@ -2150,7 +2157,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         and step["uses"].startswith("actions/cache/save@")
     ]
     cache_platform_prefix = (
-        "mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
+        "mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-"
         "${{ steps.python.outputs.python-version }}"
     )
     expected_clean_cache = {
@@ -2205,7 +2212,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: mutation state cache must "
             "restore and save resumable state under immutable per-run keys, "
             "save verified clean results separately, and use runtime- and "
-            "platform-scoped v5 keys"
+            "platform-scoped v6 keys"
         )
 
     cache_preparer_relative = "scripts/prepare_mutation_cache.py"

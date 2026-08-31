@@ -305,12 +305,14 @@ Mutation testing extends that toolchain through the separate, hash-verified
 `requirements-mutation.txt`. Mutmut versions are not duplicated in validators
 or tests; a compatible Dependabot bump passes the runner integration tests,
 while an incompatible internal API change fails those behavioral checks. Its
-monthly and manually dispatched workflow runs mutmut on Linux, rejects
+daily and manually dispatched workflow runs mutmut on Linux, rejects
 incomplete runs, enforces the evidence-backed mutation score floor documented in
 `CONTRIBUTING.md`, and retains generated mutants plus metadata for diagnosis. A
 bounded mutation step records interrupted progress before the job ends; later
 runs reset every non-killed result and may resume an explicitly verified
-same-repository, same-commit artifact. Native Windows is not supported by
+same-repository, same-commit artifact. Its cache is invalidated only by mutation
+source, test, or mutation-control changes, so documentation and release metadata
+do not discard safe interrupted progress. Native Windows is not supported by
 mutmut; contributors can use WSL for the same check.
 
 ## 11. Releases

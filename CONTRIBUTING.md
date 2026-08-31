@@ -132,8 +132,10 @@ python scripts/validate_repository.py
 The coverage command enforces the repository's 100% branch-coverage floor from
 `.coveragerc`.
 
-Mutation testing runs monthly and on manual dispatch because a complete run is
-substantially more expensive than the required pull-request checks. Mutmut
+Mutation testing runs daily and on manual dispatch because a complete run is
+substantially more expensive than the required pull-request checks and interrupted
+progress must be resumed promptly. The cache invalidates only when mutation
+source, test, `pyproject.toml`, or `requirements-mutation.txt` changes. Mutmut
 requires operating-system `fork` support, so run it on Linux or in WSL on
 Windows:
 

@@ -1921,6 +1921,24 @@ jobs:
             problems,
         )
 
+    def test_mutation_schedule_must_continue_daily(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                '    - cron: "41 5 * * *"', '    - cron: "41 5 1 * *"', 1
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: schedule daily continuation "
+            "of interrupted mutation runs",
+            problems,
+        )
+
     def test_mutation_diagnostics_must_preserve_generated_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2081,13 +2099,13 @@ jobs:
             workflow = workflow.replace(
                 "          path: mutants/\n"
                 "          key: >-\n"
-                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-"
                 "${{ github.run_id }}-${{ github.run_attempt }}\n"
                 "          restore-keys: |\n"
-                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-\n"
-                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-\n",
                 "          path: mutants/*.meta\n"
                 "          key: mutmut-shared\n"
@@ -2106,7 +2124,7 @@ jobs:
             ".github/workflows/mutation-testing.yml: mutation state cache must "
             "restore and save resumable state under immutable per-run keys, "
             "save verified clean results separately, and use runtime- and "
-            "platform-scoped v5 keys",
+            "platform-scoped v6 keys",
             problems,
         )
         self.assertIn(
@@ -2148,7 +2166,7 @@ jobs:
             ".github/workflows/mutation-testing.yml: mutation state cache must "
             "restore and save resumable state under immutable per-run keys, save "
             "verified clean results separately, and use runtime- and platform-scoped "
-            "v5 keys",
+            "v6 keys",
             problems,
         )
 
