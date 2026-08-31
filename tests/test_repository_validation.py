@@ -3748,6 +3748,29 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             problems,
         )
 
+    def test_reports_unreadable_maintainer_agent_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            agents_path = root / "AGENTS.md"
+            claude_path = root / ".claude" / "CLAUDE.md"
+            agents_path.unlink()
+            agents_path.mkdir()
+            claude_path.unlink()
+            claude_path.mkdir()
+
+            problems = validate_repository.validate_maintainer_agent_instructions(root)
+
+        self.assertTrue(
+            any(problem.startswith("AGENTS.md: unreadable:") for problem in problems)
+        )
+        self.assertTrue(
+            any(
+                problem.startswith(".claude/CLAUDE.md: unreadable:")
+                for problem in problems
+            )
+        )
+
     def test_reports_missing_scaffold_generation_reference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
