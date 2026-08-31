@@ -27,7 +27,7 @@
       "tool": "Scorecard",
       "rule": "CodeReviewID",
       "path": "no file associated with this alert",
-      "reason": "Scorecard cannot inspect repository rulesets and review enforcement; those settings are verified separately before merge."
+      "reason": "The owner deliberately requires zero approval reviews. Branch protection still requires the selected status checks and resolution of every review conversation before merge."
     },
     {
       "number": 5,
