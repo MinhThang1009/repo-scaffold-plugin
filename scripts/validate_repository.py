@@ -76,6 +76,8 @@ RELEASE_PLUGIN_VERSION_PATHS = (
     Path(".codex-plugin/plugin.json"),
     Path(".claude-plugin/plugin.json"),
 )
+CODEX_MARKETPLACE_PATH = Path(".agents/plugins/marketplace.json")
+CODEX_MARKETPLACE_NAME = "repo-scaffold-plugins"
 CLAUDE_MARKETPLACE_PATH = Path(".claude-plugin/marketplace.json")
 CLAUDE_MARKETPLACE_NAME = "repo-scaffold-plugins"
 CLAUDE_MARKETPLACE_OWNER = {
@@ -2804,6 +2806,42 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
                 ".claude-plugin/plugin.json: displayName must be Repo Scaffold"
             )
 
+    codex_marketplace_path = repository_root / CODEX_MARKETPLACE_PATH
+    try:
+        codex_marketplace = load_json(codex_marketplace_path)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        problems.append(f"{CODEX_MARKETPLACE_PATH.as_posix()}: invalid JSON: {error}")
+    else:
+        expected_entry = {
+            "name": "repo-scaffold",
+            "source": {"source": "local", "path": "./"},
+            "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+            "category": "Productivity",
+        }
+        if not isinstance(codex_marketplace, dict):
+            problems.append(
+                f"{CODEX_MARKETPLACE_PATH.as_posix()}: root must be an object"
+            )
+        else:
+            if codex_marketplace.get("name") != CODEX_MARKETPLACE_NAME:
+                problems.append(
+                    f"{CODEX_MARKETPLACE_PATH.as_posix()}: name must be "
+                    f"{CODEX_MARKETPLACE_NAME}"
+                )
+            if codex_marketplace.get("interface") != {
+                "displayName": "Repo Scaffold plugins"
+            }:
+                problems.append(
+                    f"{CODEX_MARKETPLACE_PATH.as_posix()}: interface must expose "
+                    "the Repo Scaffold marketplace display name"
+                )
+            plugins = codex_marketplace.get("plugins")
+            if not isinstance(plugins, list) or plugins != [expected_entry]:
+                problems.append(
+                    f"{CODEX_MARKETPLACE_PATH.as_posix()}: plugins must expose "
+                    "only the root repo-scaffold plugin"
+                )
+
     marketplace_path = repository_root / CLAUDE_MARKETPLACE_PATH
     try:
         marketplace = load_json(marketplace_path)
@@ -5037,6 +5075,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
     if git is None:
         return ["release archive: git is unavailable outside the repository"]
     archive_paths = (
+        ".agents",
         ".claude-plugin",
         ".codex-plugin",
         "skills",

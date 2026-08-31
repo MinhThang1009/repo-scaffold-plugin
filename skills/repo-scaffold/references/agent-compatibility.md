@@ -7,8 +7,19 @@ not copy it into agent-specific adapters.
 
 ## Codex
 
-The Codex adapter is `.codex-plugin/plugin.json`. Install it through a Codex
-marketplace as described in the [official Codex plugin documentation](https://developers.openai.com/plugins/build/plugins), then ask for a repository scaffold normally.
+The Codex adapter is `.codex-plugin/plugin.json`. The repository ships the
+Codex marketplace catalog at `.agents/plugins/marketplace.json`, so install it
+through the documented marketplace flow:
+
+```bash
+codex plugin marketplace add MinhThang1009/repo-scaffold-plugin
+codex plugin add repo-scaffold@repo-scaffold-plugins
+```
+
+Restart Codex, then ask for a repository scaffold normally. The catalog's
+`source.path` resolves from the marketplace root and targets this plugin root.
+For a checkout private to one user, use a personal marketplace at
+`~/.agents/plugins/marketplace.json`. See the [official Codex plugin documentation](https://developers.openai.com/plugins/build/plugins).
 
 Codex reads project instructions from `AGENTS.md`; it layers the applicable
 files from the repository root to the working directory. The generated

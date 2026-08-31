@@ -76,6 +76,7 @@
       ],
       "required-markers": [
         ".codex-plugin/plugin.json",
+        ".agents/plugins/marketplace.json",
         "shared by ChatGPT and Codex"
       ],
       "reviewed-on": "2026-08-24",

@@ -3675,6 +3675,26 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         codex_root = root / ".codex-plugin"
         codex_root.mkdir()
         (codex_root / "plugin.json").write_text(json.dumps(shared), encoding="utf-8")
+        codex_marketplace_root = root / ".agents" / "plugins"
+        codex_marketplace_root.mkdir(parents=True)
+        codex_marketplace = {
+            "name": validate_repository.CODEX_MARKETPLACE_NAME,
+            "interface": {"displayName": "Repo Scaffold plugins"},
+            "plugins": [
+                {
+                    "name": "repo-scaffold",
+                    "source": {"source": "local", "path": "./"},
+                    "policy": {
+                        "installation": "AVAILABLE",
+                        "authentication": "ON_INSTALL",
+                    },
+                    "category": "Productivity",
+                }
+            ],
+        }
+        (codex_marketplace_root / "marketplace.json").write_text(
+            json.dumps(codex_marketplace), encoding="utf-8"
+        )
         claude_root = root / ".claude-plugin"
         claude_root.mkdir()
         claude = {
@@ -3848,7 +3868,7 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "codex_manifest_version",
             "claude_manifest_version",
             "Codex and Claude plugin manifest versions must match.",
-            "HEAD -- .claude-plugin .codex-plugin skills README.md LICENSE",
+            "HEAD -- .agents .claude-plugin .codex-plugin skills README.md LICENSE",
         ):
             self.assertIn(fragment, workflow)
 
@@ -3856,6 +3876,7 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         dossier = (PLUGIN_ROOT / "PLUGIN_SUBMISSION.md").read_text(encoding="utf-8")
 
         for fragment in (
+            ".agents/plugins/marketplace.json",
             ".codex-plugin",
             ".claude-plugin",
             "claude-community",
@@ -3973,6 +3994,53 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         self.assertIn(
             ".claude-plugin/marketplace.json: plugins must expose only the root "
             "repo-scaffold plugin through source ./",
+            drifted,
+        )
+
+    def test_rejects_missing_or_drifted_codex_marketplace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            marketplace_path = root / validate_repository.CODEX_MARKETPLACE_PATH
+            marketplace_path.unlink()
+
+            missing = validate_repository.validate_multi_agent_plugin_contract(root)
+
+            self.assertTrue(
+                any(
+                    problem.startswith(
+                        ".agents/plugins/marketplace.json: invalid JSON:"
+                    )
+                    for problem in missing
+                )
+            )
+
+            marketplace_path.write_text("[]", encoding="utf-8")
+            non_object = validate_repository.validate_multi_agent_plugin_contract(root)
+
+            self.assertIn(
+                ".agents/plugins/marketplace.json: root must be an object",
+                non_object,
+            )
+
+            marketplace_path.write_text(
+                json.dumps({"name": "wrong", "interface": {}, "plugins": {}}),
+                encoding="utf-8",
+            )
+            drifted = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        self.assertIn(
+            ".agents/plugins/marketplace.json: name must be repo-scaffold-plugins",
+            drifted,
+        )
+        self.assertIn(
+            ".agents/plugins/marketplace.json: interface must expose the Repo "
+            "Scaffold marketplace display name",
+            drifted,
+        )
+        self.assertIn(
+            ".agents/plugins/marketplace.json: plugins must expose only the root "
+            "repo-scaffold plugin",
             drifted,
         )
 

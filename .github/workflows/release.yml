@@ -164,7 +164,7 @@ jobs:
             --format=zip \
             --prefix="repo-scaffold/" \
             --output "dist/repo-scaffold-plugin-${artifact_tag}.zip" \
-            HEAD -- .claude-plugin .codex-plugin skills README.md LICENSE
+            HEAD -- .agents .claude-plugin .codex-plugin skills README.md LICENSE
 
       - name: Validate release artifacts
         shell: bash

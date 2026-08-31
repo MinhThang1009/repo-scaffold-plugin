@@ -7,9 +7,19 @@ vào các adapter riêng của từng agent.
 
 ## Codex
 
-Adapter cho Codex là `.codex-plugin/plugin.json`. Cài qua Codex marketplace
-theo [tài liệu plugin chính thức](https://developers.openai.com/plugins/build/plugins),
-rồi yêu cầu scaffold repository như bình thường.
+Adapter cho Codex là `.codex-plugin/plugin.json`. Repository đóng gói Codex
+marketplace catalog tại `.agents/plugins/marketplace.json`, nên cài theo luồng
+marketplace chính thức:
+
+```bash
+codex plugin marketplace add MinhThang1009/repo-scaffold-plugin
+codex plugin add repo-scaffold@repo-scaffold-plugins
+```
+
+Khởi động lại Codex, sau đó yêu cầu scaffold repository như bình thường.
+`source.path` của catalog được phân giải từ root của marketplace và trỏ đến
+plugin root này. Với checkout chỉ dành cho một người dùng, dùng personal
+marketplace tại `~/.agents/plugins/marketplace.json`. Xem [tài liệu plugin chính thức](https://developers.openai.com/plugins/build/plugins).
 
 Codex đọc hướng dẫn dự án từ `AGENTS.md` và áp dụng các tệp phù hợp từ root
 của repository đến thư mục làm việc. `AGENTS.md` được tạo ra là điểm vào hướng

@@ -97,13 +97,17 @@ Report vulnerabilities according to [SECURITY.md](SECURITY.md), never through a 
 
 Public plugins are installed from the universal Plugin Directory shared by ChatGPT and Codex. This repository is not yet claiming a public-directory listing.
 
-For local development, first add this checkout to a personal marketplace as described in the [official plugin packaging guide](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list). If that marketplace is named `personal`, install the plugin and then start a new Codex thread in the target repository:
+For a private or local Codex installation, add this repository's marketplace and
+install the plugin, then start a new Codex thread in the target repository:
 
 ```powershell
-codex plugin add repo-scaffold@personal
+codex plugin marketplace add MinhThang1009/repo-scaffold-plugin
+codex plugin add repo-scaffold@repo-scaffold-plugins
 ```
 
-`personal` is a local marketplace name, not a global default. A personal marketplace catalog lives at `~/.agents/plugins/marketplace.json`; its plugin source path must point to this checkout.
+The catalog is `.agents/plugins/marketplace.json`; its source path resolves from
+the marketplace root. A personal marketplace at `~/.agents/plugins/marketplace.json`
+is still appropriate when the checkout must remain local to one user.
 
 Claude Code distribution has a separate community-marketplace review process.
 Until a Claude Code listing is approved, do not treat Codex Plugin Directory
@@ -119,7 +123,7 @@ claude plugin install repo-scaffold@repo-scaffold-plugins
 Restart Claude Code, then invoke `/repo-scaffold:repo-scaffold`, or ask Claude
 to scaffold the current repository. For local development only, validate and
 load the checkout directly with `claude --plugin-dir .`. The release archive
-contains both manifests and the Claude marketplace catalog; extract it before
+contains both host manifests and both marketplace catalogs; extract it before
 adding it as a local marketplace.
 
 ## 7. Update
@@ -127,8 +131,9 @@ adding it as a local marketplace.
 After the local marketplace source and plugin version have been updated, reinstall the plugin and start a new Codex thread:
 
 ```powershell
-codex plugin remove repo-scaffold@personal
-codex plugin add repo-scaffold@personal
+codex plugin marketplace upgrade repo-scaffold-plugins
+codex plugin remove repo-scaffold@repo-scaffold-plugins
+codex plugin add repo-scaffold@repo-scaffold-plugins
 claude plugin marketplace update repo-scaffold-plugins
 claude plugin update repo-scaffold@repo-scaffold-plugins
 ```
@@ -151,6 +156,8 @@ template files are omitted for brevity.
 
 ```text
 repo-scaffold/
+├── .agents/plugins/
+│   └── marketplace.json
 ├── .coveragerc
 ├── .release-please-manifest.json
 ├── .markdownlint-cli2.jsonc
@@ -336,7 +343,7 @@ The engine verifies the tag target, builds
 `repo-scaffold-plugin-<filesystem-safe-tag>.zip` from the immutable commit,
 generates signed SLSA build provenance in a separate no-checkout job, attaches
 the asset to the draft, and publishes only after attestation succeeds. The
-archive contains `.codex-plugin/`, `.claude-plugin/`, `skills/`, `README.md`, and
+archive contains `.agents/`, `.codex-plugin/`, `.claude-plugin/`, `skills/`, `README.md`, and
 `LICENSE` under a
 `repo-scaffold/` directory. The workflow requires a fine-grained PAT stored as
 `RELEASE_PLEASE_TOKEN`; see [CONTRIBUTING.md](CONTRIBUTING.md) for the release
