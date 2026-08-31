@@ -72,7 +72,8 @@ jobs:
               r"<!-- repo-scaffold:optional-checklist:end -->\s*",
               re.MULTILINE | re.DOTALL,
           )
-          fenced_code_pattern = re.compile(r"^[ \t]{0,3}([`~]{3,})")
+          fenced_code_start_pattern = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+          fenced_code_end_pattern = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$")
           template_comment_pattern = re.compile(
               r"^[ \t]*<!-- repo-scaffold:(?:pr-template=[a-z][a-z0-9-]*|"
               r"required-checklist:(?:start|end)|optional-checklist:(?:start|end)) -->[ \t]*$"
@@ -86,8 +87,9 @@ jobs:
               fence_length = 0
               for raw_line in markdown.splitlines(keepends=True):
                   line = raw_line.rstrip("\r\n")
-                  fence_match = fenced_code_pattern.match(line)
+                  fence_start_match = fenced_code_start_pattern.match(line)
                   if fence_character is not None:
+                      fence_match = fenced_code_end_pattern.match(line)
                       if (
                           fence_match is not None
                           and fence_match.group(1)[0] == fence_character
@@ -96,9 +98,9 @@ jobs:
                           fence_character = None
                           fence_length = 0
                       continue
-                  if fence_match is not None:
-                      fence_character = fence_match.group(1)[0]
-                      fence_length = len(fence_match.group(1))
+                  if fence_start_match is not None:
+                      fence_character = fence_start_match.group(1)[0]
+                      fence_length = len(fence_start_match.group(1))
                       continue
                   if comment_open:
                       comment_end = line.find("-->")

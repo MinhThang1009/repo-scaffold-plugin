@@ -5334,6 +5334,10 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     "<!-- repo-scaffold:pr-template=feature -->\n\n"
                     f"```markdown\n{feature_payload}\n```\n"
                 ),
+                "fenced code with a non-closing fence": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    f"```markdown\n``` not-a-closing-fence\n{feature_payload}\n```\n"
+                ),
                 "HTML comment": (
                     "<!-- repo-scaffold:pr-template=feature -->\n\n"
                     f"<!--\n{feature_payload}\n-->\n"
