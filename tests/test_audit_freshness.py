@@ -798,5 +798,64 @@ class FreshnessTests(unittest.TestCase):
             self.assertNotIn("pull_request:", workflow)
 
 
+class AssetFreshnessTests(FreshnessTests):
+    """Run freshness checks against the distributed script copy as well."""
+
+    asset_scripts_directory = (
+        PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts"
+    )
+    asset_script_path = asset_scripts_directory / "audit_freshness.py"
+    asset_sync_action_pins_path = asset_scripts_directory / "sync_action_pins.py"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        resolver_specification = importlib.util.spec_from_file_location(
+            "skills.repo-scaffold.scripts.sync_action_pins",
+            cls.asset_sync_action_pins_path,
+        )
+        if resolver_specification is None or resolver_specification.loader is None:
+            raise RuntimeError("Could not load asset sync_action_pins.py")
+        cls.asset_resolver = importlib.util.module_from_spec(resolver_specification)
+        sys.modules[resolver_specification.name] = cls.asset_resolver
+        resolver_specification.loader.exec_module(cls.asset_resolver)
+
+        original_resolver = sys.modules.get("sync_action_pins")
+        sys.modules["sync_action_pins"] = cls.asset_resolver
+        try:
+            specification = importlib.util.spec_from_file_location(
+                "skills.repo-scaffold.scripts.audit_freshness", cls.asset_script_path
+            )
+            if specification is None or specification.loader is None:
+                raise RuntimeError("Could not load asset audit_freshness.py")
+            cls.asset_module = importlib.util.module_from_spec(specification)
+            sys.modules[specification.name] = cls.asset_module
+            specification.loader.exec_module(cls.asset_module)
+        finally:
+            if original_resolver is None:
+                del sys.modules["sync_action_pins"]
+            else:
+                sys.modules["sync_action_pins"] = original_resolver
+
+    def setUp(self) -> None:
+        global SCRIPT_PATH, freshness
+
+        self.original_script_path = SCRIPT_PATH
+        self.original_module = freshness
+        self.original_resolver = sys.modules.get("sync_action_pins")
+        SCRIPT_PATH = self.asset_script_path
+        freshness = self.asset_module
+        sys.modules["sync_action_pins"] = self.asset_resolver
+
+    def tearDown(self) -> None:
+        global SCRIPT_PATH, freshness
+
+        SCRIPT_PATH = self.original_script_path
+        freshness = self.original_module
+        if self.original_resolver is None:
+            del sys.modules["sync_action_pins"]
+        else:
+            sys.modules["sync_action_pins"] = self.original_resolver
+
+
 if __name__ == "__main__":
     unittest.main()

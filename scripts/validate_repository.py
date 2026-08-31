@@ -1741,6 +1741,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
         "tests/test_run_mutation_testing.py",
+        "tests/test_sync_action_pins.py",
         "tests/test_mutation_runner_linux.py",
         "tests/test_python_support.py",
         "tests/test_repository_validation.py",
@@ -2413,7 +2414,11 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         )
 
     loader_contract = {
-        "tests/test_audit_freshness.py": ("scripts.audit_freshness",),
+        "tests/test_audit_freshness.py": (
+            "scripts.audit_freshness",
+            "skills.repo-scaffold.scripts.audit_freshness",
+            "skills.repo-scaffold.scripts.sync_action_pins",
+        ),
         "tests/test_ci_toolchain.py": ("skills.repo-scaffold.scripts.ci_toolchain",),
         "tests/test_codeql_preflight.py": (
             "scripts.validate_workflows",
@@ -2424,6 +2429,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         ),
         "tests/test_prepare_mutation_cache.py": ("scripts.prepare_mutation_cache",),
         "tests/test_run_mutation_testing.py": ("scripts.run_mutation_testing",),
+        "tests/test_sync_action_pins.py": (
+            "scripts.sync_action_pins",
+            "skills.repo-scaffold.scripts.sync_action_pins",
+        ),
         "tests/test_python_support.py": ("scripts.python_support",),
         "tests/test_repository_validation.py": (
             "scripts.validate_repository",

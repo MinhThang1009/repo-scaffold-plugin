@@ -1732,6 +1732,7 @@ class MutationTestingContractTests(unittest.TestCase):
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
         "tests/test_run_mutation_testing.py",
+        "tests/test_sync_action_pins.py",
         "tests/test_mutation_runner_linux.py",
         "tests/test_python_support.py",
         "tests/test_repository_validation.py",

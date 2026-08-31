@@ -1774,5 +1774,42 @@ class ActionPinSyncTests(unittest.TestCase):
             runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
 
 
+class AssetActionPinSyncTests(ActionPinSyncTests):
+    """Run the action-pin suite against the distributed copy as well."""
+
+    asset_script_path = (
+        PLUGIN_ROOT
+        / "skills"
+        / "repo-scaffold"
+        / "scripts"
+        / "sync_action_pins.py"
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        specification = importlib.util.spec_from_file_location(
+            "skills.repo-scaffold.scripts.sync_action_pins", cls.asset_script_path
+        )
+        if specification is None or specification.loader is None:
+            raise RuntimeError("Could not load asset sync_action_pins.py")
+        cls.asset_module = importlib.util.module_from_spec(specification)
+        sys.modules[specification.name] = cls.asset_module
+        specification.loader.exec_module(cls.asset_module)
+
+    def setUp(self) -> None:
+        global SCRIPT_PATH, sync_action_pins
+
+        self.original_script_path = SCRIPT_PATH
+        self.original_module = sync_action_pins
+        SCRIPT_PATH = self.asset_script_path
+        sync_action_pins = self.asset_module
+
+    def tearDown(self) -> None:
+        global SCRIPT_PATH, sync_action_pins
+
+        SCRIPT_PATH = self.original_script_path
+        sync_action_pins = self.original_module
+
+
 if __name__ == "__main__":
     unittest.main()
