@@ -21,6 +21,8 @@ API_ROOT = "https://api.github.com"
 API_VERSION = "2026-03-10"
 DEFAULT_ALLOWLIST = Path(".github/code-scanning-allowlist.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_ALLOWLIST_BYTES = 1 * 1024 * 1024
+MAX_ALLOWLIST_ENTRIES = 256
 MAX_PAGES = 20
 MAX_ANALYSIS_PAGES = 20
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -113,10 +115,23 @@ def safe_alert_path(value: str) -> str:
 def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
     """Load a strict, reviewable allowlist from the checked-out base."""
     try:
+        with path.open("rb") as allowlist_file:
+            payload = allowlist_file.read(MAX_ALLOWLIST_BYTES + 1)
+        if len(payload) > MAX_ALLOWLIST_BYTES:
+            raise GateError(
+                f"code-scanning allowlist exceeds the {MAX_ALLOWLIST_BYTES}-byte limit"
+            )
         document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            payload.decode("utf-8"), object_pairs_hook=unique_json_object
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, DuplicateJsonMember) as error:
+    except GateError:
+        raise
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        RecursionError,
+    ) as error:
         raise GateError(
             f"could not read code-scanning allowlist {path}: {error}"
         ) from error
@@ -125,6 +140,10 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
     entries = document.get("allowlist")
     if not isinstance(entries, list):
         raise GateError("code-scanning allowlist allowlist must be a list")
+    if len(entries) > MAX_ALLOWLIST_ENTRIES:
+        raise GateError(
+            f"code-scanning allowlist exceeds the {MAX_ALLOWLIST_ENTRIES}-entry limit"
+        )
     selectors: list[AlertSelector] = []
     seen: set[int] = set()
     for entry in entries:
@@ -189,8 +208,7 @@ def api_json(url: str, token: str) -> Any:
         return json.loads(payload.decode("utf-8"), object_pairs_hook=unique_json_object)
     except (
         UnicodeError,
-        json.JSONDecodeError,
-        DuplicateJsonMember,
+        ValueError,
         RecursionError,
     ) as error:
         raise GateError(f"GitHub API response is not valid JSON: {error}") from error

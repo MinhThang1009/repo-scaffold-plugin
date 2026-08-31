@@ -127,8 +127,7 @@ class GitHubClient:
             )
         except (
             UnicodeError,
-            json.JSONDecodeError,
-            DuplicateJsonMember,
+            ValueError,
             RecursionError,
         ) as error:
             raise AuditError(
@@ -223,8 +222,7 @@ def load_registry(path: Path) -> list[RegistryEntry]:
     except (
         OSError,
         UnicodeError,
-        json.JSONDecodeError,
-        DuplicateJsonMember,
+        ValueError,
         RecursionError,
     ) as error:
         raise AuditError(f"could not read tracker registry {path}: {error}") from error

@@ -38,3 +38,4 @@ mutate_only_covered_lines = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

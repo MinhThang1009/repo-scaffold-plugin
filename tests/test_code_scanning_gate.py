@@ -197,6 +197,52 @@ class CodeScanningGateTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.GateError, "duplicate JSON member"):
                 gate.load_allowlist(path)
 
+    def test_allowlist_rejects_oversized_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "allowlist.json"
+            path.write_bytes(b" " * (gate.MAX_ALLOWLIST_BYTES + 1))
+
+            with self.assertRaisesRegex(gate.GateError, "exceeds the .*byte limit"):
+                gate.load_allowlist(path)
+
+    def test_allowlist_rejects_too_many_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "allowlist.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 2,
+                        "allowlist": [
+                            {
+                                "number": index + 1,
+                                "tool": "CodeQL",
+                                "rule": "rule",
+                                "path": None,
+                                "reason": "reason",
+                            }
+                            for index in range(gate.MAX_ALLOWLIST_ENTRIES + 1)
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(gate.GateError, "exceeds the .*entry limit"):
+                gate.load_allowlist(path)
+
+    def test_allowlist_converts_recursion_errors_to_gate_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "allowlist.json"
+            path.write_text("{}", encoding="utf-8")
+
+            for error in (RecursionError("too deep"), ValueError("too many digits")):
+                with (
+                    self.subTest(error=type(error).__name__),
+                    mock.patch.object(gate.json, "loads", side_effect=error),
+                    self.assertRaisesRegex(gate.GateError, "could not read"),
+                ):
+                    gate.load_allowlist(path)
+
     def test_api_client_bounds_and_authenticates_requests(self) -> None:
         with mock.patch.object(
             gate.GITHUB_API_OPENER, "open", return_value=FakeResponse(b"[]")
@@ -213,6 +259,17 @@ class CodeScanningGateTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(gate.GateError, "exceeds"):
                 gate.api_json("https://api.github.com/example", "token")
+
+        with (
+            mock.patch.object(
+                gate.GITHUB_API_OPENER, "open", return_value=FakeResponse(b"[]")
+            ),
+            mock.patch.object(
+                gate.json, "loads", side_effect=ValueError("too many digits")
+            ),
+            self.assertRaisesRegex(gate.GateError, "not valid JSON"),
+        ):
+            gate.api_json("https://api.github.com/example", "token")
         with mock.patch.object(
             gate.GITHUB_API_OPENER, "open", side_effect=URLError("offline")
         ):

@@ -67,7 +67,12 @@ def discover_workflows(directory: Path) -> list[Path]:
 
 def workflow_shell_blocks(path: Path) -> list[tuple[str, str, bytes]]:
     """Extract statically identifiable Bash and POSIX shell run blocks."""
-    document: Any = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    try:
+        document: Any = yaml.load(
+            path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+        )
+    except RecursionError as error:
+        raise yaml.YAMLError("YAML nesting exceeds parser limit") from error
     if not isinstance(document, dict):
         raise ValueError("workflow root must be a mapping")
     jobs = document.get("jobs")

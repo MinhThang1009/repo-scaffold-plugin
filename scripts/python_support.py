@@ -19,6 +19,8 @@ POLICY_FIELDS = {
     "full-coverage-os",
     "boundary-coverage-os",
 }
+MAX_POLICY_BYTES = 64 * 1024
+MAX_SUPPORTED_VERSIONS = 32
 PYTHON_MINOR = re.compile(r"^3\.(0|[1-9]\d*)$")
 GITHUB_HOSTED_RUNNERS = frozenset({"ubuntu-latest", "windows-latest", "macos-latest"})
 
@@ -51,11 +53,15 @@ def reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def require_string_list(document: dict[str, Any], field: str) -> tuple[str, ...]:
+def require_string_list(
+    document: dict[str, Any], field: str, *, max_items: int
+) -> tuple[str, ...]:
     """Return a nonempty list of unique, nonempty strings."""
     value = document.get(field)
     if not isinstance(value, list) or not value:
         raise PolicyError(f"{field} must be a nonempty array")
+    if len(value) > max_items:
+        raise PolicyError(f"{field} must not contain more than {max_items} entries")
     if not all(isinstance(item, str) and item for item in value):
         raise PolicyError(f"{field} must contain only nonempty strings")
     if len(value) != len(set(value)):
@@ -78,7 +84,9 @@ def parse_policy(document: Any) -> PythonSupportPolicy:
     if document["implementation"] != "cpython":
         raise PolicyError("implementation must be cpython")
 
-    versions = require_string_list(document, "versions")
+    versions = require_string_list(
+        document, "versions", max_items=MAX_SUPPORTED_VERSIONS
+    )
     parsed_versions: list[tuple[int, int]] = []
     for version in versions:
         match = PYTHON_MINOR.fullmatch(version)
@@ -93,8 +101,12 @@ def parse_policy(document: Any) -> PythonSupportPolicy:
     if parsed_versions != expected_versions:
         raise PolicyError("versions must be ordered, contiguous, and gap-free")
 
-    full_coverage_os = require_string_list(document, "full-coverage-os")
-    boundary_coverage_os = require_string_list(document, "boundary-coverage-os")
+    full_coverage_os = require_string_list(
+        document, "full-coverage-os", max_items=len(GITHUB_HOSTED_RUNNERS)
+    )
+    boundary_coverage_os = require_string_list(
+        document, "boundary-coverage-os", max_items=len(GITHUB_HOSTED_RUNNERS)
+    )
     for runner in (*full_coverage_os, *boundary_coverage_os):
         if runner not in GITHUB_HOSTED_RUNNERS:
             allowed = ", ".join(sorted(GITHUB_HOSTED_RUNNERS))
@@ -118,11 +130,17 @@ def parse_policy(document: Any) -> PythonSupportPolicy:
 def load_policy(path: Path) -> PythonSupportPolicy:
     """Read a UTF-8 JSON policy with duplicate-member rejection."""
     try:
+        with path.open("rb") as policy_file:
+            payload = policy_file.read(MAX_POLICY_BYTES + 1)
+        if len(payload) > MAX_POLICY_BYTES:
+            raise PolicyError(f"policy exceeds the {MAX_POLICY_BYTES}-byte size limit")
         document = json.loads(
-            path.read_text(encoding="utf-8"),
+            payload.decode("utf-8"),
             object_pairs_hook=reject_duplicate_json_pairs,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except PolicyError:
+        raise
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise PolicyError(f"could not read {path}: {error}") from error
     return parse_policy(document)
 

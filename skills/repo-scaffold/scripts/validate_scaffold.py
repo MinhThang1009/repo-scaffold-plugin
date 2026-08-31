@@ -89,6 +89,14 @@ class UniqueKeyBaseLoader(yaml.BaseLoader):
         return mapping
 
 
+def load_yaml_text(text: str) -> Any:
+    """Parse YAML while converting recursive parser failures into YAML errors."""
+    try:
+        return yaml.load(text, Loader=UniqueKeyBaseLoader)
+    except RecursionError as error:
+        raise yaml.YAMLError("YAML nesting exceeds parser limit") from error
+
+
 def is_project_markdown(path: Path, repository_root: Path) -> bool:
     """Return whether a Markdown file belongs to the project source."""
     relative = path.relative_to(repository_root)
@@ -638,7 +646,7 @@ def validate_markdown_issue_templates(
             problems.append(f"{relative}: missing complete YAML front matter")
             continue
         try:
-            metadata = yaml.load(match.group(1), Loader=UniqueKeyBaseLoader)
+            metadata = load_yaml_text(match.group(1))
         except yaml.YAMLError as error:
             problems.append(f"{relative}: invalid YAML front matter: {error}")
             continue
@@ -689,9 +697,7 @@ def validate_issue_forms(
             )
             continue
         try:
-            document = yaml.load(
-                path.read_text(encoding="utf-8"), Loader=UniqueKeyBaseLoader
-            )
+            document = load_yaml_text(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, yaml.YAMLError) as error:
             problems.append(f"{relative}: invalid issue form YAML: {error}")
             continue

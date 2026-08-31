@@ -156,6 +156,16 @@ class PythonSupportPolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(python_support.PolicyError, message):
                     python_support.parse_policy(document)
 
+    def test_policy_rejects_excessive_list_entries(self) -> None:
+        document = policy_document()
+        document["versions"] = [
+            f"3.{minor}"
+            for minor in range(10, 10 + python_support.MAX_SUPPORTED_VERSIONS + 1)
+        ]
+
+        with self.assertRaisesRegex(python_support.PolicyError, "more than"):
+            python_support.parse_policy(document)
+
     def test_policy_rejects_invalid_version_and_runner_syntax(self) -> None:
         cases = [
             ("versions", ["3.10.1"], "feature-release syntax"),
@@ -218,15 +228,24 @@ class PythonSupportPolicyTests(unittest.TestCase):
                     ):
                         python_support.load_policy(path)
 
-    def test_policy_loader_requests_utf8_explicitly(self) -> None:
-        path = mock.Mock(spec=Path)
-        path.read_text.return_value = json.dumps(policy_document())
+    def test_policy_loader_rejects_oversized_and_recursive_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "policy.json"
+            path.write_bytes(b" " * (python_support.MAX_POLICY_BYTES + 1))
 
-        self.assertEqual(
-            python_support.load_policy(path),
-            python_support.parse_policy(policy_document()),
-        )
-        path.read_text.assert_called_once_with(encoding="utf-8")
+            with self.assertRaisesRegex(python_support.PolicyError, "size limit"):
+                python_support.load_policy(path)
+
+            path.write_text(json.dumps(policy_document()), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    python_support.json,
+                    "loads",
+                    side_effect=RecursionError("too deep"),
+                ),
+                self.assertRaisesRegex(python_support.PolicyError, "could not read"),
+            ):
+                python_support.load_policy(path)
 
     def test_latest_canary_detects_a_new_stable_release(self) -> None:
         policy = python_support.parse_policy(policy_document())

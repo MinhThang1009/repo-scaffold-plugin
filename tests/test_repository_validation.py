@@ -58,6 +58,29 @@ class SerializedFileValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate JSON member"):
                 validate_repository.load_json(path)
 
+    def test_parser_helpers_convert_recursive_input_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            yaml_path = root / "recursive.yml"
+            json_path = root / "recursive.json"
+            yaml_path.write_text("name: value\n", encoding="utf-8")
+            json_path.write_text("{}", encoding="utf-8")
+
+            with mock.patch.object(
+                validate_repository.yaml,
+                "load",
+                side_effect=RecursionError("too deep"),
+            ):
+                with self.assertRaisesRegex(yaml.YAMLError, "nesting exceeds"):
+                    validate_repository.load_yaml(yaml_path)
+            with mock.patch.object(
+                validate_repository.json,
+                "loads",
+                side_effect=RecursionError("too deep"),
+            ):
+                with self.assertRaisesRegex(ValueError, "nesting exceeds"):
+                    validate_repository.load_json(json_path)
+
     def test_helpers_identify_project_files_and_basic_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3048,12 +3071,14 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_release_please",
             "validate_release_attestation",
             "validate_privileged_workflow_permissions",
+            "validate_scorecard_manual_dispatch",
             "validate_action_pin_sync_contract",
             "validate_required_check_concurrency",
             "validate_issue_templates",
             "validate_release_notes_config",
             "validate_dependabot",
             "validate_markdown_links",
+            "validate_pr_template_catalog_documentation",
             "validate_community_health_tracking_contract",
             "validate_freshness_tracking_contract",
             "validate_official_docs_tracking_contract",
@@ -4460,6 +4485,40 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
                 2,
             )
 
+    def test_rejects_codeql_trigger_that_omits_manual_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            for relative in (
+                Path(".github/workflows/release-please.yml"),
+                Path("skills/repo-scaffold/assets/workflows/release-please.yml"),
+                Path(".github/workflows/codeql.yml"),
+                Path("skills/repo-scaffold/assets/workflows/codeql.yml"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            for path in (workflow_root / "codeql.yml", asset_root / "codeql.yml"):
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "  workflow_dispatch:\n", "", 1
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_privileged_workflow_permissions(
+                root
+            )
+
+            self.assertEqual(
+                sum(
+                    "CodeQL must support manual security scans" in item
+                    for item in problems
+                ),
+                2,
+            )
+
     def test_reports_unreadable_scalar_and_missing_job_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4498,6 +4557,57 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
             self.assertEqual(
                 sum("analyze job is missing" in item for item in problems), 2
             )
+
+
+class SecurityManualDispatchTests(unittest.TestCase):
+    def test_scorecard_workflows_support_manual_security_scans(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_scorecard_manual_dispatch(PLUGIN_ROOT), []
+        )
+
+    def test_scorecard_workflows_reject_missing_manual_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = (
+                Path(".github/workflows/scorecard.yml"),
+                Path("skills/repo-scaffold/assets/workflows/scorecard.yml"),
+            )
+            for relative in paths:
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    (PLUGIN_ROOT / relative)
+                    .read_text(encoding="utf-8")
+                    .replace("  workflow_dispatch:\n", "", 1),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_scorecard_manual_dispatch(root)
+
+            self.assertEqual(
+                sum(
+                    "Scorecard must support manual security scans" in item
+                    for item in problems
+                ),
+                2,
+            )
+
+    def test_scorecard_workflows_report_unreadable_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            asset_root = root / "skills" / "repo-scaffold" / "assets" / "workflows"
+            workflow_root.mkdir(parents=True)
+            asset_root.mkdir(parents=True)
+            (workflow_root / "scorecard.yml").write_text("on: [\n", encoding="utf-8")
+            (asset_root / "scorecard.yml").write_text(
+                "on:\n  workflow_dispatch:\n", encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_scorecard_manual_dispatch(root)
+
+            self.assertEqual(len(problems), 1)
+            self.assertIn("Scorecard workflow is unreadable", problems[0])
 
 
 class RequiredCheckConcurrencyTests(unittest.TestCase):
@@ -4892,6 +5002,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "ref: ${{ github.event.pull_request.base.sha }}",
             "persist-credentials: false",
             "PR_BODY: ${{ github.event.pull_request.body }}",
+            "PR_TITLE: ${{ github.event.pull_request.title }}",
             "PR_IS_DRAFT: ${{ github.event.pull_request.draft }}",
             'Path(".github/PULL_REQUEST_TEMPLATE.md")',
             'Path(".github/PULL_REQUEST_TEMPLATE")',
@@ -4899,6 +5010,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "repo-scaffold:required-checklist:start",
             "repo-scaffold:optional-checklist:start",
             "Pull request body must select exactly one trusted template",
+            "Pull request title type",
             "Pull request body must preserve every required heading and checklist",
             "Mark each required checklist item only after it is complete",
             "github.event.pull_request.user.login != 'dependabot[bot]'",
@@ -4916,6 +5028,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "documentation",
             "security",
             "deployment",
+            "dependency-update",
         )
         template_paths = {
             "default": (
@@ -5035,6 +5148,82 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             )
             self.assertEqual(deployment_result.returncode, 0, deployment_result.stderr)
 
+            dependency_update_body = (
+                template_root / "PULL_REQUEST_TEMPLATE" / "dependency-update.md"
+            ).read_text(encoding="utf-8")
+            dependency_update_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": dependency_update_body},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(
+                dependency_update_result.returncode, 0, dependency_update_result.stderr
+            )
+
+            default_body = (template_root / "PULL_REQUEST_TEMPLATE.md").read_text(
+                encoding="utf-8"
+            )
+            for title, template_id in (
+                ("feat: require the focused template", "feature"),
+                ("fix(ci)!: require the focused template", "bugfix"),
+                ("docs: require the focused template", "documentation"),
+            ):
+                selected_body = (
+                    template_root / "PULL_REQUEST_TEMPLATE" / f"{template_id}.md"
+                ).read_text(encoding="utf-8")
+                with self.subTest(title=title, template_id=template_id):
+                    selected_result = subprocess.run(
+                        [sys.executable, "-c", script],
+                        cwd=root,
+                        env={
+                            **os.environ,
+                            "PR_BODY": selected_body,
+                            "PR_TITLE": title,
+                        },
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                    )
+                    self.assertEqual(
+                        selected_result.returncode, 0, selected_result.stderr
+                    )
+                    default_result = subprocess.run(
+                        [sys.executable, "-c", script],
+                        cwd=root,
+                        env={
+                            **os.environ,
+                            "PR_BODY": default_body,
+                            "PR_TITLE": title,
+                        },
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                    )
+                    self.assertNotEqual(default_result.returncode, 0)
+                    self.assertIn(
+                        f"must use the {template_id!r} template",
+                        default_result.stderr,
+                    )
+
+            maintenance_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": default_body,
+                    "PR_TITLE": "ci: retain the default template",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(
+                maintenance_result.returncode, 0, maintenance_result.stderr
+            )
+
             ready_incomplete = subprocess.run(
                 [sys.executable, "-c", script],
                 cwd=root,
@@ -5136,6 +5325,39 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             self.assertIn(
                 "must select exactly one trusted template", missing_marker.stderr
             )
+
+            feature_payload = feature_body.replace(
+                "<!-- repo-scaffold:pr-template=feature -->\n\n", "", 1
+            )
+            hidden_content_bodies = {
+                "fenced code": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    f"```markdown\n{feature_payload}\n```\n"
+                ),
+                "fenced code with a non-closing fence": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    f"```markdown\n``` not-a-closing-fence\n{feature_payload}\n```\n"
+                ),
+                "HTML comment": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    f"<!--\n{feature_payload}\n-->\n"
+                ),
+            }
+            for hiding_method, hidden_body in hidden_content_bodies.items():
+                with self.subTest(hiding_method=hiding_method):
+                    hidden_result = subprocess.run(
+                        [sys.executable, "-c", script],
+                        cwd=root,
+                        env={**os.environ, "PR_BODY": hidden_body},
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                    )
+                    self.assertNotEqual(hidden_result.returncode, 0)
+                    self.assertIn(
+                        "must contain exactly one required checklist section",
+                        hidden_result.stderr,
+                    )
 
     def test_workflow_never_checks_out_or_executes_the_pull_request_head(self) -> None:
         workflow = (
@@ -6300,6 +6522,18 @@ class WorkflowShellValidationTests(unittest.TestCase):
             blocks = validate_workflows.workflow_shell_blocks(path)
 
             self.assertEqual(blocks, [("test: Test", "bash", b"echo ok\n")])
+
+    def test_workflow_parser_converts_recursive_yaml_failures(self) -> None:
+        path = mock.Mock(spec=Path)
+        path.read_text.return_value = "jobs: {}\n"
+
+        with mock.patch.object(
+            validate_workflows.yaml,
+            "load",
+            side_effect=RecursionError("too deep"),
+        ):
+            with self.assertRaisesRegex(yaml.YAMLError, "nesting exceeds"):
+                validate_workflows.workflow_shell_blocks(path)
 
     def test_unknown_shell_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

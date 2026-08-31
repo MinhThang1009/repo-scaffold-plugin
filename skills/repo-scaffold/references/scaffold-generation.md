@@ -67,6 +67,7 @@ The Vietnamese mappings are:
 - `PULL_REQUEST_TEMPLATE.vi/documentation.md` → `.github/PULL_REQUEST_TEMPLATE/documentation.md`
 - `PULL_REQUEST_TEMPLATE.vi/security.md` → `.github/PULL_REQUEST_TEMPLATE/security.md`
 - `PULL_REQUEST_TEMPLATE.vi/deployment.md` → `.github/PULL_REQUEST_TEMPLATE/deployment.md`
+- `PULL_REQUEST_TEMPLATE.vi/dependency-update.md` → `.github/PULL_REQUEST_TEMPLATE/dependency-update.md`
 - `CITATION.vi.cff` → `CITATION.cff`
 - `release-config.vi.yml` → `.github/release.yml`
 - `release-please-config.vi.json` → `release-please-config.json`

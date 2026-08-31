@@ -106,7 +106,7 @@ def load_reusable_sources(repository_root: Path) -> frozenset[str]:
         document = json.loads(
             marker.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, DuplicateJsonMember) as error:
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(
             f"could not read incremental mutation sources: {error}"
         ) from error

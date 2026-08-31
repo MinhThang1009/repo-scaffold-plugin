@@ -34,6 +34,7 @@ jobs:
       - name: Validate pull request body against its template
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
           PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
         shell: bash
         run: |
@@ -43,10 +44,19 @@ jobs:
           from pathlib import Path
 
           body = os.environ.get("PR_BODY", "")
+          title = os.environ.get("PR_TITLE", "")
           is_draft = os.environ.get("PR_IS_DRAFT", "true").lower() == "true"
           heading_pattern = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
           checklist_pattern = re.compile(r"^- \[[ xX]\] (.+?)\s*$", re.MULTILINE)
           checked_checklist_pattern = re.compile(r"^- \[[xX]\] (.+?)\s*$", re.MULTILINE)
+          title_type_pattern = re.compile(
+              r"^(?P<type>feat|fix|docs)(?:\([^()\r\n]+\))?!?: "
+          )
+          required_template_by_title_type = {
+              "feat": "feature",
+              "fix": "bugfix",
+              "docs": "documentation",
+          }
           template_marker_pattern = re.compile(
               r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",
               re.MULTILINE,
@@ -62,6 +72,56 @@ jobs:
               r"<!-- repo-scaffold:optional-checklist:end -->\s*",
               re.MULTILINE | re.DOTALL,
           )
+          fenced_code_start_pattern = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+          fenced_code_end_pattern = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$")
+          template_comment_pattern = re.compile(
+              r"^[ \t]*<!-- repo-scaffold:(?:pr-template=[a-z][a-z0-9-]*|"
+              r"required-checklist:(?:start|end)|optional-checklist:(?:start|end)) -->[ \t]*$"
+          )
+
+          def visible_markdown(markdown):
+              """Discard fenced code and HTML comments while retaining gate markers."""
+              visible_lines = []
+              comment_open = False
+              fence_character = None
+              fence_length = 0
+              for raw_line in markdown.splitlines(keepends=True):
+                  line = raw_line.rstrip("\r\n")
+                  fence_start_match = fenced_code_start_pattern.match(line)
+                  if fence_character is not None:
+                      fence_match = fenced_code_end_pattern.match(line)
+                      if (
+                          fence_match is not None
+                          and fence_match.group(1)[0] == fence_character
+                          and len(fence_match.group(1)) >= fence_length
+                      ):
+                          fence_character = None
+                          fence_length = 0
+                      continue
+                  if fence_start_match is not None:
+                      fence_character = fence_start_match.group(1)[0]
+                      fence_length = len(fence_start_match.group(1))
+                      continue
+                  if comment_open:
+                      comment_end = line.find("-->")
+                      if comment_end < 0:
+                          continue
+                      line = line[comment_end + 3 :]
+                      comment_open = False
+                  if template_comment_pattern.fullmatch(line):
+                      visible_lines.append(raw_line)
+                      continue
+                  while "<!--" in line:
+                      comment_start = line.find("<!--")
+                      comment_end = line.find("-->", comment_start + 4)
+                      if comment_end < 0:
+                          line = line[:comment_start]
+                          comment_open = True
+                          break
+                      line = line[:comment_start] + line[comment_end + 3 :]
+                  visible_lines.append(line + ("\n" if raw_line.endswith("\n") else ""))
+              return "".join(visible_lines)
+
           template_paths = {"default": Path(".github/PULL_REQUEST_TEMPLATE.md")}
           template_directory = Path(".github/PULL_REQUEST_TEMPLATE")
           if template_directory.is_dir():
@@ -119,7 +179,8 @@ jobs:
                   required_checklist_items,
               )
 
-          selected_template_ids = template_marker_pattern.findall(body)
+          visible_body = visible_markdown(body)
+          selected_template_ids = template_marker_pattern.findall(visible_body)
           if len(selected_template_ids) != 1:
               raise SystemExit(
                   "Pull request body must select exactly one trusted template with "
@@ -131,11 +192,21 @@ jobs:
                   f"Pull request body selects unknown template {selected_template_id!r}."
               )
 
+          title_type_match = title_type_pattern.match(title)
+          if title_type_match is not None:
+              title_type = title_type_match.group("type")
+              required_template_id = required_template_by_title_type[title_type]
+              if selected_template_id != required_template_id:
+                  raise SystemExit(
+                      f"Pull request title type {title_type!r} must use the "
+                      f"{required_template_id!r} template, not {selected_template_id!r}."
+                  )
+
           required_headings, required_checklist_items = trusted_templates[
               selected_template_id
           ]
-          body_headings = set(heading_pattern.findall(body))
-          body_required_checklists = required_checklist_pattern.findall(body)
+          body_headings = set(heading_pattern.findall(visible_body))
+          body_required_checklists = required_checklist_pattern.findall(visible_body)
           if len(body_required_checklists) != 1:
               raise SystemExit(
                   "Pull request body must contain exactly one required checklist section."

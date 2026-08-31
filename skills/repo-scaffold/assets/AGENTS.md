@@ -16,15 +16,18 @@ This file is the shared instruction entry point for coding agents that support
 ## Pull requests
 
 Before creating or updating a pull request, read the trusted template set from
-the target base branch. Use the default template unless the change genuinely
-needs feature, bugfix, documentation, or security review. Preserve exactly one
-matching `<!-- repo-scaffold:pr-template=<id> -->` marker, every required
-heading, and every required-checklist item from the selected template. Include
-an `If applicable` item only when it applies, and omit that section when none
-apply. A draft PR may leave required items unchecked; before marking it ready
-for review, tick a required item only after it is complete. Use a UTF-8 body
-file with `gh pr create --body-file` or `gh pr edit --body-file`. Do not use `--fill`
-or a free-form `--body` value that bypasses the template.
+the target base branch. For a Conventional Commit PR title beginning with
+`feat`, `fix`, or `docs`, use `feature`, `bugfix`, or `documentation`,
+respectively. The `pr-template` gate enforces those mappings. For other title
+types, use the default template unless the change genuinely needs security or
+deployment or dependency-update review. Preserve exactly one matching
+`<!-- repo-scaffold:pr-template=<id> -->` marker, every required heading, and
+every required-checklist item from the selected template. Include an `If
+applicable` item only when it applies, and omit that section when none apply. A
+draft PR may leave required items unchecked; before marking it ready for review,
+tick a required item only after it is complete. Use a UTF-8 body file with `gh
+pr create --body-file` or `gh pr edit --body-file`. Do not use `--fill` or a
+free-form `--body` value that bypasses the template.
 
 ## Language
 

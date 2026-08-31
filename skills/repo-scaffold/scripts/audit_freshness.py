@@ -136,8 +136,7 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
     except (
         OSError,
         UnicodeError,
-        json.JSONDecodeError,
-        DuplicateJsonMember,
+        ValueError,
         RecursionError,
     ) as error:
         raise AuditError(
@@ -232,8 +231,7 @@ def read_json(url: str) -> dict[str, Any]:
         )
     except (
         UnicodeError,
-        json.JSONDecodeError,
-        DuplicateJsonMember,
+        ValueError,
         RecursionError,
     ) as error:
         raise AuditError(f"upstream response is not valid JSON for {url}") from error
@@ -332,8 +330,8 @@ def release_please_findings(
         except (
             OSError,
             UnicodeError,
-            json.JSONDecodeError,
-            DuplicateJsonMember,
+            ValueError,
+            RecursionError,
         ) as error:
             raise AuditError(
                 f"could not read Release Please config {relative}: {error}"
