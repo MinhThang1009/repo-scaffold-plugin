@@ -1778,11 +1778,7 @@ class AssetActionPinSyncTests(ActionPinSyncTests):
     """Run the action-pin suite against the distributed copy as well."""
 
     asset_script_path = (
-        PLUGIN_ROOT
-        / "skills"
-        / "repo-scaffold"
-        / "scripts"
-        / "sync_action_pins.py"
+        PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "sync_action_pins.py"
     )
 
     @classmethod
