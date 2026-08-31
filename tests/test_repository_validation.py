@@ -3820,6 +3820,8 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             ".codex-plugin",
             ".claude-plugin",
             "claude-community",
+            "in-app submission form",
+            "pinned to a specific source commit",
             "claude plugin validate --strict .",
             "claude --plugin-dir",
         ):
