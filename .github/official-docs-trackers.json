@@ -114,10 +114,11 @@
       "allowed-hosts": ["code.claude.com"],
       "paths": [
         "README.md",
+        "PLUGIN_SUBMISSION.md",
         "skills/repo-scaffold/references/agent-compatibility.md",
         "skills/repo-scaffold/references/agent-compatibility.vi.md"
       ],
-      "required-markers": ["skills/", "--plugin-dir"],
+      "required-markers": ["skills/", "--plugin-dir", "claude-community"],
       "reviewed-on": "2026-08-24",
       "review-period-days": 90
     },
