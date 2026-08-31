@@ -9,7 +9,8 @@ import unittest
 from contextlib import redirect_stdout
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any
+from types import ModuleType
+from typing import Any, ClassVar
 from unittest import mock
 from urllib.request import Request
 
@@ -801,6 +802,8 @@ class FreshnessTests(unittest.TestCase):
 class AssetFreshnessTests(FreshnessTests):
     """Run freshness checks against the distributed script copy as well."""
 
+    asset_module: ClassVar[ModuleType]
+    asset_resolver: ClassVar[ModuleType]
     asset_scripts_directory = PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts"
     asset_script_path = asset_scripts_directory / "audit_freshness.py"
     asset_sync_action_pins_path = asset_scripts_directory / "sync_action_pins.py"

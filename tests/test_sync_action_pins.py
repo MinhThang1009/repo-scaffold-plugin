@@ -11,7 +11,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from email.message import Message
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any
+from types import ModuleType
+from typing import Any, ClassVar
 from unittest import mock
 from urllib.request import Request
 
@@ -1777,6 +1778,7 @@ class ActionPinSyncTests(unittest.TestCase):
 class AssetActionPinSyncTests(ActionPinSyncTests):
     """Run the action-pin suite against the distributed copy as well."""
 
+    asset_module: ClassVar[ModuleType]
     asset_script_path = (
         PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "sync_action_pins.py"
     )
