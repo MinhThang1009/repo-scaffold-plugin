@@ -105,6 +105,10 @@ codex plugin add repo-scaffold@personal
 
 `personal` is a local marketplace name, not a global default. A personal marketplace catalog lives at `~/.agents/plugins/marketplace.json`; its plugin source path must point to this checkout.
 
+Claude Code distribution has a separate community-marketplace review process.
+Until a Claude Code listing is approved, use the direct session loading below;
+do not treat Codex Plugin Directory availability as a Claude Code listing.
+
 For Claude Code, validate and load the same checkout directly:
 
 ```powershell

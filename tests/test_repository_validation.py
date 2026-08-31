@@ -3813,6 +3813,18 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         ):
             self.assertIn(fragment, workflow)
 
+    def test_public_submission_dossier_covers_claude_code_distribution(self) -> None:
+        dossier = (PLUGIN_ROOT / "PLUGIN_SUBMISSION.md").read_text(encoding="utf-8")
+
+        for fragment in (
+            ".codex-plugin",
+            ".claude-plugin",
+            "claude-community",
+            "claude plugin validate --strict .",
+            "claude --plugin-dir",
+        ):
+            self.assertIn(fragment, dossier)
+
     def test_scaffold_templates_support_language_and_host_adapters(self) -> None:
         asset_root = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
 

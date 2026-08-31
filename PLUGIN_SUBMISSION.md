@@ -24,6 +24,21 @@ The same release archive also includes a native Claude Code
 [`agent-compatibility.md`](skills/repo-scaffold/references/agent-compatibility.md)
 for host-specific installation and invocation details.
 
+## Claude Code distribution
+
+Claude Code uses an independent community-marketplace review flow. Anthropic's
+third-party public catalog is `claude-community`; submit the native manifest and
+release ZIP through the process documented in the [Claude Code plugin guide](https://code.claude.com/docs/en/plugins).
+Do not claim that the Codex Plugin Directory also makes the plugin available in
+Claude Code, or that the plugin has a Claude Code listing, until Anthropic
+accepts the submission and the catalog sync completes.
+
+Before submitting the release build, run `claude plugin validate --strict .`,
+load the release ZIP with `claude --plugin-dir`, and record the positive and
+negative test evidence above. The Claude Code review pipeline performs its own
+validation and safety screening; use its current submission form and
+marketplace scope rather than copying Codex portal settings.
+
 Long description:
 
 > Repo Scaffold creates project-specific GitHub community files, maintenance
