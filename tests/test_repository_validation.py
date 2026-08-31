@@ -3068,6 +3068,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_plugin_manifest",
             "validate_skill_reference_paths",
             "validate_multi_agent_plugin_contract",
+            "validate_maintainer_agent_instructions",
             "validate_release_please",
             "validate_release_attestation",
             "validate_privileged_workflow_permissions",
@@ -3625,6 +3626,20 @@ class SkillReferenceValidationTests(unittest.TestCase):
 class MultiAgentPluginContractTests(unittest.TestCase):
     @staticmethod
     def write_valid_contract(root: Path) -> None:
+        (root / "AGENTS.md").write_text(
+            "## Repository purpose\n"
+            "python -m pytest -q\n"
+            "python scripts/validate_repository.py\n"
+            "python skills/repo-scaffold/scripts/validate_scaffold.py\n"
+            "claude plugin validate --strict .\n",
+            encoding="utf-8",
+        )
+        claude_instructions = root / ".claude" / "CLAUDE.md"
+        claude_instructions.parent.mkdir()
+        claude_instructions.write_text(
+            validate_repository.CLAUDE_SHARED_INSTRUCTIONS,
+            encoding="utf-8",
+        )
         shared = {
             "name": "repo-scaffold",
             "version": "1.2.3",
@@ -3708,6 +3723,53 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             self.assertEqual(
                 validate_repository.validate_multi_agent_plugin_contract(root), []
             )
+            self.assertEqual(
+                validate_repository.validate_maintainer_agent_instructions(root), []
+            )
+
+    def test_rejects_missing_or_drifted_maintainer_agent_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            (root / "AGENTS.md").write_text("## Repository purpose\n", encoding="utf-8")
+            (root / ".claude" / "CLAUDE.md").write_text(
+                "Extra instructions\n", encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_maintainer_agent_instructions(root)
+
+        self.assertIn(
+            "AGENTS.md: missing maintainer instruction 'python -m pytest -q'",
+            problems,
+        )
+        self.assertIn(
+            ".claude/CLAUDE.md: must contain only @AGENTS.md so Codex and Claude Code "
+            "maintainers share one instruction source",
+            problems,
+        )
+
+    def test_reports_unreadable_maintainer_agent_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            agents_path = root / "AGENTS.md"
+            claude_path = root / ".claude" / "CLAUDE.md"
+            agents_path.unlink()
+            agents_path.mkdir()
+            claude_path.unlink()
+            claude_path.mkdir()
+
+            problems = validate_repository.validate_maintainer_agent_instructions(root)
+
+        self.assertTrue(
+            any(problem.startswith("AGENTS.md: unreadable:") for problem in problems)
+        )
+        self.assertTrue(
+            any(
+                problem.startswith(".claude/CLAUDE.md: unreadable:")
+                for problem in problems
+            )
+        )
 
     def test_reports_missing_scaffold_generation_reference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

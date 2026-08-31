@@ -150,6 +150,17 @@ MULTILINGUAL_SCAFFOLD_ASSET_PAIRS = (
     ),
 )
 CLAUDE_SHARED_INSTRUCTIONS = "@AGENTS.md\n"
+MAINTAINER_AGENT_INSTRUCTION_PATHS = (
+    Path("AGENTS.md"),
+    Path(".claude/CLAUDE.md"),
+)
+MAINTAINER_AGENT_REQUIRED_FRAGMENTS = (
+    "## Repository purpose",
+    "python -m pytest -q",
+    "python scripts/validate_repository.py",
+    "python skills/repo-scaffold/scripts/validate_scaffold.py",
+    "claude plugin validate --strict .",
+)
 TEMPLATE_TOKEN = re.compile(r"(?:\{\{|\$\{\{)")
 ISSUE_FORM_ID = re.compile(r"^[0-9A-Za-z_-]+$")
 ISSUE_FORM_INPUT_TYPES = {
@@ -2905,6 +2916,36 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_maintainer_agent_instructions(repository_root: Path) -> list[str]:
+    """Require equivalent root guidance for Codex and Claude Code maintainers."""
+    problems: list[str] = []
+    agents_path, claude_path = (
+        repository_root / relative for relative in MAINTAINER_AGENT_INSTRUCTION_PATHS
+    )
+    try:
+        agents_text = agents_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f"AGENTS.md: unreadable: {error}")
+    else:
+        for fragment in MAINTAINER_AGENT_REQUIRED_FRAGMENTS:
+            if fragment not in agents_text:
+                problems.append(
+                    f"AGENTS.md: missing maintainer instruction {fragment!r}"
+                )
+
+    try:
+        claude_text = claude_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(f".claude/CLAUDE.md: unreadable: {error}")
+    else:
+        if claude_text != CLAUDE_SHARED_INSTRUCTIONS:
+            problems.append(
+                ".claude/CLAUDE.md: must contain only @AGENTS.md so Codex and Claude Code "
+                "maintainers share one instruction source"
+            )
+    return problems
+
+
 def validate_release_please(repository_root: Path) -> list[str]:
     """Validate the repository's single automated release mode and version state."""
     workflow_root = repository_root / ".github" / "workflows"
@@ -5170,6 +5211,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_plugin_manifest,
         validate_skill_reference_paths,
         validate_multi_agent_plugin_contract,
+        validate_maintainer_agent_instructions,
         validate_release_please,
         validate_release_attestation,
         validate_privileged_workflow_permissions,
