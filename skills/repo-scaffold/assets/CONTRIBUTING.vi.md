@@ -9,6 +9,12 @@ Cảm ơn bạn đã quan tâm đóng góp! Tài liệu này mô tả quy trình
 3. Push branch và mở Pull Request vào **{{REPO_SCAFFOLD_DEFAULT_BRANCH}}**.
 {{REPO_SCAFFOLD_CONTRIBUTION_REVIEW_STEP}}
 
+Trước khi tạo hoặc cập nhật pull request, chạy
+`python scripts/pr_template_preflight.py --title "<title>"`. Với thay đổi
+security, deployment hoặc dependency update cần review chuyên biệt mà title
+không có mapping bắt buộc, thêm `--template security`, `--template deployment`
+hoặc `--template dependency-update`.
+
 ## Kỳ vọng về mã nguồn
 
 - Tuân theo các quy ước hiện có của codebase.

@@ -22,5 +22,6 @@ assets compatible with their documented host contracts.
 
 Before `gh pr create` or `gh pr edit`, run
 `python scripts/pr_template_preflight.py --title "<title>"`, then use the
-selected trusted base-branch template with `--body-file`. Record validation
-evidence and update a focused regression test when behavior changes.
+selected checked-in template with `--body-file`. For a focused template without
+a mandatory title mapping, pass `--template <id>`. Record validation evidence
+and update a focused regression test when behavior changes.

@@ -288,6 +288,11 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
 SCAFFOLD_GENERATION_REFERENCE = Path(
     "skills/repo-scaffold/references/scaffold-generation.md"
 )
+PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT = Path("scripts/pr_template_preflight.py")
+PR_TEMPLATE_PREFLIGHT_SKILL_SCRIPT = Path(
+    "skills/repo-scaffold/scripts/pr_template_preflight.py"
+)
+PR_TEMPLATE_PREFLIGHT_DESTINATION = Path("scripts/pr_template_preflight.py")
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -1598,24 +1603,22 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         and isinstance(step.get("run"), str)
         and "python -m mypy" in step["run"]
     ]
-    required_mypy_paths = {
-        "skills/repo-scaffold/scripts/check_community_health.py",
-        "skills/repo-scaffold/scripts/audit_freshness.py",
-        "skills/repo-scaffold/scripts/codeql_preflight.py",
-        "skills/repo-scaffold/scripts/ci_toolchain.py",
-        "skills/repo-scaffold/scripts/sync_action_pins.py",
-        "skills/repo-scaffold/scripts/validate_scaffold.py",
-        "scripts/audit_freshness.py",
-        "scripts/audit_official_docs.py",
-        "scripts/check_code_scanning_alerts.py",
-        "scripts/prepare_mutation_cache.py",
-        "scripts/python_support.py",
-        "scripts/run_mutation_testing.py",
-        "scripts/validate_mutation_results.py",
-        "scripts/validate_repository.py",
-        "scripts/validate_workflows.py",
-        "tests",
-    }
+    required_mypy_paths = {"tests"}
+    for script_directory in (
+        repository_root / "scripts",
+        repository_root / "skills" / "repo-scaffold" / "scripts",
+    ):
+        try:
+            required_mypy_paths.update(
+                path.relative_to(repository_root).as_posix()
+                for path in script_directory.glob("*.py")
+                if path.is_file()
+            )
+        except OSError as error:
+            problems.append(
+                f"{script_directory.relative_to(repository_root).as_posix()}: could not "
+                f"inventory production scripts for Mypy: {error}"
+            )
     mypy_arguments = (
         set(mypy_steps[0]["run"].split()) if len(mypy_steps) == 1 else set()
     )
@@ -5244,6 +5247,96 @@ def validate_workflow_script_copy_contract(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_pr_template_preflight_contract(repository_root: Path) -> list[str]:
+    """Keep PR-template preflight runnable in generated repositories."""
+    source = repository_root / PR_TEMPLATE_PREFLIGHT_SKILL_SCRIPT
+    entrypoint = repository_root / PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT
+    reference = repository_root / SCAFFOLD_GENERATION_REFERENCE
+    problems: list[str] = []
+
+    if not source.is_file():
+        problems.append(
+            f"{PR_TEMPLATE_PREFLIGHT_SKILL_SCRIPT.as_posix()}: bundled preflight "
+            "script is missing"
+        )
+    if not entrypoint.is_file():
+        problems.append(
+            f"{PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT.as_posix()}: maintainer preflight "
+            "entry point is missing"
+        )
+    else:
+        try:
+            entrypoint_text = entrypoint.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"{PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT.as_posix()}: unreadable: {error}"
+            )
+        else:
+            if (
+                "skills" not in entrypoint_text
+                or "pr_template_preflight.py" not in entrypoint_text
+            ):
+                problems.append(
+                    f"{PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT.as_posix()}: must delegate "
+                    "to the bundled preflight script"
+                )
+
+    try:
+        reference_text = reference.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(
+            f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: could not read preflight "
+            f"copy contract: {error}"
+        )
+    else:
+        row = (
+            "| Pull-request preflight | `../scripts/pr_template_preflight.py` | "
+            "`scripts/pr_template_preflight.py` |"
+        )
+        if row not in reference_text:
+            problems.append(
+                f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: must document copying "
+                f"{PR_TEMPLATE_PREFLIGHT_DESTINATION.as_posix()}"
+            )
+
+    preflight_command = 'scripts/pr_template_preflight.py --title "<title>"'
+    guidance_paths = [repository_root / "CONTRIBUTING.md"]
+    asset_root = repository_root / "skills" / "repo-scaffold" / "assets"
+    guidance_paths.extend(
+        asset_root / asset_name
+        for asset_name in (
+            "AGENTS.md",
+            "AGENTS.vi.md",
+            "CONTRIBUTING.md",
+            "CONTRIBUTING.vi.md",
+        )
+    )
+    for asset in guidance_paths:
+        try:
+            asset_text = asset.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"{asset.relative_to(repository_root).as_posix()}: unreadable: {error}"
+            )
+            continue
+        required_fragments = [preflight_command]
+        if asset.name.startswith("AGENTS"):
+            required_fragments.extend(
+                (
+                    "--template security",
+                    "--template deployment",
+                    "--template dependency-update",
+                )
+            )
+        for fragment in required_fragments:
+            if fragment not in asset_text:
+                problems.append(
+                    f"{asset.relative_to(repository_root).as_posix()}: missing "
+                    f"preflight guidance {fragment!r}"
+                )
+    return problems
+
+
 def validate_test_quality_contract(repository_root: Path) -> list[str]:
     """Reject structurally weak or duplicated test cases."""
     test_root = repository_root / "tests"
@@ -5331,6 +5424,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_official_docs_tracking_contract,
         validate_code_scanning_gate_contract,
         validate_workflow_script_copy_contract,
+        validate_pr_template_preflight_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,

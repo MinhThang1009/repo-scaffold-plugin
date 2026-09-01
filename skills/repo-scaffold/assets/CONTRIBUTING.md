@@ -9,6 +9,12 @@ Thanks for your interest in contributing! This document describes the workflow.
 3. Push the branch and open a Pull Request against **{{REPO_SCAFFOLD_DEFAULT_BRANCH}}**.
 {{REPO_SCAFFOLD_CONTRIBUTION_REVIEW_STEP}}
 
+Before creating or editing a pull request, run
+`python scripts/pr_template_preflight.py --title "<title>"`. For a focused
+security, deployment, or dependency-update review whose title has no mandatory
+mapping, add `--template security`, `--template deployment`, or
+`--template dependency-update`.
+
 ## Code expectations
 
 - Follow the existing conventions of the codebase.

@@ -1278,6 +1278,8 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         "requirements-dev.txt",
         "requirements-dev.in",
         "requirements-mutation.txt",
+        "scripts/pr_template_preflight.py",
+        "skills/repo-scaffold/scripts/pr_template_preflight.py",
     )
 
     def copy_contract(self, root: Path) -> None:
@@ -1442,7 +1444,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             self.copy_contract(root)
             workflow_path = root / ".github" / "workflows" / "ci.yml"
             workflow = workflow_path.read_text(encoding="utf-8").replace(
-                "          scripts/run_mutation_testing.py\n", "", 1
+                "          scripts/pr_template_preflight.py\n", "", 1
             )
             workflow_path.write_text(workflow, encoding="utf-8")
 
@@ -1452,6 +1454,28 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
 
         self.assertIn(
             ".github/workflows/ci.yml: Mypy must check every production script and tests",
+            problems,
+        )
+
+    def test_ci_mypy_reports_unreadable_production_script_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            scripts = root / "scripts"
+            original_glob = Path.glob
+
+            def glob(path: Path, pattern: str) -> object:
+                if path == scripts:
+                    raise OSError("access denied")
+                return original_glob(path, pattern)
+
+            with mock.patch.object(Path, "glob", autospec=True, side_effect=glob):
+                problems = validate_repository.validate_development_dependency_contract(
+                    root
+                )
+
+        self.assertIn(
+            "scripts: could not inventory production scripts for Mypy: access denied",
             problems,
         )
 
@@ -3139,6 +3163,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_official_docs_tracking_contract",
             "validate_code_scanning_gate_contract",
             "validate_workflow_script_copy_contract",
+            "validate_pr_template_preflight_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
             "validate_release_archive",
@@ -5368,6 +5393,10 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "AGENTS.vi.md",
         ):
             text = path.read_text(encoding="utf-8")
+            self.assertIn("scripts/pr_template_preflight.py", text)
+            self.assertIn("--template security", text)
+            self.assertIn("--template deployment", text)
+            self.assertIn("--template dependency-update", text)
             self.assertIn("--body-file", text)
             self.assertIn("--fill", text)
             self.assertRegex(text, r"ready(?:\s+|_)for(?:\s+|_)review", path)
@@ -5381,6 +5410,9 @@ class PullRequestTemplateContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("--body-file", pull_request_reference)
         self.assertIn("scripts/pr_template_preflight.py", pull_request_reference)
+        self.assertIn("--template security", pull_request_reference)
+        self.assertIn("--template deployment", pull_request_reference)
+        self.assertIn("--template dependency-update", pull_request_reference)
         self.assertIn("--fill", pull_request_reference)
         self.assertRegex(
             pull_request_reference,
@@ -7882,6 +7914,106 @@ class WorkflowScriptCopyContractTests(unittest.TestCase):
             unreadable_reference[0].startswith(
                 "references/scaffold-generation.md: could not read workflow script "
             )
+        )
+
+
+class PullRequestTemplatePreflightDistributionTests(unittest.TestCase):
+    def test_current_preflight_distribution_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_pr_template_preflight_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_bundled_preflight_or_copy_contract_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root_script = root / "scripts" / "pr_template_preflight.py"
+            reference = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "scaffold-generation.md"
+            )
+            root_script.parent.mkdir(parents=True)
+            root_script.write_text("print('unrelated')\n", encoding="utf-8")
+            reference.parent.mkdir(parents=True)
+            reference.write_text("# Scaffold generation contract\n", encoding="utf-8")
+            assets = root / "skills" / "repo-scaffold" / "assets"
+            assets.mkdir(parents=True)
+            for name in ("AGENTS.md", "AGENTS.vi.md"):
+                (assets / name).write_text("No preflight\n", encoding="utf-8")
+
+            problems = validate_repository.validate_pr_template_preflight_contract(root)
+
+        self.assertIn(
+            "skills/repo-scaffold/scripts/pr_template_preflight.py: bundled "
+            "preflight script is missing",
+            problems,
+        )
+        self.assertIn(
+            "scripts/pr_template_preflight.py: must delegate to the bundled "
+            "preflight script",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/references/scaffold-generation.md: must document "
+            "copying scripts/pr_template_preflight.py",
+            problems,
+        )
+
+    def test_missing_entrypoint_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            problems = validate_repository.validate_pr_template_preflight_contract(root)
+
+        self.assertIn(
+            "scripts/pr_template_preflight.py: maintainer preflight entry point is "
+            "missing",
+            problems,
+        )
+
+    def test_unreadable_preflight_contract_files_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root_script = root / "scripts" / "pr_template_preflight.py"
+            source = root / "skills" / "repo-scaffold" / "scripts" / root_script.name
+            reference = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "scaffold-generation.md"
+            )
+            assets = root / "skills" / "repo-scaffold" / "assets"
+            for path in (
+                root_script,
+                source,
+                reference,
+                assets / "AGENTS.md",
+                assets / "AGENTS.vi.md",
+            ):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("preflight\n", encoding="utf-8")
+
+            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+                problems = validate_repository.validate_pr_template_preflight_contract(
+                    root
+                )
+
+        self.assertIn(
+            "scripts/pr_template_preflight.py: unreadable: denied",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/references/scaffold-generation.md: could not read "
+            "preflight copy contract: denied",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/assets/AGENTS.md: unreadable: denied",
+            problems,
         )
 
 

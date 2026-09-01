@@ -223,6 +223,7 @@ repo-scaffold/
 │   ├── run_mutation_testing.py
 │   ├── audit_freshness.py
 │   ├── audit_official_docs.py
+│   ├── pr_template_preflight.py
 │   ├── sync_action_pins.py
 │   ├── sync_versioned_inputs.py
 │   ├── validate_mutation_results.py
@@ -236,6 +237,7 @@ repo-scaffold/
         │   ├── check_community_health.py # versioned upstream drift checker
         │   ├── ci_toolchain.py      # centralized CI bootstrap/tool pin policy
         │   ├── codeql_preflight.py  # fail-closed CodeQL/reusable-workflow inspection
+        │   ├── pr_template_preflight.py # PR template selection and validation
         │   ├── sync_action_pins.py  # immutable action-release resolver
         │   └── validate_scaffold.py # rendered Markdown and template contract
         ├── references/
@@ -259,7 +261,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/pr_template_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
