@@ -7,6 +7,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
 
@@ -60,7 +61,7 @@ class FakeClient:
         return value
 
 
-def check_runs(context: str, app_id: int = 15368) -> dict[str, object]:
+def check_runs(context: str, app_id: int = 15368) -> dict[str, Any]:
     return {
         "total_count": 1,
         "check_runs": [
@@ -399,12 +400,13 @@ jobs:
                         payload, "ci-success", now
                     )
 
-        base = valid["check_runs"][0]
-        for update, message in [
+        base = cast(dict[str, Any], valid["check_runs"][0])
+        evidence_updates: list[tuple[dict[str, Any], str]] = [
             ({"app": {}}, "incomplete"),
             ({"completed_at": "not-a-time"}, "invalid completion"),
             ({"completed_at": "2026-01-01T00:00:00"}, "timezone-less"),
-        ]:
+        ]
+        for update, message in evidence_updates:
             item = dict(base, **update)
             with self.subTest(update=update):
                 with self.assertRaisesRegex(
@@ -468,10 +470,11 @@ jobs:
                     )
 
     def test_run_rejects_invalid_representative_pull_request_data(self) -> None:
-        for overrides, message in [
+        invalid_arguments: list[tuple[dict[str, object], str]] = [
             ({"hostname": "github.example"}, "GitHub.com only"),
             ({"pull_request": 0}, "positive"),
-        ]:
+        ]
+        for overrides, message in invalid_arguments:
             with self.subTest(overrides=overrides):
                 args = preflight_args("ci-success")
                 for key, value in overrides.items():

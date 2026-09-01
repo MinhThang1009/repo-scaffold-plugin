@@ -958,6 +958,55 @@ The repository view returns the owner login but not its account type. Treat the 
 
 Run each eligible command separately after confirmation and only report a feature as enabled after its final state is verified. Treat `403` as forbidden and `404` as missing or inaccessible unless endpoint-specific evidence proves a capability limitation. Preserve and inspect every `422` response: depending on the endpoint it can indicate invalid input, ineligibility, or abuse controls, so do not automatically relabel it as a plan or permission failure. Treat `409` as an in-progress/conflicting operation and `503` as transient service unavailability. Report the verified capability, validation, or retry result and continue instead of claiming success or failing the entire scaffold.
 
+Before the first security-feature mutation, run the bundled
+`scripts/security_features_preflight.py` with exactly the approved feature
+flags. It is read-only and fail-closed: it binds the repository response to the
+explicit `OWNER/REPO`, rejects archived or ambiguous repositories, validates the
+published security-analysis fields, requires secret scanning before push
+protection, and permits private vulnerability reporting only for a public
+non-fork repository. It does not infer entitlement from a missing field, so
+continue to handle GitHub's final `403`, `404`, `409`, `422`, and `503` result
+separately.
+
+```powershell
+$securityFeaturesPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/security_features_preflight.py"
+if (-not (Test-Path -LiteralPath $securityFeaturesPreflight -PathType Leaf)) {
+  throw "The bundled security-features preflight is missing; do not mutate security settings."
+}
+
+# Set each value only from explicit user approval.
+$enableDependabotAlertsRequested = $false
+$enableAutomatedSecurityFixesRequested = $false
+$enableSecretScanningRequested = $false
+$enablePushProtectionRequested = $false
+$enablePrivateVulnerabilityReportingRequested = $false
+$securityPreflightArguments = @("--repository", "OWNER/REPO", "--hostname", "github.com")
+if ($enableDependabotAlertsRequested) { $securityPreflightArguments += "--enable-dependabot-alerts" }
+if ($enableAutomatedSecurityFixesRequested) { $securityPreflightArguments += "--enable-automated-security-fixes" }
+if ($enableSecretScanningRequested) { $securityPreflightArguments += "--enable-secret-scanning" }
+if ($enablePushProtectionRequested) { $securityPreflightArguments += "--enable-push-protection" }
+if ($enablePrivateVulnerabilityReportingRequested) { $securityPreflightArguments += "--enable-private-vulnerability-reporting" }
+
+$securityPreflightOutput = python $securityFeaturesPreflight @securityPreflightArguments 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Security-feature inspection is inconclusive; do not mutate. $($securityPreflightOutput | Out-String)"
+}
+try {
+  $securityPreflightResult = ($securityPreflightOutput | Out-String) | ConvertFrom-Json
+} catch {
+  throw "Security-feature preflight returned invalid JSON; do not mutate."
+}
+if (-not $securityPreflightResult.inspection_complete -or
+    $securityPreflightResult.decision -ne "may-configure-security-features") {
+  throw "Security-feature preflight did not approve the requested mutations."
+}
+```
+
+Run a following mutating command only when its matching approved request flag
+was passed to this final preflight result. Re-query its endpoint after the
+mutation; an approved preflight is not proof that GitHub accepted or enabled a
+feature.
+
 - **Dependency graph**: enabled by default for public repositories. It is not the same setting as Dependabot alerts.
 - **Dependabot alerts**: not enabled by default. Enable explicitly where supported, then optionally enable security updates:
 

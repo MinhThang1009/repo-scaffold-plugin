@@ -95,6 +95,12 @@ fail-closed `scripts/merge_settings_preflight.py`. Preserve its required merge
 methods, obtain separate confirmation before disabling any enabled method, and
 skip the shipped auto-merge workflows when it reports an effective merge queue.
 
+Before enabling Dependabot alerts or security updates, secret scanning or push
+protection, or private vulnerability reporting, run the fail-closed
+`scripts/security_features_preflight.py`. Do not enable push protection unless
+secret scanning is already enabled or is in the same approved mutation. Offer
+private vulnerability reporting only for a verified public non-fork repository.
+
 ### 5. Configure GitHub
 
 Before GitHub configuration, read `references/github-setup.md`. Apply only

@@ -1731,6 +1731,7 @@ class MutationTestingContractTests(unittest.TestCase):
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_merge_settings_preflight.py",
+        "tests/test_security_features_preflight.py",
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
         "tests/test_run_mutation_testing.py",
@@ -3094,6 +3095,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 "branch_protection_preflight.py",
                 "codeql_preflight.py",
                 "merge_settings_preflight.py",
+                "security_features_preflight.py",
                 "validate_scaffold.py",
             ):
                 self.assertIn(
