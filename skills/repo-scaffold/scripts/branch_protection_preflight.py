@@ -272,10 +272,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if pr.get("mergeable") is not True:
         raise InspectionError("Representative pull request is not confirmed mergeable.")
     rules = client.json(
-        f"repos/{owner}/{repo}/rules/branches/{quote(args.default_branch, safe='')}"
+        f"repos/{owner}/{repo}/rules/branches/"
+        f"{quote(args.default_branch, safe='')}?per_page=100"
     )
     if not isinstance(rules, list):
         raise InspectionError("Effective rules response is invalid.")
+    if len(rules) >= 100:
+        raise InspectionError(
+            "Effective rules response may be paginated; inspection is inconclusive."
+        )
     queue_required = any(
         isinstance(rule, dict) and rule.get("type") == "merge_queue" for rule in rules
     )

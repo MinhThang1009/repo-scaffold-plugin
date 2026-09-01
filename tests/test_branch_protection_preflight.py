@@ -301,7 +301,7 @@ jobs:
                 "merge_commit_sha": MERGE_SHA,
                 "mergeable": True,
             },
-            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main": [],
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100": [],
             tree_path: {
                 "truncated": False,
                 "tree": [
@@ -373,9 +373,9 @@ jobs:
         self.configure(
             self.WORKFLOW.replace("  merge_group:\n    types: [checks_requested]\n", "")
         )
-        FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/rules/branches/main"] = [
-            {"type": "merge_queue"}
-        ]
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+        ] = [{"type": "merge_queue"}]
 
         with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
             with self.assertRaisesRegex(
@@ -509,10 +509,22 @@ jobs:
                         branch_protection_preflight.run(preflight_args("ci-success"))
 
         self.configure()
-        FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/rules/branches/main"] = {}
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+        ] = {}
         with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
             with self.assertRaisesRegex(
                 branch_protection_preflight.InspectionError, "rules response"
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+        self.configure()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+        ] = [{}] * 100
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            with self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError, "may be paginated"
             ):
                 branch_protection_preflight.run(preflight_args("ci-success"))
 
