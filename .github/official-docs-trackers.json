@@ -161,8 +161,8 @@
       "review-period-days": 90
     },
     {
-      "id": "claude-plugin-community-marketplace",
-      "label": "Claude Code community marketplace submission",
+      "id": "claude-plugin-official-marketplace-submission",
+      "label": "Claude Code official marketplace submission",
       "url": "https://code.claude.com/docs/en/discover-plugins",
       "allowed-hosts": ["code.claude.com"],
       "paths": [
@@ -172,7 +172,7 @@
         "skills/repo-scaffold/references/agent-compatibility.vi.md"
       ],
       "required-markers": [
-        "claude-community",
+        "claude-plugins-official",
         "in-app submission form"
       ],
       "reviewed-on": "2026-09-01",

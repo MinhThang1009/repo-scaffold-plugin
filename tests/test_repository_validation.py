@@ -3909,8 +3909,8 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             ".agents/plugins/marketplace.json",
             ".codex-plugin",
             ".claude-plugin",
-            "claude-community",
-            "separately curated marketplace",
+            "claude-plugins-official",
+            "official",
             "in-app submission form",
             "Skills only",
             "Apps Management write access",
@@ -3919,6 +3919,30 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "claude --plugin-dir",
         ):
             self.assertIn(fragment, dossier)
+
+    def test_claude_submission_guidance_uses_official_marketplace(self) -> None:
+        documents = {
+            PLUGIN_ROOT
+            / "README.md": "in-app submission form for the official\n`claude-plugins-official` marketplace",
+            PLUGIN_ROOT
+            / "PLUGIN_SUBMISSION.md": "in-app submission form for the official `claude-plugins-official` marketplace",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.md": "in-app\nsubmission form for the official `claude-plugins-official` marketplace",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.vi.md": "form nộp plugin trong app hiện hành\ncủa Anthropic cho marketplace chính thức `claude-plugins-official`",
+        }
+
+        for path, expected in documents.items():
+            text = path.read_text(encoding="utf-8")
+
+            self.assertIn(expected, text, path.name)
+            self.assertNotIn("claude-community", text, path.name)
 
     def test_readme_uninstalls_from_the_documented_marketplace(self) -> None:
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
