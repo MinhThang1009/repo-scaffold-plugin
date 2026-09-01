@@ -41,10 +41,10 @@ claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
 claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-The official Anthropic marketplace is `claude-plugins-official`; use its in-app
-submission form for a public listing. This repository's
-`repo-scaffold-plugins` marketplace remains a separate local or private
-distribution source.
+The public third-party Anthropic marketplace is `claude-community`; use its
+in-app submission form for a public listing. `claude-plugins-official` is a
+separately curated marketplace. This repository's `repo-scaffold-plugins`
+marketplace remains a separate local or private distribution source.
 
 Restart Claude Code, then invoke `/repo-scaffold:repo-scaffold` or ask Claude
 to scaffold the repository. For local verification without installation, run

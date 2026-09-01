@@ -41,8 +41,9 @@ claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
 claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-Marketplace chính thức của Anthropic là `claude-plugins-official`; hãy dùng form
-nộp plugin trong app để xin public listing. Marketplace
+Marketplace public dành cho plugin bên thứ ba của Anthropic là
+`claude-community`; hãy dùng form nộp plugin trong app để xin public listing.
+`claude-plugins-official` là marketplace được tuyển chọn riêng. Marketplace
 `repo-scaffold-plugins` của repository này vẫn là nguồn phân phối private hoặc
 local riêng biệt.
 
