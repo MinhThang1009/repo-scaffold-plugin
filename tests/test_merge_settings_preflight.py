@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import runpy
 import sys
 import unittest
 from pathlib import Path
@@ -10,6 +11,17 @@ from unittest import mock
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIRECTORY = PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts"
+
+CODEQL_SPEC = importlib.util.spec_from_file_location(
+    "skills.repo-scaffold.scripts.codeql_preflight",
+    SCRIPT_DIRECTORY / "codeql_preflight.py",
+)
+if CODEQL_SPEC is None or CODEQL_SPEC.loader is None:
+    raise RuntimeError("Could not load codeql_preflight.py")
+codeql_preflight = importlib.util.module_from_spec(CODEQL_SPEC)
+sys.modules[CODEQL_SPEC.name] = codeql_preflight
+sys.modules["codeql_preflight"] = codeql_preflight
+CODEQL_SPEC.loader.exec_module(codeql_preflight)
 
 
 BRANCH_SPEC = importlib.util.spec_from_file_location(
@@ -143,3 +155,132 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 merge_settings_preflight.InspectionError, "different repository"
             ):
                 merge_settings_preflight.run(arguments())
+
+    def test_rule_parser_and_boolean_validation_fail_closed(self) -> None:
+        with self.assertRaisesRegex(
+            merge_settings_preflight.InspectionError, "invalid 'archived'"
+        ):
+            merge_settings_preflight.require_boolean({}, "archived")
+
+        cases = [
+            ({}, "response is invalid"),
+            ([{}] * 100, "may be paginated"),
+            (["rule"], "invalid rule"),
+            ([{"type": "other"}], None),
+            ([{"type": "merge_queue"}], "no parameters"),
+            (
+                [{"type": "merge_queue", "parameters": {"merge_method": "bad"}}],
+                "unsupported merge method",
+            ),
+            ([{"type": "pull_request", "parameters": {}}], "allowed merge-method"),
+            (
+                [
+                    {
+                        "type": "pull_request",
+                        "parameters": {"allowed_merge_methods": ["bad"]},
+                    }
+                ],
+                "unsupported merge method",
+            ),
+        ]
+        for payload, message in cases:
+            with self.subTest(payload=payload):
+                if message is None:
+                    self.assertEqual(
+                        merge_settings_preflight.parse_effective_rules(payload),
+                        (set(), False),
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        merge_settings_preflight.InspectionError, message
+                    ):
+                        merge_settings_preflight.parse_effective_rules(payload)
+
+        methods, queue = merge_settings_preflight.parse_effective_rules(
+            [
+                {
+                    "type": "pull_request",
+                    "parameters": {"allowed_merge_methods": ["Merge", "squash"]},
+                },
+                {
+                    "type": "merge_queue",
+                    "parameters": {"merge_method": "rebase"},
+                },
+            ]
+        )
+        self.assertEqual(methods, {"merge", "squash", "rebase"})
+        self.assertTrue(queue)
+
+    def test_run_rejects_invalid_repository_and_arguments(self) -> None:
+        for overrides, message in [
+            ({"hostname": "github.example"}, "GitHub.com only"),
+            ({"default_branch": " "}, "Default branch"),
+        ]:
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(
+                    merge_settings_preflight.InspectionError, message
+                ):
+                    merge_settings_preflight.run(arguments(**overrides))
+
+        self.configure(rules=[])
+        for repository, message in [
+            ([], "response is invalid"),
+            (
+                {
+                    "full_name": "octo/example",
+                    "archived": True,
+                    "allow_squash_merge": True,
+                    "allow_merge_commit": False,
+                    "allow_rebase_merge": False,
+                },
+                "Archived",
+            ),
+            (
+                {
+                    "full_name": "octo/example",
+                    "archived": False,
+                    "allow_squash_merge": "yes",
+                    "allow_merge_commit": False,
+                    "allow_rebase_merge": False,
+                },
+                "allow_squash_merge",
+            ),
+        ]:
+            FakeClient.responses["repos/octo/example"] = repository
+            with self.subTest(repository=repository):
+                with mock.patch.object(
+                    merge_settings_preflight, "GitHubClient", FakeClient
+                ):
+                    with self.assertRaisesRegex(
+                        merge_settings_preflight.InspectionError, message
+                    ):
+                        merge_settings_preflight.run(arguments())
+
+    def test_cli_reports_success_and_inconclusive_result(self) -> None:
+        self.configure(rules=[])
+        with (
+            mock.patch.object(
+                merge_settings_preflight, "parse_args", return_value=arguments()
+            ),
+            mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient),
+            mock.patch("builtins.print") as print_mock,
+        ):
+            self.assertEqual(merge_settings_preflight.main(), 0)
+        self.assertIn("may-configure", print_mock.call_args.args[0])
+        with (
+            mock.patch.object(
+                merge_settings_preflight,
+                "parse_args",
+                side_effect=merge_settings_preflight.InspectionError("bad input"),
+            ),
+            mock.patch("builtins.print") as print_mock,
+        ):
+            self.assertEqual(merge_settings_preflight.main(), 2)
+        self.assertIn("inconclusive", print_mock.call_args.args[0])
+
+    def test_module_entrypoint_exits_for_invalid_cli_arguments(self) -> None:
+        with self.assertRaises(SystemExit):
+            runpy.run_path(
+                str(SCRIPT_DIRECTORY / "merge_settings_preflight.py"),
+                run_name="__main__",
+            )

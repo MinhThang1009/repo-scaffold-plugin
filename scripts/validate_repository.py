@@ -2435,9 +2435,11 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         ),
         "tests/test_ci_toolchain.py": ("skills.repo-scaffold.scripts.ci_toolchain",),
         "tests/test_branch_protection_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.branch_protection_preflight",
         ),
         "tests/test_merge_settings_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.branch_protection_preflight",
             "skills.repo-scaffold.scripts.merge_settings_preflight",
         ),
