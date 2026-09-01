@@ -90,6 +90,11 @@ Before configuring classic branch protection, run the fail-closed
 whose head contains the final workflow set. Use only its returned contexts and
 GitHub App IDs. Do not configure required checks when it is inconclusive.
 
+Before changing merge settings or installing an auto-merge workflow, run the
+fail-closed `scripts/merge_settings_preflight.py`. Preserve its required merge
+methods, obtain separate confirmation before disabling any enabled method, and
+skip the shipped auto-merge workflows when it reports an effective merge queue.
+
 ### 5. Configure GitHub
 
 Before GitHub configuration, read `references/github-setup.md`. Apply only

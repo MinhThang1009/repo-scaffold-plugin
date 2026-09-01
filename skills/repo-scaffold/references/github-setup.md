@@ -1160,7 +1160,66 @@ Match the squash-default PR flow and keep branches tidy:
 
 On GitHub.com, auto-merge is available for private repositories only with GitHub Pro, Team, or Enterprise Cloud. Check the repository plan/capability first. Treat `403` as forbidden; preserve a `422` response and report it as a rejected or ineligible configuration without guessing that token permission caused it. Do not install an auto-merge workflow unless enablement succeeds.
 
-Before installing either shipped auto-merge workflow, inspect the effective rules on the detected default branch. The built-in `GITHUB_TOKEN` cannot add a pull request to a merge queue, and the shipped workflows are intentionally not queue workflows:
+Run the bundled `scripts/merge_settings_preflight.py` before the first
+merge-setting mutation. It is read-only and fail-closed: it binds the requested
+repository response to the explicit `OWNER/REPO`, rejects archived repositories
+and unbounded effective-rule results, preserves every method required by an
+effective merge queue or pull-request rule, and records the exact resulting
+method plan. It returns `require-explicit-merge-method-removal-confirmation`
+when the proposed squash-default configuration would disable an enabled merge
+or rebase method. Do not pass its confirmation flag until the user separately
+approves those named removals. When `--require-auto-merge-workflows` reports
+`skip-auto-merge-workflows`, preserve the merge settings plan but do not install
+either shipped auto-merge asset.
+
+```powershell
+$mergeSettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/merge_settings_preflight.py"
+if (-not (Test-Path -LiteralPath $mergeSettingsPreflight -PathType Leaf)) {
+  throw "The bundled merge-settings preflight is missing; do not mutate merge settings."
+}
+if ([string]::IsNullOrWhiteSpace($DEFAULT_BRANCH)) {
+  throw "DEFAULT_BRANCH must be known before inspecting merge settings."
+}
+$preflightArguments = @(
+  "--repository", "OWNER/REPO",
+  "--default-branch", $DEFAULT_BRANCH,
+  "--require-auto-merge-workflows"
+)
+$preflightOutput = python $mergeSettingsPreflight @preflightArguments 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Merge-settings inspection is inconclusive; do not mutate. $($preflightOutput | Out-String)"
+}
+$mergeSettingsPreflightResult = ($preflightOutput | Out-String) | ConvertFrom-Json
+if (-not $mergeSettingsPreflightResult.inspection_complete) {
+  throw "Merge-settings inspection is incomplete; do not mutate."
+}
+if ($mergeSettingsPreflightResult.decision -eq "require-explicit-merge-method-removal-confirmation") {
+  $methods = @($mergeSettingsPreflightResult.methods_to_disable) -join ", "
+  throw "Disabling enabled merge methods ($methods) needs separate user confirmation; do not mutate."
+}
+if ($mergeSettingsPreflightResult.decision -notin @(
+  "may-configure-merge-settings", "skip-auto-merge-workflows"
+)) {
+  throw "Merge-settings preflight returned an unknown decision; do not mutate."
+}
+$enableMergeCommit = [bool]$mergeSettingsPreflightResult.desired_merge_methods.merge
+$enableRebaseMerge = [bool]$mergeSettingsPreflightResult.desired_merge_methods.rebase
+$hasMergeQueue = [bool]$mergeSettingsPreflightResult.merge_queue_applies
+$installAutoMergeWorkflows = [bool]$mergeSettingsPreflightResult.auto_merge_workflows_eligible
+```
+
+After separate approval for listed removals, append
+`--confirm-disable-merge-methods`, rerun the preflight, and require the
+`may-configure-merge-settings` or `skip-auto-merge-workflows` decision again.
+Use `$enableMergeCommit`, `$enableRebaseMerge`, and
+`$installAutoMergeWorkflows` only from its final JSON result. The detailed
+effective-rule inspection below is retained to explain the underlying GitHub
+policy fields; do not replace the helper's result with manually inferred values.
+
+For explanation and troubleshooting only, the following inspection shows the
+effective-rule fields evaluated by the helper. The built-in `GITHUB_TOKEN`
+cannot add a pull request to a merge queue, and the shipped workflows are
+intentionally not queue workflows:
 
 ```powershell
 $repoViewOutput = gh repo view github.com/OWNER/REPO --json nameWithOwner,defaultBranchRef
@@ -1222,14 +1281,11 @@ if ($hasMergeQueue) {
 }
 ```
 
-Continue with the repository merge settings below even when `$hasMergeQueue` is true, but preserve every merge method used by an effective merge queue or allowed by an effective pull-request rule. Install `auto-merge.yml` or `dependabot-auto-merge.yml` only when `$hasMergeQueue` is false.
+Continue with the repository merge settings below even when `$hasMergeQueue` is true, but preserve every merge method used by an effective merge queue or allowed by an effective pull-request rule. Install `auto-merge.yml` or `dependabot-auto-merge.yml` only when `$installAutoMergeWorkflows` from the final preflight is true.
 
 ```powershell
-# Default to squash-only only when effective rules do not require or allow another
-# repository-level merge method. A queue configured for MERGE or REBASE must keep
-# that method enabled or GitHub will block the queue.
-$enableMergeCommit = $requiredRepositoryMergeMethods.Contains("merge")
-$enableRebaseMerge = $requiredRepositoryMergeMethods.Contains("rebase")
+# Values come only from the final merge-settings preflight. A queue configured
+# for MERGE or REBASE must keep that method enabled or GitHub will block it.
 $mergeArguments = @(
   "repo", "edit", "github.com/OWNER/REPO",
   "--enable-squash-merge=true",

@@ -1603,6 +1603,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         "skills/repo-scaffold/scripts/branch_protection_preflight.py",
         "skills/repo-scaffold/scripts/codeql_preflight.py",
         "skills/repo-scaffold/scripts/ci_toolchain.py",
+        "skills/repo-scaffold/scripts/merge_settings_preflight.py",
         "skills/repo-scaffold/scripts/sync_action_pins.py",
         "skills/repo-scaffold/scripts/validate_scaffold.py",
         "scripts/audit_freshness.py",
@@ -1748,6 +1749,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_branch_protection_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
+        "tests/test_merge_settings_preflight.py",
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
         "tests/test_run_mutation_testing.py",
@@ -2434,6 +2436,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_ci_toolchain.py": ("skills.repo-scaffold.scripts.ci_toolchain",),
         "tests/test_branch_protection_preflight.py": (
             "skills.repo-scaffold.scripts.branch_protection_preflight",
+        ),
+        "tests/test_merge_settings_preflight.py": (
+            "skills.repo-scaffold.scripts.branch_protection_preflight",
+            "skills.repo-scaffold.scripts.merge_settings_preflight",
         ),
         "tests/test_codeql_preflight.py": (
             "scripts.validate_workflows",
@@ -5183,6 +5189,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                 "repo-scaffold/skills/repo-scaffold/scripts/branch_protection_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/codeql_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/validate_scaffold.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/merge_settings_preflight.py",
             }
         )
         for missing in sorted(expected - names):
