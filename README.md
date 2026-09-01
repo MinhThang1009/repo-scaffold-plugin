@@ -143,11 +143,16 @@ version they loaded when the session started.
 
 ## 8. Uninstall
 
-Remove the installed plugin, then start a new Codex thread:
+Remove the installed plugin from the marketplace that supplied it:
 
 ```powershell
-codex plugin remove repo-scaffold@personal
+codex plugin remove repo-scaffold@repo-scaffold-plugins
+claude plugin uninstall repo-scaffold@repo-scaffold-plugins
 ```
+
+If you no longer use this catalog, remove it separately with
+`codex plugin marketplace remove repo-scaffold-plugins` or
+`claude plugin marketplace remove repo-scaffold-plugins`.
 
 ## 9. Structure
 

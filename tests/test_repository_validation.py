@@ -3887,6 +3887,15 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         ):
             self.assertIn(fragment, dossier)
 
+    def test_readme_uninstalls_from_the_documented_marketplace(self) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("codex plugin remove repo-scaffold@repo-scaffold-plugins", readme)
+        self.assertIn(
+            "claude plugin uninstall repo-scaffold@repo-scaffold-plugins", readme
+        )
+        self.assertNotIn("codex plugin remove repo-scaffold@personal", readme)
+
     def test_scaffold_templates_support_language_and_host_adapters(self) -> None:
         asset_root = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
 
