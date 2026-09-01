@@ -21,6 +21,13 @@ Khởi động lại Codex, sau đó yêu cầu scaffold repository như bình t
 plugin root này. Với checkout chỉ dành cho một người dùng, dùng personal
 marketplace tại `~/.agents/plugins/marketplace.json`. Xem [tài liệu plugin chính thức](https://developers.openai.com/plugins/build/plugins).
 
+Để public trên OpenAI, hãy nộp release ZIP theo [flow Skills-only cho
+plugin](https://developers.openai.com/plugins/guides/submit-claude-plugin).
+Thư mục `repo-scaffold/` duy nhất trong archive chứa Claude manifest không rỗng
+và skill dùng chung cùng mọi file được tham chiếu. Portal OpenAI chuẩn hóa Codex
+manifest trong quá trình review; listing marketplace Claude Code vẫn cần một
+phê duyệt riêng.
+
 Codex đọc hướng dẫn dự án từ `AGENTS.md` và áp dụng các tệp phù hợp từ root
 của repository đến thư mục làm việc. `AGENTS.md` được tạo ra là điểm vào hướng
 dẫn ở root theo ngôn ngữ đã chọn của scaffold; Codex vẫn có thể áp dụng thêm

@@ -95,7 +95,13 @@ Report vulnerabilities according to [SECURITY.md](SECURITY.md), never through a 
 
 ## 6. Install
 
-Public plugins are installed from the universal Plugin Directory shared by ChatGPT and Codex. This repository is not yet claiming a public-directory listing.
+Public plugins are installed from the universal Plugin Directory shared by
+ChatGPT and Codex. This repository is not yet claiming a public-directory
+listing. Its release ZIP meets the archive layout for OpenAI's [Skills-only
+submission flow](https://developers.openai.com/plugins/guides/submit-claude-plugin):
+one `repo-scaffold/` root, a nonempty Claude manifest, and the shared
+`skills/repo-scaffold/SKILL.md`. Submission and review still occur in the
+OpenAI portal.
 
 For a private or local Codex installation, add this repository's marketplace and
 install the plugin, then start a new Codex thread in the target repository:

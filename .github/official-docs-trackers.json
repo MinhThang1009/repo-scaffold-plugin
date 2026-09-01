@@ -83,6 +83,25 @@
       "review-period-days": 90
     },
     {
+      "id": "openai-claude-plugin-submission",
+      "label": "OpenAI Claude Code plugin submission",
+      "url": "https://developers.openai.com/plugins/guides/submit-claude-plugin",
+      "allowed-hosts": ["developers.openai.com"],
+      "paths": [
+        "README.md",
+        "PLUGIN_SUBMISSION.md",
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": [
+        "Skills only",
+        "Apps Management",
+        "identity verification"
+      ],
+      "reviewed-on": "2026-09-01",
+      "review-period-days": 90
+    },
+    {
       "id": "codex-agents-instructions",
       "label": "Codex AGENTS.md instructions",
       "url": "https://learn.chatgpt.com/docs/agent-configuration/agents-md",

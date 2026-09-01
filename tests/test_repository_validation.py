@@ -3912,6 +3912,9 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "claude-community",
             "separately curated marketplace",
             "in-app submission form",
+            "Skills only",
+            "Apps Management write access",
+            "identity verification",
             "claude plugin validate --strict .",
             "claude --plugin-dir",
         ):

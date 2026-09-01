@@ -21,6 +21,13 @@ Restart Codex, then ask for a repository scaffold normally. The catalog's
 For a checkout private to one user, use a personal marketplace at
 `~/.agents/plugins/marketplace.json`. See the [official Codex plugin documentation](https://developers.openai.com/plugins/build/plugins).
 
+For an OpenAI public listing, submit the release ZIP through the [Skills-only
+plugin flow](https://developers.openai.com/plugins/guides/submit-claude-plugin).
+Its single `repo-scaffold/` directory includes a nonempty Claude manifest and
+the shared skill with all referenced files. The OpenAI portal normalizes the
+Codex manifest during review; a Claude Code marketplace listing remains a
+separate approval.
+
 Codex reads project instructions from `AGENTS.md`; it layers the applicable
 files from the repository root to the working directory. The generated
 `AGENTS.md` is the language-selected root instruction entry point created by

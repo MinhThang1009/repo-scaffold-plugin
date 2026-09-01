@@ -25,6 +25,22 @@ installation. The same release archive also includes a native Claude Code
 [`agent-compatibility.md`](skills/repo-scaffold/references/agent-compatibility.md)
 for host-specific installation and invocation details.
 
+## OpenAI distribution
+
+OpenAI accepts a Claude Code plugin with skills through its [Skills-only
+submission flow](https://developers.openai.com/plugins/guides/submit-claude-plugin).
+The release ZIP qualifies for that path: it has one `repo-scaffold/` root with a
+nonempty `.claude-plugin/plugin.json` and the shared
+`skills/repo-scaffold/SKILL.md` plus its referenced scripts, references, and
+assets. The archive also contains `.codex-plugin/plugin.json`; the portal
+reviews and normalizes the Codex manifest during upload.
+
+At submission time, open the OpenAI portal, select **Create plugin** and
+**Skills only**, upload the release ZIP, review the generated manifest, then
+test the imported skill in a clean environment. A Claude marketplace approval
+does not transfer to OpenAI, and an OpenAI approval does not create a Claude
+Code listing.
+
 ## Claude Code distribution
 
 Public third-party Claude Code distribution uses Anthropic's
@@ -93,13 +109,15 @@ Initial public submission with per-project English and Vietnamese output,
 deterministic repository validation, pinned GitHub Actions, release provenance,
 and cached incremental mutation testing with a 100% mutation-score gate.
 
-## Portal-only prerequisites
+## Portal and listing prerequisites
 
-Before submission, the publisher must:
+Before an OpenAI submission, the publisher must:
 
-- verify the publisher identity and account required by the portal;
-- upload a production logo that meets the current portal requirements;
-- select the intended supported countries or regions;
+- have Apps Management write access in the OpenAI organization that owns the
+  plugin;
+- complete individual or business identity verification;
+- verify any portal-requested listing fields, including a production logo or
+  supported countries or regions, at submission time;
 - confirm that every listing URL is reachable from the default branch;
 - run and record the positive and negative tests against the submitted build;
   and
