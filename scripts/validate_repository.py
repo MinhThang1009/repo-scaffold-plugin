@@ -2390,14 +2390,16 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 )
         also_copy = mutation_config.get("also_copy")
         if not isinstance(also_copy, list) or not {
+            ".agents",
             ".claude",
             "AGENTS.md",
             "requirements-mutation.txt",
             "requirements-mutation.in",
         }.issubset(also_copy):
             problems.append(
-                "pyproject.toml: mutation workspace must copy the maintainer "
-                "instructions and both mutation requirement files"
+                "pyproject.toml: mutation workspace must copy the plugin "
+                "marketplace, maintainer instructions, and both mutation "
+                "requirement files"
             )
         if pytest_config.get("testpaths") != ["tests"]:
             problems.append(

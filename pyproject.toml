@@ -3,6 +3,7 @@ source_paths = ["scripts", "skills/repo-scaffold/scripts"]
 pytest_add_cli_args_test_selection = ["tests"]
 pytest_add_cli_args = ["-p", "no:cacheprovider"]
 also_copy = [
+  ".agents",
   ".claude",
   ".claude-plugin",
   ".codex-plugin",

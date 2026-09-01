@@ -2442,6 +2442,11 @@ jobs:
                     1,
                 )
                 .replace(
+                    '  ".agents",',
+                    "",
+                    1,
+                )
+                .replace(
                     'testpaths = ["tests"]',
                     'testpaths = ["other-tests"]',
                     1,
@@ -2472,8 +2477,8 @@ jobs:
         )
         self.assertTrue(
             any(
-                "workspace must copy the maintainer instructions and both mutation "
-                "requirement files" in p
+                "workspace must copy the plugin marketplace, maintainer "
+                "instructions, and both mutation requirement files" in p
                 for p in problems
             )
         )
@@ -2481,13 +2486,13 @@ jobs:
             any("pytest must collect only first-party tests" in p for p in problems)
         )
 
-    def test_mutation_workspace_copies_maintainer_instructions(self) -> None:
+    def test_mutation_workspace_copies_required_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
             config_path = root / "pyproject.toml"
             original_config = config_path.read_text(encoding="utf-8")
-            for copied_path in (".claude", "AGENTS.md"):
+            for copied_path in (".agents", ".claude", "AGENTS.md"):
                 with self.subTest(copied_path=copied_path):
                     config_path.write_text(
                         original_config.replace(f'  "{copied_path}",\n', "", 1),
@@ -2500,7 +2505,7 @@ jobs:
 
                     self.assertTrue(
                         any(
-                            "workspace must copy the maintainer instructions" in problem
+                            "workspace must copy the plugin marketplace" in problem
                             for problem in problems
                         )
                     )
