@@ -27,11 +27,10 @@ for host-specific installation and invocation details.
 
 ## Claude Code distribution
 
-Claude Code uses an independent community-marketplace review flow. Anthropic's
-third-party public catalog is `claude-community`; submit this plugin through
-Anthropic's current in-app submission form, as documented in the [Claude Code
-plugin guide](https://code.claude.com/docs/en/plugins). Approved entries are
-pinned to a specific source commit in that catalog.
+Public Claude Code distribution uses Anthropic's official
+`claude-plugins-official` marketplace. Submit this plugin through Anthropic's
+current in-app submission form, as documented in the [Claude Code plugin
+guide](https://code.claude.com/docs/en/plugins).
 Do not claim that the Codex Plugin Directory also makes the plugin available in
 Claude Code, or that the plugin has a Claude Code listing, until Anthropic
 accepts the submission and the catalog sync completes.

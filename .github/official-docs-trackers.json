@@ -121,11 +121,42 @@
       ],
       "required-markers": [
         "skills/",
-        "--plugin-dir",
-        "claude-community",
-        "v2.1.128"
+        "--plugin-dir"
       ],
       "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "claude-plugin-zip-archive",
+      "label": "Claude Code ZIP plugin loading",
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w19",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "README.md",
+        "PLUGIN_SUBMISSION.md",
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["v2.1.128"],
+      "reviewed-on": "2026-09-01",
+      "review-period-days": 90
+    },
+    {
+      "id": "claude-plugin-official-marketplace",
+      "label": "Claude Code official marketplace submission",
+      "url": "https://code.claude.com/docs/en/discover-plugins",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "README.md",
+        "PLUGIN_SUBMISSION.md",
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": [
+        "claude-plugins-official",
+        "in-app submission form"
+      ],
+      "reviewed-on": "2026-09-01",
       "review-period-days": 90
     },
     {

@@ -3909,9 +3909,8 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             ".agents/plugins/marketplace.json",
             ".codex-plugin",
             ".claude-plugin",
-            "claude-community",
+            "claude-plugins-official",
             "in-app submission form",
-            "pinned to a specific source commit",
             "claude plugin validate --strict .",
             "claude --plugin-dir",
         ):
