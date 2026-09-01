@@ -120,6 +120,38 @@ class MutationCacheTests(unittest.TestCase):
                 (root / "mutants" / "mutation-cache-manifest.json").exists()
             )
 
+    def test_record_and_prepare_continue_interrupted_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            self.write_state(root, "scripts/alpha.py")
+
+            prepare_mutation_cache.record_cache(root)
+
+            manifest = prepare_mutation_cache.load_manifest(
+                root / "mutants" / prepare_mutation_cache.MANIFEST_NAME
+            )
+            self.assertEqual(
+                set(manifest.state_hashes),
+                {"scripts/alpha.py", "scripts/alpha.py.meta"},
+            )
+
+            result = prepare_mutation_cache.prepare_cache(root)
+
+            self.assertEqual(
+                result,
+                prepare_mutation_cache.PreparationResult(False, 2, 3, 1),
+            )
+            marker = json.loads(
+                (
+                    root / "mutants" / prepare_mutation_cache.REUSABLE_SOURCES_NAME
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                marker,
+                {"schema_version": 1, "sources": ["scripts/alpha.py"]},
+            )
+
     def test_existing_test_module_additions_force_a_full_reset(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -285,6 +317,14 @@ class MutationCacheTests(unittest.TestCase):
             {
                 **prepare_mutation_cache.manifest_document(valid),
                 "control_hashes": {"pyproject.toml": "not-a-digest"},
+            },
+            {
+                **prepare_mutation_cache.manifest_document(valid),
+                "state_hashes": {"tests/test_injected.py": "0" * 64},
+            },
+            {
+                **prepare_mutation_cache.manifest_document(valid),
+                "state_hashes": {"scripts/alpha.py": "0" * 64},
             },
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -474,13 +514,14 @@ class MutationCacheTests(unittest.TestCase):
             ):
                 prepare_mutation_cache._load_meta(path)
 
-    def test_state_collection_requires_complete_bounded_regular_files(self) -> None:
+    def test_state_collection_allows_partial_bounded_regular_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             mutants = Path(directory) / "mutants"
             mutants.mkdir()
             sources = {"scripts/alpha.py": "0" * 64}
-            with self.assertRaisesRegex(ValueError, "state is missing"):
-                prepare_mutation_cache._collect_state_hashes(mutants, sources)
+            self.assertEqual(
+                prepare_mutation_cache._collect_state_hashes(mutants, sources), {}
+            )
 
             for relative in prepare_mutation_cache._expected_state_paths(sources):
                 path = mutants / relative
@@ -490,6 +531,11 @@ class MutationCacheTests(unittest.TestCase):
                 mock.patch.object(prepare_mutation_cache, "MAX_META_BYTES", 0),
                 self.assertRaisesRegex(ValueError, "exceeds the size limits"),
             ):
+                prepare_mutation_cache._collect_state_hashes(mutants, sources)
+
+            path.unlink()
+            path.mkdir()
+            with self.assertRaisesRegex(ValueError, "not a regular file"):
                 prepare_mutation_cache._collect_state_hashes(mutants, sources)
 
     def test_state_sanitizer_removes_directory_symlinks(self) -> None:

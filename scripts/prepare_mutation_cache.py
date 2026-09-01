@@ -157,8 +157,13 @@ def _expected_state_paths(source_hashes: dict[str, str]) -> set[str]:
 def _validate_state_paths(
     state_hashes: dict[str, str], source_hashes: dict[str, str]
 ) -> None:
-    if set(state_hashes) != _expected_state_paths(source_hashes):
+    if not set(state_hashes).issubset(_expected_state_paths(source_hashes)):
         raise ValueError("manifest state paths differ from configured mutation sources")
+    for relative in source_hashes:
+        state_path = relative in state_hashes
+        metadata_path = f"{relative}.meta" in state_hashes
+        if state_path != metadata_path:
+            raise ValueError("manifest source state and metadata must be paired")
 
 
 def _sha256(content: bytes) -> str:
@@ -392,8 +397,10 @@ def _collect_state_hashes(
     for relative in sorted(_expected_state_paths(source_hashes)):
         path = mutation_root.joinpath(*PurePosixPath(relative).parts)
         _assert_safe_cache_path(mutation_root, path)
+        if not path.exists():
+            continue
         if not path.is_file():
-            raise ValueError(f"mutation state is missing {relative!r}")
+            raise ValueError(f"mutation state is not a regular file: {relative!r}")
         content = path.read_bytes()
         total_bytes += len(content)
         if len(content) > MAX_META_BYTES or total_bytes > MAX_STATE_BYTES:
@@ -567,7 +574,7 @@ def prepare_cache(repository_root: Path) -> PreparationResult:
     if invalidated:
         stats_path = mutation_root / "mutmut-stats.json"
         _assert_safe_cache_path(mutation_root, stats_path)
-        stats_path.unlink()
+        stats_path.unlink(missing_ok=True)
     _write_json(
         mutation_root / REUSABLE_SOURCES_NAME,
         {
