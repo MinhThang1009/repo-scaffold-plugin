@@ -119,7 +119,12 @@
         "skills/repo-scaffold/references/agent-compatibility.md",
         "skills/repo-scaffold/references/agent-compatibility.vi.md"
       ],
-      "required-markers": ["skills/", "--plugin-dir", "claude-community"],
+      "required-markers": [
+        "skills/",
+        "--plugin-dir",
+        "claude-community",
+        "v2.1.128"
+      ],
       "reviewed-on": "2026-08-24",
       "review-period-days": 90
     },

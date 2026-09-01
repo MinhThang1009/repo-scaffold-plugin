@@ -46,9 +46,10 @@ to scaffold the repository. For local verification without installation, run
 `claude --plugin-dir .`. Claude Code documents the marketplace contract, plugin
 layout, and shared `SKILL.md` format in its [marketplace guide](https://code.claude.com/docs/en/plugin-marketplaces), [plugin guide](https://code.claude.com/docs/en/plugins), and [skills guide](https://code.claude.com/docs/en/skills).
 
-Release assets contain both manifests under `repo-scaffold/`. Pass the ZIP
-directly to `claude --plugin-dir` for an ephemeral local check, or extract it
-and add the extracted directory as a local marketplace.
+Release assets contain both manifests under `repo-scaffold/`. Claude Code
+v2.1.128 or later can pass the ZIP directly to `claude --plugin-dir` for an
+ephemeral local check. On an older Claude Code release, extract the archive and
+add the extracted directory as a local marketplace.
 
 ## Other agents
 

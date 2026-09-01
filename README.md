@@ -123,8 +123,10 @@ claude plugin install repo-scaffold@repo-scaffold-plugins
 Restart Claude Code, then invoke `/repo-scaffold:repo-scaffold`, or ask Claude
 to scaffold the current repository. For local development only, validate and
 load the checkout directly with `claude --plugin-dir .`. The release archive
-contains both host manifests and both marketplace catalogs; extract it before
-adding it as a local marketplace.
+contains both host manifests and both marketplace catalogs. Claude Code
+v2.1.128 or later can load that ZIP directly with `claude --plugin-dir`; on an
+older Claude Code release, extract it before loading or adding it as a local
+marketplace.
 
 ## 7. Update
 

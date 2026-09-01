@@ -37,11 +37,12 @@ Claude Code, or that the plugin has a Claude Code listing, until Anthropic
 accepts the submission and the catalog sync completes.
 
 Before submitting, run `claude plugin validate --strict .`, load the release
-ZIP with `claude --plugin-dir`, and record the positive and negative test
-evidence above. The ZIP is direct-session test evidence, not a substitute for
-the current submission form or its requested source details. The Claude Code
-review pipeline performs its own validation and safety screening; use its
-current marketplace scope rather than copying Codex portal settings.
+ZIP with `claude --plugin-dir` on Claude Code v2.1.128 or later (or extract it
+first on an older release), and record the positive and negative test evidence
+above. The ZIP is direct-session test evidence, not a substitute for the
+current submission form or its requested source details. The Claude Code review
+pipeline performs its own validation and safety screening; use its current
+marketplace scope rather than copying Codex portal settings.
 
 Long description:
 

@@ -47,9 +47,10 @@ cầu Claude scaffold repository. Để kiểm tra local mà không cài đặt,
 và [skills guide](https://code.claude.com/docs/en/skills) chính thức của Claude
 Code để biết marketplace, layout và định dạng `SKILL.md` dùng chung.
 
-Release asset chứa cả hai manifest trong thư mục `repo-scaffold/`. Có thể truyền
-trực tiếp ZIP cho `claude --plugin-dir` để kiểm tra cục bộ tạm thời, hoặc giải
-nén rồi thêm thư mục đã giải nén làm local marketplace.
+Release asset chứa cả hai manifest trong thư mục `repo-scaffold/`. Claude Code
+từ v2.1.128 trở lên có thể truyền trực tiếp ZIP cho `claude --plugin-dir` để
+kiểm tra cục bộ tạm thời. Với bản Claude Code cũ hơn, hãy giải nén archive rồi
+thêm thư mục đã giải nén làm local marketplace.
 
 ## Agent khác
 
