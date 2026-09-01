@@ -43,9 +43,10 @@ Code listing.
 
 ## Claude Code distribution
 
-Public Claude Code distribution is submitted through Anthropic's current
-in-app submission form for the official `claude-plugins-official` marketplace,
-as documented in the [Claude Code plugin guide](https://code.claude.com/docs/en/plugins).
+Public third-party Claude Code distribution is submitted to Anthropic's
+`claude-community` marketplace through one of its current in-app forms, as
+documented in the [Claude Code plugin guide](https://code.claude.com/docs/en/plugins).
+`claude-plugins-official` is a separately curated Anthropic marketplace.
 Do not claim that the Codex Plugin Directory also makes the plugin available in
 Claude Code, or that the plugin has a Claude Code listing, until Anthropic
 accepts the submission and the catalog sync completes.

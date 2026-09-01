@@ -115,12 +115,12 @@ The catalog is `.agents/plugins/marketplace.json`; its source path resolves from
 the marketplace root. A personal marketplace at `~/.agents/plugins/marketplace.json`
 is still appropriate when the checkout must remain local to one user.
 
-Claude Code distribution is separate. Submit a public listing through
-Anthropic's current in-app submission form for the official
-`claude-plugins-official` marketplace. Until Anthropic approves the listing, do
-not treat Codex Plugin Directory availability as a Claude Code listing. For a
-private or local Claude Code installation, add this repository as a marketplace
-and install the plugin:
+Claude Code distribution is separate. Public third-party listings are submitted
+to Anthropic's `claude-community` marketplace through its in-app forms.
+`claude-plugins-official` is Anthropic's separately curated marketplace. Until a
+Claude Code listing is approved, do not treat Codex Plugin Directory
+availability as a Claude Code listing. For a private or local Claude Code
+installation, add this repository as a marketplace and install the plugin:
 
 ```powershell
 claude plugin validate --strict .

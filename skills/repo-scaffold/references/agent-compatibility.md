@@ -48,8 +48,9 @@ claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
 claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-Submit a public Claude Code listing through Anthropic's current in-app
-submission form for the official `claude-plugins-official` marketplace. This
+Submit a public third-party Claude Code listing to Anthropic's
+`claude-community` marketplace through one of its current in-app forms.
+`claude-plugins-official` is a separately curated Anthropic marketplace. This
 repository's `repo-scaffold-plugins` marketplace remains a separate local or
 private distribution source.
 

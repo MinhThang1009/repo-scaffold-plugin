@@ -3909,9 +3909,9 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             ".agents/plugins/marketplace.json",
             ".codex-plugin",
             ".claude-plugin",
-            "claude-plugins-official",
-            "official",
-            "in-app submission form",
+            "claude-community",
+            "separately curated Anthropic marketplace",
+            "in-app forms",
             "Skills only",
             "Apps Management write access",
             "identity verification",
@@ -3920,29 +3920,29 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         ):
             self.assertIn(fragment, dossier)
 
-    def test_claude_submission_guidance_uses_official_marketplace(self) -> None:
+    def test_claude_submission_guidance_uses_community_marketplace(self) -> None:
         documents = {
             PLUGIN_ROOT
-            / "README.md": "in-app submission form for the official\n`claude-plugins-official` marketplace",
+            / "README.md": "`claude-community` marketplace through its in-app forms.",
             PLUGIN_ROOT
-            / "PLUGIN_SUBMISSION.md": "in-app submission form for the official `claude-plugins-official` marketplace",
-            PLUGIN_ROOT
-            / "skills"
-            / "repo-scaffold"
-            / "references"
-            / "agent-compatibility.md": "in-app\nsubmission form for the official `claude-plugins-official` marketplace",
+            / "PLUGIN_SUBMISSION.md": "`claude-community` marketplace through one of its current in-app forms",
             PLUGIN_ROOT
             / "skills"
             / "repo-scaffold"
             / "references"
-            / "agent-compatibility.vi.md": "form nộp plugin trong app hiện hành\ncủa Anthropic cho marketplace chính thức `claude-plugins-official`",
+            / "agent-compatibility.md": "`claude-community` marketplace through one of its current in-app forms.",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.vi.md": "`claude-community` của Anthropic qua một trong các form trong app hiện hành.",
         }
 
         for path, expected in documents.items():
             text = path.read_text(encoding="utf-8")
 
             self.assertIn(expected, text, path.name)
-            self.assertNotIn("claude-community", text, path.name)
+            self.assertIn("claude-plugins-official", text, path.name)
 
     def test_readme_uninstalls_from_the_documented_marketplace(self) -> None:
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
