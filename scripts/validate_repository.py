@@ -168,6 +168,7 @@ MAINTAINER_AGENT_REQUIRED_FRAGMENTS = (
     "python scripts/validate_repository.py",
     "python skills/repo-scaffold/scripts/validate_scaffold.py",
     "claude plugin validate --strict .",
+    "scripts/pr_template_preflight.py",
 )
 TEMPLATE_TOKEN = re.compile(r"(?:\{\{|\$\{\{)")
 ISSUE_FORM_ID = re.compile(r"^[0-9A-Za-z_-]+$")

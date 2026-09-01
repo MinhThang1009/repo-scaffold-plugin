@@ -3685,7 +3685,8 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "python -m pytest -q\n"
             "python scripts/validate_repository.py\n"
             "python skills/repo-scaffold/scripts/validate_scaffold.py\n"
-            "claude plugin validate --strict .\n",
+            "claude plugin validate --strict .\n"
+            "scripts/pr_template_preflight.py\n",
             encoding="utf-8",
         )
         claude_instructions = root / ".claude" / "CLAUDE.md"
@@ -5379,6 +5380,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             / "pull-request-contract.md"
         ).read_text(encoding="utf-8")
         self.assertIn("--body-file", pull_request_reference)
+        self.assertIn("scripts/pr_template_preflight.py", pull_request_reference)
         self.assertIn("--fill", pull_request_reference)
         self.assertRegex(
             pull_request_reference,

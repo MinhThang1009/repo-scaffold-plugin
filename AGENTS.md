@@ -20,5 +20,7 @@ assets compatible with their documented host contracts.
 
 ## Pull requests
 
-Use the trusted base-branch pull request template. Record validation evidence
-and update a focused regression test when behavior changes.
+Before `gh pr create` or `gh pr edit`, run
+`python scripts/pr_template_preflight.py --title "<title>"`, then use the
+selected trusted base-branch template with `--body-file`. Record validation
+evidence and update a focused regression test when behavior changes.
