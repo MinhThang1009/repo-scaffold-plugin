@@ -3,6 +3,7 @@ source_paths = ["scripts", "skills/repo-scaffold/scripts"]
 pytest_add_cli_args_test_selection = ["tests"]
 pytest_add_cli_args = ["-p", "no:cacheprovider"]
 also_copy = [
+  ".claude",
   ".claude-plugin",
   ".codex-plugin",
   ".github",
@@ -12,6 +13,7 @@ also_copy = [
   ".gitignore",
   ".markdownlint-cli2.jsonc",
   ".release-please-manifest.json",
+  "AGENTS.md",
   "CHANGELOG.md",
   "CODE_OF_CONDUCT.md",
   "CONTRIBUTING.md",
