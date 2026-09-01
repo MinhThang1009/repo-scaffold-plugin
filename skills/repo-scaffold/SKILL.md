@@ -85,6 +85,11 @@ For CodeQL default setup, run the fail-closed `scripts/codeql_preflight.py` and
 require explicit confirmation that no external or indirect uploader exists.
 Never switch CodeQL modes without separate approval.
 
+Before configuring classic branch protection, run the fail-closed
+`scripts/branch_protection_preflight.py` against a mergeable representative PR
+whose head contains the final workflow set. Use only its returned contexts and
+GitHub App IDs. Do not configure required checks when it is inconclusive.
+
 ### 5. Configure GitHub
 
 Before GitHub configuration, read `references/github-setup.md`. Apply only

@@ -137,6 +137,7 @@ jobs:
           python -m mypy --explicit-package-bases
           skills/repo-scaffold/scripts/check_community_health.py
           skills/repo-scaffold/scripts/audit_freshness.py
+          skills/repo-scaffold/scripts/branch_protection_preflight.py
           skills/repo-scaffold/scripts/codeql_preflight.py
           skills/repo-scaffold/scripts/ci_toolchain.py
           skills/repo-scaffold/scripts/sync_action_pins.py

@@ -62,7 +62,7 @@ repository policy.
 - [`gh`](https://cli.github.com/) (GitHub CLI), authenticated to GitHub.com (`gh auth status --active --hostname github.com`) — used for every GitHub API call and configuration step.
 - `git`.
 - `actionlint` and ShellCheck are required for local workflow validation. CI obtains their reviewed versions, release metadata, archive layout, and asset digests from the centralized [CI toolchain policy](.github/ci-toolchain.json).
-- Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with the hash-locked development dependencies, for deterministic tests, branch coverage, scaffold validation, and the fail-closed CodeQL default-setup preflight. The preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime. It also requires separate confirmation that no external or indirect process uploads CodeQL results; without either prerequisite, the plugin skips that mutation and reports the verification gap.
+- Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with the hash-locked development dependencies, for deterministic tests, branch coverage, scaffold validation, and fail-closed preflights. The CodeQL preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime, and requires separate confirmation that no external or indirect process uploads CodeQL results. The classic branch-protection preflight proves an exact remote workflow producer, event coverage, recent successful Check Runs on both representative PR SHAs, a stable GitHub App ID, and no Commit Status collision before it permits a required context. Without the applicable proof, the plugin skips that mutation and reports the verification gap.
 - Node.js with `npx` is required only to reproduce the markdownlint package pinned by the [CI toolchain policy](.github/ci-toolchain.json).
 - Remote automation supports GitHub.com only. GitHub Enterprise Server and GHE.com repositories receive host-independent local community files, but bundled workflows, GitHub.com badges, and remote configuration are skipped.
 - Without a remote, the plugin can generate host-independent local files. It defers workflows, badges, and GitHub configuration until a GitHub.com remote exists; it never creates that remote without confirmation.
@@ -236,6 +236,7 @@ repo-scaffold/
         │   ├── check_community_health.py # versioned upstream drift checker
         │   ├── ci_toolchain.py      # centralized CI bootstrap/tool pin policy
         │   ├── codeql_preflight.py  # fail-closed CodeQL/reusable-workflow inspection
+        │   ├── branch_protection_preflight.py # required-check producer and evidence inspection
         │   ├── sync_action_pins.py  # immutable action-release resolver
         │   └── validate_scaffold.py # rendered Markdown and template contract
         ├── references/
@@ -259,7 +260,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py

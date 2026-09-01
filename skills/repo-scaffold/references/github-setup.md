@@ -452,6 +452,56 @@ Build the check list from contexts verified during the scaffold run, not from wo
 - For every representative PR, retrieve both `.head.sha` and the current `.merge_commit_sha` with `gh api --hostname github.com repos/OWNER/REPO/pulls/NUMBER --jq '{head_sha: .head.sha, test_merge_sha: .merge_commit_sha}'`. Require a mergeable representative PR with a non-null test-merge SHA. Inspect complete paginated results from Check Runs (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/check-runs`) and Commit Statuses (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/statuses`) on both SHAs, plus a merge-group SHA when applicable and recent default-branch SHAs. When the test-merge commit has statuses, apply GitHub's documented precedence and treat it as controlling; never infer that head-only evidence is complete. A check must have completed successfully in this repository during the past seven days before it can be selected as required. Compare context names case-insensitively. GitHub requires both systems when a Check Run and Commit Status share a required name, so reject that candidate on any controlling SHA instead of treating it as one producer. Record the intended Check Run's exact positive `app.id`; reject an unknown, absent, or changing source. Bind every new required check to that verified app ID rather than allowing GitHub to auto-select a recent source.
 - Stop before applying required-status-check protection when no real gate has been confirmed. Never submit a context that no workflow emits.
 
+The bundled `scripts/branch_protection_preflight.py` turns this proof into a
+read-only, fail-closed gate. Run it after the final workflows are pushed to a
+mergeable representative PR and before any branch-protection mutation. It reads
+the exact workflow blobs at that PR head, rejects duplicate YAML keys and
+ambiguous producers, verifies unfiltered `pull_request` coverage plus
+`merge_group` coverage when an effective merge queue applies, requires an
+unconditional executable job, and verifies a successful Check Run no older than
+seven days on both the head and test-merge SHAs. It also rejects a changing or
+missing GitHub App ID and every same-name Commit Status collision. It never
+modifies GitHub state. Any API, parsing, pagination, mergeability, or evidence
+gap is inconclusive and required-check mutation remains forbidden.
+
+Resolve `REPO_SCAFFOLD_SKILL_ROOT` to the installed/source directory that
+contains this skill's `SKILL.md`, then run:
+
+```powershell
+$branchProtectionPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/branch_protection_preflight.py"
+if (-not (Test-Path -LiteralPath $branchProtectionPreflight -PathType Leaf)) {
+  throw "The bundled branch-protection preflight script is missing; do not mutate protection."
+}
+$preflightOutput = python $branchProtectionPreflight `
+  --repository "OWNER/REPO" `
+  --default-branch $defaultBranch `
+  --pull-request NUMBER `
+  --required-check "ci-success" 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Required-check evidence is inconclusive; do not mutate protection. $($preflightOutput | Out-String)"
+}
+$requiredCheckPreflight = ($preflightOutput | Out-String) | ConvertFrom-Json
+if (-not $requiredCheckPreflight.inspection_complete -or
+    $requiredCheckPreflight.decision -ne "may-configure-classic-protection") {
+  throw "Required-check evidence is incomplete; do not mutate protection."
+}
+# Use only these returned values in the mutation block. Do not add contexts or
+# substitute app IDs manually after the preflight completes.
+$requiredCheckNames = @($requiredCheckPreflight.required_checks.context)
+$requiredAppIdsByContext = [Collections.Generic.Dictionary[string, int64]]::new(
+  [StringComparer]::OrdinalIgnoreCase
+)
+foreach ($check in @($requiredCheckPreflight.required_checks)) {
+  $requiredAppIdsByContext[[string]$check.context] = [int64]$check.app_id
+}
+```
+
+Run it once with every context passed to the later mutation block. When multiple
+contexts are eligible, pass one `--required-check` argument for each and retain
+the returned context/app-ID pairs exactly. The PowerShell example below explains
+the preservation and post-mutation verification of classic-protection settings;
+do not bypass this preflight by hand-populating its producer evidence.
+
 PowerShell example:
 
 ```powershell

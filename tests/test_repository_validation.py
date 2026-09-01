@@ -1727,6 +1727,7 @@ class MutationTestingContractTests(unittest.TestCase):
         "scripts/run_mutation_testing.py",
         "scripts/validate_mutation_results.py",
         "tests/test_audit_freshness.py",
+        "tests/test_branch_protection_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_validate_mutation_results.py",
@@ -3089,6 +3090,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             )
             for script in (
                 "ci_toolchain.py",
+                "branch_protection_preflight.py",
                 "codeql_preflight.py",
                 "validate_scaffold.py",
             ):
