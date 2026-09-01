@@ -36,6 +36,7 @@ SPEC.loader.exec_module(security_features_preflight)
 
 class FakeClient:
     response: object = {}
+    raw_error: Exception | None = None
 
     def __init__(self, hostname: str) -> None:
         self.hostname = hostname
@@ -46,6 +47,14 @@ class FakeClient:
         if endpoint != "repos/octo/example":
             raise AssertionError(f"Unexpected endpoint: {endpoint}")
         return self.response
+
+    def raw(self, endpoint: str) -> str:
+        self.request_count += 1
+        if endpoint != "repos/octo/example/vulnerability-alerts":
+            raise AssertionError(f"Unexpected endpoint: {endpoint}")
+        if self.raw_error is not None:
+            raise self.raw_error
+        return ""
 
 
 def arguments(**overrides: object) -> argparse.Namespace:
@@ -207,6 +216,36 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             result = security_features_preflight.run(arguments(push_protection=True))
         self.assertEqual(result["requested_features"], ["push_protection"])
 
+    def test_automated_security_fixes_require_dependabot_alert_evidence(self) -> None:
+        FakeClient.response = repository()
+        FakeClient.raw_error = None
+        with mock.patch.object(security_features_preflight, "GitHubClient", FakeClient):
+            result = security_features_preflight.run(
+                arguments(automated_security_fixes=True)
+            )
+        self.assertEqual(result["dependabot_alerts_precondition"], "verified-enabled")
+        self.assertEqual(result["github_api_requests"], 2)
+
+        FakeClient.raw_error = security_features_preflight.InspectionError("not found")
+        with mock.patch.object(security_features_preflight, "GitHubClient", FakeClient):
+            with self.assertRaisesRegex(
+                security_features_preflight.InspectionError,
+                "Automated security fixes require Dependabot alerts",
+            ):
+                security_features_preflight.run(
+                    arguments(automated_security_fixes=True)
+                )
+
+        FakeClient.raw_error = None
+        with mock.patch.object(security_features_preflight, "GitHubClient", FakeClient):
+            result = security_features_preflight.run(
+                arguments(dependabot_alerts=True, automated_security_fixes=True)
+            )
+        self.assertEqual(
+            result["dependabot_alerts_precondition"], "requested-for-prior-enable"
+        )
+        self.assertEqual(result["github_api_requests"], 1)
+
     def test_cli_reports_success_and_inconclusive_result(self) -> None:
         FakeClient.response = repository()
         with (
@@ -259,6 +298,7 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
         self.assertIn("security_features_preflight.py", security)
         self.assertIn("--enable-push-protection", security)
         self.assertIn("non-fork repository", security)
+        self.assertIn("Dependabot alerts before automated security fixes", security)
 
 
 if __name__ == "__main__":

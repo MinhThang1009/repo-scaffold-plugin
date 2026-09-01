@@ -63,6 +63,24 @@ def requested_features(args: argparse.Namespace) -> list[str]:
     return requested
 
 
+def dependabot_alerts_precondition(
+    client: GitHubClient, owner: str, repo: str, args: argparse.Namespace
+) -> str | None:
+    """Return the evidence needed before enabling automated security fixes."""
+    if not args.automated_security_fixes:
+        return None
+    if args.dependabot_alerts:
+        return "requested-for-prior-enable"
+    try:
+        client.raw(f"repos/{owner}/{repo}/vulnerability-alerts")
+    except InspectionError as exc:
+        raise InspectionError(
+            "Automated security fixes require Dependabot alerts to be enabled "
+            "or requested for prior enablement."
+        ) from exc
+    return "verified-enabled"
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(args.hostname, str) or args.hostname.casefold() != "github.com":
         raise InspectionError("Security-feature preflight supports GitHub.com only.")
@@ -106,6 +124,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Private vulnerability reporting is limited to public non-fork repositories."
         )
+    alerts_precondition = dependabot_alerts_precondition(client, owner, repo, args)
 
     return {
         "inspection_complete": True,
@@ -116,6 +135,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "is_fork": is_fork,
         "owner_type": owner_type,
         "security_and_analysis": statuses,
+        "dependabot_alerts_precondition": alerts_precondition,
         "github_api_requests": client.request_count,
     }
 

@@ -964,7 +964,9 @@ flags. It is read-only and fail-closed: it binds the repository response to the
 explicit `OWNER/REPO`, rejects archived or ambiguous repositories, validates the
 published security-analysis fields, requires secret scanning before push
 protection, and permits private vulnerability reporting only for a public
-non-fork repository. It does not infer entitlement from a missing field, so
+non-fork repository. It checks Dependabot alerts before automated security fixes
+unless alerts were requested for prior enablement. It does not infer entitlement
+from a missing field, so
 continue to handle GitHub's final `403`, `404`, `409`, `422`, and `503` result
 separately.
 
@@ -1008,7 +1010,7 @@ mutation; an approved preflight is not proof that GitHub accepted or enabled a
 feature.
 
 - **Dependency graph**: enabled by default for public repositories. It is not the same setting as Dependabot alerts.
-- **Dependabot alerts**: not enabled by default. Enable explicitly where supported, then optionally enable security updates:
+- **Dependabot alerts**: not enabled by default. Enable explicitly where supported. Dependabot alerts before automated security fixes are required: when both were approved in one preflight, enable alerts, re-query `vulnerability-alerts` successfully, and only then enable security fixes:
 
   ```bash
   gh api --hostname github.com -X PUT repos/OWNER/REPO/vulnerability-alerts
