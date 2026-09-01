@@ -2,7 +2,7 @@ name: Mutation testing
 
 on:
   schedule:
-    - cron: "41 5 1 * *"
+    - cron: "41 5 * * *"
   workflow_dispatch:
     inputs:
       clean:
@@ -63,7 +63,7 @@ jobs:
         with:
           path: mutants/
           key: >-
-            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-clean-${{ github.sha }}
+            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-clean-${{ github.sha }}
 
       - name: Restore incremental mutation state
         id: mutation-cache
@@ -72,10 +72,10 @@ jobs:
         with:
           path: mutants/
           key: >-
-            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-
-            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-
+            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-
+            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-
 
       - name: Verify resumable mutation run
         if: ${{ inputs.resume_run_id != '' }}
@@ -168,7 +168,7 @@ jobs:
         with:
           path: mutants/
           key: >-
-            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Export mutation results
         if: ${{ always() }}
@@ -183,7 +183,7 @@ jobs:
         with:
           path: mutants/
           key: >-
-            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-clean-${{ github.sha }}
+            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-clean-${{ github.sha }}
 
       - name: Upload mutation results
         if: ${{ always() }}

@@ -7,9 +7,26 @@ vào các adapter riêng của từng agent.
 
 ## Codex
 
-Adapter cho Codex là `.codex-plugin/plugin.json`. Cài qua Codex marketplace
-theo [tài liệu plugin chính thức](https://developers.openai.com/plugins/build/plugins),
-rồi yêu cầu scaffold repository như bình thường.
+Adapter cho Codex là `.codex-plugin/plugin.json`. Repository đóng gói Codex
+marketplace catalog tại `.agents/plugins/marketplace.json`, nên cài theo luồng
+marketplace chính thức:
+
+```bash
+codex plugin marketplace add MinhThang1009/repo-scaffold-plugin
+codex plugin add repo-scaffold@repo-scaffold-plugins
+```
+
+Khởi động lại Codex, sau đó yêu cầu scaffold repository như bình thường.
+`source.path` của catalog được phân giải từ root của marketplace và trỏ đến
+plugin root này. Với checkout chỉ dành cho một người dùng, dùng personal
+marketplace tại `~/.agents/plugins/marketplace.json`. Xem [tài liệu plugin chính thức](https://developers.openai.com/plugins/build/plugins).
+
+Để public trên OpenAI, hãy nộp release ZIP theo [flow Skills-only cho
+plugin](https://developers.openai.com/plugins/guides/submit-claude-plugin).
+Thư mục `repo-scaffold/` duy nhất trong archive chứa Claude manifest không rỗng
+và skill dùng chung cùng mọi file được tham chiếu. Portal OpenAI chuẩn hóa Codex
+manifest trong quá trình review; listing marketplace Claude Code vẫn cần một
+phê duyệt riêng.
 
 Codex đọc hướng dẫn dự án từ `AGENTS.md` và áp dụng các tệp phù hợp từ root
 của repository đến thư mục làm việc. `AGENTS.md` được tạo ra là điểm vào hướng
@@ -21,21 +38,32 @@ thức](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 
 Adapter cho Claude Code là `.claude-plugin/plugin.json`. Claude Code tự phát
 hiện thư mục `skills/` chuẩn trong plugin, nên dùng chung core skill mà không
-cần wrapper sao chép. Kiểm tra local từ root của repository:
+cần wrapper sao chép. Repository cũng đóng gói marketplace catalog của Claude
+Code tại `.claude-plugin/marketplace.json`, nên có thể cài plugin qua marketplace
+đúng chuẩn:
 
 ```bash
 claude plugin validate --strict .
-claude --plugin-dir .
+claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
+claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-Trong phiên kết quả, gọi `/repo-scaffold:repo-scaffold` hoặc yêu cầu Claude
-scaffold repository. Xem [plugin guide](https://code.claude.com/docs/en/plugins)
-và [skills guide](https://code.claude.com/docs/en/skills) chính thức của Claude
-Code để biết layout và định dạng `SKILL.md` dùng chung.
+Marketplace public dành cho plugin bên thứ ba của Anthropic là
+`claude-community`; hãy dùng form nộp plugin trong app để xin public listing.
+`claude-plugins-official` là marketplace được tuyển chọn riêng. Marketplace
+`repo-scaffold-plugins` của repository này vẫn là nguồn phân phối private hoặc
+local riêng biệt.
 
-Release asset chứa cả hai manifest trong thư mục `repo-scaffold/`. Có thể truyền
-trực tiếp ZIP cho `claude --plugin-dir`, hoặc giải nén rồi truyền thư mục đã giải
-nén.
+Khởi động lại Claude Code, sau đó gọi `/repo-scaffold:repo-scaffold` hoặc yêu
+cầu Claude scaffold repository. Để kiểm tra local mà không cài đặt, dùng
+`claude --plugin-dir .`. Xem [marketplace guide](https://code.claude.com/docs/en/plugin-marketplaces), [plugin guide](https://code.claude.com/docs/en/plugins),
+và [skills guide](https://code.claude.com/docs/en/skills) chính thức của Claude
+Code để biết marketplace, layout và định dạng `SKILL.md` dùng chung.
+
+Release asset chứa cả hai manifest trong thư mục `repo-scaffold/`. Claude Code
+từ v2.1.128 trở lên có thể truyền trực tiếp ZIP cho `claude --plugin-dir` để
+kiểm tra cục bộ tạm thời. Với bản Claude Code cũ hơn, hãy giải nén archive rồi
+thêm thư mục đã giải nén làm local marketplace.
 
 ## Agent khác
 

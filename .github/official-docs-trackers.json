@@ -76,9 +76,29 @@
       ],
       "required-markers": [
         ".codex-plugin/plugin.json",
+        ".agents/plugins/marketplace.json",
         "shared by ChatGPT and Codex"
       ],
       "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "openai-claude-plugin-submission",
+      "label": "OpenAI Claude Code plugin submission",
+      "url": "https://developers.openai.com/plugins/guides/submit-claude-plugin",
+      "allowed-hosts": ["developers.openai.com"],
+      "paths": [
+        "README.md",
+        "PLUGIN_SUBMISSION.md",
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": [
+        "Skills only",
+        "Apps Management",
+        "identity verification"
+      ],
+      "reviewed-on": "2026-09-01",
       "review-period-days": 90
     },
     {
@@ -118,8 +138,57 @@
         "skills/repo-scaffold/references/agent-compatibility.md",
         "skills/repo-scaffold/references/agent-compatibility.vi.md"
       ],
-      "required-markers": ["skills/", "--plugin-dir", "claude-community"],
+      "required-markers": [
+        "skills/",
+        "--plugin-dir"
+      ],
       "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "claude-plugin-zip-archive",
+      "label": "Claude Code ZIP plugin loading",
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w19",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "README.md",
+        "PLUGIN_SUBMISSION.md",
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["v2.1.128"],
+      "reviewed-on": "2026-09-01",
+      "review-period-days": 90
+    },
+    {
+      "id": "claude-plugin-community-marketplace",
+      "label": "Claude Code community marketplace submission",
+      "url": "https://code.claude.com/docs/en/discover-plugins",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "README.md",
+        "PLUGIN_SUBMISSION.md",
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": [
+        "claude-community",
+        "in-app submission form"
+      ],
+      "reviewed-on": "2026-09-01",
+      "review-period-days": 90
+    },
+    {
+      "id": "claude-plugin-marketplace",
+      "label": "Claude Code plugin marketplace",
+      "url": "https://code.claude.com/docs/en/plugin-marketplaces",
+      "allowed-hosts": ["code.claude.com"],
+      "paths": [
+        "skills/repo-scaffold/references/agent-compatibility.md",
+        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+      ],
+      "required-markers": ["marketplace.json", "claude plugin marketplace add"],
+      "reviewed-on": "2026-08-31",
       "review-period-days": 90
     },
     {

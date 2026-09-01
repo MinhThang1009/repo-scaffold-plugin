@@ -7,8 +7,26 @@ not copy it into agent-specific adapters.
 
 ## Codex
 
-The Codex adapter is `.codex-plugin/plugin.json`. Install it through a Codex
-marketplace as described in the [official Codex plugin documentation](https://developers.openai.com/plugins/build/plugins), then ask for a repository scaffold normally.
+The Codex adapter is `.codex-plugin/plugin.json`. The repository ships the
+Codex marketplace catalog at `.agents/plugins/marketplace.json`, so install it
+through the documented marketplace flow:
+
+```bash
+codex plugin marketplace add MinhThang1009/repo-scaffold-plugin
+codex plugin add repo-scaffold@repo-scaffold-plugins
+```
+
+Restart Codex, then ask for a repository scaffold normally. The catalog's
+`source.path` resolves from the marketplace root and targets this plugin root.
+For a checkout private to one user, use a personal marketplace at
+`~/.agents/plugins/marketplace.json`. See the [official Codex plugin documentation](https://developers.openai.com/plugins/build/plugins).
+
+For an OpenAI public listing, submit the release ZIP through the [Skills-only
+plugin flow](https://developers.openai.com/plugins/guides/submit-claude-plugin).
+Its single `repo-scaffold/` directory includes a nonempty Claude manifest and
+the shared skill with all referenced files. The OpenAI portal normalizes the
+Codex manifest during review; a Claude Code marketplace listing remains a
+separate approval.
 
 Codex reads project instructions from `AGENTS.md`; it layers the applicable
 files from the repository root to the working directory. The generated
@@ -20,21 +38,30 @@ around it. See the [official AGENTS.md documentation](https://learn.chatgpt.com/
 
 The Claude Code adapter is `.claude-plugin/plugin.json`. Claude Code discovers
 the standard `skills/` directory in a plugin, so it loads the same core skill
-without a copied wrapper. For local verification from this repository root:
+without a copied wrapper. The repository also ships a Claude Code marketplace
+catalog at `.claude-plugin/marketplace.json`, so users can install the release
+through the documented marketplace flow:
 
 ```bash
 claude plugin validate --strict .
-claude --plugin-dir .
+claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
+claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-In the resulting session, invoke `/repo-scaffold:repo-scaffold` or ask Claude
-to scaffold the repository. Claude Code documents both the plugin layout and
-the shared `SKILL.md` format in its [plugin guide](https://code.claude.com/docs/en/plugins)
-and [skills guide](https://code.claude.com/docs/en/skills).
+The public third-party Anthropic marketplace is `claude-community`; use its
+in-app submission form for a public listing. `claude-plugins-official` is a
+separately curated marketplace. This repository's `repo-scaffold-plugins`
+marketplace remains a separate local or private distribution source.
 
-Release assets contain both manifests under `repo-scaffold/`. Pass the ZIP
-directly to `claude --plugin-dir`, or extract it and pass the extracted
-directory.
+Restart Claude Code, then invoke `/repo-scaffold:repo-scaffold` or ask Claude
+to scaffold the repository. For local verification without installation, run
+`claude --plugin-dir .`. Claude Code documents the marketplace contract, plugin
+layout, and shared `SKILL.md` format in its [marketplace guide](https://code.claude.com/docs/en/plugin-marketplaces), [plugin guide](https://code.claude.com/docs/en/plugins), and [skills guide](https://code.claude.com/docs/en/skills).
+
+Release assets contain both manifests under `repo-scaffold/`. Claude Code
+v2.1.128 or later can pass the ZIP directly to `claude --plugin-dir` for an
+ephemeral local check. On an older Claude Code release, extract the archive and
+add the extracted directory as a local marketplace.
 
 ## Other agents
 

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "repo-scaffold-plugins",
+  "owner": {
+    "name": "Minh Thang",
+    "url": "https://github.com/MinhThang1009"
+  },
+  "description": "Repo Scaffold plugins for Claude Code.",
+  "plugins": [
+    {
+      "name": "repo-scaffold",
+      "source": "./",
+      "description": "Agent Skills plugin for Codex and Claude Code that scaffolds repositories to production GitHub.com standards."
+    }
+  ]
+}

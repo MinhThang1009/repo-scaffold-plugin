@@ -16,10 +16,17 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
+REUSABLE_SOURCES_SCHEMA_VERSION = 1
 MANIFEST_NAME = "mutation-cache-manifest.json"
 REUSABLE_SOURCES_NAME = ".incremental-sources.json"
 SOURCE_ROOTS = (PurePosixPath("scripts"), PurePosixPath("skills/repo-scaffold/scripts"))
+CACHE_CONTROL_FILES = frozenset(
+    {
+        PurePosixPath("pyproject.toml"),
+        PurePosixPath("requirements-mutation.txt"),
+    }
+)
 KILLED_EXIT_CODES = {1, 3}
 MAX_PROJECT_FILES = 10_000
 MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -55,7 +62,7 @@ class ProjectSnapshot:
 
     source_hashes: dict[str, str]
     test_sources: dict[str, str]
-    support_hashes: dict[str, str]
+    control_hashes: dict[str, str]
     state_hashes: dict[str, str] = field(default_factory=dict)
 
 
@@ -150,8 +157,13 @@ def _expected_state_paths(source_hashes: dict[str, str]) -> set[str]:
 def _validate_state_paths(
     state_hashes: dict[str, str], source_hashes: dict[str, str]
 ) -> None:
-    if set(state_hashes) != _expected_state_paths(source_hashes):
+    if not set(state_hashes).issubset(_expected_state_paths(source_hashes)):
         raise ValueError("manifest state paths differ from configured mutation sources")
+    for relative in source_hashes:
+        state_path = relative in state_hashes
+        metadata_path = f"{relative}.meta" in state_hashes
+        if state_path != metadata_path:
+            raise ValueError("manifest source state and metadata must be paired")
 
 
 def _sha256(content: bytes) -> str:
@@ -267,10 +279,10 @@ def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
 
 
 def snapshot_project(repository_root: Path) -> ProjectSnapshot:
-    """Hash production and support files while retaining test source for diffs."""
+    """Hash production, test, and mutation-control inputs for cache reuse."""
     source_hashes: dict[str, str] = {}
     test_sources: dict[str, str] = {}
-    support_hashes: dict[str, str] = {}
+    control_hashes: dict[str, str] = {}
     for relative, path in _project_files(repository_root):
         posix_path = PurePosixPath(relative)
         content = path.read_bytes()
@@ -285,18 +297,18 @@ def snapshot_project(repository_root: Path) -> ProjectSnapshot:
                 test_sources[relative] = content.decode("utf-8")
             except UnicodeDecodeError as error:
                 raise ValueError(f"test source {relative!r} is not UTF-8") from error
-        else:
-            support_hashes[relative] = _sha256(content)
-    return ProjectSnapshot(source_hashes, test_sources, support_hashes)
+        elif posix_path in CACHE_CONTROL_FILES:
+            control_hashes[relative] = _sha256(content)
+    return ProjectSnapshot(source_hashes, test_sources, control_hashes)
 
 
 def manifest_document(snapshot: ProjectSnapshot) -> dict[str, Any]:
     """Return the stable JSON document saved with recorded mutation state."""
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "source_hashes": snapshot.source_hashes,
         "test_sources": snapshot.test_sources,
-        "support_hashes": snapshot.support_hashes,
+        "control_hashes": snapshot.control_hashes,
         "state_hashes": snapshot.state_hashes,
     }
 
@@ -315,12 +327,12 @@ def load_manifest(path: Path) -> ProjectSnapshot:
         "schema_version",
         "source_hashes",
         "test_sources",
-        "support_hashes",
+        "control_hashes",
         "state_hashes",
     }
     if not isinstance(document, dict) or set(document) != expected_fields:
         raise ValueError("mutation cache manifest fields differ from the schema")
-    if document["schema_version"] != SCHEMA_VERSION:
+    if document["schema_version"] != MANIFEST_SCHEMA_VERSION:
         raise ValueError("mutation cache manifest schema version is unsupported")
     source_hashes = _validate_digest_map(
         document["source_hashes"], field="source_hashes"
@@ -331,8 +343,8 @@ def load_manifest(path: Path) -> ProjectSnapshot:
     return ProjectSnapshot(
         source_hashes=source_hashes,
         test_sources=_validate_test_sources(document["test_sources"]),
-        support_hashes=_validate_digest_map(
-            document["support_hashes"], field="support_hashes"
+        control_hashes=_validate_digest_map(
+            document["control_hashes"], field="control_hashes"
         ),
         state_hashes=state_hashes,
     )
@@ -385,8 +397,10 @@ def _collect_state_hashes(
     for relative in sorted(_expected_state_paths(source_hashes)):
         path = mutation_root.joinpath(*PurePosixPath(relative).parts)
         _assert_safe_cache_path(mutation_root, path)
+        if not path.exists():
+            continue
         if not path.is_file():
-            raise ValueError(f"mutation state is missing {relative!r}")
+            raise ValueError(f"mutation state is not a regular file: {relative!r}")
         content = path.read_bytes()
         total_bytes += len(content)
         if len(content) > MAX_META_BYTES or total_bytes > MAX_STATE_BYTES:
@@ -530,7 +544,7 @@ def prepare_cache(repository_root: Path) -> PreparationResult:
         return PreparationResult(True, 0, 0, 0)
 
     if (
-        previous.support_hashes != current.support_hashes
+        previous.control_hashes != current.control_hashes
         or previous.source_hashes != current.source_hashes
         or not _tests_are_compatible(previous.test_sources, current.test_sources)
     ):
@@ -560,10 +574,13 @@ def prepare_cache(repository_root: Path) -> PreparationResult:
     if invalidated:
         stats_path = mutation_root / "mutmut-stats.json"
         _assert_safe_cache_path(mutation_root, stats_path)
-        stats_path.unlink()
+        stats_path.unlink(missing_ok=True)
     _write_json(
         mutation_root / REUSABLE_SOURCES_NAME,
-        {"schema_version": SCHEMA_VERSION, "sources": reusable_sources},
+        {
+            "schema_version": REUSABLE_SOURCES_SCHEMA_VERSION,
+            "sources": reusable_sources,
+        },
         mutation_root=mutation_root,
     )
     _assert_safe_cache_path(mutation_root, manifest_path)
@@ -584,7 +601,7 @@ def record_cache(repository_root: Path) -> None:
     snapshot = ProjectSnapshot(
         source_hashes=snapshot.source_hashes,
         test_sources=snapshot.test_sources,
-        support_hashes=snapshot.support_hashes,
+        control_hashes=snapshot.control_hashes,
         state_hashes=_collect_state_hashes(mutation_root, snapshot.source_hashes),
     )
     _write_json(

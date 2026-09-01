@@ -1732,6 +1732,7 @@ class MutationTestingContractTests(unittest.TestCase):
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
         "tests/test_run_mutation_testing.py",
+        "tests/test_sync_action_pins.py",
         "tests/test_mutation_runner_linux.py",
         "tests/test_python_support.py",
         "tests/test_repository_validation.py",
@@ -1921,6 +1922,24 @@ jobs:
             problems,
         )
 
+    def test_mutation_schedule_must_continue_daily(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "mutation-testing.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                '    - cron: "41 5 * * *"', '    - cron: "41 5 1 * *"', 1
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            ".github/workflows/mutation-testing.yml: schedule daily continuation "
+            "of interrupted mutation runs",
+            problems,
+        )
+
     def test_mutation_diagnostics_must_preserve_generated_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2081,13 +2100,13 @@ jobs:
             workflow = workflow.replace(
                 "          path: mutants/\n"
                 "          key: >-\n"
-                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-"
                 "${{ github.run_id }}-${{ github.run_attempt }}\n"
                 "          restore-keys: |\n"
-                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-\n"
-                "            mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
+                "            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-"
                 "${{ steps.python.outputs.python-version }}-incremental-\n",
                 "          path: mutants/*.meta\n"
                 "          key: mutmut-shared\n"
@@ -2106,7 +2125,7 @@ jobs:
             ".github/workflows/mutation-testing.yml: mutation state cache must "
             "restore and save resumable state under immutable per-run keys, "
             "save verified clean results separately, and use runtime- and "
-            "platform-scoped v5 keys",
+            "platform-scoped v6 keys",
             problems,
         )
         self.assertIn(
@@ -2148,7 +2167,7 @@ jobs:
             ".github/workflows/mutation-testing.yml: mutation state cache must "
             "restore and save resumable state under immutable per-run keys, save "
             "verified clean results separately, and use runtime- and platform-scoped "
-            "v5 keys",
+            "v6 keys",
             problems,
         )
 
@@ -2418,6 +2437,11 @@ jobs:
                     1,
                 )
                 .replace(
+                    '  "AGENTS.md",',
+                    "",
+                    1,
+                )
+                .replace(
                     'testpaths = ["tests"]',
                     'testpaths = ["other-tests"]',
                     1,
@@ -2448,13 +2472,38 @@ jobs:
         )
         self.assertTrue(
             any(
-                "workspace must copy both mutation requirement files" in p
+                "workspace must copy the maintainer instructions and both mutation "
+                "requirement files" in p
                 for p in problems
             )
         )
         self.assertTrue(
             any("pytest must collect only first-party tests" in p for p in problems)
         )
+
+    def test_mutation_workspace_copies_maintainer_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            config_path = root / "pyproject.toml"
+            original_config = config_path.read_text(encoding="utf-8")
+            for copied_path in (".claude", "AGENTS.md"):
+                with self.subTest(copied_path=copied_path):
+                    config_path.write_text(
+                        original_config.replace(f'  "{copied_path}",\n', "", 1),
+                        encoding="utf-8",
+                    )
+
+                    problems = validate_repository.validate_mutation_testing_contract(
+                        root
+                    )
+
+                    self.assertTrue(
+                        any(
+                            "workspace must copy the maintainer instructions" in problem
+                            for problem in problems
+                        )
+                    )
 
     def test_mutation_loaders_must_use_canonical_module_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3643,7 +3692,10 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         shared = {
             "name": "repo-scaffold",
             "version": "1.2.3",
-            "description": "Shared Agent Skills plugin",
+            "description": (
+                "Agent Skills plugin for Codex and Claude Code that scaffolds "
+                "repositories to production GitHub.com standards."
+            ),
             "author": {"name": "Maintainer"},
             "homepage": "https://example.test/readme",
             "repository": "https://example.test",
@@ -3653,6 +3705,26 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         codex_root = root / ".codex-plugin"
         codex_root.mkdir()
         (codex_root / "plugin.json").write_text(json.dumps(shared), encoding="utf-8")
+        codex_marketplace_root = root / ".agents" / "plugins"
+        codex_marketplace_root.mkdir(parents=True)
+        codex_marketplace = {
+            "name": validate_repository.CODEX_MARKETPLACE_NAME,
+            "interface": {"displayName": "Repo Scaffold plugins"},
+            "plugins": [
+                {
+                    "name": "repo-scaffold",
+                    "source": {"source": "local", "path": "./"},
+                    "policy": {
+                        "installation": "AVAILABLE",
+                        "authentication": "ON_INSTALL",
+                    },
+                    "category": "Productivity",
+                }
+            ],
+        }
+        (codex_marketplace_root / "marketplace.json").write_text(
+            json.dumps(codex_marketplace), encoding="utf-8"
+        )
         claude_root = root / ".claude-plugin"
         claude_root.mkdir()
         claude = {
@@ -3661,6 +3733,22 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             **shared,
         }
         (claude_root / "plugin.json").write_text(json.dumps(claude), encoding="utf-8")
+        marketplace = {
+            "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+            "name": validate_repository.CLAUDE_MARKETPLACE_NAME,
+            "owner": validate_repository.CLAUDE_MARKETPLACE_OWNER,
+            "description": "Repo Scaffold plugins for Claude Code.",
+            "plugins": [
+                {
+                    "name": "repo-scaffold",
+                    "source": "./",
+                    "description": shared["description"],
+                }
+            ],
+        }
+        (claude_root / "marketplace.json").write_text(
+            json.dumps(marketplace), encoding="utf-8"
+        )
         skill = root / "skills" / "repo-scaffold" / "SKILL.md"
         skill.parent.mkdir(parents=True)
         language_mappings = "".join(
@@ -3682,6 +3770,7 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "https://developers.openai.com/plugins/build/plugins\n"
             "https://learn.chatgpt.com/docs/agent-configuration/agents-md\n"
             "https://learn.chatgpt.com/docs/agent-configuration/subagents\n"
+            "https://code.claude.com/docs/en/plugin-marketplaces\n"
             "https://code.claude.com/docs/en/plugins\n"
             "https://code.claude.com/docs/en/skills\n"
             "https://code.claude.com/docs/en/memory\n"
@@ -3809,7 +3898,7 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "codex_manifest_version",
             "claude_manifest_version",
             "Codex and Claude plugin manifest versions must match.",
-            "HEAD -- .claude-plugin .codex-plugin skills README.md LICENSE",
+            "HEAD -- .agents .claude-plugin .codex-plugin skills README.md LICENSE",
         ):
             self.assertIn(fragment, workflow)
 
@@ -3817,15 +3906,28 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         dossier = (PLUGIN_ROOT / "PLUGIN_SUBMISSION.md").read_text(encoding="utf-8")
 
         for fragment in (
+            ".agents/plugins/marketplace.json",
             ".codex-plugin",
             ".claude-plugin",
             "claude-community",
+            "separately curated marketplace",
             "in-app submission form",
-            "pinned to a specific source commit",
+            "Skills only",
+            "Apps Management write access",
+            "identity verification",
             "claude plugin validate --strict .",
             "claude --plugin-dir",
         ):
             self.assertIn(fragment, dossier)
+
+    def test_readme_uninstalls_from_the_documented_marketplace(self) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("codex plugin remove repo-scaffold@repo-scaffold-plugins", readme)
+        self.assertIn(
+            "claude plugin uninstall repo-scaffold@repo-scaffold-plugins", readme
+        )
+        self.assertNotIn("codex plugin remove repo-scaffold@personal", readme)
 
     def test_scaffold_templates_support_language_and_host_adapters(self) -> None:
         asset_root = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
@@ -3884,6 +3986,104 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "skills/repo-scaffold/assets/AGENTS.vi.md: must not duplicate the "
             "English source",
             problems,
+        )
+
+    def test_rejects_missing_or_drifted_claude_marketplace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            marketplace_path = root / validate_repository.CLAUDE_MARKETPLACE_PATH
+            marketplace_path.unlink()
+
+            missing = validate_repository.validate_multi_agent_plugin_contract(root)
+
+            self.assertTrue(
+                any(
+                    problem.startswith(".claude-plugin/marketplace.json: invalid JSON:")
+                    for problem in missing
+                )
+            )
+
+            marketplace_path.write_text("[]", encoding="utf-8")
+            non_object = validate_repository.validate_multi_agent_plugin_contract(root)
+
+            self.assertIn(
+                ".claude-plugin/marketplace.json: root must be an object",
+                non_object,
+            )
+
+            marketplace_path.write_text(
+                json.dumps(
+                    {
+                        "name": "wrong",
+                        "owner": {},
+                        "plugins": [{"name": "repo-scaffold", "source": "../"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            drifted = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        self.assertIn(
+            ".claude-plugin/marketplace.json: name must be repo-scaffold-plugins",
+            drifted,
+        )
+        self.assertIn(
+            ".claude-plugin/marketplace.json: owner must identify the plugin "
+            "maintainer",
+            drifted,
+        )
+        self.assertIn(
+            ".claude-plugin/marketplace.json: plugins must expose only the root "
+            "repo-scaffold plugin through source ./",
+            drifted,
+        )
+
+    def test_rejects_missing_or_drifted_codex_marketplace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            marketplace_path = root / validate_repository.CODEX_MARKETPLACE_PATH
+            marketplace_path.unlink()
+
+            missing = validate_repository.validate_multi_agent_plugin_contract(root)
+
+            self.assertTrue(
+                any(
+                    problem.startswith(
+                        ".agents/plugins/marketplace.json: invalid JSON:"
+                    )
+                    for problem in missing
+                )
+            )
+
+            marketplace_path.write_text("[]", encoding="utf-8")
+            non_object = validate_repository.validate_multi_agent_plugin_contract(root)
+
+            self.assertIn(
+                ".agents/plugins/marketplace.json: root must be an object",
+                non_object,
+            )
+
+            marketplace_path.write_text(
+                json.dumps({"name": "wrong", "interface": {}, "plugins": {}}),
+                encoding="utf-8",
+            )
+            drifted = validate_repository.validate_multi_agent_plugin_contract(root)
+
+        self.assertIn(
+            ".agents/plugins/marketplace.json: name must be repo-scaffold-plugins",
+            drifted,
+        )
+        self.assertIn(
+            ".agents/plugins/marketplace.json: interface must expose the Repo "
+            "Scaffold marketplace display name",
+            drifted,
+        )
+        self.assertIn(
+            ".agents/plugins/marketplace.json: plugins must expose only the root "
+            "repo-scaffold plugin",
+            drifted,
         )
 
     def test_rejects_reference_without_current_subagent_documentation(self) -> None:

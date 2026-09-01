@@ -18,29 +18,47 @@ portal selection are listed separately and must be verified at submission time.
 Use the canonical default-branch URLs declared in the plugin manifest when
 copying these policies into the submission portal.
 
-The Codex marketplace package includes the native `.codex-plugin` manifest.
-The same release archive also includes a native Claude Code
-`.claude-plugin` manifest. See
+The Codex marketplace package includes the native `.codex-plugin` manifest and
+the repo-scoped `.agents/plugins/marketplace.json` catalog for private or local
+installation. The same release archive also includes a native Claude Code
+`.claude-plugin` manifest and marketplace catalog. See
 [`agent-compatibility.md`](skills/repo-scaffold/references/agent-compatibility.md)
 for host-specific installation and invocation details.
 
+## OpenAI distribution
+
+OpenAI accepts a Claude Code plugin with skills through its [Skills-only
+submission flow](https://developers.openai.com/plugins/guides/submit-claude-plugin).
+The release ZIP qualifies for that path: it has one `repo-scaffold/` root with a
+nonempty `.claude-plugin/plugin.json` and the shared
+`skills/repo-scaffold/SKILL.md` plus its referenced scripts, references, and
+assets. The archive also contains `.codex-plugin/plugin.json`; the portal
+reviews and normalizes the Codex manifest during upload.
+
+At submission time, open the OpenAI portal, select **Create plugin** and
+**Skills only**, upload the release ZIP, review the generated manifest, then
+test the imported skill in a clean environment. A Claude marketplace approval
+does not transfer to OpenAI, and an OpenAI approval does not create a Claude
+Code listing.
+
 ## Claude Code distribution
 
-Claude Code uses an independent community-marketplace review flow. Anthropic's
-third-party public catalog is `claude-community`; submit this plugin through
-Anthropic's current in-app submission form, as documented in the [Claude Code
-plugin guide](https://code.claude.com/docs/en/plugins). Approved entries are
-pinned to a specific source commit in that catalog.
+Public third-party Claude Code distribution uses Anthropic's
+`claude-community` marketplace. Submit this plugin through Anthropic's current
+in-app submission form, as documented in the [Claude Code plugin
+guide](https://code.claude.com/docs/en/plugins). `claude-plugins-official` is a
+separately curated marketplace and does not accept third-party submissions.
 Do not claim that the Codex Plugin Directory also makes the plugin available in
 Claude Code, or that the plugin has a Claude Code listing, until Anthropic
 accepts the submission and the catalog sync completes.
 
 Before submitting, run `claude plugin validate --strict .`, load the release
-ZIP with `claude --plugin-dir`, and record the positive and negative test
-evidence above. The ZIP is direct-session test evidence, not a substitute for
-the current submission form or its requested source details. The Claude Code
-review pipeline performs its own validation and safety screening; use its
-current marketplace scope rather than copying Codex portal settings.
+ZIP with `claude --plugin-dir` on Claude Code v2.1.128 or later (or extract it
+first on an older release), and record the positive and negative test evidence
+above. The ZIP is direct-session test evidence, not a substitute for the
+current submission form or its requested source details. The Claude Code review
+pipeline performs its own validation and safety screening; use its current
+marketplace scope rather than copying Codex portal settings.
 
 Long description:
 
@@ -91,13 +109,15 @@ Initial public submission with per-project English and Vietnamese output,
 deterministic repository validation, pinned GitHub Actions, release provenance,
 and cached incremental mutation testing with a 100% mutation-score gate.
 
-## Portal-only prerequisites
+## Portal and listing prerequisites
 
-Before submission, the publisher must:
+Before an OpenAI submission, the publisher must:
 
-- verify the publisher identity and account required by the portal;
-- upload a production logo that meets the current portal requirements;
-- select the intended supported countries or regions;
+- have Apps Management write access in the OpenAI organization that owns the
+  plugin;
+- complete individual or business identity verification;
+- verify any portal-requested listing fields, including a production logo or
+  supported countries or regions, at submission time;
 - confirm that every listing URL is reachable from the default branch;
 - run and record the positive and negative tests against the submitted build;
   and

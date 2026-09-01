@@ -76,6 +76,14 @@ RELEASE_PLUGIN_VERSION_PATHS = (
     Path(".codex-plugin/plugin.json"),
     Path(".claude-plugin/plugin.json"),
 )
+CODEX_MARKETPLACE_PATH = Path(".agents/plugins/marketplace.json")
+CODEX_MARKETPLACE_NAME = "repo-scaffold-plugins"
+CLAUDE_MARKETPLACE_PATH = Path(".claude-plugin/marketplace.json")
+CLAUDE_MARKETPLACE_NAME = "repo-scaffold-plugins"
+CLAUDE_MARKETPLACE_OWNER = {
+    "name": "Minh Thang",
+    "url": "https://github.com/MinhThang1009",
+}
 AGENT_COMPATIBILITY_REFERENCE_PATHS = (
     Path("skills/repo-scaffold/references/agent-compatibility.md"),
     Path("skills/repo-scaffold/references/agent-compatibility.vi.md"),
@@ -1741,6 +1749,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
         "tests/test_run_mutation_testing.py",
+        "tests/test_sync_action_pins.py",
         "tests/test_mutation_runner_linux.py",
         "tests/test_python_support.py",
         "tests/test_repository_validation.py",
@@ -1884,6 +1893,13 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         problems.append(
             ".github/workflows/mutation-testing.yml: use only scheduled and manual "
             "trusted triggers"
+        )
+    if not isinstance(triggers, dict) or triggers.get("schedule") != [
+        {"cron": "41 5 * * *"}
+    ]:
+        problems.append(
+            ".github/workflows/mutation-testing.yml: schedule daily continuation "
+            "of interrupted mutation runs"
         )
     dispatch = triggers.get("workflow_dispatch") if isinstance(triggers, dict) else None
     expected_dispatch = {
@@ -2161,7 +2177,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         and step["uses"].startswith("actions/cache/save@")
     ]
     cache_platform_prefix = (
-        "mutmut-v5-${{ runner.os }}-${{ runner.arch }}-python-"
+        "mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-"
         "${{ steps.python.outputs.python-version }}"
     )
     expected_clean_cache = {
@@ -2216,7 +2232,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: mutation state cache must "
             "restore and save resumable state under immutable per-run keys, "
             "save verified clean results separately, and use runtime- and "
-            "platform-scoped v5 keys"
+            "platform-scoped v6 keys"
         )
 
     cache_preparer_relative = "scripts/prepare_mutation_cache.py"
@@ -2374,12 +2390,14 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 )
         also_copy = mutation_config.get("also_copy")
         if not isinstance(also_copy, list) or not {
+            ".claude",
+            "AGENTS.md",
             "requirements-mutation.txt",
             "requirements-mutation.in",
         }.issubset(also_copy):
             problems.append(
-                "pyproject.toml: mutation workspace must copy both mutation "
-                "requirement files"
+                "pyproject.toml: mutation workspace must copy the maintainer "
+                "instructions and both mutation requirement files"
             )
         if pytest_config.get("testpaths") != ["tests"]:
             problems.append(
@@ -2406,7 +2424,11 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         )
 
     loader_contract = {
-        "tests/test_audit_freshness.py": ("scripts.audit_freshness",),
+        "tests/test_audit_freshness.py": (
+            "scripts.audit_freshness",
+            "skills.repo-scaffold.scripts.audit_freshness",
+            "skills.repo-scaffold.scripts.sync_action_pins",
+        ),
         "tests/test_ci_toolchain.py": ("skills.repo-scaffold.scripts.ci_toolchain",),
         "tests/test_codeql_preflight.py": (
             "scripts.validate_workflows",
@@ -2417,6 +2439,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         ),
         "tests/test_prepare_mutation_cache.py": ("scripts.prepare_mutation_cache",),
         "tests/test_run_mutation_testing.py": ("scripts.run_mutation_testing",),
+        "tests/test_sync_action_pins.py": (
+            "scripts.sync_action_pins",
+            "skills.repo-scaffold.scripts.sync_action_pins",
+        ),
         "tests/test_python_support.py": ("scripts.python_support",),
         "tests/test_repository_validation.py": (
             "scripts.validate_repository",
@@ -2782,6 +2808,78 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
                 ".claude-plugin/plugin.json: displayName must be Repo Scaffold"
             )
 
+    codex_marketplace_path = repository_root / CODEX_MARKETPLACE_PATH
+    try:
+        codex_marketplace = load_json(codex_marketplace_path)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        problems.append(f"{CODEX_MARKETPLACE_PATH.as_posix()}: invalid JSON: {error}")
+    else:
+        expected_entry = {
+            "name": "repo-scaffold",
+            "source": {"source": "local", "path": "./"},
+            "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+            "category": "Productivity",
+        }
+        if not isinstance(codex_marketplace, dict):
+            problems.append(
+                f"{CODEX_MARKETPLACE_PATH.as_posix()}: root must be an object"
+            )
+        else:
+            if codex_marketplace.get("name") != CODEX_MARKETPLACE_NAME:
+                problems.append(
+                    f"{CODEX_MARKETPLACE_PATH.as_posix()}: name must be "
+                    f"{CODEX_MARKETPLACE_NAME}"
+                )
+            if codex_marketplace.get("interface") != {
+                "displayName": "Repo Scaffold plugins"
+            }:
+                problems.append(
+                    f"{CODEX_MARKETPLACE_PATH.as_posix()}: interface must expose "
+                    "the Repo Scaffold marketplace display name"
+                )
+            plugins = codex_marketplace.get("plugins")
+            if not isinstance(plugins, list) or plugins != [expected_entry]:
+                problems.append(
+                    f"{CODEX_MARKETPLACE_PATH.as_posix()}: plugins must expose "
+                    "only the root repo-scaffold plugin"
+                )
+
+    marketplace_path = repository_root / CLAUDE_MARKETPLACE_PATH
+    try:
+        marketplace = load_json(marketplace_path)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        problems.append(f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: invalid JSON: {error}")
+    else:
+        if not isinstance(marketplace, dict):
+            problems.append(
+                f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: root must be an object"
+            )
+        else:
+            if marketplace.get("name") != CLAUDE_MARKETPLACE_NAME:
+                problems.append(
+                    f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: name must be "
+                    f"{CLAUDE_MARKETPLACE_NAME}"
+                )
+            if marketplace.get("owner") != CLAUDE_MARKETPLACE_OWNER:
+                problems.append(
+                    f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: owner must identify "
+                    "the plugin maintainer"
+                )
+            plugins = marketplace.get("plugins")
+            expected_entry = {
+                "name": "repo-scaffold",
+                "source": "./",
+                "description": (
+                    "Agent Skills plugin for Codex and Claude Code that scaffolds "
+                    "repositories to production GitHub.com standards."
+                ),
+            }
+            if not isinstance(plugins, list) or plugins != [expected_entry]:
+                problems.append(
+                    f"{CLAUDE_MARKETPLACE_PATH.as_posix()}: plugins must expose "
+                    "only the root repo-scaffold plugin through source ./"
+                )
+
     skill_path = repository_root / "skills" / "repo-scaffold" / "SKILL.md"
     try:
         skill_text = skill_path.read_text(encoding="utf-8")
@@ -2894,6 +2992,7 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
         "https://developers.openai.com/plugins/build/plugins",
         "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
         "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+        "https://code.claude.com/docs/en/plugin-marketplaces",
         "https://code.claude.com/docs/en/plugins",
         "https://code.claude.com/docs/en/skills",
         "https://code.claude.com/docs/en/memory",
@@ -4978,6 +5077,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
     if git is None:
         return ["release archive: git is unavailable outside the repository"]
     archive_paths = (
+        ".agents",
         ".claude-plugin",
         ".codex-plugin",
         "skills",

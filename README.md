@@ -95,50 +95,74 @@ Report vulnerabilities according to [SECURITY.md](SECURITY.md), never through a 
 
 ## 6. Install
 
-Public plugins are installed from the universal Plugin Directory shared by ChatGPT and Codex. This repository is not yet claiming a public-directory listing.
+Public plugins are installed from the universal Plugin Directory shared by
+ChatGPT and Codex. This repository is not yet claiming a public-directory
+listing. Its release ZIP meets the archive layout for OpenAI's [Skills-only
+submission flow](https://developers.openai.com/plugins/guides/submit-claude-plugin):
+one `repo-scaffold/` root, a nonempty Claude manifest, and the shared
+`skills/repo-scaffold/SKILL.md`. Submission and review still occur in the
+OpenAI portal.
 
-For local development, first add this checkout to a personal marketplace as described in the [official plugin packaging guide](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list). If that marketplace is named `personal`, install the plugin and then start a new Codex thread in the target repository:
+For a private or local Codex installation, add this repository's marketplace and
+install the plugin, then start a new Codex thread in the target repository:
 
 ```powershell
-codex plugin add repo-scaffold@personal
+codex plugin marketplace add MinhThang1009/repo-scaffold-plugin
+codex plugin add repo-scaffold@repo-scaffold-plugins
 ```
 
-`personal` is a local marketplace name, not a global default. A personal marketplace catalog lives at `~/.agents/plugins/marketplace.json`; its plugin source path must point to this checkout.
+The catalog is `.agents/plugins/marketplace.json`; its source path resolves from
+the marketplace root. A personal marketplace at `~/.agents/plugins/marketplace.json`
+is still appropriate when the checkout must remain local to one user.
 
-Claude Code distribution has a separate community-marketplace review process.
-Until a Claude Code listing is approved, use the direct session loading below;
-do not treat Codex Plugin Directory availability as a Claude Code listing.
-
-For Claude Code, validate and load the same checkout directly:
+Claude Code distribution is separate. Public third-party listings are submitted
+through Anthropic's `claude-community` marketplace using its in-app form.
+`claude-plugins-official` is a separately curated marketplace. Until a Claude
+Code listing is approved, do not treat Codex Plugin Directory availability as a
+Claude Code listing. For a private or local Claude Code installation, add this
+repository as a marketplace and install the plugin:
 
 ```powershell
 claude plugin validate --strict .
-claude --plugin-dir .
+claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
+claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-Then invoke `/repo-scaffold:repo-scaffold`, or ask Claude to scaffold the
-current repository. The release archive contains both `.codex-plugin/` and
-`.claude-plugin/`; pass the ZIP directly to `claude --plugin-dir`, or extract
-it and pass the resulting `repo-scaffold/` directory.
+Restart Claude Code, then invoke `/repo-scaffold:repo-scaffold`, or ask Claude
+to scaffold the current repository. For local development only, validate and
+load the checkout directly with `claude --plugin-dir .`. The release archive
+contains both host manifests and both marketplace catalogs. Claude Code
+v2.1.128 or later can load that ZIP directly with `claude --plugin-dir`; on an
+older Claude Code release, extract it before loading or adding it as a local
+marketplace.
 
 ## 7. Update
 
 After the local marketplace source and plugin version have been updated, reinstall the plugin and start a new Codex thread:
 
 ```powershell
-codex plugin remove repo-scaffold@personal
-codex plugin add repo-scaffold@personal
+codex plugin marketplace upgrade repo-scaffold-plugins
+codex plugin remove repo-scaffold@repo-scaffold-plugins
+codex plugin add repo-scaffold@repo-scaffold-plugins
+claude plugin marketplace update repo-scaffold-plugins
+claude plugin update repo-scaffold@repo-scaffold-plugins
 ```
 
-The current thread keeps the skill version that it loaded when the thread started.
+Restart Codex or Claude Code after updating. Existing sessions keep the skill
+version they loaded when the session started.
 
 ## 8. Uninstall
 
-Remove the installed plugin, then start a new Codex thread:
+Remove the installed plugin from the marketplace that supplied it:
 
 ```powershell
-codex plugin remove repo-scaffold@personal
+codex plugin remove repo-scaffold@repo-scaffold-plugins
+claude plugin uninstall repo-scaffold@repo-scaffold-plugins
 ```
+
+If you no longer use this catalog, remove it separately with
+`codex plugin marketplace remove repo-scaffold-plugins` or
+`claude plugin marketplace remove repo-scaffold-plugins`.
 
 ## 9. Structure
 
@@ -147,10 +171,13 @@ template files are omitted for brevity.
 
 ```text
 repo-scaffold/
+├── .agents/plugins/
+│   └── marketplace.json
 ├── .coveragerc
 ├── .release-please-manifest.json
 ├── .markdownlint-cli2.jsonc
 ├── .claude-plugin/
+│   ├── marketplace.json
 │   └── plugin.json
 ├── .codex-plugin/
 │   └── plugin.json
@@ -309,12 +336,14 @@ Mutation testing extends that toolchain through the separate, hash-verified
 `requirements-mutation.txt`. Mutmut versions are not duplicated in validators
 or tests; a compatible Dependabot bump passes the runner integration tests,
 while an incompatible internal API change fails those behavioral checks. Its
-monthly and manually dispatched workflow runs mutmut on Linux, rejects
+daily and manually dispatched workflow runs mutmut on Linux, rejects
 incomplete runs, enforces the evidence-backed mutation score floor documented in
 `CONTRIBUTING.md`, and retains generated mutants plus metadata for diagnosis. A
 bounded mutation step records interrupted progress before the job ends; later
 runs reset every non-killed result and may resume an explicitly verified
-same-repository, same-commit artifact. Native Windows is not supported by
+same-repository, same-commit artifact. Its cache is invalidated only by mutation
+source, test, or mutation-control changes, so documentation and release metadata
+do not discard safe interrupted progress. Native Windows is not supported by
 mutmut; contributors can use WSL for the same check.
 
 ## 11. Releases
@@ -329,7 +358,7 @@ The engine verifies the tag target, builds
 `repo-scaffold-plugin-<filesystem-safe-tag>.zip` from the immutable commit,
 generates signed SLSA build provenance in a separate no-checkout job, attaches
 the asset to the draft, and publishes only after attestation succeeds. The
-archive contains `.codex-plugin/`, `.claude-plugin/`, `skills/`, `README.md`, and
+archive contains `.agents/`, `.codex-plugin/`, `.claude-plugin/`, `skills/`, `README.md`, and
 `LICENSE` under a
 `repo-scaffold/` directory. The workflow requires a fine-grained PAT stored as
 `RELEASE_PLEASE_TOKEN`; see [CONTRIBUTING.md](CONTRIBUTING.md) for the release
