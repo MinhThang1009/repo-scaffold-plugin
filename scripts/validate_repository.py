@@ -4944,7 +4944,6 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             not isinstance(checkout, dict)
             or checkout.get("with")
             != {
-                "ref": "${{ github.event.pull_request.base.sha }}",
                 "persist-credentials": "false",
             }
             or not isinstance(run_step, dict)

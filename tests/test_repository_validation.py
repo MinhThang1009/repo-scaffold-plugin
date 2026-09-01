@@ -5095,7 +5095,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("only base-branch alert-gate code" in item for item in unsafe)
             )
 
-    def test_gate_uses_base_trusted_code_and_polls_for_the_test_merge(self) -> None:
+    def test_gate_uses_default_trusted_code_and_polls_for_the_test_merge(self) -> None:
         workflow = PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
         asset = (
             PLUGIN_ROOT
@@ -5132,7 +5132,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 "security-events": "read",
             },
         )
-        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
+        self.assertNotIn("ref: ${{ github.event.pull_request.base.sha }}", text)
         self.assertIn("ref: ${{ github.event.merge_group.base_sha }}", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn('--pull-request "$PR_NUMBER"', text)
