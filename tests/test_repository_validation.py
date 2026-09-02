@@ -1767,7 +1767,7 @@ class MutationTestingContractTests(unittest.TestCase):
     )
 
     def test_sharded_workflow_validator_rejects_every_incomplete_shape(self) -> None:
-        valid = {
+        valid: dict[str, Any] = {
             "jobs": {
                 "mutation-plan": {
                     "steps": [
@@ -1791,7 +1791,7 @@ class MutationTestingContractTests(unittest.TestCase):
                 },
             }
         }
-        cases = (
+        cases: tuple[tuple[object, str], ...] = (
             (None, "invalid workflow"),
             ({"jobs": {}}, "require plan, shard, and aggregate"),
             (
