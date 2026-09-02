@@ -110,7 +110,9 @@ Install provenance-attestation jobs only when it returns
 `may-install-attestation-workflows`; otherwise render the documented
 no-attestation variant. A private or internal repository needs separate
 GitHub Enterprise Cloud confirmation before that preflight can approve
-attestations.
+attestations. After a maintainer has created `RELEASE_PLEASE_TOKEN`, use
+`--require-release-please-token` before installing release-please or an
+auto-merge workflow that relies on it; never retrieve or print the secret value.
 
 ### 5. Configure GitHub
 

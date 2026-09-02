@@ -1500,6 +1500,22 @@ gh attestation verify PATH/TO/ARTIFACT \
 1. Create the PAT (GitHub UI → Settings → Developer settings → Fine-grained tokens, or `gh` if available). Scope it least-privilege: **only this repository**, permissions **Contents: Read and write** + **Pull requests: Read and write** (add **Issues: Read and write** if release-please manages issues). Nothing else.
 2. Add it as a repository secret named **exactly** `RELEASE_PLEASE_TOKEN` (Settings → Secrets and variables → Actions → New repository secret). The name must match the `secrets.RELEASE_PLEASE_TOKEN` reference in the workflows character-for-character — secret names allow only letters, digits, and underscores (no hyphens/spaces), so a mismatch makes the action fail with "Input required: token".
 
+3. Before installing `release-please.yml` or an `auto-merge.yml` that depends on
+   the PAT, verify only the secret's exact repository-scoped name. This does not
+   retrieve, print, or otherwise expose its value. An unavailable secret API or
+   a missing/mismatched name is inconclusive and forbids that workflow mutation:
+
+   ```bash
+   python "$REPO_SCAFFOLD_SKILL_ROOT/scripts/release_preflight.py" \
+     --repository OWNER/REPO \
+     --default-branch DEFAULT_BRANCH \
+     --require-release-please-token
+   ```
+
+   Continue only when `release_please_token` is `verified-present` in the JSON
+   result. The caller still must confirm that the PAT itself has the documented
+   least-privilege scopes; GitHub's secret API intentionally cannot prove them.
+
 Never paste the token value into a chat, commit, or log. If one is ever exposed, revoke it immediately and create a new one.
 
 ## Verify

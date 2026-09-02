@@ -11,6 +11,7 @@ from codeql_preflight import GitHubClient, InspectionError, split_repository
 
 
 SUPPORTED_VISIBILITIES = frozenset({"public", "private", "internal"})
+RELEASE_PLEASE_TOKEN = "RELEASE_PLEASE_TOKEN"
 
 
 def require_boolean(document: dict[str, Any], field: str) -> bool:
@@ -46,6 +47,23 @@ def attestation_decision(
     return "render-no-attestation-variant"
 
 
+def verify_release_please_token(client: GitHubClient, owner: str, repo: str) -> None:
+    """Prove only the required Actions secret name, never its value or metadata."""
+    try:
+        secret = client.json(
+            f"repos/{owner}/{repo}/actions/secrets/{RELEASE_PLEASE_TOKEN}"
+        )
+    except InspectionError as exc:
+        raise InspectionError(
+            "Release Please requires a readable repository Actions secret named "
+            f"{RELEASE_PLEASE_TOKEN!r}."
+        ) from exc
+    if not isinstance(secret, dict) or secret.get("name") != RELEASE_PLEASE_TOKEN:
+        raise InspectionError(
+            "Release Please secret inspection did not return the required exact name."
+        )
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     """Inspect one exact GitHub.com repository before release asset installation."""
     if not isinstance(args.hostname, str) or args.hostname.casefold() != "github.com":
@@ -76,6 +94,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if visibility not in SUPPORTED_VISIBILITIES:
         raise InspectionError("Repository response has an invalid visibility value.")
     is_fork = require_boolean(repository, "fork")
+    release_please_token = "not-requested"
+    if args.require_release_please_token:
+        verify_release_please_token(client, owner, repo)
+        release_please_token = "verified-present"
     decision = attestation_decision(
         visibility, args.with_attestations, args.github_enterprise_cloud
     )
@@ -88,6 +110,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "is_fork": is_fork,
         "attestations_requested": args.with_attestations,
         "github_enterprise_cloud_confirmed": args.github_enterprise_cloud,
+        "release_please_token": release_please_token,
         "github_api_requests": client.request_count,
     }
 
@@ -99,6 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hostname", default="github.com")
     parser.add_argument("--with-attestations", action="store_true")
     parser.add_argument("--github-enterprise-cloud", action="store_true")
+    parser.add_argument("--require-release-please-token", action="store_true")
     return parser.parse_args()
 
 

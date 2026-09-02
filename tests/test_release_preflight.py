@@ -36,6 +36,7 @@ SPEC.loader.exec_module(release_preflight)
 
 class FakeClient:
     response: object = {}
+    token_response: object = {"name": "RELEASE_PLEASE_TOKEN"}
 
     def __init__(self, hostname: str) -> None:
         self.hostname = hostname
@@ -43,9 +44,13 @@ class FakeClient:
 
     def json(self, endpoint: str) -> object:
         self.request_count += 1
-        if endpoint != "repos/octo/example":
-            raise AssertionError(f"Unexpected endpoint: {endpoint}")
-        return self.response
+        if endpoint == "repos/octo/example":
+            return self.response
+        if endpoint == "repos/octo/example/actions/secrets/RELEASE_PLEASE_TOKEN":
+            if isinstance(self.token_response, Exception):
+                raise self.token_response
+            return self.token_response
+        raise AssertionError(f"Unexpected endpoint: {endpoint}")
 
 
 def arguments(**overrides: object) -> argparse.Namespace:
@@ -55,6 +60,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
         "default_branch": "main",
         "with_attestations": False,
         "github_enterprise_cloud": False,
+        "require_release_please_token": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -103,6 +109,37 @@ class ReleasePreflightTests(unittest.TestCase):
             result = release_preflight.run(arguments())
         self.assertEqual(result["decision"], "may-install-release-workflows")
         self.assertTrue(result["is_fork"])
+
+    def test_requires_exact_release_please_token_before_dependent_workflow(
+        self,
+    ) -> None:
+        FakeClient.response = repository()
+        FakeClient.token_response = {"name": "RELEASE_PLEASE_TOKEN"}
+        with mock.patch.object(release_preflight, "GitHubClient", FakeClient):
+            result = release_preflight.run(arguments(require_release_please_token=True))
+        self.assertEqual(result["release_please_token"], "verified-present")
+        self.assertEqual(result["github_api_requests"], 2)
+
+        for response, message in (
+            ([], "did not return"),
+            ({"name": "OTHER_TOKEN"}, "exact name"),
+        ):
+            FakeClient.token_response = response
+            with self.subTest(response=response):
+                with mock.patch.object(release_preflight, "GitHubClient", FakeClient):
+                    with self.assertRaisesRegex(
+                        release_preflight.InspectionError, message
+                    ):
+                        release_preflight.run(
+                            arguments(require_release_please_token=True)
+                        )
+
+        FakeClient.token_response = release_preflight.InspectionError("not found")
+        with mock.patch.object(release_preflight, "GitHubClient", FakeClient):
+            with self.assertRaisesRegex(
+                release_preflight.InspectionError, "requires a readable"
+            ):
+                release_preflight.run(arguments(require_release_please_token=True))
 
     def test_rejects_untrusted_or_unwritable_repository_state(self) -> None:
         cases: tuple[tuple[argparse.Namespace, object, str], ...] = (
@@ -176,10 +213,12 @@ class ReleasePreflightTests(unittest.TestCase):
                 "--default-branch",
                 "main",
                 "--with-attestations",
+                "--require-release-please-token",
             ],
         ):
             args = release_preflight.parse_args()
         self.assertTrue(args.with_attestations)
+        self.assertTrue(args.require_release_please_token)
         with self.assertRaises(SystemExit):
             runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
 
@@ -193,6 +232,7 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn("release_preflight.py", skill)
         self.assertIn("release_preflight.py", release)
         self.assertIn("render-no-attestation-variant", release)
+        self.assertIn("--require-release-please-token", release)
 
 
 if __name__ == "__main__":
