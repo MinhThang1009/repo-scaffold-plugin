@@ -1769,6 +1769,10 @@ class MutationTestingContractTests(unittest.TestCase):
             destination = root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+        shutil.copy2(
+            PLUGIN_ROOT / "tests" / "fixtures" / "mutation-testing-legacy.yml",
+            root / ".github" / "workflows" / "mutation-testing.yml",
+        )
 
     def test_repository_mutation_contract_is_valid(self) -> None:
         self.assertEqual(

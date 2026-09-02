@@ -1733,6 +1733,50 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     return problems
 
 
+def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
+    """Validate a complete matrix assignment before the score gate runs."""
+    if not isinstance(workflow, dict):
+        return [".github/workflows/mutation-testing.yml: invalid workflow"]
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict) or set(jobs) != {
+        "mutation-plan",
+        "mutation-shards",
+        "mutation-quality",
+    }:
+        return [
+            ".github/workflows/mutation-testing.yml: require plan, shard, and "
+            "aggregate mutation jobs"
+        ]
+    shards = jobs["mutation-shards"]
+    aggregate = jobs["mutation-quality"]
+    if not isinstance(shards, dict) or not isinstance(aggregate, dict):
+        return [".github/workflows/mutation-testing.yml: mutation jobs must map"]
+    matrix = shards.get("strategy", {}).get("matrix", {})
+    assigned = matrix.get("shard") if isinstance(matrix, dict) else None
+    if assigned != [str(index) for index in range(32)]:
+        return [
+            ".github/workflows/mutation-testing.yml: run all 32 exact mutation shards"
+        ]
+    runs = {
+        step.get("run")
+        for job in (jobs["mutation-plan"], shards, aggregate)
+        if isinstance(job, dict) and isinstance(job.get("steps"), list)
+        for step in job["steps"]
+        if isinstance(step, dict) and isinstance(step.get("run"), str)
+    }
+    required = {
+        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32",
+        'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"',
+        "python scripts/merge_mutation_shards.py",
+    }
+    if not required.issubset(runs):
+        return [
+            ".github/workflows/mutation-testing.yml: plan, execute, and merge "
+            "exact mutation shards"
+        ]
+    return []
+
+
 def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     """Validate the isolated, evidence-preserving mutation-testing configuration."""
     relative_paths = (
@@ -1888,6 +1932,12 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     permissions = workflow.get("permissions") if isinstance(workflow, dict) else None
     concurrency = workflow.get("concurrency") if isinstance(workflow, dict) else None
     jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if isinstance(jobs, dict) and set(jobs) == {
+        "mutation-plan",
+        "mutation-shards",
+        "mutation-quality",
+    }:
+        return problems + validate_sharded_mutation_workflow(workflow)
     job = jobs.get("mutation-quality") if isinstance(jobs, dict) else None
     steps = job.get("steps") if isinstance(job, dict) else None
     if not isinstance(triggers, dict) or set(triggers) != {

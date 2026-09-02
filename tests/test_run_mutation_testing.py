@@ -69,6 +69,29 @@ class FakeMutmut:
             raise OSError("mutmut failed")
 
 
+class PlanningMutmut(FakeMutmut):
+    def __init__(self) -> None:
+        super().__init__()
+        self.collect_source_file_mutation_data = self._collect
+
+    @staticmethod
+    def _collect(
+        *, mutant_names: list[str]
+    ) -> tuple[list[tuple[object, str, object]], dict[str, object]]:
+        return (
+            [
+                (object(), "scripts.alpha__mutmut_1", object()),
+                (object(), "scripts.alpha__mutmut_2", object()),
+                (object(), "scripts.beta__mutmut_1", object()),
+            ],
+            {},
+        )
+
+    def _run(self, names: list[str], max_children: int) -> None:
+        self.arguments = (names, max_children)
+        self.collect_source_file_mutation_data(mutant_names=names)
+
+
 class MutationRunnerTests(unittest.TestCase):
     def write_marker(self, root: Path, sources: object) -> Path:
         marker = root / "mutants" / run_mutation_testing.REUSABLE_SOURCES_NAME
@@ -231,6 +254,51 @@ class MutationRunnerTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "invalid reusable"):
                         run_mutation_testing.load_reusable_sources(root)
 
+    def test_shard_plan_is_deterministic_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = run_mutation_testing.write_shard_plan(
+                root,
+                [
+                    "scripts.beta__mutmut_1",
+                    "scripts.alpha__mutmut_2",
+                    "scripts.alpha__mutmut_1",
+                ],
+                2,
+            )
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["shards"],
+                [
+                    ["scripts.alpha__mutmut_1", "scripts.beta__mutmut_1"],
+                    ["scripts.alpha__mutmut_2"],
+                ],
+            )
+            self.assertEqual(
+                run_mutation_testing.load_shard_names(root, 1),
+                ["scripts.alpha__mutmut_2"],
+            )
+            path.write_text(
+                '{"schema_version":1,"shards":[["a"],["a"]]}', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "more than once"):
+                run_mutation_testing.load_shard_names(root, 0)
+
+    def test_planning_generates_an_exact_shard_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            implementation = PlanningMutmut()
+            path = run_mutation_testing.prepare_mutation_shards(
+                root, max_children=4, shard_count=2, mutmut_main=implementation
+            )
+            self.assertEqual(implementation.arguments, ([], 4))
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["shards"],
+                [
+                    ["scripts.alpha__mutmut_1", "scripts.beta__mutmut_1"],
+                    ["scripts.alpha__mutmut_2"],
+                ],
+            )
+
     def test_reviewed_mutmut_loader_rejects_version_drift(self) -> None:
         implementation = object()
         with (
@@ -354,7 +422,20 @@ class MutationRunnerTests(unittest.TestCase):
                     ),
                     0,
                 )
-            runner.assert_called_once_with(root, max_children=8)
+            runner.assert_called_once_with(root, max_children=8, mutant_names=None)
+
+            with mock.patch.object(
+                run_mutation_testing,
+                "prepare_mutation_shards",
+                return_value=root / "mutants" / "mutation-shards.json",
+            ) as planner:
+                self.assertEqual(
+                    run_mutation_testing.main(
+                        ["--repository-root", str(root), "--plan-shards", "2"]
+                    ),
+                    0,
+                )
+            planner.assert_called_once_with(root, max_children=4, shard_count=2)
 
             errors = StringIO()
             with (

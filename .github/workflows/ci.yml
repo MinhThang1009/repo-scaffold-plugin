@@ -145,6 +145,7 @@ jobs:
           scripts/audit_freshness.py
           scripts/audit_official_docs.py
           scripts/check_code_scanning_alerts.py
+          scripts/merge_mutation_shards.py
           scripts/pr_template_preflight.py
           scripts/prepare_mutation_cache.py
           scripts/python_support.py

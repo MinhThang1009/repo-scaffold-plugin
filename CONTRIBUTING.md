@@ -86,16 +86,11 @@ on a newer interpreter. A mutmut update must pass the runner's internal API
 integration and behavioral tests; validators derive the reviewed version from
 the direct input instead of duplicating it. Regenerating the lock alone remains
 insufficient. Trusted scheduled and manual runs
-record complete or interrupted progress under an integrity manifest and reuse
-only previously killed mutants when production, support, and the complete test
-suite are unchanged. Survivor, timeout, and pending results are always reset.
-Any test change forces a full run because a new module can introduce fixtures or
-import-time side effects that alter existing tests. A completed run on the same
-repository and commit can be resumed explicitly with `resume_run_id`; the
-workflow verifies its source and downloads only its unexpired
-`mutation-results` artifact. Use the `clean` workflow-dispatch input without a
-resume run before claiming a final mutation score so every mutant is
-independently rerun without cached results.
+plan every mutant, execute the exact assignment in 32 Linux workers, and merge
+only a complete non-overlapping result set. The aggregate job rejects a missing
+artifact, an unassigned result, or a shard that did not finish before it exports
+statistics. This preserves a full mutation run without accepting partial cache
+state or lowering the score gate.
 
 ## Make a change
 
@@ -122,7 +117,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/pr_template_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -133,11 +128,10 @@ The coverage command enforces the repository's 100% branch-coverage floor from
 `.coveragerc`.
 
 Mutation testing runs daily and on manual dispatch because a complete run is
-substantially more expensive than the required pull-request checks and interrupted
-progress must be resumed promptly. The cache invalidates only when mutation
-source, test, `pyproject.toml`, or `requirements-mutation.txt` changes. Mutmut
-requires operating-system `fork` support, so run it on Linux or in WSL on
-Windows:
+substantially more expensive than the required pull-request checks. The workflow
+plans every mutant, runs 32 exact Linux shards, and merges only a complete,
+non-overlapping assignment before it applies the gate. Mutmut requires
+operating-system `fork` support, so run it on Linux or in WSL on Windows:
 
 ```bash
 python -m pip install --require-hashes --requirement requirements-mutation.txt

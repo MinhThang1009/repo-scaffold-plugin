@@ -261,7 +261,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/pr_template_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -338,15 +338,12 @@ Mutation testing extends that toolchain through the separate, hash-verified
 `requirements-mutation.txt`. Mutmut versions are not duplicated in validators
 or tests; a compatible Dependabot bump passes the runner integration tests,
 while an incompatible internal API change fails those behavioral checks. Its
-daily and manually dispatched workflow runs mutmut on Linux, rejects
-incomplete runs, enforces the evidence-backed mutation score floor documented in
-`CONTRIBUTING.md`, and retains generated mutants plus metadata for diagnosis. A
-bounded mutation step records interrupted progress before the job ends; later
-runs reset every non-killed result and may resume an explicitly verified
-same-repository, same-commit artifact. Its cache is invalidated only by mutation
-source, test, or mutation-control changes, so documentation and release metadata
-do not discard safe interrupted progress. Native Windows is not supported by
-mutmut; contributors can use WSL for the same check.
+daily and manually dispatched workflow plans every mutant on Linux, executes
+each exact assignment in a 32-way matrix, then rejects missing, duplicate, or
+incomplete shard results before enforcing the evidence-backed mutation score
+floor documented in `CONTRIBUTING.md`. It retains generated mutants and metadata
+for diagnosis. Native Windows is not supported by mutmut; contributors can use
+WSL for the same check.
 
 ## 11. Releases
 
