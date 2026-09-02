@@ -141,6 +141,7 @@ jobs:
           skills/repo-scaffold/scripts/codeql_preflight.py
           skills/repo-scaffold/scripts/ci_toolchain.py
           skills/repo-scaffold/scripts/pr_template_preflight.py
+          skills/repo-scaffold/scripts/release_preflight.py
           skills/repo-scaffold/scripts/merge_settings_preflight.py
           skills/repo-scaffold/scripts/security_features_preflight.py
           skills/repo-scaffold/scripts/sync_action_pins.py

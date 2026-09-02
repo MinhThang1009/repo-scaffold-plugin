@@ -1432,6 +1432,30 @@ The repository API setting `squash_merge_commit_title=PR_TITLE` makes the final 
 
 ## release-please token (RELEASE_PLEASE_TOKEN)
 
+Before copying `release.yml`, `release-please.yml`, or an attestation-enabled
+release variant, run the bundled release preflight from the installed skill
+root. It verifies the exact GitHub.com repository identity, rejects archived or
+disabled repositories, binds the installation to the remote default branch,
+and chooses the allowed attestation variant. Do not infer private or internal
+repository attestation eligibility from visibility alone: GitHub requires
+Enterprise Cloud for those repositories, so use `--github-enterprise-cloud`
+only after separately confirming that plan.
+
+```bash
+python "$REPO_SCAFFOLD_SKILL_ROOT/scripts/release_preflight.py" \
+  --repository OWNER/REPO \
+  --default-branch DEFAULT_BRANCH \
+  --with-attestations
+```
+
+Proceed with attestation-enabled assets only when the JSON decision is
+`may-install-attestation-workflows`. When it returns
+`render-no-attestation-variant`, install the documented no-attestation variant
+instead. A result of `inconclusive` forbids the release workflow mutation until
+the evidence is repaired. For a confirmed private or internal GitHub Enterprise
+Cloud repository, add `--github-enterprise-cloud`; omit
+`--with-attestations` when provenance attestations are not requested.
+
 Treat plugin-creator's local `+codex.<cachebuster>` suffix as installation identity only. Do not copy it into the public release manifest, plugin version, changelog, or tag; confirm and use the clean public SemVer instead. Preserve other SemVer build metadata only when the user explicitly confirms it is part of the public release identity.
 
 The shipped `release.yml` also supports a verified manual recovery path without a `push.tags` trigger. Run it only after the exact tag exists and resolves to the supplied full commit SHA:

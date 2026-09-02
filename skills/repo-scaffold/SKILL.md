@@ -104,6 +104,14 @@ Automated security fixes need Dependabot alerts first: request both features in
 the preflight or let it verify existing alerts, then enable alerts and confirm
 them before enabling the fixes.
 
+Before installing release workflows, run the fail-closed
+`scripts/release_preflight.py` against the exact repository and default branch.
+Install provenance-attestation jobs only when it returns
+`may-install-attestation-workflows`; otherwise render the documented
+no-attestation variant. A private or internal repository needs separate
+GitHub Enterprise Cloud confirmation before that preflight can approve
+attestations.
+
 ### 5. Configure GitHub
 
 Before GitHub configuration, read `references/github-setup.md`. Apply only
