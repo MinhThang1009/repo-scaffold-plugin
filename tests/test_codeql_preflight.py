@@ -4171,8 +4171,16 @@ class PlaceholderContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("parameters.merge_method", setup)
         self.assertIn("parameters.allowed_merge_methods", setup)
-        self.assertIn('$requiredRepositoryMergeMethods.Contains("merge")', setup)
-        self.assertIn('$requiredRepositoryMergeMethods.Contains("rebase")', setup)
+        self.assertIn("merge_settings_preflight.py", setup)
+        self.assertIn(
+            "$enableMergeCommit = [bool]$mergeSettingsPreflightResult.desired_merge_methods.merge",
+            setup,
+        )
+        self.assertIn(
+            "$enableRebaseMerge = [bool]$mergeSettingsPreflightResult.desired_merge_methods.rebase",
+            setup,
+        )
+        self.assertIn("$installAutoMergeWorkflows", setup)
         self.assertNotIn("--enable-merge-commit=false `", setup)
 
         merge_settings = setup.split("## Merge settings", 1)[1].split("\n## ", 1)[0]

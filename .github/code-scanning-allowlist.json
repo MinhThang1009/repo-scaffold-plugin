@@ -6,7 +6,7 @@
       "tool": "Scorecard",
       "rule": "DangerousWorkflowID",
       "path": ".github/workflows/code-scanning-gate.yml",
-      "reason": "The pull_request_target workflow checks out only github.event.pull_request.base.sha with read-only permissions and never executes pull-request code."
+      "reason": "The pull_request_target workflow checks out only the trusted default branch with read-only permissions and never executes pull-request code."
     },
     {
       "number": 17,

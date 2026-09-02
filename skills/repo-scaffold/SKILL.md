@@ -85,6 +85,25 @@ For CodeQL default setup, run the fail-closed `scripts/codeql_preflight.py` and
 require explicit confirmation that no external or indirect uploader exists.
 Never switch CodeQL modes without separate approval.
 
+Before configuring classic branch protection, run the fail-closed
+`scripts/branch_protection_preflight.py` against a mergeable representative PR
+whose head contains the final workflow set. Use only its returned contexts and
+GitHub App IDs. Do not configure required checks when it is inconclusive.
+
+Before changing merge settings or installing an auto-merge workflow, run the
+fail-closed `scripts/merge_settings_preflight.py`. Preserve its required merge
+methods, obtain separate confirmation before disabling any enabled method, and
+skip the shipped auto-merge workflows when it reports an effective merge queue.
+
+Before enabling Dependabot alerts or security updates, secret scanning or push
+protection, or private vulnerability reporting, run the fail-closed
+`scripts/security_features_preflight.py`. Do not enable push protection unless
+secret scanning is already enabled or is in the same approved mutation. Offer
+private vulnerability reporting only for a verified public non-fork repository.
+Automated security fixes need Dependabot alerts first: request both features in
+the preflight or let it verify existing alerts, then enable alerts and confirm
+them before enabling the fixes.
+
 ### 5. Configure GitHub
 
 Before GitHub configuration, read `references/github-setup.md`. Apply only

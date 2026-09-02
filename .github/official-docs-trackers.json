@@ -163,7 +163,7 @@
     {
       "id": "claude-plugin-community-marketplace",
       "label": "Claude Code community marketplace submission",
-      "url": "https://code.claude.com/docs/en/discover-plugins",
+      "url": "https://code.claude.com/docs/en/plugins",
       "allowed-hosts": ["code.claude.com"],
       "paths": [
         "README.md",
@@ -173,7 +173,7 @@
       ],
       "required-markers": [
         "claude-community",
-        "in-app submission form"
+        "in-app forms"
       ],
       "reviewed-on": "2026-09-01",
       "review-period-days": 90

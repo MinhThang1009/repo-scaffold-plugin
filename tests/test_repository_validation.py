@@ -1751,8 +1751,11 @@ class MutationTestingContractTests(unittest.TestCase):
         "scripts/run_mutation_testing.py",
         "scripts/validate_mutation_results.py",
         "tests/test_audit_freshness.py",
+        "tests/test_branch_protection_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
+        "tests/test_merge_settings_preflight.py",
+        "tests/test_security_features_preflight.py",
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
         "tests/test_run_mutation_testing.py",
@@ -3122,7 +3125,10 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             )
             for script in (
                 "ci_toolchain.py",
+                "branch_protection_preflight.py",
                 "codeql_preflight.py",
+                "merge_settings_preflight.py",
+                "security_features_preflight.py",
                 "validate_scaffold.py",
             ):
                 self.assertIn(
@@ -3945,8 +3951,8 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             ".codex-plugin",
             ".claude-plugin",
             "claude-community",
-            "separately curated marketplace",
-            "in-app submission form",
+            "separately curated Anthropic marketplace",
+            "in-app forms",
             "Skills only",
             "Apps Management write access",
             "identity verification",
@@ -3954,6 +3960,30 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "claude --plugin-dir",
         ):
             self.assertIn(fragment, dossier)
+
+    def test_claude_submission_guidance_uses_community_marketplace(self) -> None:
+        documents = {
+            PLUGIN_ROOT
+            / "README.md": "`claude-community` marketplace through its in-app forms.",
+            PLUGIN_ROOT
+            / "PLUGIN_SUBMISSION.md": "`claude-community` marketplace through one of its current in-app forms",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.md": "`claude-community` marketplace through one of its current in-app forms.",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.vi.md": "`claude-community` của Anthropic qua một trong các form trong app hiện hành.",
+        }
+
+        for path, expected in documents.items():
+            text = path.read_text(encoding="utf-8")
+
+            self.assertIn(expected, text, path.name)
+            self.assertIn("claude-plugins-official", text, path.name)
 
     def test_readme_uninstalls_from_the_documented_marketplace(self) -> None:
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
@@ -5106,7 +5136,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("only base-branch alert-gate code" in item for item in unsafe)
             )
 
-    def test_gate_uses_base_trusted_code_and_polls_for_the_test_merge(self) -> None:
+    def test_gate_uses_default_trusted_code_and_polls_for_the_test_merge(self) -> None:
         workflow = PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml"
         asset = (
             PLUGIN_ROOT
@@ -5143,7 +5173,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 "security-events": "read",
             },
         )
-        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
+        self.assertNotIn("ref: ${{ github.event.pull_request.base.sha }}", text)
         self.assertIn("ref: ${{ github.event.merge_group.base_sha }}", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn('--pull-request "$PR_NUMBER"', text)

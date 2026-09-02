@@ -91,9 +91,25 @@ class CodeScanningGateTests(unittest.TestCase):
             1,
         )
 
-    def test_checked_in_allowlist_approves_reviewed_base_only_checkout(self) -> None:
-        selectors = gate.load_allowlist(
-            PLUGIN_ROOT / ".github" / "code-scanning-allowlist.json"
+    def test_checked_in_allowlist_approves_reviewed_default_branch_checkout(
+        self,
+    ) -> None:
+        allowlist_path = PLUGIN_ROOT / ".github" / "code-scanning-allowlist.json"
+        allowlist_text = allowlist_path.read_text(encoding="utf-8")
+        selectors = gate.load_allowlist(allowlist_path)
+
+        allowlist = json.loads(allowlist_text)
+        reasons_by_path = {
+            entry["path"]: entry["reason"] for entry in allowlist["allowlist"]
+        }
+        code_scanning_reason = reasons_by_path[
+            ".github/workflows/code-scanning-gate.yml"
+        ]
+        self.assertIn("trusted default branch", code_scanning_reason)
+        self.assertNotIn("github.event.pull_request.base.sha", code_scanning_reason)
+        self.assertIn(
+            "github.event.pull_request.base.sha",
+            reasons_by_path[".github/workflows/pr-template.yml"],
         )
 
         self.assertEqual(
