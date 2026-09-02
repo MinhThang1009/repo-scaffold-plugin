@@ -1600,8 +1600,11 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     required_mypy_paths = {
         "skills/repo-scaffold/scripts/check_community_health.py",
         "skills/repo-scaffold/scripts/audit_freshness.py",
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
         "skills/repo-scaffold/scripts/codeql_preflight.py",
         "skills/repo-scaffold/scripts/ci_toolchain.py",
+        "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+        "skills/repo-scaffold/scripts/security_features_preflight.py",
         "skills/repo-scaffold/scripts/sync_action_pins.py",
         "skills/repo-scaffold/scripts/validate_scaffold.py",
         "scripts/audit_freshness.py",
@@ -1744,8 +1747,11 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "scripts/run_mutation_testing.py",
         "scripts/validate_mutation_results.py",
         "tests/test_audit_freshness.py",
+        "tests/test_branch_protection_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
+        "tests/test_merge_settings_preflight.py",
+        "tests/test_security_features_preflight.py",
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
         "tests/test_run_mutation_testing.py",
@@ -2430,6 +2436,19 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             "skills.repo-scaffold.scripts.sync_action_pins",
         ),
         "tests/test_ci_toolchain.py": ("skills.repo-scaffold.scripts.ci_toolchain",),
+        "tests/test_branch_protection_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.branch_protection_preflight",
+        ),
+        "tests/test_merge_settings_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.branch_protection_preflight",
+            "skills.repo-scaffold.scripts.merge_settings_preflight",
+        ),
+        "tests/test_security_features_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.security_features_preflight",
+        ),
         "tests/test_codeql_preflight.py": (
             "scripts.validate_workflows",
             "skills.repo-scaffold.scripts.codeql_preflight",
@@ -4944,7 +4963,6 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             not isinstance(checkout, dict)
             or checkout.get("with")
             != {
-                "ref": "${{ github.event.pull_request.base.sha }}",
                 "persist-credentials": "false",
             }
             or not isinstance(run_step, dict)
@@ -5176,8 +5194,11 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                 "repo-scaffold/skills/repo-scaffold/assets/.editorconfig",
                 "repo-scaffold/skills/repo-scaffold/assets/gitattributes.template",
                 "repo-scaffold/skills/repo-scaffold/scripts/ci_toolchain.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/branch_protection_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/codeql_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/validate_scaffold.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/security_features_preflight.py",
             }
         )
         for missing in sorted(expected - names):

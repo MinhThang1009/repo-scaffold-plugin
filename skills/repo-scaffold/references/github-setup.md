@@ -452,6 +452,56 @@ Build the check list from contexts verified during the scaffold run, not from wo
 - For every representative PR, retrieve both `.head.sha` and the current `.merge_commit_sha` with `gh api --hostname github.com repos/OWNER/REPO/pulls/NUMBER --jq '{head_sha: .head.sha, test_merge_sha: .merge_commit_sha}'`. Require a mergeable representative PR with a non-null test-merge SHA. Inspect complete paginated results from Check Runs (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/check-runs`) and Commit Statuses (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/statuses`) on both SHAs, plus a merge-group SHA when applicable and recent default-branch SHAs. When the test-merge commit has statuses, apply GitHub's documented precedence and treat it as controlling; never infer that head-only evidence is complete. A check must have completed successfully in this repository during the past seven days before it can be selected as required. Compare context names case-insensitively. GitHub requires both systems when a Check Run and Commit Status share a required name, so reject that candidate on any controlling SHA instead of treating it as one producer. Record the intended Check Run's exact positive `app.id`; reject an unknown, absent, or changing source. Bind every new required check to that verified app ID rather than allowing GitHub to auto-select a recent source.
 - Stop before applying required-status-check protection when no real gate has been confirmed. Never submit a context that no workflow emits.
 
+The bundled `scripts/branch_protection_preflight.py` turns this proof into a
+read-only, fail-closed gate. Run it after the final workflows are pushed to a
+mergeable representative PR and before any branch-protection mutation. It reads
+the exact workflow blobs at that PR head, rejects duplicate YAML keys and
+ambiguous producers, verifies unfiltered `pull_request` coverage plus
+`merge_group` coverage when an effective merge queue applies, requires an
+unconditional executable job, and verifies a successful Check Run no older than
+seven days on both the head and test-merge SHAs. It also rejects a changing or
+missing GitHub App ID and every same-name Commit Status collision. It never
+modifies GitHub state. Any API, parsing, pagination, mergeability, or evidence
+gap is inconclusive and required-check mutation remains forbidden.
+
+Resolve `REPO_SCAFFOLD_SKILL_ROOT` to the installed/source directory that
+contains this skill's `SKILL.md`, then run:
+
+```powershell
+$branchProtectionPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/branch_protection_preflight.py"
+if (-not (Test-Path -LiteralPath $branchProtectionPreflight -PathType Leaf)) {
+  throw "The bundled branch-protection preflight script is missing; do not mutate protection."
+}
+$preflightOutput = python $branchProtectionPreflight `
+  --repository "OWNER/REPO" `
+  --default-branch $defaultBranch `
+  --pull-request NUMBER `
+  --required-check "ci-success" 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Required-check evidence is inconclusive; do not mutate protection. $($preflightOutput | Out-String)"
+}
+$requiredCheckPreflight = ($preflightOutput | Out-String) | ConvertFrom-Json
+if (-not $requiredCheckPreflight.inspection_complete -or
+    $requiredCheckPreflight.decision -ne "may-configure-classic-protection") {
+  throw "Required-check evidence is incomplete; do not mutate protection."
+}
+# Use only these returned values in the mutation block. Do not add contexts or
+# substitute app IDs manually after the preflight completes.
+$requiredCheckNames = @($requiredCheckPreflight.required_checks.context)
+$requiredAppIdsByContext = [Collections.Generic.Dictionary[string, int64]]::new(
+  [StringComparer]::OrdinalIgnoreCase
+)
+foreach ($check in @($requiredCheckPreflight.required_checks)) {
+  $requiredAppIdsByContext[[string]$check.context] = [int64]$check.app_id
+}
+```
+
+Run it once with every context passed to the later mutation block. When multiple
+contexts are eligible, pass one `--required-check` argument for each and retain
+the returned context/app-ID pairs exactly. The PowerShell example below explains
+the preservation and post-mutation verification of classic-protection settings;
+do not bypass this preflight by hand-populating its producer evidence.
+
 PowerShell example:
 
 ```powershell
@@ -908,8 +958,59 @@ The repository view returns the owner login but not its account type. Treat the 
 
 Run each eligible command separately after confirmation and only report a feature as enabled after its final state is verified. Treat `403` as forbidden and `404` as missing or inaccessible unless endpoint-specific evidence proves a capability limitation. Preserve and inspect every `422` response: depending on the endpoint it can indicate invalid input, ineligibility, or abuse controls, so do not automatically relabel it as a plan or permission failure. Treat `409` as an in-progress/conflicting operation and `503` as transient service unavailability. Report the verified capability, validation, or retry result and continue instead of claiming success or failing the entire scaffold.
 
+Before the first security-feature mutation, run the bundled
+`scripts/security_features_preflight.py` with exactly the approved feature
+flags. It is read-only and fail-closed: it binds the repository response to the
+explicit `OWNER/REPO`, rejects archived or ambiguous repositories, validates the
+published security-analysis fields, requires secret scanning before push
+protection, and permits private vulnerability reporting only for a public
+non-fork repository. It checks Dependabot alerts before automated security fixes
+unless alerts were requested for prior enablement. It does not infer entitlement
+from a missing field, so
+continue to handle GitHub's final `403`, `404`, `409`, `422`, and `503` result
+separately.
+
+```powershell
+$securityFeaturesPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/security_features_preflight.py"
+if (-not (Test-Path -LiteralPath $securityFeaturesPreflight -PathType Leaf)) {
+  throw "The bundled security-features preflight is missing; do not mutate security settings."
+}
+
+# Set each value only from explicit user approval.
+$enableDependabotAlertsRequested = $false
+$enableAutomatedSecurityFixesRequested = $false
+$enableSecretScanningRequested = $false
+$enablePushProtectionRequested = $false
+$enablePrivateVulnerabilityReportingRequested = $false
+$securityPreflightArguments = @("--repository", "OWNER/REPO", "--hostname", "github.com")
+if ($enableDependabotAlertsRequested) { $securityPreflightArguments += "--enable-dependabot-alerts" }
+if ($enableAutomatedSecurityFixesRequested) { $securityPreflightArguments += "--enable-automated-security-fixes" }
+if ($enableSecretScanningRequested) { $securityPreflightArguments += "--enable-secret-scanning" }
+if ($enablePushProtectionRequested) { $securityPreflightArguments += "--enable-push-protection" }
+if ($enablePrivateVulnerabilityReportingRequested) { $securityPreflightArguments += "--enable-private-vulnerability-reporting" }
+
+$securityPreflightOutput = python $securityFeaturesPreflight @securityPreflightArguments 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Security-feature inspection is inconclusive; do not mutate. $($securityPreflightOutput | Out-String)"
+}
+try {
+  $securityPreflightResult = ($securityPreflightOutput | Out-String) | ConvertFrom-Json
+} catch {
+  throw "Security-feature preflight returned invalid JSON; do not mutate."
+}
+if (-not $securityPreflightResult.inspection_complete -or
+    $securityPreflightResult.decision -ne "may-configure-security-features") {
+  throw "Security-feature preflight did not approve the requested mutations."
+}
+```
+
+Run a following mutating command only when its matching approved request flag
+was passed to this final preflight result. Re-query its endpoint after the
+mutation; an approved preflight is not proof that GitHub accepted or enabled a
+feature.
+
 - **Dependency graph**: enabled by default for public repositories. It is not the same setting as Dependabot alerts.
-- **Dependabot alerts**: not enabled by default. Enable explicitly where supported, then optionally enable security updates:
+- **Dependabot alerts**: not enabled by default. Enable explicitly where supported. Dependabot alerts before automated security fixes are required: when both were approved in one preflight, enable alerts, re-query `vulnerability-alerts` successfully, and only then enable security fixes:
 
   ```bash
   gh api --hostname github.com -X PUT repos/OWNER/REPO/vulnerability-alerts
@@ -1110,7 +1211,66 @@ Match the squash-default PR flow and keep branches tidy:
 
 On GitHub.com, auto-merge is available for private repositories only with GitHub Pro, Team, or Enterprise Cloud. Check the repository plan/capability first. Treat `403` as forbidden; preserve a `422` response and report it as a rejected or ineligible configuration without guessing that token permission caused it. Do not install an auto-merge workflow unless enablement succeeds.
 
-Before installing either shipped auto-merge workflow, inspect the effective rules on the detected default branch. The built-in `GITHUB_TOKEN` cannot add a pull request to a merge queue, and the shipped workflows are intentionally not queue workflows:
+Run the bundled `scripts/merge_settings_preflight.py` before the first
+merge-setting mutation. It is read-only and fail-closed: it binds the requested
+repository response to the explicit `OWNER/REPO`, rejects archived repositories
+and unbounded effective-rule results, preserves every method required by an
+effective merge queue or pull-request rule, and records the exact resulting
+method plan. It returns `require-explicit-merge-method-removal-confirmation`
+when the proposed squash-default configuration would disable an enabled merge
+or rebase method. Do not pass its confirmation flag until the user separately
+approves those named removals. When `--require-auto-merge-workflows` reports
+`skip-auto-merge-workflows`, preserve the merge settings plan but do not install
+either shipped auto-merge asset.
+
+```powershell
+$mergeSettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/merge_settings_preflight.py"
+if (-not (Test-Path -LiteralPath $mergeSettingsPreflight -PathType Leaf)) {
+  throw "The bundled merge-settings preflight is missing; do not mutate merge settings."
+}
+if ([string]::IsNullOrWhiteSpace($DEFAULT_BRANCH)) {
+  throw "DEFAULT_BRANCH must be known before inspecting merge settings."
+}
+$preflightArguments = @(
+  "--repository", "OWNER/REPO",
+  "--default-branch", $DEFAULT_BRANCH,
+  "--require-auto-merge-workflows"
+)
+$preflightOutput = python $mergeSettingsPreflight @preflightArguments 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Merge-settings inspection is inconclusive; do not mutate. $($preflightOutput | Out-String)"
+}
+$mergeSettingsPreflightResult = ($preflightOutput | Out-String) | ConvertFrom-Json
+if (-not $mergeSettingsPreflightResult.inspection_complete) {
+  throw "Merge-settings inspection is incomplete; do not mutate."
+}
+if ($mergeSettingsPreflightResult.decision -eq "require-explicit-merge-method-removal-confirmation") {
+  $methods = @($mergeSettingsPreflightResult.methods_to_disable) -join ", "
+  throw "Disabling enabled merge methods ($methods) needs separate user confirmation; do not mutate."
+}
+if ($mergeSettingsPreflightResult.decision -notin @(
+  "may-configure-merge-settings", "skip-auto-merge-workflows"
+)) {
+  throw "Merge-settings preflight returned an unknown decision; do not mutate."
+}
+$enableMergeCommit = [bool]$mergeSettingsPreflightResult.desired_merge_methods.merge
+$enableRebaseMerge = [bool]$mergeSettingsPreflightResult.desired_merge_methods.rebase
+$hasMergeQueue = [bool]$mergeSettingsPreflightResult.merge_queue_applies
+$installAutoMergeWorkflows = [bool]$mergeSettingsPreflightResult.auto_merge_workflows_eligible
+```
+
+After separate approval for listed removals, append
+`--confirm-disable-merge-methods`, rerun the preflight, and require the
+`may-configure-merge-settings` or `skip-auto-merge-workflows` decision again.
+Use `$enableMergeCommit`, `$enableRebaseMerge`, and
+`$installAutoMergeWorkflows` only from its final JSON result. The detailed
+effective-rule inspection below is retained to explain the underlying GitHub
+policy fields; do not replace the helper's result with manually inferred values.
+
+For explanation and troubleshooting only, the following inspection shows the
+effective-rule fields evaluated by the helper. The built-in `GITHUB_TOKEN`
+cannot add a pull request to a merge queue, and the shipped workflows are
+intentionally not queue workflows:
 
 ```powershell
 $repoViewOutput = gh repo view github.com/OWNER/REPO --json nameWithOwner,defaultBranchRef
@@ -1172,14 +1332,11 @@ if ($hasMergeQueue) {
 }
 ```
 
-Continue with the repository merge settings below even when `$hasMergeQueue` is true, but preserve every merge method used by an effective merge queue or allowed by an effective pull-request rule. Install `auto-merge.yml` or `dependabot-auto-merge.yml` only when `$hasMergeQueue` is false.
+Continue with the repository merge settings below even when `$hasMergeQueue` is true, but preserve every merge method used by an effective merge queue or allowed by an effective pull-request rule. Install `auto-merge.yml` or `dependabot-auto-merge.yml` only when `$installAutoMergeWorkflows` from the final preflight is true.
 
 ```powershell
-# Default to squash-only only when effective rules do not require or allow another
-# repository-level merge method. A queue configured for MERGE or REBASE must keep
-# that method enabled or GitHub will block the queue.
-$enableMergeCommit = $requiredRepositoryMergeMethods.Contains("merge")
-$enableRebaseMerge = $requiredRepositoryMergeMethods.Contains("rebase")
+# Values come only from the final merge-settings preflight. A queue configured
+# for MERGE or REBASE must keep that method enabled or GitHub will block it.
 $mergeArguments = @(
   "repo", "edit", "github.com/OWNER/REPO",
   "--enable-squash-merge=true",

@@ -23,11 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      # Use only base-branch policy and code. Never check out or execute PR code.
+      # pull_request_target defaults checkout to its trusted default-base branch.
+      # Do not override that ref or execute PR code in this privileged context.
       - name: Checkout trusted base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: Require an explicit disposition for every open alert
