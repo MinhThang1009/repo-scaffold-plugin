@@ -299,6 +299,37 @@ class MutationRunnerTests(unittest.TestCase):
                 ],
             )
 
+    def test_shard_plan_rejects_invalid_names_shapes_and_indices(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for names, shard_count, message in (
+                (["valid"], 0, "shard count"),
+                ([], 1, "cannot be empty"),
+                (["duplicate", "duplicate"], 1, "duplicate"),
+                (["invalid\nname"], 1, "invalid mutant name"),
+            ):
+                with self.subTest(names=names, shard_count=shard_count):
+                    with self.assertRaisesRegex(ValueError, message):
+                        run_mutation_testing.shard_mutants(names, shard_count)
+
+            plan = root / "mutants" / run_mutation_testing.SHARD_PLAN_NAME
+            plan.parent.mkdir()
+            with self.assertRaisesRegex(ValueError, "could not read"):
+                run_mutation_testing.load_shard_names(root, 0)
+            plan.write_text(
+                '{"schema_version":0,"shards":[["name"]]}', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "invalid schema"):
+                run_mutation_testing.load_shard_names(root, 0)
+            plan.write_text(
+                '{"schema_version":1,"shards":[["name"]]}', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "outside"):
+                run_mutation_testing.load_shard_names(root, 1)
+            plan.write_text('{"schema_version":1,"shards":[[]]}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid shard"):
+                run_mutation_testing.load_shard_names(root, 0)
+
     def test_reviewed_mutmut_loader_rejects_version_drift(self) -> None:
         implementation = object()
         with (
@@ -436,6 +467,16 @@ class MutationRunnerTests(unittest.TestCase):
                     0,
                 )
             planner.assert_called_once_with(root, max_children=4, shard_count=2)
+
+            errors = StringIO()
+            with redirect_stderr(errors):
+                self.assertEqual(
+                    run_mutation_testing.main(
+                        ["--plan-shards", "2", "--shard-index", "0"]
+                    ),
+                    1,
+                )
+            self.assertIn("cannot plan mutation shards", errors.getvalue())
 
             errors = StringIO()
             with (

@@ -1766,6 +1766,72 @@ class MutationTestingContractTests(unittest.TestCase):
         "tests/test_validate_scaffold.py",
     )
 
+    def test_sharded_workflow_validator_rejects_every_incomplete_shape(self) -> None:
+        valid = {
+            "jobs": {
+                "mutation-plan": {
+                    "steps": [
+                        {
+                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32"
+                        }
+                    ]
+                },
+                "mutation-shards": {
+                    "strategy": {
+                        "matrix": {"shard": [str(index) for index in range(32)]}
+                    },
+                    "steps": [
+                        {
+                            "run": 'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"'
+                        }
+                    ],
+                },
+                "mutation-quality": {
+                    "steps": [{"run": "python scripts/merge_mutation_shards.py"}]
+                },
+            }
+        }
+        cases = (
+            (None, "invalid workflow"),
+            ({"jobs": {}}, "require plan, shard, and aggregate"),
+            (
+                {"jobs": {**valid["jobs"], "mutation-shards": []}},
+                "mutation jobs must map",
+            ),
+            (
+                {
+                    "jobs": {
+                        **valid["jobs"],
+                        "mutation-shards": {
+                            **valid["jobs"]["mutation-shards"],
+                            "strategy": {"matrix": {"shard": []}},
+                        },
+                    }
+                },
+                "run all 32 exact mutation shards",
+            ),
+            (
+                {
+                    "jobs": {
+                        **valid["jobs"],
+                        "mutation-quality": {"steps": []},
+                    }
+                },
+                "plan, execute, and merge",
+            ),
+        )
+        for workflow, message in cases:
+            with self.subTest(message=message):
+                self.assertIn(
+                    message,
+                    "\n".join(
+                        validate_repository.validate_sharded_mutation_workflow(workflow)
+                    ),
+                )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(valid), []
+        )
+
     def copy_contract(self, root: Path) -> None:
         for relative in self.CONTRACT_FILES:
             source = PLUGIN_ROOT / relative
