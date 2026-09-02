@@ -1278,6 +1278,8 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
         "requirements-dev.txt",
         "requirements-dev.in",
         "requirements-mutation.txt",
+        "scripts/pr_template_preflight.py",
+        "skills/repo-scaffold/scripts/pr_template_preflight.py",
     )
 
     def copy_contract(self, root: Path) -> None:
@@ -1442,7 +1444,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             self.copy_contract(root)
             workflow_path = root / ".github" / "workflows" / "ci.yml"
             workflow = workflow_path.read_text(encoding="utf-8").replace(
-                "          scripts/run_mutation_testing.py\n", "", 1
+                "          scripts/pr_template_preflight.py\n", "", 1
             )
             workflow_path.write_text(workflow, encoding="utf-8")
 
@@ -1452,6 +1454,28 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
 
         self.assertIn(
             ".github/workflows/ci.yml: Mypy must check every production script and tests",
+            problems,
+        )
+
+    def test_ci_mypy_reports_unreadable_production_script_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            scripts = root / "scripts"
+            original_glob = Path.glob
+
+            def glob(path: Path, pattern: str) -> object:
+                if path == scripts:
+                    raise OSError("access denied")
+                return original_glob(path, pattern)
+
+            with mock.patch.object(Path, "glob", autospec=True, side_effect=glob):
+                problems = validate_repository.validate_development_dependency_contract(
+                    root
+                )
+
+        self.assertIn(
+            "scripts: could not inventory production scripts for Mypy: access denied",
             problems,
         )
 
@@ -1731,6 +1755,7 @@ class MutationTestingContractTests(unittest.TestCase):
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_merge_settings_preflight.py",
+        "tests/test_release_preflight.py",
         "tests/test_security_features_preflight.py",
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
@@ -1742,12 +1767,82 @@ class MutationTestingContractTests(unittest.TestCase):
         "tests/test_validate_scaffold.py",
     )
 
+    def test_sharded_workflow_validator_rejects_every_incomplete_shape(self) -> None:
+        valid: dict[str, Any] = {
+            "jobs": {
+                "mutation-plan": {
+                    "steps": [
+                        {
+                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32"
+                        }
+                    ]
+                },
+                "mutation-shards": {
+                    "strategy": {
+                        "matrix": {"shard": [str(index) for index in range(32)]}
+                    },
+                    "steps": [
+                        {
+                            "run": 'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"'
+                        }
+                    ],
+                },
+                "mutation-quality": {
+                    "steps": [{"run": "python scripts/merge_mutation_shards.py"}]
+                },
+            }
+        }
+        cases: tuple[tuple[object, str], ...] = (
+            (None, "invalid workflow"),
+            ({"jobs": {}}, "require plan, shard, and aggregate"),
+            (
+                {"jobs": {**valid["jobs"], "mutation-shards": []}},
+                "mutation jobs must map",
+            ),
+            (
+                {
+                    "jobs": {
+                        **valid["jobs"],
+                        "mutation-shards": {
+                            **valid["jobs"]["mutation-shards"],
+                            "strategy": {"matrix": {"shard": []}},
+                        },
+                    }
+                },
+                "run all 32 exact mutation shards",
+            ),
+            (
+                {
+                    "jobs": {
+                        **valid["jobs"],
+                        "mutation-quality": {"steps": []},
+                    }
+                },
+                "plan, execute, and merge",
+            ),
+        )
+        for workflow, message in cases:
+            with self.subTest(message=message):
+                self.assertIn(
+                    message,
+                    "\n".join(
+                        validate_repository.validate_sharded_mutation_workflow(workflow)
+                    ),
+                )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(valid), []
+        )
+
     def copy_contract(self, root: Path) -> None:
         for relative in self.CONTRACT_FILES:
             source = PLUGIN_ROOT / relative
             destination = root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+        shutil.copy2(
+            PLUGIN_ROOT / "tests" / "fixtures" / "mutation-testing-legacy.yml",
+            root / ".github" / "workflows" / "mutation-testing.yml",
+        )
 
     def test_repository_mutation_contract_is_valid(self) -> None:
         self.assertEqual(
@@ -2445,6 +2540,11 @@ jobs:
                     1,
                 )
                 .replace(
+                    '  ".agents",',
+                    "",
+                    1,
+                )
+                .replace(
                     'testpaths = ["tests"]',
                     'testpaths = ["other-tests"]',
                     1,
@@ -2475,8 +2575,8 @@ jobs:
         )
         self.assertTrue(
             any(
-                "workspace must copy the maintainer instructions and both mutation "
-                "requirement files" in p
+                "workspace must copy the plugin marketplace, maintainer "
+                "instructions, and both mutation requirement files" in p
                 for p in problems
             )
         )
@@ -2484,13 +2584,13 @@ jobs:
             any("pytest must collect only first-party tests" in p for p in problems)
         )
 
-    def test_mutation_workspace_copies_maintainer_instructions(self) -> None:
+    def test_mutation_workspace_copies_required_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
             config_path = root / "pyproject.toml"
             original_config = config_path.read_text(encoding="utf-8")
-            for copied_path in (".claude", "AGENTS.md"):
+            for copied_path in (".agents", ".claude", "AGENTS.md"):
                 with self.subTest(copied_path=copied_path):
                     config_path.write_text(
                         original_config.replace(f'  "{copied_path}",\n', "", 1),
@@ -2503,7 +2603,7 @@ jobs:
 
                     self.assertTrue(
                         any(
-                            "workspace must copy the maintainer instructions" in problem
+                            "workspace must copy the plugin marketplace" in problem
                             for problem in problems
                         )
                     )
@@ -3095,6 +3195,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 "branch_protection_preflight.py",
                 "codeql_preflight.py",
                 "merge_settings_preflight.py",
+                "release_preflight.py",
                 "security_features_preflight.py",
                 "validate_scaffold.py",
             ):
@@ -3140,6 +3241,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_official_docs_tracking_contract",
             "validate_code_scanning_gate_contract",
             "validate_workflow_script_copy_contract",
+            "validate_pr_template_preflight_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
             "validate_release_archive",
@@ -3686,7 +3788,8 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "python -m pytest -q\n"
             "python scripts/validate_repository.py\n"
             "python skills/repo-scaffold/scripts/validate_scaffold.py\n"
-            "claude plugin validate --strict .\n",
+            "claude plugin validate --strict .\n"
+            "scripts/pr_template_preflight.py\n",
             encoding="utf-8",
         )
         claude_instructions = root / ".claude" / "CLAUDE.md"
@@ -5392,6 +5495,10 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "AGENTS.vi.md",
         ):
             text = path.read_text(encoding="utf-8")
+            self.assertIn("scripts/pr_template_preflight.py", text)
+            self.assertIn("--template security", text)
+            self.assertIn("--template deployment", text)
+            self.assertIn("--template dependency-update", text)
             self.assertIn("--body-file", text)
             self.assertIn("--fill", text)
             self.assertRegex(text, r"ready(?:\s+|_)for(?:\s+|_)review", path)
@@ -5404,6 +5511,10 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             / "pull-request-contract.md"
         ).read_text(encoding="utf-8")
         self.assertIn("--body-file", pull_request_reference)
+        self.assertIn("scripts/pr_template_preflight.py", pull_request_reference)
+        self.assertIn("--template security", pull_request_reference)
+        self.assertIn("--template deployment", pull_request_reference)
+        self.assertIn("--template dependency-update", pull_request_reference)
         self.assertIn("--fill", pull_request_reference)
         self.assertRegex(
             pull_request_reference,
@@ -7905,6 +8016,106 @@ class WorkflowScriptCopyContractTests(unittest.TestCase):
             unreadable_reference[0].startswith(
                 "references/scaffold-generation.md: could not read workflow script "
             )
+        )
+
+
+class PullRequestTemplatePreflightDistributionTests(unittest.TestCase):
+    def test_current_preflight_distribution_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_pr_template_preflight_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_bundled_preflight_or_copy_contract_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root_script = root / "scripts" / "pr_template_preflight.py"
+            reference = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "scaffold-generation.md"
+            )
+            root_script.parent.mkdir(parents=True)
+            root_script.write_text("print('unrelated')\n", encoding="utf-8")
+            reference.parent.mkdir(parents=True)
+            reference.write_text("# Scaffold generation contract\n", encoding="utf-8")
+            assets = root / "skills" / "repo-scaffold" / "assets"
+            assets.mkdir(parents=True)
+            for name in ("AGENTS.md", "AGENTS.vi.md"):
+                (assets / name).write_text("No preflight\n", encoding="utf-8")
+
+            problems = validate_repository.validate_pr_template_preflight_contract(root)
+
+        self.assertIn(
+            "skills/repo-scaffold/scripts/pr_template_preflight.py: bundled "
+            "preflight script is missing",
+            problems,
+        )
+        self.assertIn(
+            "scripts/pr_template_preflight.py: must delegate to the bundled "
+            "preflight script",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/references/scaffold-generation.md: must document "
+            "copying scripts/pr_template_preflight.py",
+            problems,
+        )
+
+    def test_missing_entrypoint_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            problems = validate_repository.validate_pr_template_preflight_contract(root)
+
+        self.assertIn(
+            "scripts/pr_template_preflight.py: maintainer preflight entry point is "
+            "missing",
+            problems,
+        )
+
+    def test_unreadable_preflight_contract_files_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root_script = root / "scripts" / "pr_template_preflight.py"
+            source = root / "skills" / "repo-scaffold" / "scripts" / root_script.name
+            reference = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "scaffold-generation.md"
+            )
+            assets = root / "skills" / "repo-scaffold" / "assets"
+            for path in (
+                root_script,
+                source,
+                reference,
+                assets / "AGENTS.md",
+                assets / "AGENTS.vi.md",
+            ):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("preflight\n", encoding="utf-8")
+
+            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+                problems = validate_repository.validate_pr_template_preflight_contract(
+                    root
+                )
+
+        self.assertIn(
+            "scripts/pr_template_preflight.py: unreadable: denied",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/references/scaffold-generation.md: could not read "
+            "preflight copy contract: denied",
+            problems,
+        )
+        self.assertIn(
+            "skills/repo-scaffold/assets/AGENTS.md: unreadable: denied",
+            problems,
         )
 
 

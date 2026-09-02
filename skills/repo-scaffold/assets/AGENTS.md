@@ -15,12 +15,14 @@ This file is the shared instruction entry point for coding agents that support
 
 ## Pull requests
 
-Before creating or updating a pull request, read the trusted template set from
-the target base branch. For a Conventional Commit PR title beginning with
-`feat`, `fix`, or `docs`, use `feature`, `bugfix`, or `documentation`,
-respectively. The `pr-template` gate enforces those mappings. For other title
-types, use the default template unless the change genuinely needs security or
-deployment or dependency-update review. Preserve exactly one matching
+Before creating or updating a pull request, run
+`python scripts/pr_template_preflight.py --title "<title>"`. For a focused
+security, deployment, or dependency update whose title has no mandatory
+mapping, pass `--template security`, `--template deployment`, or
+`--template dependency-update`. For a Conventional Commit PR title beginning
+with `feat`, `fix`, or `docs`, use `feature`, `bugfix`, or `documentation`,
+respectively. The `pr-template` gate enforces those mappings and rejects an
+override. Preserve exactly one matching
 `<!-- repo-scaffold:pr-template=<id> -->` marker, every required heading, and
 every required-checklist item from the selected template. Include an `If
 applicable` item only when it applies, and omit that section when none apply. A

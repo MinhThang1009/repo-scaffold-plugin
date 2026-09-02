@@ -168,6 +168,7 @@ MAINTAINER_AGENT_REQUIRED_FRAGMENTS = (
     "python scripts/validate_repository.py",
     "python skills/repo-scaffold/scripts/validate_scaffold.py",
     "claude plugin validate --strict .",
+    "scripts/pr_template_preflight.py",
 )
 TEMPLATE_TOKEN = re.compile(r"(?:\{\{|\$\{\{)")
 ISSUE_FORM_ID = re.compile(r"^[0-9A-Za-z_-]+$")
@@ -287,6 +288,11 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
 SCAFFOLD_GENERATION_REFERENCE = Path(
     "skills/repo-scaffold/references/scaffold-generation.md"
 )
+PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT = Path("scripts/pr_template_preflight.py")
+PR_TEMPLATE_PREFLIGHT_SKILL_SCRIPT = Path(
+    "skills/repo-scaffold/scripts/pr_template_preflight.py"
+)
+PR_TEMPLATE_PREFLIGHT_DESTINATION = Path("scripts/pr_template_preflight.py")
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -1597,27 +1603,22 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         and isinstance(step.get("run"), str)
         and "python -m mypy" in step["run"]
     ]
-    required_mypy_paths = {
-        "skills/repo-scaffold/scripts/check_community_health.py",
-        "skills/repo-scaffold/scripts/audit_freshness.py",
-        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
-        "skills/repo-scaffold/scripts/codeql_preflight.py",
-        "skills/repo-scaffold/scripts/ci_toolchain.py",
-        "skills/repo-scaffold/scripts/merge_settings_preflight.py",
-        "skills/repo-scaffold/scripts/security_features_preflight.py",
-        "skills/repo-scaffold/scripts/sync_action_pins.py",
-        "skills/repo-scaffold/scripts/validate_scaffold.py",
-        "scripts/audit_freshness.py",
-        "scripts/audit_official_docs.py",
-        "scripts/check_code_scanning_alerts.py",
-        "scripts/prepare_mutation_cache.py",
-        "scripts/python_support.py",
-        "scripts/run_mutation_testing.py",
-        "scripts/validate_mutation_results.py",
-        "scripts/validate_repository.py",
-        "scripts/validate_workflows.py",
-        "tests",
-    }
+    required_mypy_paths = {"tests"}
+    for script_directory in (
+        repository_root / "scripts",
+        repository_root / "skills" / "repo-scaffold" / "scripts",
+    ):
+        try:
+            required_mypy_paths.update(
+                path.relative_to(repository_root).as_posix()
+                for path in script_directory.glob("*.py")
+                if path.is_file()
+            )
+        except OSError as error:
+            problems.append(
+                f"{script_directory.relative_to(repository_root).as_posix()}: could not "
+                f"inventory production scripts for Mypy: {error}"
+            )
     mypy_arguments = (
         set(mypy_steps[0]["run"].split()) if len(mypy_steps) == 1 else set()
     )
@@ -1732,6 +1733,50 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     return problems
 
 
+def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
+    """Validate a complete matrix assignment before the score gate runs."""
+    if not isinstance(workflow, dict):
+        return [".github/workflows/mutation-testing.yml: invalid workflow"]
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict) or set(jobs) != {
+        "mutation-plan",
+        "mutation-shards",
+        "mutation-quality",
+    }:
+        return [
+            ".github/workflows/mutation-testing.yml: require plan, shard, and "
+            "aggregate mutation jobs"
+        ]
+    shards = jobs["mutation-shards"]
+    aggregate = jobs["mutation-quality"]
+    if not isinstance(shards, dict) or not isinstance(aggregate, dict):
+        return [".github/workflows/mutation-testing.yml: mutation jobs must map"]
+    matrix = shards.get("strategy", {}).get("matrix", {})
+    assigned = matrix.get("shard") if isinstance(matrix, dict) else None
+    if assigned != [str(index) for index in range(32)]:
+        return [
+            ".github/workflows/mutation-testing.yml: run all 32 exact mutation shards"
+        ]
+    runs = {
+        step.get("run")
+        for job in (jobs["mutation-plan"], shards, aggregate)
+        if isinstance(job, dict) and isinstance(job.get("steps"), list)
+        for step in job["steps"]
+        if isinstance(step, dict) and isinstance(step.get("run"), str)
+    }
+    required = {
+        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32",
+        'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"',
+        "python scripts/merge_mutation_shards.py",
+    }
+    if not required.issubset(runs):
+        return [
+            ".github/workflows/mutation-testing.yml: plan, execute, and merge "
+            "exact mutation shards"
+        ]
+    return []
+
+
 def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     """Validate the isolated, evidence-preserving mutation-testing configuration."""
     relative_paths = (
@@ -1751,6 +1796,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_merge_settings_preflight.py",
+        "tests/test_release_preflight.py",
         "tests/test_security_features_preflight.py",
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
@@ -1890,6 +1936,12 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     permissions = workflow.get("permissions") if isinstance(workflow, dict) else None
     concurrency = workflow.get("concurrency") if isinstance(workflow, dict) else None
     jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if isinstance(jobs, dict) and set(jobs) == {
+        "mutation-plan",
+        "mutation-shards",
+        "mutation-quality",
+    }:
+        return problems + validate_sharded_mutation_workflow(workflow)
     job = jobs.get("mutation-quality") if isinstance(jobs, dict) else None
     steps = job.get("steps") if isinstance(job, dict) else None
     if not isinstance(triggers, dict) or set(triggers) != {
@@ -2396,14 +2448,16 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 )
         also_copy = mutation_config.get("also_copy")
         if not isinstance(also_copy, list) or not {
+            ".agents",
             ".claude",
             "AGENTS.md",
             "requirements-mutation.txt",
             "requirements-mutation.in",
         }.issubset(also_copy):
             problems.append(
-                "pyproject.toml: mutation workspace must copy the maintainer "
-                "instructions and both mutation requirement files"
+                "pyproject.toml: mutation workspace must copy the plugin "
+                "marketplace, maintainer instructions, and both mutation "
+                "requirement files"
             )
         if pytest_config.get("testpaths") != ["tests"]:
             problems.append(
@@ -2448,6 +2502,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_security_features_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.security_features_preflight",
+        ),
+        "tests/test_release_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.release_preflight",
         ),
         "tests/test_codeql_preflight.py": (
             "scripts.validate_workflows",
@@ -5198,6 +5256,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                 "repo-scaffold/skills/repo-scaffold/scripts/codeql_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/validate_scaffold.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/release_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/security_features_preflight.py",
             }
         )
@@ -5258,6 +5317,96 @@ def validate_workflow_script_copy_contract(repository_root: Path) -> list[str]:
                 problems.append(
                     f"{workflow_relative.as_posix()}: must invoke "
                     f"{destination.as_posix()}"
+                )
+    return problems
+
+
+def validate_pr_template_preflight_contract(repository_root: Path) -> list[str]:
+    """Keep PR-template preflight runnable in generated repositories."""
+    source = repository_root / PR_TEMPLATE_PREFLIGHT_SKILL_SCRIPT
+    entrypoint = repository_root / PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT
+    reference = repository_root / SCAFFOLD_GENERATION_REFERENCE
+    problems: list[str] = []
+
+    if not source.is_file():
+        problems.append(
+            f"{PR_TEMPLATE_PREFLIGHT_SKILL_SCRIPT.as_posix()}: bundled preflight "
+            "script is missing"
+        )
+    if not entrypoint.is_file():
+        problems.append(
+            f"{PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT.as_posix()}: maintainer preflight "
+            "entry point is missing"
+        )
+    else:
+        try:
+            entrypoint_text = entrypoint.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"{PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT.as_posix()}: unreadable: {error}"
+            )
+        else:
+            if (
+                "skills" not in entrypoint_text
+                or "pr_template_preflight.py" not in entrypoint_text
+            ):
+                problems.append(
+                    f"{PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT.as_posix()}: must delegate "
+                    "to the bundled preflight script"
+                )
+
+    try:
+        reference_text = reference.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(
+            f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: could not read preflight "
+            f"copy contract: {error}"
+        )
+    else:
+        row = (
+            "| Pull-request preflight | `../scripts/pr_template_preflight.py` | "
+            "`scripts/pr_template_preflight.py` |"
+        )
+        if row not in reference_text:
+            problems.append(
+                f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: must document copying "
+                f"{PR_TEMPLATE_PREFLIGHT_DESTINATION.as_posix()}"
+            )
+
+    preflight_command = 'scripts/pr_template_preflight.py --title "<title>"'
+    guidance_paths = [repository_root / "CONTRIBUTING.md"]
+    asset_root = repository_root / "skills" / "repo-scaffold" / "assets"
+    guidance_paths.extend(
+        asset_root / asset_name
+        for asset_name in (
+            "AGENTS.md",
+            "AGENTS.vi.md",
+            "CONTRIBUTING.md",
+            "CONTRIBUTING.vi.md",
+        )
+    )
+    for asset in guidance_paths:
+        try:
+            asset_text = asset.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"{asset.relative_to(repository_root).as_posix()}: unreadable: {error}"
+            )
+            continue
+        required_fragments = [preflight_command]
+        if asset.name.startswith("AGENTS"):
+            required_fragments.extend(
+                (
+                    "--template security",
+                    "--template deployment",
+                    "--template dependency-update",
+                )
+            )
+        for fragment in required_fragments:
+            if fragment not in asset_text:
+                problems.append(
+                    f"{asset.relative_to(repository_root).as_posix()}: missing "
+                    f"preflight guidance {fragment!r}"
                 )
     return problems
 
@@ -5349,6 +5498,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_official_docs_tracking_contract,
         validate_code_scanning_gate_contract,
         validate_workflow_script_copy_contract,
+        validate_pr_template_preflight_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,

@@ -1221,7 +1221,10 @@ when the proposed squash-default configuration would disable an enabled merge
 or rebase method. Do not pass its confirmation flag until the user separately
 approves those named removals. When `--require-auto-merge-workflows` reports
 `skip-auto-merge-workflows`, preserve the merge settings plan but do not install
-either shipped auto-merge asset.
+either shipped auto-merge asset. When it reports
+`enable-auto-merge-before-installing-workflows`, do not install either asset:
+enable the repository capability only with separate approval, verify the
+mutation, then rerun the preflight.
 
 ```powershell
 $mergeSettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/merge_settings_preflight.py"
@@ -1249,7 +1252,8 @@ if ($mergeSettingsPreflightResult.decision -eq "require-explicit-merge-method-re
   throw "Disabling enabled merge methods ($methods) needs separate user confirmation; do not mutate."
 }
 if ($mergeSettingsPreflightResult.decision -notin @(
-  "may-configure-merge-settings", "skip-auto-merge-workflows"
+  "may-configure-merge-settings", "skip-auto-merge-workflows",
+  "enable-auto-merge-before-installing-workflows"
 )) {
   throw "Merge-settings preflight returned an unknown decision; do not mutate."
 }
@@ -1261,7 +1265,11 @@ $installAutoMergeWorkflows = [bool]$mergeSettingsPreflightResult.auto_merge_work
 
 After separate approval for listed removals, append
 `--confirm-disable-merge-methods`, rerun the preflight, and require the
-`may-configure-merge-settings` or `skip-auto-merge-workflows` decision again.
+`may-configure-merge-settings`, `skip-auto-merge-workflows`, or
+`enable-auto-merge-before-installing-workflows` decision again. If the last
+decision requires auto-merge enablement, do not copy an auto-merge asset until
+the separately approved mutation succeeds, its final state is verified, and a
+rerun reports `may-configure-merge-settings`.
 Use `$enableMergeCommit`, `$enableRebaseMerge`, and
 `$installAutoMergeWorkflows` only from its final JSON result. The detailed
 effective-rule inspection below is retained to explain the underlying GitHub
@@ -1432,6 +1440,30 @@ The repository API setting `squash_merge_commit_title=PR_TITLE` makes the final 
 
 ## release-please token (RELEASE_PLEASE_TOKEN)
 
+Before copying `release.yml`, `release-please.yml`, or an attestation-enabled
+release variant, run the bundled release preflight from the installed skill
+root. It verifies the exact GitHub.com repository identity, rejects archived or
+disabled repositories, binds the installation to the remote default branch,
+and chooses the allowed attestation variant. Do not infer private or internal
+repository attestation eligibility from visibility alone: GitHub requires
+Enterprise Cloud for those repositories, so use `--github-enterprise-cloud`
+only after separately confirming that plan.
+
+```bash
+python "$REPO_SCAFFOLD_SKILL_ROOT/scripts/release_preflight.py" \
+  --repository OWNER/REPO \
+  --default-branch DEFAULT_BRANCH \
+  --with-attestations
+```
+
+Proceed with attestation-enabled assets only when the JSON decision is
+`may-install-attestation-workflows`. When it returns
+`render-no-attestation-variant`, install the documented no-attestation variant
+instead. A result of `inconclusive` forbids the release workflow mutation until
+the evidence is repaired. For a confirmed private or internal GitHub Enterprise
+Cloud repository, add `--github-enterprise-cloud`; omit
+`--with-attestations` when provenance attestations are not requested.
+
 Treat plugin-creator's local `+codex.<cachebuster>` suffix as installation identity only. Do not copy it into the public release manifest, plugin version, changelog, or tag; confirm and use the clean public SemVer instead. Preserve other SemVer build metadata only when the user explicitly confirms it is part of the public release identity.
 
 The shipped `release.yml` also supports a verified manual recovery path without a `push.tags` trigger. Run it only after the exact tag exists and resolves to the supplied full commit SHA:
@@ -1475,6 +1507,22 @@ gh attestation verify PATH/TO/ARTIFACT \
 
 1. Create the PAT (GitHub UI → Settings → Developer settings → Fine-grained tokens, or `gh` if available). Scope it least-privilege: **only this repository**, permissions **Contents: Read and write** + **Pull requests: Read and write** (add **Issues: Read and write** if release-please manages issues). Nothing else.
 2. Add it as a repository secret named **exactly** `RELEASE_PLEASE_TOKEN` (Settings → Secrets and variables → Actions → New repository secret). The name must match the `secrets.RELEASE_PLEASE_TOKEN` reference in the workflows character-for-character — secret names allow only letters, digits, and underscores (no hyphens/spaces), so a mismatch makes the action fail with "Input required: token".
+
+3. Before installing `release-please.yml` or an `auto-merge.yml` that depends on
+   the PAT, verify only the secret's exact repository-scoped name. This does not
+   retrieve, print, or otherwise expose its value. An unavailable secret API or
+   a missing/mismatched name is inconclusive and forbids that workflow mutation:
+
+   ```bash
+   python "$REPO_SCAFFOLD_SKILL_ROOT/scripts/release_preflight.py" \
+     --repository OWNER/REPO \
+     --default-branch DEFAULT_BRANCH \
+     --require-release-please-token
+   ```
+
+   Continue only when `release_please_token` is `verified-present` in the JSON
+   result. The caller still must confirm that the PAT itself has the documented
+   least-privilege scopes; GitHub's secret API intentionally cannot prove them.
 
 Never paste the token value into a chat, commit, or log. If one is ever exposed, revoke it immediately and create a new one.
 
