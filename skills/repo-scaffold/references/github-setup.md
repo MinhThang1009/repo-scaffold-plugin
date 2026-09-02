@@ -1221,7 +1221,10 @@ when the proposed squash-default configuration would disable an enabled merge
 or rebase method. Do not pass its confirmation flag until the user separately
 approves those named removals. When `--require-auto-merge-workflows` reports
 `skip-auto-merge-workflows`, preserve the merge settings plan but do not install
-either shipped auto-merge asset.
+either shipped auto-merge asset. When it reports
+`enable-auto-merge-before-installing-workflows`, do not install either asset:
+enable the repository capability only with separate approval, verify the
+mutation, then rerun the preflight.
 
 ```powershell
 $mergeSettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/merge_settings_preflight.py"
@@ -1249,7 +1252,8 @@ if ($mergeSettingsPreflightResult.decision -eq "require-explicit-merge-method-re
   throw "Disabling enabled merge methods ($methods) needs separate user confirmation; do not mutate."
 }
 if ($mergeSettingsPreflightResult.decision -notin @(
-  "may-configure-merge-settings", "skip-auto-merge-workflows"
+  "may-configure-merge-settings", "skip-auto-merge-workflows",
+  "enable-auto-merge-before-installing-workflows"
 )) {
   throw "Merge-settings preflight returned an unknown decision; do not mutate."
 }
@@ -1261,7 +1265,11 @@ $installAutoMergeWorkflows = [bool]$mergeSettingsPreflightResult.auto_merge_work
 
 After separate approval for listed removals, append
 `--confirm-disable-merge-methods`, rerun the preflight, and require the
-`may-configure-merge-settings` or `skip-auto-merge-workflows` decision again.
+`may-configure-merge-settings`, `skip-auto-merge-workflows`, or
+`enable-auto-merge-before-installing-workflows` decision again. If the last
+decision requires auto-merge enablement, do not copy an auto-merge asset until
+the separately approved mutation succeeds, its final state is verified, and a
+rerun reports `may-configure-merge-settings`.
 Use `$enableMergeCommit`, `$enableRebaseMerge`, and
 `$installAutoMergeWorkflows` only from its final JSON result. The detailed
 effective-rule inspection below is retained to explain the underlying GitHub

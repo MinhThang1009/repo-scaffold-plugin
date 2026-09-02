@@ -94,6 +94,9 @@ Before changing merge settings or installing an auto-merge workflow, run the
 fail-closed `scripts/merge_settings_preflight.py`. Preserve its required merge
 methods, obtain separate confirmation before disabling any enabled method, and
 skip the shipped auto-merge workflows when it reports an effective merge queue.
+When it reports that repository auto-merge is disabled, enable that capability
+only with separate approval, verify the mutation, then rerun the preflight
+before installing either shipped auto-merge workflow.
 
 Before enabling Dependabot alerts or security updates, secret scanning or push
 protection, or private vulnerability reporting, run the fail-closed
