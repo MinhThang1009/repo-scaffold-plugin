@@ -4916,13 +4916,45 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "scripts/sync_action_pins.py",
                     "skills/repo-scaffold/scripts/sync_action_pins.py",
                 },
-                "github-action-pin-git-refs-api": {
+                "github-git-refs-api": {
                     "scripts/sync_action_pins.py",
                     "skills/repo-scaffold/scripts/sync_action_pins.py",
+                    "scripts/check_code_scanning_alerts.py",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
                 },
-                "github-action-pin-git-tags-api": {
+                "github-git-tags-api": {
                     "scripts/sync_action_pins.py",
                     "skills/repo-scaffold/scripts/sync_action_pins.py",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                },
+                "github-releases-api": {
+                    "scripts/sync_action_pins.py",
+                    "skills/repo-scaffold/scripts/sync_action_pins.py",
+                    "skills/repo-scaffold/scripts/ci_toolchain.py",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                },
+                "github-pull-requests-api": {
+                    "scripts/check_code_scanning_alerts.py",
+                },
+                "github-git-commits-api": {
+                    "scripts/check_code_scanning_alerts.py",
+                },
+                "github-community-health-branches-api": {
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                },
+                "github-community-health-git-trees-api": {
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                },
+                "github-reminder-issues-api": {
+                    ".github/workflows/ci.yml",
+                    ".github/workflows/community-health.yml",
+                    ".github/workflows/freshness.yml",
+                    ".github/workflows/official-docs.yml",
+                    "skills/repo-scaffold/assets/workflows/community-health.yml",
+                    "skills/repo-scaffold/assets/workflows/freshness.yml",
                 },
                 "github-branch-protection-status-checks": {
                     "skills/repo-scaffold/SKILL.md",

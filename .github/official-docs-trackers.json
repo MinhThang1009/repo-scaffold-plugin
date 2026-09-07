@@ -396,13 +396,16 @@
       "review-period-days": 90
     },
     {
-      "id": "github-action-pin-git-refs-api",
-      "label": "GitHub Git references API for action pins",
+      "id": "github-git-refs-api",
+      "label": "GitHub Git references API",
       "url": "https://docs.github.com/en/rest/git/refs",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
         "scripts/sync_action_pins.py",
-        "skills/repo-scaffold/scripts/sync_action_pins.py"
+        "skills/repo-scaffold/scripts/sync_action_pins.py",
+        "scripts/check_code_scanning_alerts.py",
+        ".github/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release.yml"
       ],
       "required-markers": [
         "Get a reference",
@@ -413,18 +416,125 @@
       "review-period-days": 90
     },
     {
-      "id": "github-action-pin-git-tags-api",
-      "label": "GitHub Git tag objects API for action pins",
+      "id": "github-git-tags-api",
+      "label": "GitHub Git tag objects API",
       "url": "https://docs.github.com/en/rest/git/tags",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
         "scripts/sync_action_pins.py",
-        "skills/repo-scaffold/scripts/sync_action_pins.py"
+        "skills/repo-scaffold/scripts/sync_action_pins.py",
+        ".github/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release.yml"
       ],
       "required-markers": [
         "Get a tag",
         "annotated tag objects",
         "Contents"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-releases-api",
+      "label": "GitHub releases API",
+      "url": "https://docs.github.com/en/rest/releases/releases",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "scripts/sync_action_pins.py",
+        "skills/repo-scaffold/scripts/sync_action_pins.py",
+        "skills/repo-scaffold/scripts/ci_toolchain.py",
+        ".github/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release.yml"
+      ],
+      "required-markers": [
+        "List releases",
+        "Get the latest release",
+        "immutable"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-pull-requests-api",
+      "label": "GitHub pull requests API",
+      "url": "https://docs.github.com/en/rest/pulls/pulls",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "scripts/check_code_scanning_alerts.py"
+      ],
+      "required-markers": [
+        "Get a pull request",
+        "merge_commit_sha",
+        "Pull requests"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-git-commits-api",
+      "label": "GitHub Git commit objects API",
+      "url": "https://docs.github.com/en/rest/git/commits",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "scripts/check_code_scanning_alerts.py"
+      ],
+      "required-markers": [
+        "Get a commit object",
+        "parents",
+        "Contents"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-community-health-branches-api",
+      "label": "GitHub branches API for community health",
+      "url": "https://docs.github.com/en/rest/branches/branches",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/scripts/check_community_health.py"
+      ],
+      "required-markers": [
+        "Get a branch",
+        "Contents",
+        "branch"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-community-health-git-trees-api",
+      "label": "GitHub Git trees API for community health",
+      "url": "https://docs.github.com/en/rest/git/trees",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/scripts/check_community_health.py"
+      ],
+      "required-markers": [
+        "Get a tree",
+        "recursive",
+        "truncated"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-reminder-issues-api",
+      "label": "GitHub Issues API for reminder workflows",
+      "url": "https://docs.github.com/en/rest/issues/issues",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/community-health.yml",
+        ".github/workflows/freshness.yml",
+        ".github/workflows/official-docs.yml",
+        "skills/repo-scaffold/assets/workflows/community-health.yml",
+        "skills/repo-scaffold/assets/workflows/freshness.yml"
+      ],
+      "required-markers": [
+        "List repository issues",
+        "pull_request",
+        "per_page"
       ],
       "reviewed-on": "2026-09-07",
       "review-period-days": 90
