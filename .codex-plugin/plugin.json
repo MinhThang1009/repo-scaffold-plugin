@@ -1,6 +1,6 @@
 {
   "name": "repo-scaffold",
-  "version": "1.9.5",
+  "version": "1.9.6",
   "description": "Agent Skills plugin for Codex and Claude Code that scaffolds repositories to production GitHub.com standards.",
   "author": {
     "name": "Minh Thang",
