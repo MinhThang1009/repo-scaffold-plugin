@@ -689,10 +689,11 @@
         "README.md",
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
         "skills/repo-scaffold/scripts/merge_settings_preflight.py"
       ],
       "required-markers": ["Get rules for a branch", "merge_queue", "required_status_checks"],
-      "reviewed-on": "2026-09-07",
+      "reviewed-on": "2026-09-08",
       "review-period-days": 90
     },
     {

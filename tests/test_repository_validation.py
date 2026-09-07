@@ -7722,6 +7722,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 ],
                 "github-effective-branch-rules-api": [
                     "README.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                     "skills/repo-scaffold/scripts/merge_settings_preflight.py",
                 ],
                 "github-merge-queue-auto-merge": [

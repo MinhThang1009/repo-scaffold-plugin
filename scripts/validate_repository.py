@@ -5006,6 +5006,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "README.md",
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                     "skills/repo-scaffold/scripts/merge_settings_preflight.py",
                 },
                 "github-merge-queue-auto-merge": {
