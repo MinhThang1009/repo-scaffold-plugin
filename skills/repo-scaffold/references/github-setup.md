@@ -298,8 +298,9 @@ $workflowPreflightArguments = @(
   "--workflow", "assets/workflows/ci.yml"
 )
 # For an issue-writing workflow outside the shipped asset names, set this true.
-# Shipped stale.yml, freshness.yml, and community-health.yml are detected from
-# their --workflow path and cannot bypass the Issues check when this stays false.
+# Known stale.yml, freshness.yml, community-health.yml, and official-docs.yml
+# workflows are detected from their --workflow path and cannot bypass the Issues
+# check when this stays false.
 $requiresIssueOperations = $false
 if ($requiresIssueOperations) { $workflowPreflightArguments += "--require-issues" }
 $workflowPreflightOutput = python $workflowPreflight @workflowPreflightArguments 2>&1

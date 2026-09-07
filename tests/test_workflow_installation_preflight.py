@@ -343,23 +343,26 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertFalse(result["issue_workflows_eligible"])
 
-    def test_infers_issue_requirement_from_shipped_workflow_name(self) -> None:
+    def test_infers_issue_requirement_from_known_workflow_name(self) -> None:
         self.configure(issues_enabled=False)
         with tempfile.TemporaryDirectory() as directory:
-            workflow = Path(directory) / "freshness.yml"
-            workflow.write_text("jobs: {}\n", encoding="utf-8")
-            with mock.patch.object(
-                workflow_installation_preflight, "GitHubClient", FakeClient
-            ):
-                result = workflow_installation_preflight.run(
-                    arguments(workflow=[workflow])
-                )
+            for filename in ("freshness.yml", "official-docs.yml"):
+                with self.subTest(filename=filename):
+                    workflow = Path(directory) / filename
+                    workflow.write_text("jobs: {}\n", encoding="utf-8")
+                    with mock.patch.object(
+                        workflow_installation_preflight, "GitHubClient", FakeClient
+                    ):
+                        result = workflow_installation_preflight.run(
+                            arguments(workflow=[workflow])
+                        )
 
-        self.assertEqual(
-            result["decision"], "enable-issues-before-installing-issue-workflows"
-        )
-        self.assertTrue(result["requires_issues"])
-        self.assertEqual(result["detected_issue_workflows"], ["freshness.yml"])
+                    self.assertEqual(
+                        result["decision"],
+                        "enable-issues-before-installing-issue-workflows",
+                    )
+                    self.assertTrue(result["requires_issues"])
+                    self.assertEqual(result["detected_issue_workflows"], [filename])
 
     def test_infers_external_actions_from_workflow_input(self) -> None:
         self.configure(allowed_actions="local_only")

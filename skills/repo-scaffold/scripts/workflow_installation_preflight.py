@@ -16,7 +16,7 @@ import sync_action_pins
 
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
 ISSUE_WORKFLOW_FILENAMES = frozenset(
-    {"community-health.yml", "freshness.yml", "stale.yml"}
+    {"community-health.yml", "freshness.yml", "official-docs.yml", "stale.yml"}
 )
 
 
