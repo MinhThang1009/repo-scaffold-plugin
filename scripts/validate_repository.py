@@ -4994,6 +4994,9 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/assets/workflows/community-health.yml",
                     "skills/repo-scaffold/assets/workflows/freshness.yml",
                 },
+                "github-repository-labels-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
                 "github-branch-protection-status-checks": {
                     "README.md",
                     "skills/repo-scaffold/SKILL.md",

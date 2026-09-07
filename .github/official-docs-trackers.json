@@ -664,6 +664,22 @@
       "review-period-days": 90
     },
     {
+      "id": "github-repository-labels-api",
+      "label": "GitHub repository labels API",
+      "url": "https://docs.github.com/en/rest/issues/labels",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md"
+      ],
+      "required-markers": [
+        "Create a label",
+        "List labels for a repository",
+        "Issues"
+      ],
+      "reviewed-on": "2026-09-08",
+      "review-period-days": 90
+    },
+    {
       "id": "github-branch-protection-status-checks",
       "label": "GitHub branch-protection required checks",
       "url": "https://docs.github.com/en/rest/branches/branch-protection",

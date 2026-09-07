@@ -7712,6 +7712,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-check-runs-api": "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                 "github-commit-statuses-api": "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                 "github-reminder-issues-api": "skills/repo-scaffold/assets/workflows/freshness.yml",
+                "github-repository-labels-api": "skills/repo-scaffold/references/github-setup.md",
                 "github-branch-protection-status-checks": [
                     "README.md",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
@@ -7988,6 +7989,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-community-health-git-trees-api",
             "github-check-runs-api",
             "github-commit-statuses-api",
+            "github-repository-labels-api",
             "github-reminder-issues-api",
             "github-branch-protection-status-checks",
             "github-branches-api",
