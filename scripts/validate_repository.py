@@ -1809,6 +1809,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_branch_protection_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
+        "tests/test_dependency_review_preflight.py",
         "tests/test_merge_settings_preflight.py",
         "tests/test_release_preflight.py",
         "tests/test_repository_settings_preflight.py",
@@ -2518,6 +2519,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_security_features_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.security_features_preflight",
+        ),
+        "tests/test_dependency_review_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.dependency_review_preflight",
         ),
         "tests/test_repository_settings_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
@@ -4819,9 +4824,13 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
         else:
             tracked_paths_by_url: dict[str, set[str]] = {}
             tracked_hosts: set[str] = set()
+            claim_paths_by_id: dict[str, object] = {}
             for claim in claims:
                 if not isinstance(claim, dict):
                     continue
+                identifier = claim.get("id")
+                if isinstance(identifier, str):
+                    claim_paths_by_id[identifier] = claim.get("paths")
                 url = claim.get("url")
                 claim_paths = claim.get("paths")
                 if isinstance(url, str) and isinstance(claim_paths, list):
@@ -4861,6 +4870,18 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                         problems.append(
                             f"{relative}: official documentation URL must list this file in its tracker claim: {source_url}"
                         )
+            dependabot_paths = claim_paths_by_id.get("github-actions-dependabot")
+            required_dependabot_paths = {
+                ".github/dependabot.yml",
+                "skills/repo-scaffold/assets/dependabot.yml",
+            }
+            if dependabot_paths is not None and (
+                not isinstance(dependabot_paths, list)
+                or not required_dependabot_paths.issubset(dependabot_paths)
+            ):
+                problems.append(
+                    ".github/official-docs-trackers.json: Dependabot claim must track both shipped configuration paths"
+                )
     try:
         script_text = script_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
@@ -5281,6 +5302,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                 "repo-scaffold/skills/repo-scaffold/scripts/ci_toolchain.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/branch_protection_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/codeql_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/validate_scaffold.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/merge_settings_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/release_preflight.py",

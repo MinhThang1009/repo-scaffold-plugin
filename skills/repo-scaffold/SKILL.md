@@ -90,6 +90,14 @@ Before configuring classic branch protection, run the fail-closed
 whose head contains the final workflow set. Use only its returned contexts and
 GitHub App IDs. Do not configure required checks when it is inconclusive.
 
+Before installing `dependency-review.yml`, run the fail-closed
+`scripts/dependency_review_preflight.py` against the exact repository. It
+proves that the dependency graph can return an SBOM and, for private or internal
+repositories, requires an organization-owned repository with GitHub Code
+Security enabled. Install the asset only when it returns
+`may-install-dependency-review-workflow`; also run the workflow-installation
+preflight before copying the asset.
+
 Before changing merge settings or installing an auto-merge workflow, run the
 fail-closed `scripts/merge_settings_preflight.py`. Preserve its required merge
 methods, obtain separate confirmation before disabling any enabled method, and

@@ -139,6 +139,7 @@ jobs:
           skills/repo-scaffold/scripts/audit_freshness.py
           skills/repo-scaffold/scripts/branch_protection_preflight.py
           skills/repo-scaffold/scripts/codeql_preflight.py
+          skills/repo-scaffold/scripts/dependency_review_preflight.py
           skills/repo-scaffold/scripts/ci_toolchain.py
           skills/repo-scaffold/scripts/pr_template_preflight.py
           skills/repo-scaffold/scripts/release_preflight.py

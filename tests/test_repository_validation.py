@@ -1754,6 +1754,7 @@ class MutationTestingContractTests(unittest.TestCase):
         "tests/test_branch_protection_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
+        "tests/test_dependency_review_preflight.py",
         "tests/test_merge_settings_preflight.py",
         "tests/test_release_preflight.py",
         "tests/test_repository_settings_preflight.py",
@@ -3196,6 +3197,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 "ci_toolchain.py",
                 "branch_protection_preflight.py",
                 "codeql_preflight.py",
+                "dependency_review_preflight.py",
                 "merge_settings_preflight.py",
                 "release_preflight.py",
                 "repository_settings_preflight.py",
@@ -7658,6 +7660,26 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             validate_repository.validate_official_docs_tracking_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_dependabot_claim_must_track_both_configuration_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            registry_path = root / ".github" / "official-docs-trackers.json"
+            registry = validate_repository.load_json(registry_path)
+            claims = registry["claims"]
+            dependabot_claim = next(
+                claim for claim in claims if claim["id"] == "github-actions-dependabot"
+            )
+            dependabot_claim["paths"].remove(
+                "skills/repo-scaffold/assets/dependabot.yml"
+            )
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+            missing_path = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+
+        self.assertTrue(any("both shipped" in problem for problem in missing_path))
 
     def test_missing_and_drifted_official_documentation_contract_is_reported(
         self,

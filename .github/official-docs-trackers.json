@@ -251,7 +251,9 @@
       "allowed-hosts": ["docs.github.com"],
       "paths": [
         "README.md",
-        "skills/repo-scaffold/references/github-setup.md"
+        "skills/repo-scaffold/references/github-setup.md",
+        ".github/dependabot.yml",
+        "skills/repo-scaffold/assets/dependabot.yml"
       ],
       "required-markers": ["github-actions", "directory"],
       "reviewed-on": "2026-08-24",

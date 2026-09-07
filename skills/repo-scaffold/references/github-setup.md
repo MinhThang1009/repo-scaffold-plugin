@@ -1394,7 +1394,35 @@ feature.
   }
   ```
 
-- **Dependency review workflow**: install `assets/workflows/dependency-review.yml` for public repositories, or for organization-owned private or internal repositories only after confirming GitHub Code Security/Advanced Security eligibility. The v5 asset handles both `pull_request` and `merge_group` payloads. Require its `dependency-review` check only when the workflow can run on every event required by the repository's effective rules.
+- **Dependency review workflow**: before installing
+  `assets/workflows/dependency-review.yml`, run the bundled preflight. It proves
+  that the dependency graph returns an SBOM. Public repositories may proceed
+  only with that proof; private or internal repositories must additionally be
+  organization-owned and have GitHub Code Security enabled. A missing or
+  malformed response is inconclusive and forbids installation. Run the
+  workflow-installation preflight as well, because it independently checks the
+  Actions policy and exact action pin.
+
+  ```powershell
+  $dependencyReviewPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/dependency_review_preflight.py"
+  if (-not (Test-Path -LiteralPath $dependencyReviewPreflight -PathType Leaf)) {
+    throw "The bundled dependency-review preflight is missing; do not copy the workflow."
+  }
+  $dependencyReviewPreflightOutput = python $dependencyReviewPreflight `
+    --repository "OWNER/REPO" --hostname "github.com" 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Dependency-review inspection is inconclusive; do not copy the workflow. $($dependencyReviewPreflightOutput | Out-String)"
+  }
+  $dependencyReviewPreflightResult = ($dependencyReviewPreflightOutput | Out-String) | ConvertFrom-Json
+  if (-not $dependencyReviewPreflightResult.inspection_complete -or
+      $dependencyReviewPreflightResult.decision -ne "may-install-dependency-review-workflow") {
+    throw "Dependency-review capability is not confirmed. Resolve the returned decision and rerun before copying the workflow."
+  }
+  ```
+
+  The v5 asset handles both `pull_request` and `merge_group` payloads. Require
+  its `dependency-review` check only when the workflow can run on every event
+  required by the repository's effective rules.
 
 ## Merge settings
 
