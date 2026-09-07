@@ -1798,6 +1798,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_merge_settings_preflight.py",
         "tests/test_release_preflight.py",
         "tests/test_security_features_preflight.py",
+        "tests/test_workflow_installation_preflight.py",
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
         "tests/test_run_mutation_testing.py",
@@ -2502,6 +2503,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_security_features_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.security_features_preflight",
+        ),
+        "tests/test_workflow_installation_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.workflow_installation_preflight",
         ),
         "tests/test_release_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
@@ -5258,6 +5263,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                 "repo-scaffold/skills/repo-scaffold/scripts/merge_settings_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/release_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/security_features_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/workflow_installation_preflight.py",
             }
         )
         for missing in sorted(expected - names):

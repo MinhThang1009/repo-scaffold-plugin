@@ -11,6 +11,7 @@ NOTE (Windows/Git-Bash): `gh api` paths must NOT start with a leading slash, or 
 - [Repository identity preflight](#repository-identity-preflight)
 - [Description and topics](#description-and-topics)
 - [Repository communication features](#repository-communication-features)
+- [Workflow installation preflight](#workflow-installation-preflight)
 - [Inherited community-health policy](#inherited-community-health-policy)
 - [Branch protection (classic)](#branch-protection-classic)
 - [Ruleset compatibility (inspect only)](#ruleset-compatibility-inspect-only)
@@ -198,6 +199,41 @@ $hasDiscussionsEnabled = [bool]$featureState.hasDiscussionsEnabled
 ```
 
 Use only `$hasIssuesEnabled` and `$hasDiscussionsEnabled` from that final query when rendering templates and links. If a feature remains disabled, omit its dependent output instead of shipping dead navigation. For a local-only repository, use confirmed non-GitHub contacts until a remote exists; intended future state is not an enabled capability.
+
+## Workflow installation preflight
+
+Before copying a GitHub Actions asset, run the bundled read-only preflight. It
+binds the response to the exact repository, rejects archived or disabled
+repositories, and checks whether GitHub Actions is enabled. Pass
+`--require-external-actions` for any asset with `uses:`. A `local_only` policy
+forbids those assets; a `selected` policy is inconclusive until its selected
+allowlist has been reviewed against every exact action reference. Pass
+`--require-issues` for `stale.yml`, `freshness.yml`, and
+`community-health.yml`, because each performs issue operations.
+
+```powershell
+$workflowPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/workflow_installation_preflight.py"
+if (-not (Test-Path -LiteralPath $workflowPreflight -PathType Leaf)) {
+  throw "The bundled workflow-installation preflight is missing; do not copy workflow assets."
+}
+$workflowPreflightArguments = @(
+  "--repository", "OWNER/REPO",
+  "--hostname", "github.com",
+  "--require-external-actions"
+)
+# Add this only for stale.yml, freshness.yml, or community-health.yml.
+$requiresIssueOperations = $false
+if ($requiresIssueOperations) { $workflowPreflightArguments += "--require-issues" }
+$workflowPreflightOutput = python $workflowPreflight @workflowPreflightArguments 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Workflow-installation inspection is inconclusive; do not copy the asset. $($workflowPreflightOutput | Out-String)"
+}
+$workflowPreflightResult = ($workflowPreflightOutput | Out-String) | ConvertFrom-Json
+if (-not $workflowPreflightResult.inspection_complete -or
+    $workflowPreflightResult.decision -ne "may-install-workflow-assets") {
+  throw "Workflow capability is not confirmed. Resolve the returned decision and rerun before copying the asset."
+}
+```
 
 ## Inherited community-health policy
 

@@ -117,6 +117,13 @@ attestations. After a maintainer has created `RELEASE_PLEASE_TOKEN`, use
 `--require-release-please-token` before installing release-please or an
 auto-merge workflow that relies on it; never retrieve or print the secret value.
 
+Before copying any GitHub Actions asset, run the fail-closed
+`scripts/workflow_installation_preflight.py`. Require external actions for an
+asset with `uses:` and require Issues for `stale.yml`, `freshness.yml`, or
+`community-health.yml`. Do not install an asset while Actions is disabled, while
+its policy forbids external actions, or until a selected-actions policy has been
+reviewed against every exact action reference.
+
 ### 5. Configure GitHub
 
 Before GitHub configuration, read `references/github-setup.md`. Apply only
