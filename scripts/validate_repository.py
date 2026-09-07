@@ -4909,6 +4909,9 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 "github-code-scanning-alerts-api": {
                     "scripts/check_code_scanning_alerts.py",
                 },
+                "github-community-profile-metrics-api": {
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                },
                 "github-branch-protection-status-checks": {
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",

@@ -363,6 +363,22 @@
       "review-period-days": 90
     },
     {
+      "id": "github-community-profile-metrics-api",
+      "label": "GitHub community profile metrics API",
+      "url": "https://docs.github.com/en/rest/metrics/community",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/scripts/check_community_health.py"
+      ],
+      "required-markers": [
+        "Get community profile metrics",
+        "health_percentage",
+        "Contents"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
       "id": "github-branch-protection-status-checks",
       "label": "GitHub branch-protection required checks",
       "url": "https://docs.github.com/en/rest/branches/branch-protection",
