@@ -128,6 +128,7 @@ class RepositorySettingsPreflightTests(unittest.TestCase):
             (arguments(issues=True), repository(full_name="octo/other"), "different repository"),
             (arguments(issues=True), repository(archived=True), "Archived"),
             (arguments(issues=True), repository(permissions={}), "administration permission"),
+            (arguments(issues=True), repository(permissions={"admin": False}), "administration permission"),
             (arguments(issues=True), repository(permissions={"admin": "yes"}), "invalid 'admin'"),
             (arguments(issues=True), repository(has_issues="yes"), "invalid 'has_issues'"),
         ]
