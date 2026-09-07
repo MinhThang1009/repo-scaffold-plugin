@@ -297,10 +297,9 @@ $workflowPreflightArguments = @(
   "--require-external-actions",
   "--workflow", "assets/workflows/ci.yml"
 )
-# For an issue-writing workflow outside the shipped asset names, set this true.
-# Known stale.yml, freshness.yml, community-health.yml, and official-docs.yml
-# workflows are detected from their --workflow path and cannot bypass the Issues
-# check when this stays false.
+# For an issue-writing workflow that does not contain either marker, set this true.
+# Every --workflow input containing issues: write or permissions: write-all is
+# detected and cannot bypass the Issues check when this stays false.
 $requiresIssueOperations = $false
 if ($requiresIssueOperations) { $workflowPreflightArguments += "--require-issues" }
 $workflowPreflightOutput = python $workflowPreflight @workflowPreflightArguments 2>&1

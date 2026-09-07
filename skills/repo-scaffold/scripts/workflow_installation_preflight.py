@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import re
 import stat
 from pathlib import Path
 from typing import Any
@@ -15,8 +16,9 @@ import sync_action_pins
 
 
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
-ISSUE_WORKFLOW_FILENAMES = frozenset(
-    {"community-health.yml", "freshness.yml", "official-docs.yml", "stale.yml"}
+ISSUES_WRITE_PERMISSION = re.compile(r"\bissues\s*:\s*[\"']?write[\"']?", re.IGNORECASE)
+WRITE_ALL_PERMISSION = re.compile(
+    r"\bpermissions\s*:\s*[\"']?write-all[\"']?", re.IGNORECASE
 )
 
 
@@ -68,13 +70,14 @@ def selected_actions_policy(document: Any) -> dict[str, bool | list[str]]:
     }
 
 
-def workflow_external_action_references(workflows: list[Path]) -> list[str]:
-    """Read exact pinned external action references from supplied workflow assets."""
+def workflow_capabilities(workflows: list[Path]) -> tuple[list[str], list[str]]:
+    """Read exact external references and declared issue-write requirements."""
     if not workflows:
         raise InspectionError(
             "Selected Actions policy requires at least one --workflow input."
         )
     references: set[str] = set()
+    issue_workflows: set[str] = set()
     for workflow in workflows:
         try:
             metadata = workflow.lstat()
@@ -97,6 +100,8 @@ def workflow_external_action_references(workflows: list[Path]) -> list[str]:
             sync_action_pins.auditable_action_repositories(workflow, text)
         except ValueError as exc:
             raise InspectionError(str(exc)) from exc
+        if ISSUES_WRITE_PERMISSION.search(text) or WRITE_ALL_PERMISSION.search(text):
+            issue_workflows.add(workflow.name)
         direct_references = {
             sync_action_pins.normalized_uses_reference(match)
             for match in sync_action_pins.workflow_uses_matches(text)
@@ -114,18 +119,9 @@ def workflow_external_action_references(workflows: list[Path]) -> list[str]:
             for reference in direct_references
             if not reference.startswith(("./", "docker://"))
         )
-    return sorted(references, key=str.casefold)
-
-
-def issue_workflow_assets(workflows: list[Path]) -> list[str]:
-    """Identify shipped issue-writing assets from their stable filenames."""
-    return sorted(
-        {
-            workflow.name
-            for workflow in workflows
-            if workflow.name.casefold() in ISSUE_WORKFLOW_FILENAMES
-        },
-        key=str.casefold,
+    return (
+        sorted(references, key=str.casefold),
+        sorted(issue_workflows, key=str.casefold),
     )
 
 
@@ -177,13 +173,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     issues_enabled = require_boolean(repository, "has_issues")
     visibility = repository.get("visibility")
 
-    external_action_references = (
-        workflow_external_action_references(args.workflow) if args.workflow else []
+    external_action_references, detected_issue_workflows = (
+        workflow_capabilities(args.workflow) if args.workflow else ([], [])
     )
     requires_external_actions = args.require_external_actions or bool(
         external_action_references
     )
-    detected_issue_workflows = issue_workflow_assets(args.workflow)
     requires_issues = args.require_issues or bool(detected_issue_workflows)
 
     actions_enabled, allowed_actions = actions_permissions(
@@ -200,8 +195,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "Repository response has an invalid visibility value."
             )
         if not external_action_references:
-            external_action_references = workflow_external_action_references(
-                args.workflow
+            external_action_references, detected_issue_workflows = (
+                workflow_capabilities(args.workflow)
             )
         unapproved_action_references = [
             reference

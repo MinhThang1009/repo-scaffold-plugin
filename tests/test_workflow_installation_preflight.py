@@ -343,13 +343,17 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertFalse(result["issue_workflows_eligible"])
 
-    def test_infers_issue_requirement_from_known_workflow_name(self) -> None:
+    def test_infers_issue_requirement_from_declared_permission(self) -> None:
         self.configure(issues_enabled=False)
         with tempfile.TemporaryDirectory() as directory:
-            for filename in ("freshness.yml", "official-docs.yml"):
-                with self.subTest(filename=filename):
+            for filename, permission in (
+                ("ci.yml", "issues: write"),
+                ("custom.yml", "permissions: {issues: write}"),
+                ("write-all.yml", "permissions: write-all"),
+            ):
+                with self.subTest(filename=filename, permission=permission):
                     workflow = Path(directory) / filename
-                    workflow.write_text("jobs: {}\n", encoding="utf-8")
+                    workflow.write_text(f"{permission}\njobs: {{}}\n", encoding="utf-8")
                     with mock.patch.object(
                         workflow_installation_preflight, "GitHubClient", FakeClient
                     ):

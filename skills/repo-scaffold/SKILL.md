@@ -150,16 +150,15 @@ auto-merge workflow that relies on it; never retrieve or print the secret value.
 
 Before copying any GitHub Actions asset, run the fail-closed
 `scripts/workflow_installation_preflight.py`. Require external actions for an
-asset with `uses:` and require Issues for `stale.yml`, `freshness.yml`, or
-`community-health.yml`, or `official-docs.yml`. Do not install an asset while
-Actions is disabled, while its policy forbids external actions, or until a
-selected-actions policy has been verified against every exact action reference.
-When the policy is `selected`, pass every candidate asset with `--workflow`; the
-preflight retrieves the effective allowlist and fails closed unless each pinned
-`uses:` reference is allowed. It also derives external-action and known
-issue-workflow requirements from every `--workflow` input, so a missing flag
-cannot bypass those checks. This preflight accepts pattern matches only for
-public repositories,
+asset with `uses:` and require Issues for an asset that declares `issues: write`
+or `permissions: write-all`. Do not install an asset while Actions is disabled,
+while its policy forbids external actions, or until a selected-actions policy has
+been verified against every exact action reference. When the policy is
+`selected`, pass every candidate asset with `--workflow`; the preflight retrieves
+the effective allowlist and fails closed unless each pinned `uses:` reference is
+allowed. It also derives external-action and issue-workflow requirements from
+every `--workflow` input, so a missing flag cannot bypass those checks. This
+preflight accepts pattern matches only for public repositories,
 because it does not infer Enterprise Cloud eligibility. Do not treat Marketplace
 verified-creator access as proof for a specific action when it has no exact
 matching pattern.
