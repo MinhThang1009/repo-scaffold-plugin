@@ -1752,6 +1752,7 @@ class MutationTestingContractTests(unittest.TestCase):
         "scripts/validate_mutation_results.py",
         "tests/test_audit_freshness.py",
         "tests/test_branch_protection_preflight.py",
+        "tests/test_advanced_codeql_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_dependency_review_preflight.py",
@@ -3196,6 +3197,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             for script in (
                 "ci_toolchain.py",
                 "branch_protection_preflight.py",
+                "advanced_codeql_preflight.py",
                 "codeql_preflight.py",
                 "dependency_review_preflight.py",
                 "merge_settings_preflight.py",
@@ -7670,6 +7672,15 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-actions-dependabot": "skills/repo-scaffold/assets/dependabot.yml",
                 "github-dependency-review": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 "github-dependency-graph-sbom-api": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                "github-actions-permissions-api": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                "github-codeql-advanced-setup": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                "github-codeql-default-setup-api": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                "github-branch-protection-status-checks": "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                "github-merge-queue-auto-merge": "skills/repo-scaffold/assets/workflows/auto-merge.yml",
+                "github-security-analysis-settings": "skills/repo-scaffold/scripts/security_features_preflight.py",
+                "github-artifact-attestations": "skills/repo-scaffold/scripts/release_preflight.py",
+                "github-actions-secrets-api": "skills/repo-scaffold/scripts/release_preflight.py",
+                "github-repository-settings-api": "skills/repo-scaffold/scripts/repository_settings_preflight.py",
             }
             for identifier, removed_path in cases.items():
                 registry = validate_repository.load_json(registry_path)
@@ -7845,24 +7856,27 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             problems = validate_repository.validate_official_docs_tracking_contract(
                 root
             )
-        self.assertTrue(
-            any(
-                "github-actions-dependabot claim is missing" in problem
-                for problem in problems
-            )
-        )
-        self.assertTrue(
-            any(
-                "github-dependency-review claim is missing" in problem
-                for problem in problems
-            )
-        )
-        self.assertTrue(
-            any(
-                "github-dependency-graph-sbom-api claim is missing" in problem
-                for problem in problems
-            )
-        )
+        for identifier in (
+            "github-actions-dependabot",
+            "github-dependency-review",
+            "github-dependency-graph-sbom-api",
+            "github-actions-permissions-api",
+            "github-codeql-advanced-setup",
+            "github-codeql-default-setup-api",
+            "github-branch-protection-status-checks",
+            "github-merge-queue-auto-merge",
+            "github-security-analysis-settings",
+            "github-artifact-attestations",
+            "github-actions-secrets-api",
+            "github-repository-settings-api",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertTrue(
+                    any(
+                        f"{identifier} claim is missing" in problem
+                        for problem in problems
+                    )
+                )
 
     def test_malformed_and_nonofficial_markdown_urls_do_not_break_tracking(
         self,

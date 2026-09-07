@@ -270,11 +270,7 @@
         "skills/repo-scaffold/assets/workflows/dependency-review.yml",
         "skills/repo-scaffold/scripts/dependency_review_preflight.py"
       ],
-      "required-markers": [
-        "Public repositories on GitHub.com",
-        "GitHub Code Security enabled",
-        "dependency graph"
-      ],
+      "required-markers": ["Dependency review", "dependency graph"],
       "reviewed-on": "2026-09-07",
       "review-period-days": 90
     },
@@ -294,6 +290,158 @@
       ],
       "reviewed-on": "2026-09-07",
       "review-period-days": 30
+    },
+    {
+      "id": "github-actions-permissions-api",
+      "label": "GitHub Actions permissions API",
+      "url": "https://docs.github.com/en/rest/actions/permissions",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/workflow_installation_preflight.py"
+      ],
+      "required-markers": [
+        "allowed_actions",
+        "patterns_allowed",
+        "only applies to public repositories"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-codeql-advanced-setup",
+      "label": "GitHub CodeQL advanced-setup eligibility",
+      "url": "https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/configure-code-scanning/configuring-advanced-setup-for-code-scanning",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/assets/workflows/codeql.yml",
+        "skills/repo-scaffold/scripts/advanced_codeql_preflight.py"
+      ],
+      "required-markers": [
+        "advanced setup",
+        "GitHub Actions is enabled.",
+        "GitHub Code Security is enabled"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-codeql-default-setup-api",
+      "label": "GitHub CodeQL default-setup API",
+      "url": "https://docs.github.com/en/rest/code-scanning/code-scanning",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/codeql_preflight.py",
+        "skills/repo-scaffold/scripts/advanced_codeql_preflight.py"
+      ],
+      "required-markers": [
+        "code-scanning/default-setup",
+        "default setup configuration",
+        "state"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-branch-protection-status-checks",
+      "label": "GitHub branch-protection required checks",
+      "url": "https://docs.github.com/en/rest/branches/branch-protection",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py"
+      ],
+      "required-markers": [
+        "required_status_checks",
+        "app_id",
+        "status checks"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-merge-queue-auto-merge",
+      "label": "GitHub merge queue and auto-merge",
+      "url": "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+        "skills/repo-scaffold/assets/workflows/auto-merge.yml",
+        "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml"
+      ],
+      "required-markers": ["merge queue", "auto-merge", "squash"],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-security-analysis-settings",
+      "label": "GitHub security and analysis settings",
+      "url": "https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/security_features_preflight.py"
+      ],
+      "required-markers": ["Dependabot alerts", "Secret scanning"],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-artifact-attestations",
+      "label": "GitHub artifact-attestation eligibility",
+      "url": "https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/release_preflight.py",
+        "skills/repo-scaffold/assets/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release-tag.yml",
+        "skills/repo-scaffold/assets/workflows/release-please.yml"
+      ],
+      "required-markers": ["artifact attestations"],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-secrets-api",
+      "label": "GitHub Actions repository secrets API",
+      "url": "https://docs.github.com/en/rest/actions/secrets",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/release_preflight.py"
+      ],
+      "required-markers": [
+        "Get a repository secret",
+        "secret_name",
+        "without revealing its encrypted value"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-repository-settings-api",
+      "label": "GitHub repository settings API",
+      "url": "https://docs.github.com/en/rest/repos",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/repository_settings_preflight.py"
+      ],
+      "required-markers": ["REST API endpoints for repositories"],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
     }
   ]
 }

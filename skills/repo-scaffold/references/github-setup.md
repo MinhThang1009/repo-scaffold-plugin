@@ -1212,7 +1212,44 @@ feature.
   }
   ```
 
-- **CodeQL advanced setup**: when the user explicitly chooses a repository-managed configuration, install `assets/workflows/codeql.yml`, render the verified default branch through `{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}` plus a supported detected language, and keep CodeQL default setup not configured. Inspect workflows and existing analyses first, and do not install a second advanced uploader silently. If default setup is already configured, stop and obtain explicit approval before switching modes.
+- **CodeQL advanced setup**: when the user explicitly chooses a repository-managed configuration, run the bundled `advanced_codeql_preflight.py` before installing `assets/workflows/codeql.yml`. It requires GitHub Actions, requires GitHub Code Security for private/internal repositories, and delegates the bounded workflow, analysis, and external-uploader inspection to the existing CodeQL preflight. Render the verified default branch through `{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}` plus a supported detected language, and keep CodeQL default setup not configured. Do not install a second advanced uploader silently. If default setup is already configured, stop and obtain explicit approval before switching modes.
+
+  ```powershell
+  if (-not (Get-Variable REPO_ROOT -ErrorAction SilentlyContinue)) {
+    throw "REPO_ROOT must be the surveyed target repository root before inspecting CodeQL setup."
+  }
+  if ([string]::IsNullOrWhiteSpace($DEFAULT_BRANCH)) {
+    throw "DEFAULT_BRANCH must be known before inspecting CodeQL setup."
+  }
+  $advancedCodeqlPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/advanced_codeql_preflight.py"
+  if (-not (Test-Path -LiteralPath $advancedCodeqlPreflight -PathType Leaf)) {
+    throw "The bundled advanced CodeQL preflight is missing; do not copy codeql.yml."
+  }
+  # Set this to $true only after the user explicitly confirms that no external
+  # or indirect process uploads CodeQL results.
+  $advancedCodeqlNoExternalConfirmed = $false
+  if (-not $advancedCodeqlNoExternalConfirmed) {
+    throw "Explicit confirmation of no external or indirect CodeQL uploader is required; do not copy codeql.yml."
+  }
+  $advancedCodeqlOutput = python $advancedCodeqlPreflight `
+    --repo-root $REPO_ROOT `
+    --repository "OWNER/REPO" `
+    --default-branch $DEFAULT_BRANCH `
+    --hostname "github.com" `
+    --confirm-no-external-codeql 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Advanced CodeQL inspection is inconclusive; do not copy codeql.yml. $($advancedCodeqlOutput | Out-String)"
+  }
+  $advancedCodeqlResult = ($advancedCodeqlOutput | Out-String) | ConvertFrom-Json
+  if (-not $advancedCodeqlResult.inspection_complete -or
+      $advancedCodeqlResult.decision -ne "may-install-advanced-codeql-workflow") {
+    throw "Advanced CodeQL setup is not eligible. Resolve the returned decision and rerun before copying codeql.yml."
+  }
+  ```
+
+  Then run `workflow_installation_preflight.py` against `codeql.yml`; this
+  separate gate verifies its exact action pins against the effective Actions
+  policy before the asset is copied.
 
 - **Code scanning default setup**: requires an eligible repository and supported detected language. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
 

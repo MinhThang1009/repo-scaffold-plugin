@@ -85,6 +85,15 @@ For CodeQL default setup, run the fail-closed `scripts/codeql_preflight.py` and
 require explicit confirmation that no external or indirect uploader exists.
 Never switch CodeQL modes without separate approval.
 
+Before installing the repository-managed `codeql.yml` advanced-setup asset, run
+the fail-closed `scripts/advanced_codeql_preflight.py` with the target root,
+default branch, and explicit confirmation that no external or indirect CodeQL
+uploader exists. Install only when it returns
+`may-install-advanced-codeql-workflow`; it blocks private/internal repositories
+without GitHub Code Security, disabled GitHub Actions, default setup, and
+existing advanced-upload evidence. Run the workflow-installation preflight as
+well, because it verifies the Actions policy for the asset's exact action pins.
+
 Before configuring classic branch protection, run the fail-closed
 `scripts/branch_protection_preflight.py` against a mergeable representative PR
 whose head contains the final workflow set. Use only its returned contexts and

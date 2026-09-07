@@ -1807,6 +1807,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "scripts/validate_mutation_results.py",
         "tests/test_audit_freshness.py",
         "tests/test_branch_protection_preflight.py",
+        "tests/test_advanced_codeql_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_dependency_review_preflight.py",
@@ -2510,6 +2511,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_branch_protection_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.branch_protection_preflight",
+        ),
+        "tests/test_advanced_codeql_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.advanced_codeql_preflight",
         ),
         "tests/test_merge_settings_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
@@ -4885,6 +4890,57 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 },
+                "github-actions-permissions-api": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                },
+                "github-codeql-advanced-setup": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/codeql.yml",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                },
+                "github-codeql-default-setup-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                },
+                "github-branch-protection-status-checks": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                },
+                "github-merge-queue-auto-merge": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                    "skills/repo-scaffold/assets/workflows/auto-merge.yml",
+                    "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
+                },
+                "github-security-analysis-settings": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/security_features_preflight.py",
+                },
+                "github-artifact-attestations": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/release_preflight.py",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/assets/workflows/release-please.yml",
+                },
+                "github-actions-secrets-api": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/release_preflight.py",
+                },
+                "github-repository-settings-api": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/repository_settings_preflight.py",
+                },
             }
             for identifier, required_paths in required_claim_paths.items():
                 claim_paths = claim_paths_by_id.get(identifier)
@@ -5319,6 +5375,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                 "repo-scaffold/skills/repo-scaffold/assets/gitattributes.template",
                 "repo-scaffold/skills/repo-scaffold/scripts/ci_toolchain.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/codeql_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/validate_scaffold.py",
