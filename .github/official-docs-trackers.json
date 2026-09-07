@@ -346,6 +346,22 @@
       "review-period-days": 90
     },
     {
+      "id": "github-actions-workflow-runs-api",
+      "label": "GitHub Actions workflow runs API",
+      "url": "https://docs.github.com/en/rest/actions/workflow-runs",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md"
+      ],
+      "required-markers": [
+        "Get a workflow run",
+        "workflow runs",
+        "Actions"
+      ],
+      "reviewed-on": "2026-09-08",
+      "review-period-days": 90
+    },
+    {
       "id": "github-codeql-advanced-setup",
       "label": "GitHub CodeQL advanced-setup eligibility",
       "url": "https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/configure-code-scanning/configuring-advanced-setup-for-code-scanning",
