@@ -611,6 +611,23 @@
       "review-period-days": 90
     },
     {
+      "id": "github-git-blobs-api",
+      "label": "GitHub Git blobs API",
+      "url": "https://docs.github.com/en/rest/git/blobs",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+        "skills/repo-scaffold/scripts/codeql_preflight.py"
+      ],
+      "required-markers": [
+        "Get a blob",
+        "application/vnd.github.raw+json",
+        "file_sha"
+      ],
+      "reviewed-on": "2026-09-08",
+      "review-period-days": 90
+    },
+    {
       "id": "github-check-runs-api",
       "label": "GitHub Check Runs API",
       "url": "https://docs.github.com/en/rest/checks/runs",

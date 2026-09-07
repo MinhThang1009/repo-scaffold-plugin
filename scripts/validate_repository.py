@@ -4980,6 +4980,10 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                     "skills/repo-scaffold/scripts/codeql_preflight.py",
                 },
+                "github-git-blobs-api": {
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                },
                 "github-check-runs-api": {
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                 },
