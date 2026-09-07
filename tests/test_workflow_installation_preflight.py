@@ -343,6 +343,46 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertFalse(result["issue_workflows_eligible"])
 
+    def test_infers_issue_requirement_from_shipped_workflow_name(self) -> None:
+        self.configure(issues_enabled=False)
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "freshness.yml"
+            workflow.write_text("jobs: {}\n", encoding="utf-8")
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(workflow=[workflow])
+                )
+
+        self.assertEqual(
+            result["decision"], "enable-issues-before-installing-issue-workflows"
+        )
+        self.assertTrue(result["requires_issues"])
+        self.assertEqual(result["detected_issue_workflows"], ["freshness.yml"])
+
+    def test_infers_external_actions_from_workflow_input(self) -> None:
+        self.configure(allowed_actions="local_only")
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text(
+                "steps:\n"
+                "  - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(workflow=[workflow])
+                )
+
+        self.assertEqual(
+            result["decision"], "allow-external-actions-before-installing-workflows"
+        )
+        self.assertTrue(result["requires_external_actions"])
+        self.assertFalse(result["external_actions_verified"])
+
     def test_rejects_invalid_responses_and_arguments(self) -> None:
         for overrides, message in [
             ({"hostname": "github.example"}, "GitHub.com only"),

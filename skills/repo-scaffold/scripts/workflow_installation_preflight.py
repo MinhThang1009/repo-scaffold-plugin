@@ -15,6 +15,9 @@ import sync_action_pins
 
 
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
+ISSUE_WORKFLOW_FILENAMES = frozenset(
+    {"community-health.yml", "freshness.yml", "stale.yml"}
+)
 
 
 def require_boolean(document: dict[str, Any], field: str) -> bool:
@@ -114,6 +117,18 @@ def workflow_external_action_references(workflows: list[Path]) -> list[str]:
     return sorted(references, key=str.casefold)
 
 
+def issue_workflow_assets(workflows: list[Path]) -> list[str]:
+    """Identify shipped issue-writing assets from their stable filenames."""
+    return sorted(
+        {
+            workflow.name
+            for workflow in workflows
+            if workflow.name.casefold() in ISSUE_WORKFLOW_FILENAMES
+        },
+        key=str.casefold,
+    )
+
+
 def selected_policy_allows(
     reference: str, policy: dict[str, bool | list[str]], *, public_repository: bool
 ) -> bool:
@@ -162,17 +177,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     issues_enabled = require_boolean(repository, "has_issues")
     visibility = repository.get("visibility")
 
+    external_action_references = (
+        workflow_external_action_references(args.workflow) if args.workflow else []
+    )
+    requires_external_actions = args.require_external_actions or bool(
+        external_action_references
+    )
+    detected_issue_workflows = issue_workflow_assets(args.workflow)
+    requires_issues = args.require_issues or bool(detected_issue_workflows)
+
     actions_enabled, allowed_actions = actions_permissions(
         client.json(f"repos/{owner}/{repo}/actions/permissions")
     )
     selected_policy: dict[str, bool | list[str]] | None = None
-    external_action_references: list[str] = []
     unapproved_action_references: list[str] = []
-    if (
-        actions_enabled
-        and args.require_external_actions
-        and allowed_actions == "selected"
-    ):
+    if actions_enabled and requires_external_actions and allowed_actions == "selected":
         selected_policy = selected_actions_policy(
             client.json(f"repos/{owner}/{repo}/actions/permissions/selected-actions")
         )
@@ -180,7 +199,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise InspectionError(
                 "Repository response has an invalid visibility value."
             )
-        external_action_references = workflow_external_action_references(args.workflow)
+        if not external_action_references:
+            external_action_references = workflow_external_action_references(
+                args.workflow
+            )
         unapproved_action_references = [
             reference
             for reference in external_action_references
@@ -191,7 +213,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
         ]
     external_actions_verified = actions_enabled and (
-        not args.require_external_actions
+        not requires_external_actions
         or allowed_actions == "all"
         or (
             allowed_actions == "selected"
@@ -199,12 +221,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             and bool(external_action_references)
         )
     )
-    issue_workflows_eligible = not args.require_issues or issues_enabled
+    issue_workflows_eligible = not requires_issues or issues_enabled
     if not actions_enabled:
         decision = "enable-github-actions-before-installing-workflows"
-    elif args.require_external_actions and allowed_actions == "local_only":
+    elif requires_external_actions and allowed_actions == "local_only":
         decision = "allow-external-actions-before-installing-workflows"
-    elif args.require_external_actions and allowed_actions == "selected":
+    elif requires_external_actions and allowed_actions == "selected":
         decision = (
             "may-install-workflow-assets"
             if external_actions_verified
@@ -221,11 +243,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "visibility": visibility,
         "github_actions_enabled": actions_enabled,
         "allowed_actions": allowed_actions,
+        "requires_external_actions": requires_external_actions,
         "external_actions_verified": external_actions_verified,
         "external_action_references": external_action_references,
         "unapproved_action_references": unapproved_action_references,
         "selected_actions_policy": selected_policy,
         "issues_enabled": issues_enabled,
+        "requires_issues": requires_issues,
+        "detected_issue_workflows": detected_issue_workflows,
         "issue_workflows_eligible": issue_workflows_eligible,
         "github_api_requests": client.request_count,
     }

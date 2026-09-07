@@ -150,7 +150,9 @@ its policy forbids external actions, or until a selected-actions policy has been
 verified against every exact action reference. When the policy is `selected`,
 pass every candidate asset with `--workflow`; the preflight retrieves the
 effective allowlist and fails closed unless each pinned `uses:` reference is
-allowed. This preflight accepts pattern matches only for public repositories,
+allowed. It also derives external-action and shipped issue-workflow requirements
+from every `--workflow` input, so a missing flag cannot bypass those checks.
+This preflight accepts pattern matches only for public repositories,
 because it does not infer Enterprise Cloud eligibility. Do not treat Marketplace
 verified-creator access as proof for a specific action when it has no exact
 matching pattern.

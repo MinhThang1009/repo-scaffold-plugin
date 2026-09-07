@@ -281,9 +281,10 @@ checks every exact pinned action reference. It fails closed unless each referenc
 matches an explicit allowlist pattern or is covered by GitHub's `actions/*`
 allowance. This preflight accepts pattern matches only for public repositories,
 because it does not infer Enterprise Cloud eligibility. Marketplace verified-creator
-access alone is not treated as proof for a specific action. Pass
-`--require-issues` for `stale.yml`, `freshness.yml`, and
-`community-health.yml`, because each performs issue operations.
+access alone is not treated as proof for a specific action. When an asset is
+provided through `--workflow`, the preflight derives its external-action and
+shipped issue-workflow requirements. `--require-issues` remains an explicit
+assertion for an issue-writing workflow outside the shipped asset names.
 
 ```powershell
 $workflowPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/workflow_installation_preflight.py"
@@ -296,7 +297,9 @@ $workflowPreflightArguments = @(
   "--require-external-actions",
   "--workflow", "assets/workflows/ci.yml"
 )
-# Add this only for stale.yml, freshness.yml, or community-health.yml.
+# For an issue-writing workflow outside the shipped asset names, set this true.
+# Shipped stale.yml, freshness.yml, and community-health.yml are detected from
+# their --workflow path and cannot bypass the Issues check when this stays false.
 $requiresIssueOperations = $false
 if ($requiresIssueOperations) { $workflowPreflightArguments += "--require-issues" }
 $workflowPreflightOutput = python $workflowPreflight @workflowPreflightArguments 2>&1
