@@ -347,6 +347,22 @@
       "review-period-days": 90
     },
     {
+      "id": "github-code-scanning-alerts-api",
+      "label": "GitHub code-scanning analyses and alerts API",
+      "url": "https://docs.github.com/en/rest/code-scanning/code-scanning",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "scripts/check_code_scanning_alerts.py"
+      ],
+      "required-markers": [
+        "List code scanning analyses for a repository",
+        "List code scanning alerts for a repository",
+        "Code scanning alerts"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
       "id": "github-branch-protection-status-checks",
       "label": "GitHub branch-protection required checks",
       "url": "https://docs.github.com/en/rest/branches/branch-protection",
