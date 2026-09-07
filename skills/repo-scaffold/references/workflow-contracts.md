@@ -24,7 +24,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   PR head code, and require one trusted marker plus all required headings/items.
 - Links, community-health, and freshness: keep network/upstream checks advisory;
   reminder workflows run only on trusted scheduled/manual events and maintain one
-  idempotent issue when Issues are enabled.
+  idempotent issue when Issues are enabled. Freshness must retain the optional
+  Release Please schema tracker and CI-toolchain policy tracker shipped with the
+  scaffold so installed inputs receive the same reminder coverage as action pins.
 - CI: create or adapt a stack-valid workflow with real commands and a stable
   aggregate gate. Do not require it while the scaffold sentinel remains. Use one
   machine-readable runtime policy and dependency caching appropriate to the stack.
