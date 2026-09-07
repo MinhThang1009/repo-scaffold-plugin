@@ -379,6 +379,57 @@
       "review-period-days": 90
     },
     {
+      "id": "github-action-pin-repository-tags-api",
+      "label": "GitHub repository tags API for action pins",
+      "url": "https://docs.github.com/en/rest/repos",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "scripts/sync_action_pins.py",
+        "skills/repo-scaffold/scripts/sync_action_pins.py"
+      ],
+      "required-markers": [
+        "List repository tags",
+        "per_page",
+        "Metadata"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-action-pin-git-refs-api",
+      "label": "GitHub Git references API for action pins",
+      "url": "https://docs.github.com/en/rest/git/refs",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "scripts/sync_action_pins.py",
+        "skills/repo-scaffold/scripts/sync_action_pins.py"
+      ],
+      "required-markers": [
+        "Get a reference",
+        "tags/<tag name>",
+        "Contents"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-action-pin-git-tags-api",
+      "label": "GitHub Git tag objects API for action pins",
+      "url": "https://docs.github.com/en/rest/git/tags",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "scripts/sync_action_pins.py",
+        "skills/repo-scaffold/scripts/sync_action_pins.py"
+      ],
+      "required-markers": [
+        "Get a tag",
+        "annotated tag objects",
+        "Contents"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
       "id": "github-branch-protection-status-checks",
       "label": "GitHub branch-protection required checks",
       "url": "https://docs.github.com/en/rest/branches/branch-protection",
