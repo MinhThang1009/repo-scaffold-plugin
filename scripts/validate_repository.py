@@ -2525,6 +2525,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         ),
         "tests/test_workflow_installation_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.sync_action_pins",
             "skills.repo-scaffold.scripts.workflow_installation_preflight",
         ),
         "tests/test_release_preflight.py": (

@@ -25,12 +25,14 @@ sys.modules["codeql_preflight"] = codeql_preflight
 CODEQL_SPEC.loader.exec_module(codeql_preflight)
 
 SYNC_SPEC = importlib.util.spec_from_file_location(
-    "sync_action_pins", SCRIPT_DIRECTORY / "sync_action_pins.py"
+    "skills.repo-scaffold.scripts.sync_action_pins",
+    SCRIPT_DIRECTORY / "sync_action_pins.py",
 )
 if SYNC_SPEC is None or SYNC_SPEC.loader is None:
     raise RuntimeError("Could not load sync_action_pins.py")
 sync_action_pins = importlib.util.module_from_spec(SYNC_SPEC)
 sys.modules[SYNC_SPEC.name] = sync_action_pins
+sys.modules["sync_action_pins"] = sync_action_pins
 SYNC_SPEC.loader.exec_module(sync_action_pins)
 
 SCRIPT_PATH = SCRIPT_DIRECTORY / "workflow_installation_preflight.py"
