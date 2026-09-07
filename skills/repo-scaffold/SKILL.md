@@ -104,6 +104,13 @@ Automated security fixes need Dependabot alerts first: request both features in
 the preflight or let it verify existing alerts, then enable alerts and confirm
 them before enabling the fixes.
 
+Before changing description/topics, enabling Issues or Discussions, or creating
+labels, run the
+fail-closed `scripts/repository_settings_preflight.py`. Bind it to the exact
+approved request and do not call `gh repo edit` or `gh label create` when it
+cannot prove the target identity, active repository state, and administration
+permission.
+
 ### 5. Configure GitHub
 
 Before GitHub configuration, read `references/github-setup.md`. Apply only

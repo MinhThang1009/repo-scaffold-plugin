@@ -127,6 +127,14 @@ Pass `github.com/OWNER/REPO` to every later repository-scoped `gh` command. Neve
 
 ## Description and topics
 
+Run the bundled `scripts/repository_settings_preflight.py` immediately before
+changing basic repository metadata or communication settings. It is read-only
+and fail-closed: it binds the GitHub response to the explicit `OWNER/REPO`,
+rejects archived repositories, requires current administration permission, and
+binds the approved description, topic, Issues, and Discussions requests to the
+final mutation plan. Do not run `gh repo edit` when this preflight is absent,
+inconclusive, or approves a different request.
+
 ```powershell
 # Keep user/repository text as data. Do not generate a command string and invoke it.
 $description = Read-Host "One-line repository description"
@@ -134,6 +142,33 @@ if ([string]::IsNullOrWhiteSpace($description)) {
   throw "Repository description must be non-empty."
 }
 $topics = @("topic1", "topic2") # confirmed GitHub topic slugs
+$repositorySettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/repository_settings_preflight.py"
+if (-not (Test-Path -LiteralPath $repositorySettingsPreflight -PathType Leaf)) {
+  throw "The bundled repository-settings preflight is missing; do not edit repository metadata."
+}
+$metadataPreflightArguments = @(
+  "--repository", "OWNER/REPO", "--hostname", "github.com",
+  "--set-description", "--description", $description
+)
+if ($topics.Count -gt 0) {
+  $metadataPreflightArguments += "--set-topics"
+  foreach ($topic in $topics) { $metadataPreflightArguments += @("--topic", $topic) }
+}
+$metadataPreflightOutput = python $repositorySettingsPreflight @metadataPreflightArguments 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Repository metadata inspection is inconclusive; do not edit metadata. $($metadataPreflightOutput | Out-String)"
+}
+try { $metadataPreflight = ($metadataPreflightOutput | Out-String) | ConvertFrom-Json } catch {
+  throw "Repository-settings preflight returned invalid JSON; do not edit metadata."
+}
+if (-not $metadataPreflight.inspection_complete -or
+    $metadataPreflight.decision -ne "may-configure-repository-settings" -or
+    @($metadataPreflight.requested_mutations) -notcontains "description") {
+  throw "Repository-settings preflight did not approve the requested metadata mutations."
+}
+if ($topics.Count -gt 0 -and @($metadataPreflight.requested_mutations) -notcontains "topics") {
+  throw "Repository-settings preflight did not approve the requested topic mutation."
+}
 $topicArgs = @()
 foreach ($topic in $topics) { $topicArgs += @('--add-topic', $topic) }
 $editOutput = & gh repo edit github.com/OWNER/REPO --description $description @topicArgs 2>&1
@@ -172,6 +207,27 @@ Archived repositories are read-only; do not attempt remote configuration for the
 # Set these only from explicit user confirmation.
 $enableIssuesRequested = $false
 $enableDiscussionsRequested = $false
+
+if ($enableIssuesRequested -or $enableDiscussionsRequested) {
+  $repositorySettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/repository_settings_preflight.py"
+  if (-not (Test-Path -LiteralPath $repositorySettingsPreflight -PathType Leaf)) {
+    throw "The bundled repository-settings preflight is missing; do not enable communication features."
+  }
+  $communicationPreflightArguments = @("--repository", "OWNER/REPO", "--hostname", "github.com")
+  if ($enableIssuesRequested) { $communicationPreflightArguments += "--enable-issues" }
+  if ($enableDiscussionsRequested) { $communicationPreflightArguments += "--enable-discussions" }
+  $communicationPreflightOutput = python $repositorySettingsPreflight @communicationPreflightArguments 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Communication-feature inspection is inconclusive; do not mutate. $($communicationPreflightOutput | Out-String)"
+  }
+  try { $communicationPreflight = ($communicationPreflightOutput | Out-String) | ConvertFrom-Json } catch {
+    throw "Repository-settings preflight returned invalid JSON; do not mutate."
+  }
+  if (-not $communicationPreflight.inspection_complete -or
+      $communicationPreflight.decision -ne "may-configure-repository-settings") {
+    throw "Repository-settings preflight did not approve the requested communication mutations."
+  }
+}
 
 if ($enableIssuesRequested) {
   $issuesOutput = & gh repo edit github.com/OWNER/REPO --enable-issues 2>&1
@@ -845,6 +901,32 @@ GitHub creates these default labels for new repositories, but they can be edited
 or deleted. Recreate them if missing:
 
 ```powershell
+$repositorySettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/repository_settings_preflight.py"
+if (-not (Test-Path -LiteralPath $repositorySettingsPreflight -PathType Leaf)) {
+  throw "The bundled repository-settings preflight is missing; do not create labels."
+}
+# This is the complete envelope of labels that the following optional asset
+# blocks can create. Keep this list synchronized with every Add-LabelIfMissing call.
+$plannedLabelNames = @(
+  "bug", "documentation", "duplicate", "enhancement", "good first issue",
+  "help wanted", "invalid", "question", "wontfix", "automerge", "ci", "tests",
+  "feature", "fix", "ignore-for-release", "Stale", "pinned", "security"
+)
+$labelPreflightArguments = @("--repository", "OWNER/REPO", "--hostname", "github.com")
+foreach ($labelName in $plannedLabelNames) { $labelPreflightArguments += @("--create-label", $labelName) }
+$labelPreflightOutput = python $repositorySettingsPreflight @labelPreflightArguments 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Label inspection is inconclusive; do not create labels. $($labelPreflightOutput | Out-String)"
+}
+try { $labelPreflight = ($labelPreflightOutput | Out-String) | ConvertFrom-Json } catch {
+  throw "Repository-settings preflight returned invalid JSON; do not create labels."
+}
+if (-not $labelPreflight.inspection_complete -or
+    $labelPreflight.decision -ne "may-configure-repository-settings" -or
+    @($labelPreflight.requested_mutations) -notcontains "labels") {
+  throw "Repository-settings preflight did not approve the planned label mutations."
+}
+
 $existingLabels = [System.Collections.Generic.HashSet[string]]::new(
   [System.StringComparer]::OrdinalIgnoreCase
 )

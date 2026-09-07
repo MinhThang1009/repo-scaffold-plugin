@@ -1604,6 +1604,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         "skills/repo-scaffold/scripts/codeql_preflight.py",
         "skills/repo-scaffold/scripts/ci_toolchain.py",
         "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+        "skills/repo-scaffold/scripts/repository_settings_preflight.py",
         "skills/repo-scaffold/scripts/security_features_preflight.py",
         "skills/repo-scaffold/scripts/sync_action_pins.py",
         "skills/repo-scaffold/scripts/validate_scaffold.py",
@@ -1751,6 +1752,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
         "tests/test_merge_settings_preflight.py",
+        "tests/test_repository_settings_preflight.py",
         "tests/test_security_features_preflight.py",
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
@@ -2444,6 +2446,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.branch_protection_preflight",
             "skills.repo-scaffold.scripts.merge_settings_preflight",
+        ),
+        "tests/test_repository_settings_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.repository_settings_preflight",
         ),
         "tests/test_security_features_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
@@ -5198,6 +5204,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                 "repo-scaffold/skills/repo-scaffold/scripts/codeql_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/validate_scaffold.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/repository_settings_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/security_features_preflight.py",
             }
         )
