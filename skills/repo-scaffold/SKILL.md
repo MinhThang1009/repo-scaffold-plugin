@@ -94,6 +94,12 @@ without GitHub Code Security, disabled GitHub Actions, default setup, and
 existing advanced-upload evidence. Run the workflow-installation preflight as
 well, because it verifies the Actions policy for the asset's exact action pins.
 
+Before installing `scorecard.yml`, run the fail-closed
+`scripts/scorecard_preflight.py`. It requires GitHub Actions and, for a private
+or internal repository, an organization-owned target with GitHub Code Security
+enabled for Scorecard's SARIF upload. Then run the workflow-installation
+preflight for the asset's exact action pins.
+
 Before configuring classic branch protection, run the fail-closed
 `scripts/branch_protection_preflight.py` against a mergeable representative PR
 whose head contains the final workflow set. Use only its returned contexts and

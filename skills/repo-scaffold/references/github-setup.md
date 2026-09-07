@@ -1254,6 +1254,26 @@ feature.
   separate gate verifies its exact action pins against the effective Actions
   policy before the asset is copied.
 
+- **Scorecard SARIF upload**: `scorecard.yml` uploads third-party SARIF results
+  to code scanning. GitHub documents this in [Uploading a SARIF file to
+  GitHub](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file): public repositories are eligible, while private/internal repositories require an organization-owned target with GitHub Code Security enabled. Before copying the asset, run the bundled capability preflight and proceed only when it returns `may-install-scorecard-workflow`; then run the workflow-installation preflight for its exact action pins.
+
+  ```powershell
+  $scorecardPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/scorecard_preflight.py"
+  if (-not (Test-Path -LiteralPath $scorecardPreflight -PathType Leaf)) {
+    throw "The bundled Scorecard preflight is missing; do not copy scorecard.yml."
+  }
+  $scorecardPreflightOutput = python $scorecardPreflight --repository "OWNER/REPO" 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Scorecard preflight was inconclusive; do not copy scorecard.yml. $($scorecardPreflightOutput | Out-String)"
+  }
+  $scorecardPreflightResult = ($scorecardPreflightOutput | Out-String) | ConvertFrom-Json
+  if (-not $scorecardPreflightResult.inspection_complete -or
+      $scorecardPreflightResult.decision -ne "may-install-scorecard-workflow") {
+    throw "Scorecard is not eligible. Resolve the returned decision and rerun before copying scorecard.yml."
+  }
+  ```
+
 - **Code scanning default setup**: requires an eligible repository and supported detected language. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
 
   The bundled preflight requires PyYAML and a Python feature release at or above

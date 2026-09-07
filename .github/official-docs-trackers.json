@@ -347,6 +347,25 @@
       "review-period-days": 90
     },
     {
+      "id": "github-code-scanning-sarif-upload",
+      "label": "GitHub code-scanning SARIF upload eligibility",
+      "url": "https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/assets/workflows/scorecard.yml",
+        "skills/repo-scaffold/scripts/scorecard_preflight.py"
+      ],
+      "required-markers": [
+        "Uploading a SARIF file to GitHub",
+        "GitHub Code Security",
+        "security-events: write"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
       "id": "github-code-scanning-alerts-api",
       "label": "GitHub code-scanning analyses and alerts API",
       "url": "https://docs.github.com/en/rest/code-scanning/code-scanning",
