@@ -7675,21 +7675,41 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-dependabot-auto-merge": "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
                 "github-dependency-review": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 "github-dependency-graph-sbom-api": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
-                "github-actions-permissions-api": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                "github-actions-permissions-api": [
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                ],
                 "github-actions-workflow-permissions-syntax": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                 "github-codeql-advanced-setup": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
                 "github-codeql-default-setup-api": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
                 "github-code-scanning-sarif-upload": "skills/repo-scaffold/scripts/scorecard_preflight.py",
-                "github-code-scanning-alerts-api": "scripts/check_code_scanning_alerts.py",
+                "github-code-scanning-alerts-api": [
+                    "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                ],
+                "github-repository-contents-api": "skills/repo-scaffold/scripts/codeql_preflight.py",
                 "github-community-profile-metrics-api": "skills/repo-scaffold/scripts/check_community_health.py",
                 "github-action-pin-repository-tags-api": "skills/repo-scaffold/scripts/sync_action_pins.py",
                 "github-git-refs-api": "skills/repo-scaffold/assets/workflows/release.yml",
                 "github-git-tags-api": "skills/repo-scaffold/assets/workflows/release.yml",
                 "github-releases-api": "skills/repo-scaffold/scripts/ci_toolchain.py",
-                "github-pull-requests-api": "scripts/check_code_scanning_alerts.py",
-                "github-git-commits-api": "scripts/check_code_scanning_alerts.py",
+                "github-pull-requests-api": [
+                    "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                ],
+                "github-git-commits-api": [
+                    "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                ],
                 "github-community-health-branches-api": "skills/repo-scaffold/scripts/check_community_health.py",
-                "github-community-health-git-trees-api": "skills/repo-scaffold/scripts/check_community_health.py",
+                "github-community-health-git-trees-api": [
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                ],
+                "github-check-runs-api": "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                "github-commit-statuses-api": "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                 "github-reminder-issues-api": "skills/repo-scaffold/assets/workflows/freshness.yml",
                 "github-branch-protection-status-checks": [
                     "README.md",
@@ -7711,7 +7731,18 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-security-analysis-settings": "skills/repo-scaffold/scripts/security_features_preflight.py",
                 "github-artifact-attestations": "skills/repo-scaffold/scripts/release_preflight.py",
                 "github-actions-secrets-api": "skills/repo-scaffold/scripts/release_preflight.py",
-                "github-repository-settings-api": "skills/repo-scaffold/scripts/repository_settings_preflight.py",
+                "github-repository-settings-api": [
+                    "skills/repo-scaffold/scripts/repository_settings_preflight.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                    "skills/repo-scaffold/scripts/release_preflight.py",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                    "skills/repo-scaffold/scripts/security_features_preflight.py",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                ],
             }
             for identifier, removed_paths in cases.items():
                 for removed_path in (
@@ -7733,6 +7764,50 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                             any(identifier in problem for problem in problems), problems
                         )
                     self.copy_contract(root)
+
+    def test_critical_policy_claims_reject_missing_and_malformed_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            registry_path = root / ".github" / "official-docs-trackers.json"
+
+            registry = validate_repository.load_json(registry_path)
+            registry["claims"] = [
+                claim
+                for claim in registry["claims"]
+                if claim["id"] != "github-check-runs-api"
+            ]
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+            missing = validate_repository.validate_official_docs_tracking_contract(root)
+
+            self.copy_contract(root)
+            registry = validate_repository.load_json(registry_path)
+            claim = next(
+                item
+                for item in registry["claims"]
+                if item["id"] == "github-commit-statuses-api"
+            )
+            claim["paths"] = (
+                "skills/repo-scaffold/scripts/branch_protection_preflight.py"
+            )
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+            malformed = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "github-check-runs-api claim is missing" in problem
+                for problem in missing
+            )
+        )
+        self.assertTrue(
+            any(
+                "github-commit-statuses-api claim must track every affected path"
+                in problem
+                for problem in malformed
+            )
+        )
 
     def test_missing_and_drifted_official_documentation_contract_is_reported(
         self,
@@ -7898,6 +7973,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-codeql-advanced-setup",
             "github-codeql-default-setup-api",
             "github-code-scanning-alerts-api",
+            "github-repository-contents-api",
             "github-community-profile-metrics-api",
             "github-action-pin-repository-tags-api",
             "github-git-refs-api",
@@ -7907,6 +7983,8 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-git-commits-api",
             "github-community-health-branches-api",
             "github-community-health-git-trees-api",
+            "github-check-runs-api",
+            "github-commit-statuses-api",
             "github-reminder-issues-api",
             "github-branch-protection-status-checks",
             "github-branches-api",

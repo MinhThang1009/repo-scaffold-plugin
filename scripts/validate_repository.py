@@ -4902,6 +4902,8 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
                 },
                 "github-actions-workflow-permissions-syntax": {
                     "skills/repo-scaffold/SKILL.md",
@@ -4927,6 +4929,10 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 },
                 "github-code-scanning-alerts-api": {
                     "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                },
+                "github-repository-contents-api": {
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
                 },
                 "github-community-profile-metrics-api": {
                     "skills/repo-scaffold/scripts/check_community_health.py",
@@ -4957,15 +4963,25 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 },
                 "github-pull-requests-api": {
                     "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                 },
                 "github-git-commits-api": {
                     "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
                 },
                 "github-community-health-branches-api": {
                     "skills/repo-scaffold/scripts/check_community_health.py",
                 },
                 "github-community-health-git-trees-api": {
                     "skills/repo-scaffold/scripts/check_community_health.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                },
+                "github-check-runs-api": {
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                },
+                "github-commit-statuses-api": {
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                 },
                 "github-reminder-issues-api": {
                     ".github/workflows/ci.yml",
@@ -5022,6 +5038,15 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/repository_settings_preflight.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                    "skills/repo-scaffold/scripts/release_preflight.py",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                    "skills/repo-scaffold/scripts/security_features_preflight.py",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                 },
             }
             for identifier, required_paths in required_claim_paths.items():
