@@ -275,8 +275,13 @@ Before copying a GitHub Actions asset, run the bundled read-only preflight. It
 binds the response to the exact repository, rejects archived or disabled
 repositories, and checks whether GitHub Actions is enabled. Pass
 `--require-external-actions` for any asset with `uses:`. A `local_only` policy
-forbids those assets; a `selected` policy is inconclusive until its selected
-allowlist has been reviewed against every exact action reference. Pass
+forbids those assets. For a `selected` policy, pass each candidate asset with
+`--workflow`; the preflight reads the effective selected-actions policy and
+checks every exact pinned action reference. It fails closed unless each reference
+matches an explicit allowlist pattern or is covered by GitHub's `actions/*`
+allowance. This preflight accepts pattern matches only for public repositories,
+because it does not infer Enterprise Cloud eligibility. Marketplace verified-creator
+access alone is not treated as proof for a specific action. Pass
 `--require-issues` for `stale.yml`, `freshness.yml`, and
 `community-health.yml`, because each performs issue operations.
 
@@ -288,7 +293,8 @@ if (-not (Test-Path -LiteralPath $workflowPreflight -PathType Leaf)) {
 $workflowPreflightArguments = @(
   "--repository", "OWNER/REPO",
   "--hostname", "github.com",
-  "--require-external-actions"
+  "--require-external-actions",
+  "--workflow", "assets/workflows/ci.yml"
 )
 # Add this only for stale.yml, freshness.yml, or community-health.yml.
 $requiresIssueOperations = $false

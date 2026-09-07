@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import runpy
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,6 +23,15 @@ codeql_preflight = importlib.util.module_from_spec(CODEQL_SPEC)
 sys.modules[CODEQL_SPEC.name] = codeql_preflight
 sys.modules["codeql_preflight"] = codeql_preflight
 CODEQL_SPEC.loader.exec_module(codeql_preflight)
+
+SYNC_SPEC = importlib.util.spec_from_file_location(
+    "sync_action_pins", SCRIPT_DIRECTORY / "sync_action_pins.py"
+)
+if SYNC_SPEC is None or SYNC_SPEC.loader is None:
+    raise RuntimeError("Could not load sync_action_pins.py")
+sync_action_pins = importlib.util.module_from_spec(SYNC_SPEC)
+sys.modules[SYNC_SPEC.name] = sync_action_pins
+SYNC_SPEC.loader.exec_module(sync_action_pins)
 
 SCRIPT_PATH = SCRIPT_DIRECTORY / "workflow_installation_preflight.py"
 SPEC = importlib.util.spec_from_file_location(
@@ -52,6 +62,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
         "repository": "octo/example",
         "require_external_actions": False,
         "require_issues": False,
+        "workflow": [],
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -71,6 +82,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "archived": False,
                 "disabled": False,
                 "has_issues": issues_enabled,
+                "visibility": "public",
             },
             "repos/octo/example/actions/permissions": {
                 "enabled": actions_enabled,
@@ -97,7 +109,6 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         cases = [
             (False, "all", "enable-github-actions-before-installing-workflows"),
             (True, "local_only", "allow-external-actions-before-installing-workflows"),
-            (True, "selected", "verify-selected-actions-before-installing-workflows"),
         ]
         for enabled, policy, expected in cases:
             with self.subTest(enabled=enabled, policy=policy):
@@ -110,6 +121,208 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     )
                 self.assertEqual(result["decision"], expected)
                 self.assertFalse(result["external_actions_verified"])
+
+        self.configure(actions_enabled=True, allowed_actions="selected")
+        FakeClient.responses[
+            "repos/octo/example/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": False,
+            "verified_allowed": False,
+            "patterns_allowed": [],
+        }
+        with mock.patch.object(
+            workflow_installation_preflight, "GitHubClient", FakeClient
+        ):
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError, "--workflow"
+            ):
+                workflow_installation_preflight.run(
+                    arguments(require_external_actions=True)
+                )
+
+    def test_compares_each_selected_action_with_effective_allowlist(self) -> None:
+        self.configure(allowed_actions="selected")
+        FakeClient.responses[
+            "repos/octo/example/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": True,
+            "verified_allowed": True,
+            "patterns_allowed": ["octo/allowed@*"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text(
+                "steps:\n"
+                "  - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                "  - uses: octo/allowed@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                "  - uses: octo/unapproved@cccccccccccccccccccccccccccccccccccccccc\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(require_external_actions=True, workflow=[workflow])
+                )
+
+        self.assertEqual(
+            result["decision"], "allow-selected-actions-before-installing-workflows"
+        )
+        self.assertFalse(result["external_actions_verified"])
+        self.assertEqual(
+            result["unapproved_action_references"],
+            ["octo/unapproved@cccccccccccccccccccccccccccccccccccccccc"],
+        )
+        self.assertEqual(result["github_api_requests"], 3)
+
+    def test_approves_selected_policy_only_after_exact_workflow_comparison(self) -> None:
+        self.configure(allowed_actions="selected")
+        FakeClient.responses[
+            "repos/octo/example/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": True,
+            "verified_allowed": False,
+            "patterns_allowed": ["octo/allowed@*"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yaml"
+            workflow.write_text(
+                "steps:\n"
+                "  - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                "  - uses: octo/allowed@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(require_external_actions=True, workflow=[workflow])
+                )
+        self.assertEqual(result["decision"], "may-install-workflow-assets")
+        self.assertTrue(result["external_actions_verified"])
+        self.assertEqual(result["unapproved_action_references"], [])
+
+    def test_selected_policy_fails_closed_for_missing_or_unsafe_workflow_inputs(self) -> None:
+        self.configure(allowed_actions="selected")
+        FakeClient.responses[
+            "repos/octo/example/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": False,
+            "verified_allowed": False,
+            "patterns_allowed": [],
+        }
+        with mock.patch.object(
+            workflow_installation_preflight, "GitHubClient", FakeClient
+        ):
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError, "--workflow"
+            ):
+                workflow_installation_preflight.run(
+                    arguments(require_external_actions=True)
+                )
+        with tempfile.TemporaryDirectory() as directory:
+            unsafe = Path(directory) / "workflow.txt"
+            unsafe.write_text("steps: []\n", encoding="utf-8")
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError, "unsafe"
+                ):
+                    workflow_installation_preflight.run(
+                        arguments(require_external_actions=True, workflow=[unsafe])
+                    )
+            unpinned = Path(directory) / "unpinned.yml"
+            unpinned.write_text(
+                "steps:\n  - uses: octo/unpinned@v1\n", encoding="utf-8"
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError, "full SHA"
+                ):
+                    workflow_installation_preflight.run(
+                        arguments(require_external_actions=True, workflow=[unpinned])
+                    )
+
+    def test_selected_policy_does_not_assume_private_pattern_eligibility(self) -> None:
+        self.configure(allowed_actions="selected")
+        repository_response = FakeClient.responses["repos/octo/example"]
+        assert isinstance(repository_response, dict)
+        repository_response["visibility"] = "private"
+        FakeClient.responses[
+            "repos/octo/example/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": False,
+            "verified_allowed": False,
+            "patterns_allowed": ["octo/allowed@*"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text(
+                "steps:\n"
+                "  - uses: octo/allowed@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(require_external_actions=True, workflow=[workflow])
+                )
+        self.assertFalse(result["external_actions_verified"])
+        self.assertEqual(
+            result["unapproved_action_references"],
+            ["octo/allowed@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        )
+
+    def test_selected_policy_rejects_invalid_api_response_and_visibility(self) -> None:
+        for response, message in (
+            ([], "response is invalid"),
+            (
+                {
+                    "github_owned_allowed": "yes",
+                    "verified_allowed": False,
+                    "patterns_allowed": [],
+                },
+                "invalid boolean",
+            ),
+            (
+                {
+                    "github_owned_allowed": False,
+                    "verified_allowed": False,
+                    "patterns_allowed": ["bad\npattern"],
+                },
+                "invalid allowed patterns",
+            ),
+        ):
+            with self.subTest(response=response):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError, message
+                ):
+                    workflow_installation_preflight.selected_actions_policy(response)
+
+        self.configure(allowed_actions="selected")
+        repository_response = FakeClient.responses["repos/octo/example"]
+        assert isinstance(repository_response, dict)
+        repository_response["visibility"] = "unknown"
+        FakeClient.responses[
+            "repos/octo/example/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": False,
+            "verified_allowed": False,
+            "patterns_allowed": [],
+        }
+        with mock.patch.object(
+            workflow_installation_preflight, "GitHubClient", FakeClient
+        ):
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError, "invalid visibility"
+            ):
+                workflow_installation_preflight.run(
+                    arguments(require_external_actions=True)
+                )
 
     def test_blocks_issue_dependent_assets_when_issues_are_disabled(self) -> None:
         self.configure(issues_enabled=False)
@@ -196,6 +409,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "octo/example",
                 "--require-external-actions",
                 "--require-issues",
+                "--workflow",
+                "assets/workflows/ci.yml",
             ],
         ):
             parsed = workflow_installation_preflight.parse_args()
@@ -203,6 +418,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertEqual(parsed.repository, "octo/example")
         self.assertTrue(parsed.require_external_actions)
         self.assertTrue(parsed.require_issues)
+        self.assertEqual(parsed.workflow, [Path("assets/workflows/ci.yml")])
         with mock.patch.object(sys, "argv", [str(SCRIPT_PATH)]):
             with self.assertRaises(SystemExit) as raised:
                 runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
