@@ -1505,6 +1505,11 @@ either shipped auto-merge asset. When it reports
 `enable-auto-merge-before-installing-workflows`, do not install either asset:
 enable the repository capability only with separate approval, verify the
 mutation, then rerun the preflight.
+When it reports `require-status-checks-before-installing-auto-merge-workflows`,
+do not install either asset: configure at least one effective required status
+check as a separate approved branch-policy change, verify it, then rerun the
+preflight. The helper accepts required checks from an applicable ruleset or
+classic protection, and fails closed when either API response is malformed.
 
 ```powershell
 $mergeSettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/merge_settings_preflight.py"
@@ -1531,6 +1536,9 @@ if ($mergeSettingsPreflightResult.decision -eq "require-explicit-merge-method-re
   $methods = @($mergeSettingsPreflightResult.methods_to_disable) -join ", "
   throw "Disabling enabled merge methods ($methods) needs separate user confirmation; do not mutate."
 }
+if ($mergeSettingsPreflightResult.decision -eq "require-status-checks-before-installing-auto-merge-workflows") {
+  throw "No effective required status check gates auto-merge. Configure and verify branch policy before installing auto-merge workflows."
+}
 if ($mergeSettingsPreflightResult.decision -notin @(
   "may-configure-merge-settings", "skip-auto-merge-workflows",
   "enable-auto-merge-before-installing-workflows"
@@ -1547,9 +1555,9 @@ After separate approval for listed removals, append
 `--confirm-disable-merge-methods`, rerun the preflight, and require the
 `may-configure-merge-settings`, `skip-auto-merge-workflows`, or
 `enable-auto-merge-before-installing-workflows` decision again. If the last
-decision requires auto-merge enablement, do not copy an auto-merge asset until
-the separately approved mutation succeeds, its final state is verified, and a
-rerun reports `may-configure-merge-settings`.
+decision requires auto-merge enablement or required status checks, do not copy
+an auto-merge asset until the separately approved mutation succeeds, its final
+state is verified, and a rerun reports `may-configure-merge-settings`.
 Use `$enableMergeCommit`, `$enableRebaseMerge`, and
 `$installAutoMergeWorkflows` only from its final JSON result. The detailed
 effective-rule inspection below is retained to explain the underlying GitHub

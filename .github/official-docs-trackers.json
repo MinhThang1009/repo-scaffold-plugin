@@ -598,9 +598,11 @@
       "url": "https://docs.github.com/en/rest/branches/branch-protection",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
+        "README.md",
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
-        "skills/repo-scaffold/scripts/branch_protection_preflight.py"
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+        "skills/repo-scaffold/scripts/merge_settings_preflight.py"
       ],
       "required-markers": [
         "required_status_checks",
@@ -611,11 +613,40 @@
       "review-period-days": 90
     },
     {
+      "id": "github-branches-api",
+      "label": "GitHub branch inspection API",
+      "url": "https://docs.github.com/en/rest/branches/branches",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "README.md",
+        "skills/repo-scaffold/scripts/merge_settings_preflight.py"
+      ],
+      "required-markers": ["Get a branch", "protection", "required_status_checks"],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-effective-branch-rules-api",
+      "label": "GitHub effective branch rules API",
+      "url": "https://docs.github.com/en/rest/repos/rules",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "README.md",
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/merge_settings_preflight.py"
+      ],
+      "required-markers": ["Get rules for a branch", "merge_queue", "required_status_checks"],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
       "id": "github-merge-queue-auto-merge",
       "label": "GitHub merge queue and auto-merge",
       "url": "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
+        "README.md",
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
         "skills/repo-scaffold/scripts/merge_settings_preflight.py",

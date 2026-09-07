@@ -4976,11 +4976,24 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/assets/workflows/freshness.yml",
                 },
                 "github-branch-protection-status-checks": {
+                    "README.md",
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                },
+                "github-branches-api": {
+                    "README.md",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                },
+                "github-effective-branch-rules-api": {
+                    "README.md",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
                 },
                 "github-merge-queue-auto-merge": {
+                    "README.md",
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/merge_settings_preflight.py",

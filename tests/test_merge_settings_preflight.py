@@ -78,6 +78,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         merge: bool = False,
         rebase: bool = False,
         auto_merge: bool = True,
+        branch: object | None = None,
     ) -> None:
         FakeClient.responses = {
             "repos/octo/example": {
@@ -91,6 +92,15 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 "allow_auto_merge": auto_merge,
             },
             "repos/octo/example/rules/branches/main?per_page=100": rules,
+            "repos/octo/example/branches/main": branch
+            if branch is not None
+            else {
+                "name": "main",
+                "protected": False,
+                "protection": {
+                    "required_status_checks": {"contexts": []},
+                },
+            },
         }
 
     def test_requires_separate_confirmation_before_disabling_methods(self) -> None:
@@ -154,7 +164,17 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         self.assertFalse(blocked["auto_merge_enabled"])
         self.assertFalse(blocked["auto_merge_workflows_eligible"])
 
-        self.configure(rules=[], auto_merge=True)
+        self.configure(
+            rules=[],
+            auto_merge=True,
+            branch={
+                "name": "main",
+                "protected": True,
+                "protection": {
+                    "required_status_checks": {"contexts": ["ci"]},
+                },
+            },
+        )
         with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
             ready = merge_settings_preflight.run(
                 arguments(require_auto_merge_workflows=True)
@@ -163,6 +183,44 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         self.assertEqual(ready["decision"], "may-configure-merge-settings")
         self.assertTrue(ready["auto_merge_enabled"])
         self.assertTrue(ready["auto_merge_workflows_eligible"])
+        self.assertTrue(ready["classic_status_checks_required"])
+
+    def test_auto_merge_workflows_require_effective_status_checks(self) -> None:
+        self.configure(rules=[])
+
+        with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
+            blocked = merge_settings_preflight.run(
+                arguments(require_auto_merge_workflows=True)
+            )
+
+        self.assertEqual(
+            blocked["decision"],
+            "require-status-checks-before-installing-auto-merge-workflows",
+        )
+        self.assertFalse(blocked["status_checks_required"])
+        self.assertFalse(blocked["auto_merge_workflows_eligible"])
+
+        self.configure(
+            rules=[
+                {
+                    "type": "required_status_checks",
+                    "parameters": {
+                        "strict_required_status_checks_policy": True,
+                        "required_status_checks": [{"context": "ci"}],
+                    },
+                }
+            ]
+        )
+        with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
+            ready = merge_settings_preflight.run(
+                arguments(require_auto_merge_workflows=True)
+            )
+
+        self.assertEqual(ready["decision"], "may-configure-merge-settings")
+        self.assertTrue(ready["ruleset_status_checks_required"])
+        self.assertIsNone(ready["classic_status_checks_required"])
+        self.assertTrue(ready["auto_merge_workflows_eligible"])
+        self.assertEqual(ready["github_api_requests"], 2)
 
     def test_rejects_invalid_effective_rule_parameters(self) -> None:
         self.configure(rules=[{"type": "pull_request", "parameters": {}}])
@@ -221,7 +279,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 if message is None:
                     self.assertEqual(
                         merge_settings_preflight.parse_effective_rules(payload),
-                        (set(), False),
+                        (set(), False, False),
                     )
                 else:
                     with self.assertRaisesRegex(
@@ -229,7 +287,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                     ):
                         merge_settings_preflight.parse_effective_rules(payload)
 
-        methods, queue = merge_settings_preflight.parse_effective_rules(
+        methods, queue, status_checks = merge_settings_preflight.parse_effective_rules(
             [
                 {
                     "type": "pull_request",
@@ -243,6 +301,121 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         )
         self.assertEqual(methods, {"merge", "squash", "rebase"})
         self.assertTrue(queue)
+        self.assertFalse(status_checks)
+
+        for contexts, message in [
+            ("ci", "no status-check context list"),
+            ([1], "invalid status-check context"),
+            ([""], "invalid status-check context"),
+            (["x" * 257], "invalid status-check context"),
+            (["ci\n"], "invalid status-check context"),
+        ]:
+            with self.subTest(contexts=contexts):
+                with self.assertRaisesRegex(
+                    merge_settings_preflight.InspectionError, message
+                ):
+                    merge_settings_preflight.status_check_contexts(contexts, "test")
+
+        invalid_rules = [
+            (
+                {"required_status_checks": []},
+                "invalid strict policy",
+            ),
+            (
+                {
+                    "strict_required_status_checks_policy": True,
+                    "required_status_checks": {},
+                },
+                "no status-check list",
+            ),
+            (
+                {
+                    "strict_required_status_checks_policy": True,
+                    "required_status_checks": ["ci"],
+                },
+                "invalid check",
+            ),
+            (
+                {
+                    "strict_required_status_checks_policy": True,
+                    "required_status_checks": [{}],
+                },
+                "invalid check",
+            ),
+            (
+                {
+                    "strict_required_status_checks_policy": True,
+                    "required_status_checks": [
+                        {"context": "ci", "integration_id": True}
+                    ],
+                },
+                "invalid integration ID",
+            ),
+            (
+                {
+                    "strict_required_status_checks_policy": True,
+                    "required_status_checks": [{"context": "ci", "integration_id": 0}],
+                },
+                "invalid integration ID",
+            ),
+        ]
+        for parameters, message in invalid_rules:
+            with self.subTest(parameters=parameters):
+                with self.assertRaisesRegex(
+                    merge_settings_preflight.InspectionError, message
+                ):
+                    merge_settings_preflight.parse_effective_rules(
+                        [{"type": "required_status_checks", "parameters": parameters}]
+                    )
+
+        for branch, message in [
+            ({}, "response is invalid"),
+            (
+                {
+                    "name": "other",
+                    "protected": False,
+                    "protection": {"required_status_checks": {"contexts": []}},
+                },
+                "response is invalid",
+            ),
+            (
+                {
+                    "name": "main",
+                    "protected": "no",
+                    "protection": {"required_status_checks": {"contexts": []}},
+                },
+                "invalid protected value",
+            ),
+            (
+                {"name": "main", "protected": False, "protection": []},
+                "no protection mapping",
+            ),
+            (
+                {"name": "main", "protected": False, "protection": {}},
+                "no required-status-checks mapping",
+            ),
+            (
+                {
+                    "name": "main",
+                    "protected": False,
+                    "protection": {"required_status_checks": {"contexts": [1]}},
+                },
+                "invalid status-check context",
+            ),
+            (
+                {
+                    "name": "main",
+                    "protected": False,
+                    "protection": {"required_status_checks": {"contexts": ["ci"]}},
+                },
+                "unprotected branch",
+            ),
+        ]:
+            with self.subTest(branch=branch):
+                with self.assertRaisesRegex(
+                    merge_settings_preflight.InspectionError, message
+                ):
+                    merge_settings_preflight.branch_has_status_checks(branch, "main")
 
     def test_run_rejects_invalid_repository_and_arguments(self) -> None:
         for overrides, message in [

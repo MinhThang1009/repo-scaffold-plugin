@@ -7691,30 +7691,48 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-community-health-branches-api": "skills/repo-scaffold/scripts/check_community_health.py",
                 "github-community-health-git-trees-api": "skills/repo-scaffold/scripts/check_community_health.py",
                 "github-reminder-issues-api": "skills/repo-scaffold/assets/workflows/freshness.yml",
-                "github-branch-protection-status-checks": "skills/repo-scaffold/scripts/branch_protection_preflight.py",
-                "github-merge-queue-auto-merge": "skills/repo-scaffold/assets/workflows/auto-merge.yml",
+                "github-branch-protection-status-checks": [
+                    "README.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                ],
+                "github-branches-api": [
+                    "README.md",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                ],
+                "github-effective-branch-rules-api": [
+                    "README.md",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                ],
+                "github-merge-queue-auto-merge": [
+                    "README.md",
+                    "skills/repo-scaffold/assets/workflows/auto-merge.yml",
+                ],
                 "github-security-analysis-settings": "skills/repo-scaffold/scripts/security_features_preflight.py",
                 "github-artifact-attestations": "skills/repo-scaffold/scripts/release_preflight.py",
                 "github-actions-secrets-api": "skills/repo-scaffold/scripts/release_preflight.py",
                 "github-repository-settings-api": "skills/repo-scaffold/scripts/repository_settings_preflight.py",
             }
-            for identifier, removed_path in cases.items():
-                registry = validate_repository.load_json(registry_path)
-                claim = next(
-                    item for item in registry["claims"] if item["id"] == identifier
-                )
-                claim["paths"].remove(removed_path)
-                registry_path.write_text(json.dumps(registry), encoding="utf-8")
-                with self.subTest(identifier=identifier):
-                    problems = (
-                        validate_repository.validate_official_docs_tracking_contract(
+            for identifier, removed_paths in cases.items():
+                for removed_path in (
+                    removed_paths
+                    if isinstance(removed_paths, list)
+                    else [removed_paths]
+                ):
+                    registry = validate_repository.load_json(registry_path)
+                    claim = next(
+                        item for item in registry["claims"] if item["id"] == identifier
+                    )
+                    claim["paths"].remove(removed_path)
+                    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+                    with self.subTest(identifier=identifier, removed_path=removed_path):
+                        problems = validate_repository.validate_official_docs_tracking_contract(
                             root
                         )
-                    )
-                    self.assertTrue(
-                        any(identifier in problem for problem in problems), problems
-                    )
-                self.copy_contract(root)
+                        self.assertTrue(
+                            any(identifier in problem for problem in problems), problems
+                        )
+                    self.copy_contract(root)
 
     def test_missing_and_drifted_official_documentation_contract_is_reported(
         self,
@@ -7891,6 +7909,8 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-community-health-git-trees-api",
             "github-reminder-issues-api",
             "github-branch-protection-status-checks",
+            "github-branches-api",
+            "github-effective-branch-rules-api",
             "github-merge-queue-auto-merge",
             "github-security-analysis-settings",
             "github-artifact-attestations",
