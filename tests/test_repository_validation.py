@@ -7672,6 +7672,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             registry_path = root / ".github" / "official-docs-trackers.json"
             cases = {
                 "github-actions-dependabot": "skills/repo-scaffold/assets/dependabot.yml",
+                "github-dependabot-auto-merge": "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
                 "github-dependency-review": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 "github-dependency-graph-sbom-api": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 "github-actions-permissions-api": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",

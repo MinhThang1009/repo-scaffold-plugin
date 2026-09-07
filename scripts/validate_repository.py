@@ -4885,6 +4885,9 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     ".github/dependabot.yml",
                     "skills/repo-scaffold/assets/dependabot.yml",
                 },
+                "github-dependabot-auto-merge": {
+                    "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
+                },
                 "github-dependency-review": {
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",

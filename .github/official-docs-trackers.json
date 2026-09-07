@@ -260,6 +260,22 @@
       "review-period-days": 90
     },
     {
+      "id": "github-dependabot-auto-merge",
+      "label": "GitHub Actions Dependabot auto-merge",
+      "url": "https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml"
+      ],
+      "required-markers": [
+        "Dependabot auto-merge",
+        "pull-requests: write",
+        "merge queue"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
       "id": "github-dependency-review",
       "label": "GitHub Dependency Review eligibility",
       "url": "https://docs.github.com/en/code-security/concepts/supply-chain-security/dependency-review",
