@@ -72,7 +72,12 @@ def arguments(**overrides: object) -> argparse.Namespace:
 
 class MergeSettingsPreflightTests(unittest.TestCase):
     def configure(
-        self, *, rules: object, merge: bool = False, rebase: bool = False
+        self,
+        *,
+        rules: object,
+        merge: bool = False,
+        rebase: bool = False,
+        auto_merge: bool = True,
     ) -> None:
         FakeClient.responses = {
             "repos/octo/example": {
@@ -81,6 +86,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 "allow_squash_merge": True,
                 "allow_merge_commit": merge,
                 "allow_rebase_merge": rebase,
+                "allow_auto_merge": auto_merge,
             },
             "repos/octo/example/rules/branches/main?per_page=100": rules,
         }
@@ -130,6 +136,30 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         self.assertTrue(result["merge_queue_applies"])
         self.assertFalse(result["auto_merge_workflows_eligible"])
         self.assertEqual(result["required_merge_methods"], ["rebase"])
+
+    def test_auto_merge_workflows_require_enabled_repository_capability(self) -> None:
+        self.configure(rules=[], auto_merge=False)
+
+        with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
+            blocked = merge_settings_preflight.run(
+                arguments(require_auto_merge_workflows=True)
+            )
+
+        self.assertEqual(
+            blocked["decision"], "enable-auto-merge-before-installing-workflows"
+        )
+        self.assertFalse(blocked["auto_merge_enabled"])
+        self.assertFalse(blocked["auto_merge_workflows_eligible"])
+
+        self.configure(rules=[], auto_merge=True)
+        with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
+            ready = merge_settings_preflight.run(
+                arguments(require_auto_merge_workflows=True)
+            )
+
+        self.assertEqual(ready["decision"], "may-configure-merge-settings")
+        self.assertTrue(ready["auto_merge_enabled"])
+        self.assertTrue(ready["auto_merge_workflows_eligible"])
 
     def test_rejects_invalid_effective_rule_parameters(self) -> None:
         self.configure(rules=[{"type": "pull_request", "parameters": {}}])
@@ -232,6 +262,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                     "allow_squash_merge": True,
                     "allow_merge_commit": False,
                     "allow_rebase_merge": False,
+                    "allow_auto_merge": True,
                 },
                 "Archived",
             ),
@@ -242,8 +273,20 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                     "allow_squash_merge": "yes",
                     "allow_merge_commit": False,
                     "allow_rebase_merge": False,
+                    "allow_auto_merge": True,
                 },
                 "allow_squash_merge",
+            ),
+            (
+                {
+                    "full_name": "octo/example",
+                    "archived": False,
+                    "allow_squash_merge": True,
+                    "allow_merge_commit": False,
+                    "allow_rebase_merge": False,
+                    "allow_auto_merge": "yes",
+                },
+                "allow_auto_merge",
             ),
         ]:
             FakeClient.responses["repos/octo/example"] = repository
