@@ -7661,25 +7661,33 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             [],
         )
 
-    def test_dependabot_claim_must_track_both_configuration_surfaces(self) -> None:
+    def test_critical_policy_claims_must_track_every_affected_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
             registry_path = root / ".github" / "official-docs-trackers.json"
-            registry = validate_repository.load_json(registry_path)
-            claims = registry["claims"]
-            dependabot_claim = next(
-                claim for claim in claims if claim["id"] == "github-actions-dependabot"
-            )
-            dependabot_claim["paths"].remove(
-                "skills/repo-scaffold/assets/dependabot.yml"
-            )
-            registry_path.write_text(json.dumps(registry), encoding="utf-8")
-            missing_path = validate_repository.validate_official_docs_tracking_contract(
-                root
-            )
-
-        self.assertTrue(any("both shipped" in problem for problem in missing_path))
+            cases = {
+                "github-actions-dependabot": "skills/repo-scaffold/assets/dependabot.yml",
+                "github-dependency-review": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                "github-dependency-graph-sbom-api": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+            }
+            for identifier, removed_path in cases.items():
+                registry = validate_repository.load_json(registry_path)
+                claim = next(
+                    item for item in registry["claims"] if item["id"] == identifier
+                )
+                claim["paths"].remove(removed_path)
+                registry_path.write_text(json.dumps(registry), encoding="utf-8")
+                with self.subTest(identifier=identifier):
+                    problems = (
+                        validate_repository.validate_official_docs_tracking_contract(
+                            root
+                        )
+                    )
+                    self.assertTrue(
+                        any(identifier in problem for problem in problems), problems
+                    )
+                self.copy_contract(root)
 
     def test_missing_and_drifted_official_documentation_contract_is_reported(
         self,
@@ -7819,7 +7827,9 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             )
         )
 
-    def test_malformed_tracker_url_does_not_break_host_discovery(self) -> None:
+    def test_malformed_tracker_url_reports_critical_claim_gaps_without_crashing(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
@@ -7835,7 +7845,24 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             problems = validate_repository.validate_official_docs_tracking_contract(
                 root
             )
-        self.assertEqual(problems, [])
+        self.assertTrue(
+            any(
+                "github-actions-dependabot claim is missing" in problem
+                for problem in problems
+            )
+        )
+        self.assertTrue(
+            any(
+                "github-dependency-review claim is missing" in problem
+                for problem in problems
+            )
+        )
+        self.assertTrue(
+            any(
+                "github-dependency-graph-sbom-api claim is missing" in problem
+                for problem in problems
+            )
+        )
 
     def test_malformed_and_nonofficial_markdown_urls_do_not_break_tracking(
         self,

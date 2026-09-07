@@ -4870,18 +4870,36 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                         problems.append(
                             f"{relative}: official documentation URL must list this file in its tracker claim: {source_url}"
                         )
-            dependabot_paths = claim_paths_by_id.get("github-actions-dependabot")
-            required_dependabot_paths = {
-                ".github/dependabot.yml",
-                "skills/repo-scaffold/assets/dependabot.yml",
+            required_claim_paths = {
+                "github-actions-dependabot": {
+                    ".github/dependabot.yml",
+                    "skills/repo-scaffold/assets/dependabot.yml",
+                },
+                "github-dependency-review": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/dependency-review.yml",
+                    "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                },
+                "github-dependency-graph-sbom-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                },
             }
-            if dependabot_paths is not None and (
-                not isinstance(dependabot_paths, list)
-                or not required_dependabot_paths.issubset(dependabot_paths)
-            ):
-                problems.append(
-                    ".github/official-docs-trackers.json: Dependabot claim must track both shipped configuration paths"
-                )
+            for identifier, required_paths in required_claim_paths.items():
+                claim_paths = claim_paths_by_id.get(identifier)
+                if claim_paths is None:
+                    problems.append(
+                        ".github/official-docs-trackers.json: "
+                        f"{identifier} claim is missing"
+                    )
+                elif not isinstance(claim_paths, list) or not required_paths.issubset(
+                    claim_paths
+                ):
+                    problems.append(
+                        ".github/official-docs-trackers.json: "
+                        f"{identifier} claim must track every affected path"
+                    )
     try:
         script_text = script_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:

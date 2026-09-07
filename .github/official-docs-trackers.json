@@ -258,6 +258,42 @@
       "required-markers": ["github-actions", "directory"],
       "reviewed-on": "2026-08-24",
       "review-period-days": 90
+    },
+    {
+      "id": "github-dependency-review",
+      "label": "GitHub Dependency Review eligibility",
+      "url": "https://docs.github.com/en/code-security/concepts/supply-chain-security/dependency-review",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/assets/workflows/dependency-review.yml",
+        "skills/repo-scaffold/scripts/dependency_review_preflight.py"
+      ],
+      "required-markers": [
+        "Public repositories on GitHub.com",
+        "GitHub Code Security enabled",
+        "dependency graph"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-dependency-graph-sbom-api",
+      "label": "GitHub dependency graph SBOM API",
+      "url": "https://docs.github.com/en/rest/dependency-graph/sboms",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/dependency_review_preflight.py"
+      ],
+      "required-markers": [
+        "dependency-graph/sbom",
+        "November 13, 2026",
+        "SPDX JSON"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 30
     }
   ]
 }
