@@ -7675,6 +7675,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-dependency-review": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 "github-dependency-graph-sbom-api": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 "github-actions-permissions-api": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                "github-actions-workflow-permissions-syntax": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                 "github-codeql-advanced-setup": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
                 "github-codeql-default-setup-api": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
                 "github-code-scanning-sarif-upload": "skills/repo-scaffold/scripts/scorecard_preflight.py",

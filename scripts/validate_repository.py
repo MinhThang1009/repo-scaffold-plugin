@@ -4900,6 +4900,11 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                 },
+                "github-actions-workflow-permissions-syntax": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                },
                 "github-codeql-advanced-setup": {
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",

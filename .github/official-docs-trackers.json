@@ -310,6 +310,24 @@
       "review-period-days": 90
     },
     {
+      "id": "github-actions-workflow-permissions-syntax",
+      "label": "GitHub Actions workflow permission syntax",
+      "url": "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/workflow_installation_preflight.py"
+      ],
+      "required-markers": [
+        "permissions",
+        "issues: read|write|none",
+        "permissions: write-all"
+      ],
+      "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
       "id": "github-codeql-advanced-setup",
       "label": "GitHub CodeQL advanced-setup eligibility",
       "url": "https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/configure-code-scanning/configuring-advanced-setup-for-code-scanning",
