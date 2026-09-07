@@ -177,7 +177,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertEqual(result["github_api_requests"], 3)
 
-    def test_approves_selected_policy_only_after_exact_workflow_comparison(self) -> None:
+    def test_approves_selected_policy_only_after_exact_workflow_comparison(
+        self,
+    ) -> None:
         self.configure(allowed_actions="selected")
         FakeClient.responses[
             "repos/octo/example/actions/permissions/selected-actions"
@@ -204,7 +206,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(result["external_actions_verified"])
         self.assertEqual(result["unapproved_action_references"], [])
 
-    def test_selected_policy_fails_closed_for_missing_or_unsafe_workflow_inputs(self) -> None:
+    def test_selected_policy_fails_closed_for_missing_or_unsafe_workflow_inputs(
+        self,
+    ) -> None:
         self.configure(allowed_actions="selected")
         FakeClient.responses[
             "repos/octo/example/actions/permissions/selected-actions"

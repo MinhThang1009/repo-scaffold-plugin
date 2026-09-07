@@ -177,7 +177,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             client.json(f"repos/{owner}/{repo}/actions/permissions/selected-actions")
         )
         if visibility not in {"public", "private", "internal"}:
-            raise InspectionError("Repository response has an invalid visibility value.")
+            raise InspectionError(
+                "Repository response has an invalid visibility value."
+            )
         external_action_references = workflow_external_action_references(args.workflow)
         unapproved_action_references = [
             reference
