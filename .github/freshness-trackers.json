@@ -9,6 +9,8 @@
     "skills/repo-scaffold/assets/release-please-config.json",
     "skills/repo-scaffold/assets/release-please-config.vi.json"
   ],
+  "optional-release-please-configs": [],
+  "ci-toolchain-policies": [],
   "requirement-sources": [
     {
       "path": "requirements-dev.in",

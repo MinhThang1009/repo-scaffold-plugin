@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import runpy
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -473,6 +474,102 @@ class FreshnessTests(unittest.TestCase):
             )
             self.assertEqual(calls, ["ruff"])
 
+    def test_optional_release_please_and_ci_toolchain_trackers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            registry = root / freshness.DEFAULT_TRACKER_REGISTRY
+            document = json.loads(registry.read_text(encoding="utf-8"))
+            document["release-please-configs"] = []
+            document["optional-release-please-configs"] = ["release-please-config.json"]
+            document["ci-toolchain-policies"] = [".github/ci-toolchain.json"]
+            registry.write_text(json.dumps(document), encoding="utf-8")
+            policy = root / ".github/ci-toolchain.json"
+            policy.write_text("{}\n", encoding="utf-8")
+            script = root / "scripts/ci_toolchain.py"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text("# bundled checker\n", encoding="utf-8")
+
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            self.assertEqual(
+                freshness.existing_optional_paths(
+                    root, trackers.optional_release_please_configs
+                ),
+                (Path("release-please-config.json"),),
+            )
+            (root / "release-please-config.json").unlink()
+            self.assertEqual(
+                freshness.existing_optional_paths(
+                    root, trackers.optional_release_please_configs
+                ),
+                (),
+            )
+            self.assertEqual(freshness.ci_toolchain_findings(root, ()), [])
+
+            current = mock.Mock(returncode=0, stderr="", stdout="current")
+            with mock.patch.object(freshness.subprocess, "run", return_value=current):
+                self.assertEqual(
+                    freshness.ci_toolchain_findings(
+                        root, trackers.ci_toolchain_policies
+                    ),
+                    [],
+                )
+
+            stale = mock.Mock(
+                returncode=1,
+                stderr=(
+                    "error: markdownlint-cli2 policy pins 1.0.0, but latest npm "
+                    "release is '2.0.0'; review the release and update the policy"
+                ),
+                stdout="",
+            )
+            with mock.patch.object(
+                freshness.subprocess, "run", return_value=stale
+            ) as run:
+                findings = freshness.ci_toolchain_findings(
+                    root, trackers.ci_toolchain_policies
+                )
+            self.assertEqual(findings[0]["kind"], "ci-toolchain")
+            self.assertIn("verify-latest-releases", run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs["timeout"], 60)
+
+            digest_drift = mock.Mock(
+                returncode=1,
+                stderr="error: actionlint asset digest differs from the reviewed policy",
+                stdout="",
+            )
+            with mock.patch.object(
+                freshness.subprocess, "run", return_value=digest_drift
+            ):
+                self.assertEqual(
+                    freshness.ci_toolchain_findings(
+                        root, trackers.ci_toolchain_policies
+                    )[0]["kind"],
+                    "ci-toolchain",
+                )
+
+            indeterminate = mock.Mock(
+                returncode=1,
+                stderr="error: could not query latest npm release",
+                stdout="",
+            )
+            with (
+                mock.patch.object(
+                    freshness.subprocess, "run", return_value=indeterminate
+                ),
+                self.assertRaisesRegex(freshness.AuditError, "indeterminate"),
+            ):
+                freshness.ci_toolchain_findings(root, trackers.ci_toolchain_policies)
+            with (
+                mock.patch.object(
+                    freshness.subprocess,
+                    "run",
+                    side_effect=subprocess.TimeoutExpired("checker", 60),
+                ),
+                self.assertRaisesRegex(freshness.AuditError, "could not run"),
+            ):
+                freshness.ci_toolchain_findings(root, trackers.ci_toolchain_policies)
+
     def test_tracker_registry_rejects_invalid_and_unsafe_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -657,6 +754,31 @@ class FreshnessTests(unittest.TestCase):
             self.assertNotIn(
                 "googleapis/release-please", client.latest_release.call_args
             )
+
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "latest_pypi_release",
+                    side_effect={
+                        "ruff": "0.1.0",
+                        "mutmut": "1.0.0",
+                        "markdown-it-py": "1.0.0",
+                    }.__getitem__,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "ci_toolchain_findings",
+                    side_effect=freshness.AuditError("CI toolchain unavailable"),
+                ),
+            ):
+                report = freshness.audit(root, "token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("CI toolchain unavailable", report["errors"])
 
     def test_audit_markdown_and_main_statuses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

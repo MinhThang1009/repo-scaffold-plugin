@@ -271,6 +271,20 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
     ),
     (
         Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/scripts/ci_toolchain.py"),
+        "../scripts/ci_toolchain.py",
+        Path("scripts/ci_toolchain.py"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/assets/ci-toolchain.json"),
+        "assets/ci-toolchain.json",
+        Path(".github/ci-toolchain.json"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
         Path("skills/repo-scaffold/scripts/sync_action_pins.py"),
         "../scripts/sync_action_pins.py",
         Path("scripts/sync_action_pins.py"),
@@ -4646,6 +4660,8 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         "schema-version": 1,
         "workflow-directories": [".github/workflows"],
         "release-please-configs": [],
+        "optional-release-please-configs": ["release-please-config.json"],
+        "ci-toolchain-policies": [".github/ci-toolchain.json"],
         "requirement-sources": [
             {"path": "requirements-docs.txt", "locks": []},
         ],

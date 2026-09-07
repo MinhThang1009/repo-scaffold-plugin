@@ -7,6 +7,8 @@ import argparse
 import json
 import os
 import re
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -74,6 +76,8 @@ class FreshnessTrackers:
 
     workflow_directories: tuple[Path, ...]
     release_please_configs: tuple[Path, ...]
+    optional_release_please_configs: tuple[Path, ...]
+    ci_toolchain_policies: tuple[Path, ...]
     requirement_sources: tuple[RequirementSource, ...]
 
 
@@ -145,8 +149,10 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
     if not isinstance(document, dict) or document.get("schema-version") != 1:
         raise AuditError("freshness tracker registry must use schema-version 1")
 
-    def paths(key: str, *, allow_empty: bool) -> tuple[Path, ...]:
-        values = document.get(key)
+    def paths(
+        key: str, *, allow_empty: bool, default_empty: bool = False
+    ) -> tuple[Path, ...]:
+        values = document.get(key, [] if default_empty else None)
         if not isinstance(values, list) or (not allow_empty and not values):
             raise AuditError(f"freshness tracker registry {key} must be a list")
         if len(values) > MAX_TRACKER_ENTRIES:
@@ -200,6 +206,12 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
     return FreshnessTrackers(
         workflow_directories=paths("workflow-directories", allow_empty=False),
         release_please_configs=paths("release-please-configs", allow_empty=True),
+        optional_release_please_configs=paths(
+            "optional-release-please-configs", allow_empty=True, default_empty=True
+        ),
+        ci_toolchain_policies=paths(
+            "ci-toolchain-policies", allow_empty=True, default_empty=True
+        ),
         requirement_sources=tuple(requirement_sources),
     )
 
@@ -358,6 +370,63 @@ def release_please_findings(
     return findings
 
 
+def existing_optional_paths(root: Path, paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    """Return opted-in optional paths that exist without hiding unsafe entries."""
+    return tuple(path for path in paths if os.path.lexists(root / path))
+
+
+def ci_toolchain_findings(
+    root: Path, policies: tuple[Path, ...]
+) -> list[dict[str, str]]:
+    """Report verified CI-toolchain release drift without treating outages as drift."""
+    if not policies:
+        return []
+    script = tracked_path(
+        root, Path("scripts/ci_toolchain.py"), kind="CI toolchain checker"
+    )
+    findings: list[dict[str, str]] = []
+    for relative in policies:
+        policy = tracked_path(root, relative, kind="CI toolchain policy")
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--policy",
+                    str(policy),
+                    "verify-latest-releases",
+                ],
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise AuditError(
+                f"CI toolchain audit could not run for {relative}: {error}"
+            ) from error
+        if result.returncode == 0:
+            continue
+        details = (result.stderr or result.stdout).strip()
+        if "policy pins" in details or "asset digest differs" in details:
+            findings.append(
+                {
+                    "kind": "ci-toolchain",
+                    "path": relative.as_posix(),
+                    "subject": "reviewed tool pins",
+                    "current": "reviewed policy",
+                    "latest": "upstream release",
+                    "details": details,
+                }
+            )
+            continue
+        raise AuditError(
+            f"CI toolchain audit is indeterminate for {relative}: {details}"
+        )
+    return findings
+
+
 def requirement_findings(
     root: Path,
     sources: tuple[RequirementSource, ...],
@@ -428,11 +497,17 @@ def audit(
                     root, trackers.workflow_directories, client.latest_release
                 )
             )
-            if trackers.release_please_configs:
+            release_please_configs = (
+                trackers.release_please_configs
+                + existing_optional_paths(
+                    root, trackers.optional_release_please_configs
+                )
+            )
+            if release_please_configs:
                 findings.extend(
                     release_please_findings(
                         root,
-                        trackers.release_please_configs,
+                        release_please_configs,
                         client.latest_release("googleapis/release-please").tag,
                     )
                 )
@@ -444,6 +519,10 @@ def audit(
                     root, trackers.requirement_sources, latest_pypi_release
                 )
             )
+        except AuditError as error:
+            errors.append(str(error))
+        try:
+            findings.extend(ci_toolchain_findings(root, trackers.ci_toolchain_policies))
         except AuditError as error:
             errors.append(str(error))
     status = "indeterminate" if errors else "attention" if findings else "current"
