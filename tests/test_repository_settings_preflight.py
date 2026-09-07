@@ -69,6 +69,7 @@ def repository(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "full_name": "octo/example",
         "archived": False,
+        "disabled": False,
         "permissions": {"admin": True},
         "has_issues": False,
         "has_discussions": False,
@@ -147,6 +148,7 @@ class RepositorySettingsPreflightTests(unittest.TestCase):
                 "different repository",
             ),
             (arguments(issues=True), repository(archived=True), "Archived"),
+            (arguments(issues=True), repository(disabled=True), "Disabled"),
             (
                 arguments(issues=True),
                 repository(permissions={}),

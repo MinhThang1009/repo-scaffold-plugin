@@ -100,6 +100,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Archived repositories cannot have security settings changed."
         )
+    if require_boolean(repository, "disabled"):
+        raise InspectionError(
+            "Disabled repositories cannot have security settings changed."
+        )
+    permissions = repository.get("permissions")
+    if not isinstance(permissions, dict) or "admin" not in permissions:
+        raise InspectionError(
+            "Repository administration permission is required to change security settings."
+        )
+    if not require_boolean(permissions, "admin"):
+        raise InspectionError(
+            "Repository administration permission is required to change security settings."
+        )
     is_fork = require_boolean(repository, "fork")
     visibility = repository.get("visibility")
     if visibility not in {"public", "private", "internal"}:
@@ -131,6 +144,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "decision": "may-configure-security-features",
         "requested_features": requested,
         "repository": args.repository,
+        "administration_permission": True,
         "visibility": visibility,
         "is_fork": is_fork,
         "owner_type": owner_type,

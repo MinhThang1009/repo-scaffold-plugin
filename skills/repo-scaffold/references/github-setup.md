@@ -131,7 +131,7 @@ Pass `github.com/OWNER/REPO` to every later repository-scoped `gh` command. Neve
 Run the bundled `scripts/repository_settings_preflight.py` immediately before
 changing basic repository metadata or communication settings. It is read-only
 and fail-closed: it binds the GitHub response to the explicit `OWNER/REPO`,
-rejects archived repositories, requires current administration permission, and
+rejects archived or disabled repositories, requires current administration permission, and
 binds the approved description, topic, Issues, and Discussions requests to the
 final mutation plan. Do not run `gh repo edit` when this preflight is absent,
 inconclusive, or approves a different request.
@@ -566,13 +566,19 @@ ambiguous producers, verifies unfiltered `pull_request` coverage plus
 unconditional executable job, and verifies a successful Check Run no older than
 seven days on both the head and test-merge SHAs. It also rejects a changing or
 missing GitHub App ID and every same-name Commit Status collision. It never
-modifies GitHub state. Any API, parsing, pagination, mergeability, or evidence
-gap is inconclusive and required-check mutation remains forbidden.
+modifies GitHub state. It also binds the exact repository/default branch,
+rejects archived or disabled targets, and requires current administration
+permission. Any API, parsing, pagination, mergeability, or evidence gap is
+inconclusive and required-check mutation remains forbidden.
 
 Resolve `REPO_SCAFFOLD_SKILL_ROOT` to the installed/source directory that
 contains this skill's `SKILL.md`, then run:
 
 ```powershell
+$defaultBranch = $repoView.defaultBranchRef.name
+if ([string]::IsNullOrWhiteSpace($defaultBranch)) {
+  throw "The repository has no default branch; confirm one before configuring protection."
+}
 $branchProtectionPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/branch_protection_preflight.py"
 if (-not (Test-Path -LiteralPath $branchProtectionPreflight -PathType Leaf)) {
   throw "The bundled branch-protection preflight script is missing; do not mutate protection."
@@ -589,6 +595,10 @@ $requiredCheckPreflight = ($preflightOutput | Out-String) | ConvertFrom-Json
 if (-not $requiredCheckPreflight.inspection_complete -or
     $requiredCheckPreflight.decision -ne "may-configure-classic-protection") {
   throw "Required-check evidence is incomplete; do not mutate protection."
+}
+if ($requiredCheckPreflight.repository -cne "OWNER/REPO" -or
+    $requiredCheckPreflight.default_branch -cne $defaultBranch) {
+  throw "Branch-protection preflight input does not match the protection mutation."
 }
 # Use only these returned values in the mutation block. Do not add contexts or
 # substitute app IDs manually after the preflight completes.
@@ -619,6 +629,10 @@ $owner, $repo = $repoView.nameWithOwner -split '/', 2
 $defaultBranch = $repoView.defaultBranchRef.name
 if ([string]::IsNullOrWhiteSpace($defaultBranch)) {
   throw "The repository has no default branch; confirm one before configuring protection."
+}
+if ($repoView.nameWithOwner -cne $requiredCheckPreflight.repository -or
+    $defaultBranch -cne $requiredCheckPreflight.default_branch) {
+  throw "Repository identity or default branch changed after preflight; rerun before mutating protection."
 }
 $encodedBranch = [Uri]::EscapeDataString($defaultBranch)
 
@@ -1101,12 +1115,13 @@ Run each eligible command separately after confirmation and only report a featur
 Before the first security-feature mutation, run the bundled
 `scripts/security_features_preflight.py` with exactly the approved feature
 flags. It is read-only and fail-closed: it binds the repository response to the
-explicit `OWNER/REPO`, rejects archived or ambiguous repositories, validates the
-published security-analysis fields, requires secret scanning before push
-protection, and permits private vulnerability reporting only for a public
-non-fork repository. It checks Dependabot alerts before automated security fixes
-unless alerts were requested for prior enablement. It does not infer entitlement
-from a missing field, so
+explicit `OWNER/REPO`, rejects archived, disabled, or ambiguous repositories, validates the
+published security-analysis fields, and requires current repository
+administration permission. It requires secret scanning before push protection,
+and permits private vulnerability reporting only for a public non-fork
+repository. It checks Dependabot alerts before automated security fixes unless
+alerts were requested for prior enablement. It does not infer entitlement from a
+missing field, so
 continue to handle GitHub's final `403`, `404`, `409`, `422`, and `503` result
 separately.
 
@@ -1142,6 +1157,17 @@ if (-not $securityPreflightResult.inspection_complete -or
     $securityPreflightResult.decision -ne "may-configure-security-features") {
   throw "Security-feature preflight did not approve the requested mutations."
 }
+$requestedSecurityFeatures = @()
+if ($enableDependabotAlertsRequested) { $requestedSecurityFeatures += "dependabot_alerts" }
+if ($enableAutomatedSecurityFixesRequested) { $requestedSecurityFeatures += "automated_security_fixes" }
+if ($enableSecretScanningRequested) { $requestedSecurityFeatures += "secret_scanning" }
+if ($enablePushProtectionRequested) { $requestedSecurityFeatures += "push_protection" }
+if ($enablePrivateVulnerabilityReportingRequested) { $requestedSecurityFeatures += "private_vulnerability_reporting" }
+$approvedSecurityFeatures = @($securityPreflightResult.requested_features | ForEach-Object { [string]$_ })
+if ($approvedSecurityFeatures.Count -ne $requestedSecurityFeatures.Count -or
+    $null -ne (Compare-Object -ReferenceObject $requestedSecurityFeatures -DifferenceObject $approvedSecurityFeatures -CaseSensitive)) {
+  throw "Security-feature preflight input does not match the requested mutations."
+}
 ```
 
 Run a following mutating command only when its matching approved request flag
@@ -1152,15 +1178,32 @@ feature.
 - **Dependency graph**: enabled by default for public repositories. It is not the same setting as Dependabot alerts.
 - **Dependabot alerts**: not enabled by default. Enable explicitly where supported. Dependabot alerts before automated security fixes are required: when both were approved in one preflight, enable alerts, re-query `vulnerability-alerts` successfully, and only then enable security fixes:
 
-  ```bash
-  gh api --hostname github.com -X PUT repos/OWNER/REPO/vulnerability-alerts
-  gh api --hostname github.com -X PUT repos/OWNER/REPO/automated-security-fixes
+  ```powershell
+  if ($enableDependabotAlertsRequested) {
+    gh api --hostname github.com -X PUT repos/OWNER/REPO/vulnerability-alerts
+  }
+  if ($enableAutomatedSecurityFixesRequested) {
+    gh api --hostname github.com repos/OWNER/REPO/vulnerability-alerts | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "Dependabot alerts are not verified as enabled; do not enable automated security fixes."
+    }
+    gh api --hostname github.com -X PUT repos/OWNER/REPO/automated-security-fixes
+  }
   ```
 
 - **Secret scanning + push protection**: availability depends on repository visibility and the owner's GitHub security entitlement. Push protection requires secret scanning. Attempt only after the capability check:
 
-  ```bash
-  gh repo edit github.com/OWNER/REPO --enable-secret-scanning --enable-secret-scanning-push-protection
+  ```powershell
+  if ($enableSecretScanningRequested) {
+    gh repo edit github.com/OWNER/REPO --enable-secret-scanning
+  }
+  if ($enablePushProtectionRequested) {
+    $secretScanningState = gh api --hostname github.com repos/OWNER/REPO --jq '.security_and_analysis.secret_scanning.status'
+    if ($LASTEXITCODE -ne 0 -or $secretScanningState -ne "enabled") {
+      throw "Secret scanning is not verified as enabled; do not enable push protection."
+    }
+    gh repo edit github.com/OWNER/REPO --enable-secret-scanning-push-protection
+  }
   ```
 
 - **CodeQL advanced setup**: when the user explicitly chooses a repository-managed configuration, install `assets/workflows/codeql.yml`, render the verified default branch through `{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}` plus a supported detected language, and keep CodeQL default setup not configured. Inspect workflows and existing analyses first, and do not install a second advanced uploader silently. If default setup is already configured, stop and obtain explicit approval before switching modes.
@@ -1339,8 +1382,10 @@ feature.
 
 - **Private vulnerability reporting**: despite its name, this repository setting is for receiving reports privately on a public repository. Offer it only for a public, non-fork repository:
 
-  ```bash
-  gh api --hostname github.com -X PUT repos/OWNER/REPO/private-vulnerability-reporting
+  ```powershell
+  if ($enablePrivateVulnerabilityReportingRequested) {
+    gh api --hostname github.com -X PUT repos/OWNER/REPO/private-vulnerability-reporting
+  }
   ```
 
 - **Dependency review workflow**: install `assets/workflows/dependency-review.yml` for public repositories, or for organization-owned private or internal repositories only after confirming GitHub Code Security/Advanced Security eligibility. The v5 asset handles both `pull_request` and `merge_group` payloads. Require its `dependency-review` check only when the workflow can run on every event required by the repository's effective rules.
@@ -1353,13 +1398,14 @@ On GitHub.com, auto-merge is available for private repositories only with GitHub
 
 Run the bundled `scripts/merge_settings_preflight.py` before the first
 merge-setting mutation. It is read-only and fail-closed: it binds the requested
-repository response to the explicit `OWNER/REPO`, rejects archived repositories
-and unbounded effective-rule results, preserves every method required by an
-effective merge queue or pull-request rule, and records the exact resulting
-method plan. It returns `require-explicit-merge-method-removal-confirmation`
-when the proposed squash-default configuration would disable an enabled merge
-or rebase method. Do not pass its confirmation flag until the user separately
-approves those named removals. When `--require-auto-merge-workflows` reports
+repository response to the explicit `OWNER/REPO`, rejects archived or disabled
+repositories, requires current administration permission, and rejects unbounded
+effective-rule results. It preserves every method required by an effective merge
+queue or pull-request rule, and records the exact resulting method plan. It
+returns `require-explicit-merge-method-removal-confirmation` when the proposed
+squash-default configuration would disable an enabled merge or rebase method.
+Do not pass its confirmation flag until the user separately approves those named
+removals. When `--require-auto-merge-workflows` reports
 `skip-auto-merge-workflows`, preserve the merge settings plan but do not install
 either shipped auto-merge asset. When it reports
 `enable-auto-merge-before-installing-workflows`, do not install either asset:

@@ -100,9 +100,11 @@ before installing either shipped auto-merge workflow.
 
 Before enabling Dependabot alerts or security updates, secret scanning or push
 protection, or private vulnerability reporting, run the fail-closed
-`scripts/security_features_preflight.py`. Do not enable push protection unless
-secret scanning is already enabled or is in the same approved mutation. Offer
-private vulnerability reporting only for a verified public non-fork repository.
+`scripts/security_features_preflight.py`. Bind it to the exact approved feature
+set and do not mutate when it cannot prove an active target repository and
+current administration permission. Do not enable push protection unless secret
+scanning is already enabled or is in the same approved mutation. Offer private
+vulnerability reporting only for a verified public non-fork repository.
 Automated security fixes need Dependabot alerts first: request both features in
 the preflight or let it verify existing alerts, then enable alerts and confirm
 them before enabling the fixes.

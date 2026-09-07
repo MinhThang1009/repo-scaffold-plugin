@@ -75,14 +75,16 @@ def check_runs(context: str, app_id: int = 15368) -> dict[str, Any]:
     }
 
 
-def preflight_args(*contexts: str) -> argparse.Namespace:
-    return argparse.Namespace(
-        hostname="github.com",
-        repository=f"{OWNER}/{REPOSITORY}",
-        default_branch="main",
-        pull_request=7,
-        required_check=list(contexts),
-    )
+def preflight_args(*contexts: str, **overrides: object) -> argparse.Namespace:
+    values: dict[str, object] = {
+        "hostname": "github.com",
+        "repository": f"{OWNER}/{REPOSITORY}",
+        "default_branch": "main",
+        "pull_request": 7,
+        "required_check": list(contexts),
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
 
 
 class WorkflowInspectionTests(unittest.TestCase):
@@ -296,6 +298,12 @@ jobs:
         workflow = self.WORKFLOW if workflow is None else workflow
         tree_path = f"repos/{OWNER}/{REPOSITORY}/git/trees/{HEAD_SHA}?recursive=1"
         FakeClient.responses = {
+            f"repos/{OWNER}/{REPOSITORY}": {
+                "full_name": f"{OWNER}/{REPOSITORY}",
+                "archived": False,
+                "disabled": False,
+                "permissions": {"admin": True},
+            },
             f"repos/{OWNER}/{REPOSITORY}/pulls/7": {
                 "head": {"sha": HEAD_SHA},
                 "merge_commit_sha": MERGE_SHA,
@@ -329,6 +337,9 @@ jobs:
             result = branch_protection_preflight.run(preflight_args("ci-success"))
 
         self.assertEqual(result["decision"], "may-configure-classic-protection")
+        self.assertEqual(result["repository"], f"{OWNER}/{REPOSITORY}")
+        self.assertEqual(result["default_branch"], "main")
+        self.assertTrue(result["administration_permission"])
         self.assertEqual(
             result["required_checks"],
             [
@@ -339,6 +350,106 @@ jobs:
                 }
             ],
         )
+
+    def test_run_rejects_ineligible_repository_or_default_branch(self) -> None:
+        self.configure()
+        cases: list[tuple[object, str]] = [
+            ([], "response is invalid"),
+            (
+                {
+                    "full_name": "octo/other",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": True},
+                },
+                "different repository",
+            ),
+            (
+                {
+                    "full_name": f"{OWNER}/{REPOSITORY}",
+                    "archived": True,
+                    "disabled": False,
+                    "permissions": {"admin": True},
+                },
+                "Archived",
+            ),
+            (
+                {
+                    "full_name": f"{OWNER}/{REPOSITORY}",
+                    "archived": False,
+                    "disabled": True,
+                    "permissions": {"admin": True},
+                },
+                "Disabled",
+            ),
+            (
+                {
+                    "full_name": f"{OWNER}/{REPOSITORY}",
+                    "archived": False,
+                    "disabled": "no",
+                    "permissions": {"admin": True},
+                },
+                "invalid 'disabled'",
+            ),
+            (
+                {
+                    "full_name": f"{OWNER}/{REPOSITORY}",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {},
+                },
+                "administration permission",
+            ),
+            (
+                {
+                    "full_name": f"{OWNER}/{REPOSITORY}",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": "yes"},
+                },
+                "invalid 'admin'",
+            ),
+            (
+                {
+                    "full_name": f"{OWNER}/{REPOSITORY}",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": False},
+                },
+                "administration permission",
+            ),
+        ]
+        for response, message in cases:
+            FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}"] = response
+            with self.subTest(response=response):
+                with mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ):
+                    with self.assertRaisesRegex(
+                        branch_protection_preflight.InspectionError, message
+                    ):
+                        branch_protection_preflight.run(preflight_args("ci-success"))
+
+        self.configure()
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            with self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError, "Default branch"
+            ):
+                branch_protection_preflight.run(
+                    preflight_args("ci-success", default_branch="\n")
+                )
+
+    def test_reference_binds_preflight_target_before_protection_mutation(self) -> None:
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        protection = setup.split("## Branch protection", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("branch_protection_preflight.py", protection)
+        self.assertIn("requires current administration", protection)
+        self.assertIn("$defaultBranch = $repoView.defaultBranchRef.name", protection)
+        self.assertIn("$requiredCheckPreflight.repository", protection)
+        self.assertIn("$requiredCheckPreflight.default_branch", protection)
+        self.assertIn("changed after preflight", protection)
 
     def test_run_rejects_multiple_workflow_producers(self) -> None:
         self.configure(

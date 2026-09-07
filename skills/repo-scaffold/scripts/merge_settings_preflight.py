@@ -92,6 +92,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Archived repositories cannot have merge settings changed."
         )
+    if require_boolean(repository, "disabled"):
+        raise InspectionError(
+            "Disabled repositories cannot have merge settings changed."
+        )
+    permissions = repository.get("permissions")
+    if not isinstance(permissions, dict) or "admin" not in permissions:
+        raise InspectionError(
+            "Repository administration permission is required to change merge settings."
+        )
+    if not require_boolean(permissions, "admin"):
+        raise InspectionError(
+            "Repository administration permission is required to change merge settings."
+        )
 
     rules = client.json(
         f"repos/{owner}/{repo}/rules/branches/"
@@ -129,6 +142,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "desired_merge_methods": desired,
         "methods_to_disable": disabled_methods,
         "merge_queue_applies": has_merge_queue,
+        "administration_permission": True,
         "auto_merge_enabled": auto_merge_enabled,
         "auto_merge_workflows_eligible": auto_merge_workflows_eligible,
         "github_api_requests": client.request_count,

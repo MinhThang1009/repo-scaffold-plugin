@@ -86,6 +86,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError("GitHub returned a different repository than requested.")
     if require_boolean(repository, "archived"):
         raise InspectionError("Archived repositories cannot have settings changed.")
+    if require_boolean(repository, "disabled"):
+        raise InspectionError("Disabled repositories cannot have settings changed.")
     permissions = repository.get("permissions")
     if not isinstance(permissions, dict) or "admin" not in permissions:
         raise InspectionError(

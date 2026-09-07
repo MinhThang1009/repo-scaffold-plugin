@@ -251,14 +251,50 @@ def validate_contexts(values: list[str]) -> list[str]:
     return values
 
 
+def require_boolean(document: dict[str, Any], field: str) -> bool:
+    """Read a repository boolean without accepting truthy replacement values."""
+    value = document.get(field)
+    if not isinstance(value, bool):
+        raise InspectionError(f"Repository response has an invalid {field!r} value.")
+    return value
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(args.hostname, str) or args.hostname.casefold() != "github.com":
         raise InspectionError("Branch-protection preflight supports GitHub.com only.")
     owner, repo = split_repository(args.repository)
     contexts = validate_contexts(args.required_check)
+    if (
+        not isinstance(args.default_branch, str)
+        or not args.default_branch.strip()
+        or any(character in args.default_branch for character in "\r\n\x00")
+    ):
+        raise InspectionError("Default branch must be a non-empty single line.")
     if not isinstance(args.pull_request, int) or args.pull_request <= 0:
         raise InspectionError("Pull request number must be positive.")
     client = GitHubClient(args.hostname)
+    repository = client.json(f"repos/{owner}/{repo}")
+    if not isinstance(repository, dict):
+        raise InspectionError("Repository response is invalid.")
+    full_name = repository.get("full_name")
+    if (
+        not isinstance(full_name, str)
+        or full_name.casefold() != args.repository.casefold()
+    ):
+        raise InspectionError("GitHub returned a different repository than requested.")
+    if require_boolean(repository, "archived"):
+        raise InspectionError("Archived repositories cannot have protection changed.")
+    if require_boolean(repository, "disabled"):
+        raise InspectionError("Disabled repositories cannot have protection changed.")
+    permissions = repository.get("permissions")
+    if not isinstance(permissions, dict) or "admin" not in permissions:
+        raise InspectionError(
+            "Repository administration permission is required to change protection."
+        )
+    if not require_boolean(permissions, "admin"):
+        raise InspectionError(
+            "Repository administration permission is required to change protection."
+        )
     pr = client.json(f"repos/{owner}/{repo}/pulls/{args.pull_request}")
     if not isinstance(pr, dict):
         raise InspectionError("Pull request response is invalid.")
@@ -322,6 +358,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "inspection_complete": True,
         "decision": "may-configure-classic-protection",
+        "repository": args.repository,
+        "default_branch": args.default_branch,
+        "administration_permission": True,
         "pull_request": args.pull_request,
         "head_sha": head_sha,
         "test_merge_sha": merge_sha,
