@@ -167,8 +167,15 @@ if (-not $metadataPreflight.inspection_complete -or
     @($metadataPreflight.requested_mutations) -notcontains "description") {
   throw "Repository-settings preflight did not approve the requested metadata mutations."
 }
-if ($topics.Count -gt 0 -and @($metadataPreflight.requested_mutations) -notcontains "topics") {
-  throw "Repository-settings preflight did not approve the requested topic mutation."
+$approvedMetadata = $metadataPreflight.requested_settings
+if ($null -eq $approvedMetadata) {
+  throw "Repository-settings preflight did not return the approved metadata input."
+}
+$approvedTopics = @($approvedMetadata.topics | ForEach-Object { [string]$_ })
+if ($approvedMetadata.description -cne $description -or
+    $approvedTopics.Count -ne $topics.Count -or
+    $null -ne (Compare-Object -ReferenceObject @($topics) -DifferenceObject $approvedTopics -CaseSensitive)) {
+  throw "Repository-settings preflight input does not match the metadata mutation."
 }
 $topicArgs = @()
 foreach ($topic in $topics) { $topicArgs += @('--add-topic', $topic) }
@@ -227,6 +234,12 @@ if ($enableIssuesRequested -or $enableDiscussionsRequested) {
   if (-not $communicationPreflight.inspection_complete -or
       $communicationPreflight.decision -ne "may-configure-repository-settings") {
     throw "Repository-settings preflight did not approve the requested communication mutations."
+  }
+  $approvedCommunication = $communicationPreflight.requested_settings
+  if ($null -eq $approvedCommunication -or
+      $approvedCommunication.issues -ne $enableIssuesRequested -or
+      $approvedCommunication.discussions -ne $enableDiscussionsRequested) {
+    throw "Repository-settings preflight input does not match the communication mutation."
   }
 }
 
@@ -961,6 +974,15 @@ if (-not $labelPreflight.inspection_complete -or
     $labelPreflight.decision -ne "may-configure-repository-settings" -or
     @($labelPreflight.requested_mutations) -notcontains "labels") {
   throw "Repository-settings preflight did not approve the planned label mutations."
+}
+$approvedLabelSettings = $labelPreflight.requested_settings
+if ($null -eq $approvedLabelSettings) {
+  throw "Repository-settings preflight did not return the approved label input."
+}
+$approvedLabels = @($approvedLabelSettings.labels | ForEach-Object { [string]$_ })
+if ($approvedLabels.Count -ne $plannedLabelNames.Count -or
+    $null -ne (Compare-Object -ReferenceObject $plannedLabelNames -DifferenceObject $approvedLabels -CaseSensitive)) {
+  throw "Repository-settings preflight input does not match the planned label mutations."
 }
 
 $existingLabels = [System.Collections.Generic.HashSet[string]]::new(

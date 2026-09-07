@@ -89,13 +89,25 @@ class RepositorySettingsPreflightTests(unittest.TestCase):
             discussions=True,
             create_label=["bug", "good first issue"],
         )
-        with mock.patch.object(repository_settings_preflight, "GitHubClient", FakeClient):
+        with mock.patch.object(
+            repository_settings_preflight, "GitHubClient", FakeClient
+        ):
             result = repository_settings_preflight.run(args)
 
         self.assertEqual(result["decision"], "may-configure-repository-settings")
         self.assertEqual(
             result["requested_mutations"],
             ["description", "topics", "issues", "discussions", "labels"],
+        )
+        self.assertEqual(
+            result["requested_settings"],
+            {
+                "description": "A project",
+                "topics": ["python", "github-actions"],
+                "labels": ["bug", "good first issue"],
+                "issues": True,
+                "discussions": True,
+            },
         )
         self.assertEqual(
             result["current_features"], {"issues": False, "discussions": False}
@@ -123,14 +135,38 @@ class RepositorySettingsPreflightTests(unittest.TestCase):
 
     def test_rejects_invalid_host_identity_state_and_permissions(self) -> None:
         cases: list[tuple[argparse.Namespace, object | None, str]] = [
-            (arguments(hostname="github.example", issues=True), None, "GitHub.com only"),
+            (
+                arguments(hostname="github.example", issues=True),
+                None,
+                "GitHub.com only",
+            ),
             (arguments(issues=True), [], "response is invalid"),
-            (arguments(issues=True), repository(full_name="octo/other"), "different repository"),
+            (
+                arguments(issues=True),
+                repository(full_name="octo/other"),
+                "different repository",
+            ),
             (arguments(issues=True), repository(archived=True), "Archived"),
-            (arguments(issues=True), repository(permissions={}), "administration permission"),
-            (arguments(issues=True), repository(permissions={"admin": False}), "administration permission"),
-            (arguments(issues=True), repository(permissions={"admin": "yes"}), "invalid 'admin'"),
-            (arguments(issues=True), repository(has_issues="yes"), "invalid 'has_issues'"),
+            (
+                arguments(issues=True),
+                repository(permissions={}),
+                "administration permission",
+            ),
+            (
+                arguments(issues=True),
+                repository(permissions={"admin": False}),
+                "administration permission",
+            ),
+            (
+                arguments(issues=True),
+                repository(permissions={"admin": "yes"}),
+                "invalid 'admin'",
+            ),
+            (
+                arguments(issues=True),
+                repository(has_issues="yes"),
+                "invalid 'has_issues'",
+            ),
         ]
         for args, response, message in cases:
             with self.subTest(args=args, response=response):
@@ -152,7 +188,9 @@ class RepositorySettingsPreflightTests(unittest.TestCase):
                 "parse_args",
                 return_value=arguments(issues=True),
             ),
-            mock.patch.object(repository_settings_preflight, "GitHubClient", FakeClient),
+            mock.patch.object(
+                repository_settings_preflight, "GitHubClient", FakeClient
+            ),
             mock.patch("builtins.print") as print_mock,
         ):
             self.assertEqual(repository_settings_preflight.main(), 0)
@@ -212,6 +250,10 @@ class RepositorySettingsPreflightTests(unittest.TestCase):
         self.assertIn("repository_settings_preflight.py", communication)
         self.assertIn("repository_settings_preflight.py", labels)
         self.assertIn("--create-label", labels)
+        self.assertIn("requested_settings", metadata)
+        self.assertIn("requested_settings", communication)
+        self.assertIn("requested_settings", labels)
+        self.assertIn("approvedLabelSettings", labels)
         planned = re.search(
             r"\$plannedLabelNames = @\((?P<names>.*?)\n\)", labels, re.DOTALL
         )

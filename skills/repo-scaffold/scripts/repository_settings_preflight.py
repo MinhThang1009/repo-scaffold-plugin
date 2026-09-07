@@ -44,11 +44,16 @@ def requested_mutations(args: argparse.Namespace) -> list[str]:
         raise InspectionError("A non-empty description is required when requested.")
     if args.topics:
         if not args.topic:
-            raise InspectionError("Provide at least one topic when topics are requested.")
+            raise InspectionError(
+                "Provide at least one topic when topics are requested."
+            )
         if any(not isinstance(topic, str) for topic in args.topic):
             raise InspectionError("Topics must be strings.")
         normalized = [topic.casefold() for topic in args.topic]
-        if any(not topic.strip() or any(character.isspace() for character in topic) for topic in args.topic):
+        if any(
+            not topic.strip() or any(character.isspace() for character in topic)
+            for topic in args.topic
+        ):
             raise InspectionError("Topics must be non-empty single tokens.")
         if len(set(normalized)) != len(normalized):
             raise InspectionError("Topics must be unique without regard to case.")
@@ -95,10 +100,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "issues": require_boolean(repository, "has_issues"),
         "discussions": require_boolean(repository, "has_discussions"),
     }
+    requested_settings = {
+        "description": args.description_value if args.description else None,
+        "topics": list(args.topic) if args.topics else [],
+        "labels": list(args.create_label),
+        "issues": args.issues,
+        "discussions": args.discussions,
+    }
     return {
         "inspection_complete": True,
         "decision": "may-configure-repository-settings",
         "requested_mutations": requested,
+        "requested_settings": requested_settings,
         "repository": args.repository,
         "current_features": current_features,
         "github_api_requests": client.request_count,
@@ -115,9 +128,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--topic", action="append", default=[])
     parser.add_argument("--create-label", action="append", default=[])
     parser.add_argument("--enable-issues", dest="issues", action="store_true")
-    parser.add_argument(
-        "--enable-discussions", dest="discussions", action="store_true"
-    )
+    parser.add_argument("--enable-discussions", dest="discussions", action="store_true")
     return parser.parse_args()
 
 
