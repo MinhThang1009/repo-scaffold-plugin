@@ -100,12 +100,20 @@ before installing either shipped auto-merge workflow.
 
 Before enabling Dependabot alerts or security updates, secret scanning or push
 protection, or private vulnerability reporting, run the fail-closed
-`scripts/security_features_preflight.py`. Do not enable push protection unless
-secret scanning is already enabled or is in the same approved mutation. Offer
-private vulnerability reporting only for a verified public non-fork repository.
+`scripts/security_features_preflight.py`. Bind it to the exact approved feature
+set and do not mutate when it cannot prove an active target repository and
+current administration permission. Do not enable push protection unless secret
+scanning is already enabled or is in the same approved mutation. Offer private
+vulnerability reporting only for a verified public non-fork repository.
 Automated security fixes need Dependabot alerts first: request both features in
 the preflight or let it verify existing alerts, then enable alerts and confirm
 them before enabling the fixes.
+
+Before changing description/topics, enabling Issues or Discussions, or creating
+labels, run the fail-closed `scripts/repository_settings_preflight.py`. Bind it
+to the exact approved request and do not call `gh repo edit` or `gh label create`
+when it cannot prove the target identity, active repository state, and
+administration permission.
 
 Before installing release workflows, run the fail-closed
 `scripts/release_preflight.py` against the exact repository and default branch.

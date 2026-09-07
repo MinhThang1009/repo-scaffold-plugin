@@ -75,6 +75,8 @@ def repository(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "full_name": "octo/example",
         "archived": False,
+        "disabled": False,
+        "permissions": {"admin": True},
         "fork": False,
         "visibility": "public",
         "owner": {"type": "Organization"},
@@ -111,6 +113,7 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result["security_and_analysis"]["secret_scanning"], "disabled")
+        self.assertTrue(result["administration_permission"])
         self.assertEqual(result["github_api_requests"], 1)
 
     def test_rejects_invalid_feature_selection_and_repository_identity(self) -> None:
@@ -131,6 +134,10 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             ([], "response is invalid"),
             (repository(full_name="octo/other"), "different repository"),
             (repository(archived=True), "Archived"),
+            (repository(disabled=True), "Disabled"),
+            (repository(permissions={}), "administration permission"),
+            (repository(permissions={"admin": False}), "administration permission"),
+            (repository(permissions={"admin": "yes"}), "invalid 'admin'"),
             (repository(fork="no"), "invalid 'fork'"),
             (repository(visibility="unknown"), "invalid visibility"),
             (repository(owner={"type": "Enterprise"}), "unsupported owner"),
@@ -295,10 +302,16 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         security = setup.split("## Security features", 1)[1].split("\n## ", 1)[0]
         self.assertIn("security_features_preflight.py", skill)
+        self.assertIn("exact approved feature", skill)
         self.assertIn("security_features_preflight.py", security)
         self.assertIn("--enable-push-protection", security)
         self.assertIn("non-fork repository", security)
         self.assertIn("Dependabot alerts before automated security fixes", security)
+        self.assertIn("administration permission", security)
+        self.assertIn("$requestedSecurityFeatures", security)
+        self.assertIn("$approvedSecurityFeatures", security)
+        self.assertIn("Compare-Object", security)
+        self.assertIn("if ($enablePrivateVulnerabilityReportingRequested)", security)
 
 
 if __name__ == "__main__":

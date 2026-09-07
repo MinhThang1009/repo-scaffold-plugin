@@ -143,6 +143,7 @@ jobs:
           skills/repo-scaffold/scripts/pr_template_preflight.py
           skills/repo-scaffold/scripts/release_preflight.py
           skills/repo-scaffold/scripts/merge_settings_preflight.py
+          skills/repo-scaffold/scripts/repository_settings_preflight.py
           skills/repo-scaffold/scripts/security_features_preflight.py
           skills/repo-scaffold/scripts/workflow_installation_preflight.py
           skills/repo-scaffold/scripts/sync_action_pins.py

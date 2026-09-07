@@ -83,6 +83,8 @@ class MergeSettingsPreflightTests(unittest.TestCase):
             "repos/octo/example": {
                 "full_name": "octo/example",
                 "archived": False,
+                "disabled": False,
+                "permissions": {"admin": True},
                 "allow_squash_merge": True,
                 "allow_merge_commit": merge,
                 "allow_rebase_merge": rebase,
@@ -101,6 +103,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
             result["decision"], "require-explicit-merge-method-removal-confirmation"
         )
         self.assertEqual(result["methods_to_disable"], ["rebase"])
+        self.assertTrue(result["administration_permission"])
         self.assertEqual(
             result["desired_merge_methods"],
             {"squash": True, "merge": False, "rebase": False},
@@ -259,6 +262,8 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 {
                     "full_name": "octo/example",
                     "archived": True,
+                    "disabled": False,
+                    "permissions": {"admin": True},
                     "allow_squash_merge": True,
                     "allow_merge_commit": False,
                     "allow_rebase_merge": False,
@@ -270,6 +275,60 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 {
                     "full_name": "octo/example",
                     "archived": False,
+                    "disabled": True,
+                    "permissions": {"admin": True},
+                    "allow_squash_merge": True,
+                    "allow_merge_commit": False,
+                    "allow_rebase_merge": False,
+                    "allow_auto_merge": True,
+                },
+                "Disabled",
+            ),
+            (
+                {
+                    "full_name": "octo/example",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {},
+                    "allow_squash_merge": True,
+                    "allow_merge_commit": False,
+                    "allow_rebase_merge": False,
+                    "allow_auto_merge": True,
+                },
+                "administration permission",
+            ),
+            (
+                {
+                    "full_name": "octo/example",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": "yes"},
+                    "allow_squash_merge": True,
+                    "allow_merge_commit": False,
+                    "allow_rebase_merge": False,
+                    "allow_auto_merge": True,
+                },
+                "invalid 'admin'",
+            ),
+            (
+                {
+                    "full_name": "octo/example",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": False},
+                    "allow_squash_merge": True,
+                    "allow_merge_commit": False,
+                    "allow_rebase_merge": False,
+                    "allow_auto_merge": True,
+                },
+                "administration permission",
+            ),
+            (
+                {
+                    "full_name": "octo/example",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": True},
                     "allow_squash_merge": "yes",
                     "allow_merge_commit": False,
                     "allow_rebase_merge": False,
@@ -281,6 +340,8 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 {
                     "full_name": "octo/example",
                     "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": True},
                     "allow_squash_merge": True,
                     "allow_merge_commit": False,
                     "allow_rebase_merge": False,
