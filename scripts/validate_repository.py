@@ -4911,6 +4911,12 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/scripts/codeql_preflight.py",
                     "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
                 },
+                "github-code-scanning-sarif-upload": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/scorecard.yml",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                },
                 "github-code-scanning-alerts-api": {
                     "scripts/check_code_scanning_alerts.py",
                 },
