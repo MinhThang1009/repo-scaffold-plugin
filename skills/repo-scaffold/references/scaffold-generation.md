@@ -29,6 +29,7 @@ destination:
 | `assets/workflows/freshness.yml` | `assets/ci-toolchain.json` | `.github/ci-toolchain.json` |
 | `assets/workflows/freshness.yml` | `../scripts/sync_action_pins.py` | `scripts/sync_action_pins.py` |
 | `assets/workflows/labeler.yml` | `assets/labeler.yml` | `.github/labeler.yml` |
+| Pull-request preflight | `../scripts/pr_template_preflight.py` | `scripts/pr_template_preflight.py` |
 
 When installing the CodeQL asset, also copy
 `assets/code-scanning-allowlist.json` to

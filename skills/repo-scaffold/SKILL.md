@@ -94,6 +94,9 @@ Before changing merge settings or installing an auto-merge workflow, run the
 fail-closed `scripts/merge_settings_preflight.py`. Preserve its required merge
 methods, obtain separate confirmation before disabling any enabled method, and
 skip the shipped auto-merge workflows when it reports an effective merge queue.
+When it reports that repository auto-merge is disabled, enable that capability
+only with separate approval, verify the mutation, then rerun the preflight
+before installing either shipped auto-merge workflow.
 
 Before enabling Dependabot alerts or security updates, secret scanning or push
 protection, or private vulnerability reporting, run the fail-closed
@@ -105,11 +108,27 @@ the preflight or let it verify existing alerts, then enable alerts and confirm
 them before enabling the fixes.
 
 Before changing description/topics, enabling Issues or Discussions, or creating
-labels, run the
-fail-closed `scripts/repository_settings_preflight.py`. Bind it to the exact
-approved request and do not call `gh repo edit` or `gh label create` when it
-cannot prove the target identity, active repository state, and administration
-permission.
+labels, run the fail-closed `scripts/repository_settings_preflight.py`. Bind it
+to the exact approved request and do not call `gh repo edit` or `gh label create`
+when it cannot prove the target identity, active repository state, and
+administration permission.
+
+Before installing release workflows, run the fail-closed
+`scripts/release_preflight.py` against the exact repository and default branch.
+Install provenance-attestation jobs only when it returns
+`may-install-attestation-workflows`; otherwise render the documented
+no-attestation variant. A private or internal repository needs separate
+GitHub Enterprise Cloud confirmation before that preflight can approve
+attestations. After a maintainer has created `RELEASE_PLEASE_TOKEN`, use
+`--require-release-please-token` before installing release-please or an
+auto-merge workflow that relies on it; never retrieve or print the secret value.
+
+Before copying any GitHub Actions asset, run the fail-closed
+`scripts/workflow_installation_preflight.py`. Require external actions for an
+asset with `uses:` and require Issues for `stale.yml`, `freshness.yml`, or
+`community-health.yml`. Do not install an asset while Actions is disabled, while
+its policy forbids external actions, or until a selected-actions policy has been
+reviewed against every exact action reference.
 
 ### 5. Configure GitHub
 

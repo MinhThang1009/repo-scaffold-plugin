@@ -4,17 +4,6 @@ on:
   schedule:
     - cron: "41 5 * * *"
   workflow_dispatch:
-    inputs:
-      clean:
-        description: Ignore incremental mutation state and run every mutant
-        required: false
-        type: boolean
-        default: false
-      resume_run_id:
-        description: Resume verified state from a completed run on the same commit
-        required: false
-        type: string
-        default: ""
 
 permissions:
   actions: read
@@ -25,10 +14,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  mutation-quality:
-    name: mutation-quality
+  mutation-plan:
+    name: mutation-plan
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,7 +30,6 @@ jobs:
         run: python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
-        id: python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ steps.support.outputs.latest }}
@@ -56,134 +44,118 @@ jobs:
       - name: Verify dependency consistency
         run: python -m pip check
 
-      - name: Restore verified clean mutation state
-        id: mutation-clean-cache
-        if: ${{ !inputs.clean && inputs.resume_run_id == '' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: mutants/
-          key: >-
-            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-clean-${{ github.sha }}
-
-      - name: Restore incremental mutation state
-        id: mutation-cache
-        if: ${{ !inputs.clean && inputs.resume_run_id == '' && steps.mutation-clean-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: mutants/
-          key: >-
-            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-
-            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-
-
-      - name: Verify resumable mutation run
-        if: ${{ inputs.resume_run_id != '' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
-          EXPECTED_SHA: ${{ github.sha }}
-          CLEAN_RUN: ${{ inputs.clean }}
+      - name: Generate exact mutation shards
         shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$RESUME_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
-            printf 'Resume run ID must contain only decimal digits.\n' >&2
-            exit 1
-          fi
-          if [[ "$CLEAN_RUN" == 'true' ]]; then
-            printf 'A clean run cannot import resumable mutation state.\n' >&2
-            exit 1
-          fi
-          IFS=$'\t' read -r source_path source_sha source_status source_repository < <(
-            gh api --hostname github.com \
-              "repos/${REPOSITORY}/actions/runs/${RESUME_RUN_ID}" \
-              --jq '[.path, .head_sha, .status, .repository.full_name] | @tsv'
-          )
-          if [[ "$source_path" != '.github/workflows/mutation-testing.yml' ||
-                "$source_sha" != "$EXPECTED_SHA" ||
-                "$source_status" != 'completed' ||
-                "$source_repository" != "$REPOSITORY" ]]; then
-            printf 'Resume run must be a completed mutation workflow for this repository and commit.\n' >&2
-            exit 1
-          fi
-          artifact_count=$(
-            gh api --hostname github.com \
-              "repos/${REPOSITORY}/actions/runs/${RESUME_RUN_ID}/artifacts" \
-              --jq '[.artifacts[] | select(.name == "mutation-results" and .expired == false)] | length'
-          )
-          if [[ "$artifact_count" != '1' ]]; then
-            printf 'Resume run must expose exactly one unexpired mutation-results artifact.\n' >&2
-            exit 1
-          fi
+        run: python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32
 
-      - name: Download resumable mutation state
-        if: ${{ inputs.resume_run_id != '' }}
+      - name: Upload mutation plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-plan
+          path: mutants/
+          retention-days: 14
+
+  mutation-shards:
+    name: mutation-shard-${{ matrix.shard }}
+    needs: mutation-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load Python support policy
+        id: support
+        shell: bash
+        run: python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ steps.support.outputs.latest }}
+          cache: pip
+          cache-dependency-path: requirements-mutation.txt
+
+      - name: Install mutation-testing dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check --require-hashes
+          --requirement requirements-mutation.txt
+
+      - name: Download mutation plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: mutation-results
+          name: mutation-plan
           path: mutants/
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.resume_run_id }}
 
-      - name: Record resumed mutation state
-        if: ${{ inputs.resume_run_id != '' }}
-        run: python scripts/prepare_mutation_cache.py record
-
-      - name: Prepare incremental mutation state
-        if: ${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' }}
-        run: python scripts/prepare_mutation_cache.py prepare
-
-      - name: Run mutation testing
-        id: mutation-run
-        if: ${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' }}
-        continue-on-error: true
-        timeout-minutes: 150
+      - name: Run exact mutation shard
         env:
-          REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: ${{ github.workspace }}
+          SHARD_INDEX: ${{ matrix.shard }}
         shell: bash
-        run: |
-          heartbeat() {
-            while sleep 60; do
-              printf '::notice::mutation testing is still running at %s UTC\n' \
-                "$(date --utc +%FT%TZ)"
-            done
-          }
-          heartbeat &
-          heartbeat_pid=$!
-          trap 'kill "$heartbeat_pid" 2>/dev/null || true; wait "$heartbeat_pid" 2>/dev/null || true' EXIT
-          printf '::notice::mutation testing started\n'
-          python scripts/run_mutation_testing.py --max-children 4
+        run: python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"
 
-      - name: Record mutation cache inputs
-        id: mutation-record
-        if: ${{ always() && steps.mutation-clean-cache.outputs.cache-hit != 'true' }}
-        run: python scripts/prepare_mutation_cache.py record
-
-      - name: Save incremental mutation state
-        if: ${{ always() && steps.mutation-clean-cache.outputs.cache-hit != 'true' && steps.mutation-record.outcome == 'success' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Upload mutation shard
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: mutation-shard-${{ matrix.shard }}
           path: mutants/
-          key: >-
-            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-incremental-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+
+  mutation-quality:
+    name: mutation-quality
+    needs: [mutation-plan, mutation-shards]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load Python support policy
+        id: support
+        shell: bash
+        run: python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ steps.support.outputs.latest }}
+          cache: pip
+          cache-dependency-path: requirements-mutation.txt
+
+      - name: Install mutation-testing dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check --require-hashes
+          --requirement requirements-mutation.txt
+
+      - name: Download mutation plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mutation-plan
+          path: mutants/
+
+      - name: Download mutation shards
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mutation-shard-*
+          path: mutation-shards/
+          merge-multiple: false
+
+      - name: Merge complete mutation shards
+        run: python scripts/merge_mutation_shards.py
 
       - name: Export mutation results
-        if: ${{ always() }}
         run: |
           mutmut export-cicd-stats
           mutmut results --all true > mutants/mutation-results.txt
           python scripts/validate_mutation_results.py
-
-      - name: Save verified clean mutation state
-        if: ${{ success() && inputs.clean && steps.mutation-run.outcome == 'success' && steps.mutation-record.outcome == 'success' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: mutants/
-          key: >-
-            mutmut-v6-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-clean-${{ github.sha }}
 
       - name: Upload mutation results
         if: ${{ always() }}
@@ -191,11 +163,10 @@ jobs:
         with:
           name: mutation-results
           path: |
+            mutants/mutation-shards.json
             mutants/mutmut-cicd-stats.json
             mutants/mutation-results.txt
             mutants/mutmut-stats.json
-            mutants/mutation-cache-manifest.json
             mutants/**/*.meta
             mutants/**/*.py
-          if-no-files-found: warn
           retention-days: 14

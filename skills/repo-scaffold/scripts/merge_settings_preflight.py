@@ -108,14 +108,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "merge": require_boolean(repository, "allow_merge_commit"),
         "rebase": require_boolean(repository, "allow_rebase_merge"),
     }
+    auto_merge_enabled = require_boolean(repository, "allow_auto_merge")
     disabled_methods = sorted(
         method for method, enabled in current.items() if enabled and not desired[method]
     )
-    auto_merge_workflows_eligible = not has_merge_queue
+    auto_merge_workflows_eligible = not has_merge_queue and auto_merge_enabled
     if disabled_methods and not args.confirm_disable_merge_methods:
         decision = "require-explicit-merge-method-removal-confirmation"
-    elif args.require_auto_merge_workflows and not auto_merge_workflows_eligible:
+    elif args.require_auto_merge_workflows and has_merge_queue:
         decision = "skip-auto-merge-workflows"
+    elif args.require_auto_merge_workflows and not auto_merge_enabled:
+        decision = "enable-auto-merge-before-installing-workflows"
     else:
         decision = "may-configure-merge-settings"
     return {
@@ -126,6 +129,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "desired_merge_methods": desired,
         "methods_to_disable": disabled_methods,
         "merge_queue_applies": has_merge_queue,
+        "auto_merge_enabled": auto_merge_enabled,
         "auto_merge_workflows_eligible": auto_merge_workflows_eligible,
         "github_api_requests": client.request_count,
     }
