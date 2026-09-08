@@ -16,9 +16,11 @@ import sync_action_pins
 
 
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
-ISSUES_WRITE_PERMISSION = re.compile(r"\bissues\s*:\s*[\"']?write[\"']?", re.IGNORECASE)
+ISSUES_WRITE_PERMISSION = re.compile(
+    r"\bissues[\"']?\s*:\s*[\"']?write[\"']?", re.IGNORECASE
+)
 WRITE_ALL_PERMISSION = re.compile(
-    r"\bpermissions\s*:\s*[\"']?write-all[\"']?", re.IGNORECASE
+    r"\bpermissions[\"']?\s*:\s*[\"']?write-all[\"']?", re.IGNORECASE
 )
 
 

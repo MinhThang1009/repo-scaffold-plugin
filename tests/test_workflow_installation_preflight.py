@@ -399,6 +399,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 ("ci.yml", "issues: write"),
                 ("custom.yml", "permissions: {issues: write}"),
                 ("write-all.yml", "permissions: write-all"),
+                ("quoted-issues.yml", 'permissions: {"issues": "write"}'),
+                ("single-quoted-issues.yml", "permissions: {'issues': 'write'}"),
+                ("quoted-permissions.yml", '"permissions": "write-all"'),
+                ("single-quoted-permissions.yml", "'permissions': 'write-all'"),
             ):
                 with self.subTest(filename=filename, permission=permission):
                     workflow = Path(directory) / filename
