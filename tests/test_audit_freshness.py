@@ -262,6 +262,54 @@ class FreshnessTests(unittest.TestCase):
                     ),
                 )
 
+    def test_invalid_workflow_does_not_skip_other_action_pin_reminders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            invalid = root / ".github/workflows/bad.yml"
+            invalid.write_text(
+                "jobs:\n  bad:\n    steps:\n      - uses: actions/setup-node@v1\n",
+                encoding="utf-8",
+            )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with self.assertRaisesRegex(freshness.AuditError, "bad.yml"):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
+                )
+
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v2.0.0", "b" * 40),
+                "googleapis/release-please": release("v17.6.0", "c" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("bad.yml", report["errors"][0])
+            self.assertEqual(
+                {
+                    item["path"]
+                    for item in report["findings"]
+                    if item["kind"] == "action-pin"
+                },
+                {
+                    ".github/workflows/ci.yml",
+                    "skills/repo-scaffold/assets/workflows/ci.yml",
+                },
+            )
+
     def test_action_findings_accepts_equivalent_uppercase_sha(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

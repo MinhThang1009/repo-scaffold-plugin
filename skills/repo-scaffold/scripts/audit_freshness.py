@@ -305,9 +305,20 @@ def action_findings(
     except ValueError as error:
         raise AuditError(str(error)) from error
     for path in workflow_paths:
-        text = path.read_text(encoding="utf-8")
-        sync_action_pins.auditable_action_repositories(path, text)
-        for match in sync_action_pins.action_pin_matches(text):
+        try:
+            text = path.read_text(encoding="utf-8")
+            sync_action_pins.auditable_action_repositories(path, text)
+            matches = sync_action_pins.action_pin_matches(text)
+        except (OSError, UnicodeError, ValueError) as cause:
+            issue = AuditError(
+                "could not inspect workflow action pins "
+                f"{path.relative_to(root).as_posix()}: {cause}"
+            )
+            if errors is None:
+                raise issue from cause
+            errors.append(str(issue))
+            continue
+        for match in matches:
             action = sync_action_pins.normalized_action_pin_part(match, "action")
             current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
             repository = sync_action_pins.action_repository(action)
