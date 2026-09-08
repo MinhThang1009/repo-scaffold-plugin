@@ -387,9 +387,9 @@ def existing_optional_paths(root: Path, paths: tuple[Path, ...]) -> tuple[Path, 
 
 
 def ci_toolchain_findings(
-    root: Path, policies: tuple[Path, ...]
+    root: Path, policies: tuple[Path, ...], errors: list[str] | None = None
 ) -> list[dict[str, str]]:
-    """Report verified CI-toolchain release drift without treating outages as drift."""
+    """Report CI-toolchain drift without letting one policy outage hide another."""
     if not policies:
         return []
     script = tracked_path(
@@ -397,8 +397,8 @@ def ci_toolchain_findings(
     )
     findings: list[dict[str, str]] = []
     for relative in policies:
-        policy = tracked_path(root, relative, kind="CI toolchain policy")
         try:
+            policy = tracked_path(root, relative, kind="CI toolchain policy")
             result = subprocess.run(
                 [
                     sys.executable,
@@ -413,10 +413,19 @@ def ci_toolchain_findings(
                 text=True,
                 timeout=60,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise AuditError(
-                f"CI toolchain audit could not run for {relative}: {error}"
-            ) from error
+        except (OSError, subprocess.TimeoutExpired) as cause:
+            issue = AuditError(
+                f"CI toolchain audit could not run for {relative}: {cause}"
+            )
+            if errors is None:
+                raise issue
+            errors.append(str(issue))
+            continue
+        except AuditError as error:
+            if errors is None:
+                raise
+            errors.append(str(error))
+            continue
         if result.returncode == 0:
             continue
         details = (result.stderr or result.stdout).strip()
@@ -432,9 +441,12 @@ def ci_toolchain_findings(
                 }
             )
             continue
-        raise AuditError(
+        issue = AuditError(
             f"CI toolchain audit is indeterminate for {relative}: {details}"
         )
+        if errors is None:
+            raise issue
+        errors.append(str(issue))
     return findings
 
 
@@ -553,7 +565,9 @@ def audit(
         except AuditError as error:
             errors.append(str(error))
         try:
-            findings.extend(ci_toolchain_findings(root, trackers.ci_toolchain_policies))
+            findings.extend(
+                ci_toolchain_findings(root, trackers.ci_toolchain_policies, errors)
+            )
         except AuditError as error:
             errors.append(str(error))
     status = "indeterminate" if errors else "attention" if findings else "current"

@@ -607,6 +607,89 @@ class FreshnessTests(unittest.TestCase):
             ):
                 freshness.ci_toolchain_findings(root, trackers.ci_toolchain_policies)
 
+    def test_ci_toolchain_failure_does_not_skip_other_policy_reminders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            registry = root / freshness.DEFAULT_TRACKER_REGISTRY
+            document = json.loads(registry.read_text(encoding="utf-8"))
+            document["ci-toolchain-policies"] = [
+                ".github/first-toolchain.json",
+                ".github/second-toolchain.json",
+            ]
+            registry.write_text(json.dumps(document), encoding="utf-8")
+            for filename in ("first-toolchain.json", "second-toolchain.json"):
+                (root / ".github" / filename).write_text("{}\n", encoding="utf-8")
+            script = root / "scripts/ci_toolchain.py"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text("# bundled checker\n", encoding="utf-8")
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.6.0", "b" * 40),
+            }[repository]
+            indeterminate = mock.Mock(
+                returncode=1,
+                stderr="error: could not query latest npm release",
+                stdout="",
+            )
+            stale = mock.Mock(
+                returncode=1,
+                stderr="error: markdownlint-cli2 policy pins 1.0.0, but latest npm release is '2.0.0'",
+                stdout="",
+            )
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+                mock.patch.object(
+                    freshness.subprocess, "run", side_effect=[indeterminate, stale]
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("first-toolchain.json", report["errors"][0])
+            self.assertIn(
+                ("ci-toolchain", ".github/second-toolchain.json"),
+                {(item["kind"], item["path"]) for item in report["findings"]},
+            )
+
+            errors: list[str] = []
+            with mock.patch.object(
+                freshness.subprocess,
+                "run",
+                side_effect=[subprocess.TimeoutExpired("checker", 60), stale],
+            ):
+                findings = freshness.ci_toolchain_findings(
+                    root,
+                    (
+                        Path(".github/first-toolchain.json"),
+                        Path(".github/second-toolchain.json"),
+                    ),
+                    errors,
+                )
+            self.assertIn("could not run", errors[0])
+            self.assertEqual(findings[0]["path"], ".github/second-toolchain.json")
+
+            missing_policy = Path(".github/missing-toolchain.json")
+            with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
+                freshness.ci_toolchain_findings(root, (missing_policy,))
+            errors = []
+            with mock.patch.object(freshness.subprocess, "run", return_value=stale):
+                findings = freshness.ci_toolchain_findings(
+                    root,
+                    (missing_policy, Path(".github/second-toolchain.json")),
+                    errors,
+                )
+            self.assertIn("missing or unsafe", errors[0])
+            self.assertEqual(findings[0]["path"], ".github/second-toolchain.json")
+
     def test_tracker_registry_rejects_invalid_and_unsafe_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
