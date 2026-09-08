@@ -6,22 +6,48 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
-import re
 import stat
 from pathlib import Path
 from typing import Any
 
-from codeql_preflight import GitHubClient, InspectionError, split_repository
+from codeql_preflight import (
+    GitHubClient,
+    InspectionError,
+    MAX_WORKFLOW_BYTES,
+    UniqueKeyBaseLoader,
+    split_repository,
+    yaml,
+)
 import sync_action_pins
 
 
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
-ISSUES_WRITE_PERMISSION = re.compile(
-    r"\bissues[\"']?\s*:\s*[\"']?write[\"']?", re.IGNORECASE
-)
-WRITE_ALL_PERMISSION = re.compile(
-    r"\bpermissions[\"']?\s*:\s*[\"']?write-all[\"']?", re.IGNORECASE
-)
+
+
+def requires_issue_write(text: str, source: Path) -> bool:
+    """Inspect YAML permission fields without treating comments or scripts as policy."""
+    try:
+        loader = UniqueKeyBaseLoader(text)
+        try:
+            document = loader.get_single_data()
+        finally:
+            loader.dispose()
+    except (yaml.YAMLError, InspectionError, RecursionError) as exc:
+        raise InspectionError(f"Could not parse workflow {source}: {exc}") from exc
+    if not isinstance(document, dict):
+        raise InspectionError(f"Workflow {source} is not a YAML mapping.")
+    jobs = document.get("jobs", {})
+    if not isinstance(jobs, dict) or any(
+        not isinstance(job, dict) for job in jobs.values()
+    ):
+        raise InspectionError(f"Workflow {source} has an invalid jobs mapping.")
+    for scope in [document, *jobs.values()]:
+        permissions = scope.get("permissions", {})
+        if permissions == "write-all" or (
+            isinstance(permissions, dict) and permissions.get("issues") == "write"
+        ):
+            return True
+    return False
 
 
 def require_boolean(document: dict[str, Any], field: str) -> bool:
@@ -89,9 +115,14 @@ def workflow_capabilities(workflows: list[Path]) -> tuple[list[str], list[str]]:
                 or workflow.is_symlink()
                 or bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
                 or workflow.suffix.casefold() not in {".yml", ".yaml"}
+                or metadata.st_size > MAX_WORKFLOW_BYTES
             ):
                 raise OSError("not a regular workflow file")
-            text = workflow.read_text(encoding="utf-8")
+            with workflow.open("rb") as stream:
+                raw = stream.read(MAX_WORKFLOW_BYTES + 1)
+            if len(raw) > MAX_WORKFLOW_BYTES:
+                raise OSError("workflow exceeds the byte safety cap")
+            text = raw.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise InspectionError(
                 f"Workflow input is missing or unsafe: {workflow}"
@@ -102,7 +133,7 @@ def workflow_capabilities(workflows: list[Path]) -> tuple[list[str], list[str]]:
             sync_action_pins.auditable_action_repositories(workflow, text)
         except ValueError as exc:
             raise InspectionError(str(exc)) from exc
-        if ISSUES_WRITE_PERMISSION.search(text) or WRITE_ALL_PERMISSION.search(text):
+        if requires_issue_write(text, workflow):
             issue_workflows.add(workflow.name)
         direct_references = {
             sync_action_pins.normalized_uses_reference(match)

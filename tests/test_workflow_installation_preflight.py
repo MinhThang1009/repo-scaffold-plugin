@@ -396,13 +396,15 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.configure(issues_enabled=False)
         with tempfile.TemporaryDirectory() as directory:
             for filename, permission in (
-                ("ci.yml", "issues: write"),
+                ("ci.yml", "permissions:\n  issues: write"),
                 ("custom.yml", "permissions: {issues: write}"),
                 ("write-all.yml", "permissions: write-all"),
                 ("quoted-issues.yml", 'permissions: {"issues": "write"}'),
                 ("single-quoted-issues.yml", "permissions: {'issues': 'write'}"),
                 ("quoted-permissions.yml", '"permissions": "write-all"'),
                 ("single-quoted-permissions.yml", "'permissions': 'write-all'"),
+                ("anchored.yml", "permissions: {issues: &access write}"),
+                ("escaped.yml", 'permissions: {"iss\\u0075es": "wr\\u0069te"}'),
             ):
                 with self.subTest(filename=filename, permission=permission):
                     workflow = Path(directory) / filename
@@ -420,6 +422,75 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     )
                     self.assertTrue(result["requires_issues"])
                     self.assertEqual(result["detected_issue_workflows"], [filename])
+
+    def test_permission_alias_at_job_scope_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text(
+                "jobs:\n  first:\n    permissions: &access {issues: &write write}\n"
+                "  reminder:\n    permissions: *access\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                workflow_installation_preflight.workflow_capabilities([workflow]),
+                ([], ["ci.yml"]),
+            )
+
+    def test_permission_text_outside_permission_fields_is_not_a_requirement(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text(
+                "# permissions: write-all\n"
+                "jobs:\n  example:\n    permissions: {contents: read}\n"
+                "    steps:\n      - run: |\n          echo 'issues: write'\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                workflow_installation_preflight.workflow_capabilities([workflow]),
+                ([], []),
+            )
+
+    def test_rejects_unparseable_or_ambiguous_permission_documents(self) -> None:
+        for document in (
+            "permissions: [",
+            "permissions: {}\npermissions: write-all\n",
+            "[]",
+            "jobs: []",
+            "jobs: {invalid: []}",
+        ):
+            with self.subTest(document=document):
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.requires_issue_write(
+                        document, Path("ci.yml")
+                    )
+
+    def test_workflow_read_is_bounded_even_if_metadata_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text("permissions: {}\n", encoding="utf-8")
+            metadata = workflow.stat()
+            with mock.patch.object(
+                workflow_installation_preflight, "MAX_WORKFLOW_BYTES", 8
+            ):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError, "unsafe"
+                ):
+                    workflow_installation_preflight.workflow_capabilities([workflow])
+                with mock.patch.object(
+                    Path,
+                    "lstat",
+                    return_value=mock.Mock(
+                        st_mode=metadata.st_mode, st_size=0, st_file_attributes=0
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError, "unsafe"
+                    ):
+                        workflow_installation_preflight.workflow_capabilities(
+                            [workflow]
+                        )
 
     def test_infers_external_actions_from_workflow_input(self) -> None:
         self.configure(allowed_actions="local_only")
