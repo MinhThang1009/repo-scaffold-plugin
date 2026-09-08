@@ -248,6 +248,20 @@ class FreshnessTests(unittest.TestCase):
                 any(finding["subject"] == "actions/setup-node" for finding in findings)
             )
 
+    def test_action_findings_raises_lookup_error_without_an_error_sink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with self.assertRaisesRegex(ValueError, "release unavailable"):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: (_ for _ in ()).throw(
+                        ValueError("release unavailable")
+                    ),
+                )
+
     def test_action_findings_accepts_equivalent_uppercase_sha(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -896,15 +910,25 @@ class FreshnessTests(unittest.TestCase):
                 "freshness-audit", markdown_output.read_text(encoding="utf-8")
             )
 
-    def test_action_failure_does_not_skip_release_schema_reminders(self) -> None:
+    def test_action_failure_does_not_skip_independent_reminders(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.write_repository(root)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + "      - uses: actions/setup-node@"
+                + "a" * 40
+                + " # v1.0.0\n",
+                encoding="utf-8",
+            )
             client = mock.Mock()
 
             def lookup(repository: str) -> Any:
                 if repository == "actions/checkout":
                     raise ValueError("checkout release unavailable")
+                if repository == "actions/setup-node":
+                    return release("v2.0.0", "b" * 40)
                 self.assertEqual(repository, "googleapis/release-please")
                 return release("v17.7.0", "b" * 40)
 
@@ -922,6 +946,14 @@ class FreshnessTests(unittest.TestCase):
                 report = freshness.audit(root, "synthetic-token")
             self.assertEqual(report["status"], "indeterminate")
             self.assertEqual(report["errors"], ["checkout release unavailable"])
+            self.assertEqual(
+                [
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                    if item["kind"] == "action-pin"
+                ],
+                [("action-pin", ".github/workflows/ci.yml", "actions/setup-node")],
+            )
             self.assertEqual(
                 {
                     item["path"]
@@ -954,6 +986,27 @@ class FreshnessTests(unittest.TestCase):
                 report = freshness.audit(root, "")
             self.assertEqual(report["status"], "indeterminate")
             self.assertEqual(len(report["errors"]), 4)
+
+            client = mock.Mock()
+            client.latest_release.return_value = release("v17.6.0", "a" * 40)
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "action_findings",
+                    side_effect=freshness.AuditError("workflow input unavailable"),
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("workflow input unavailable", report["errors"])
 
         with (
             mock.patch.object(freshness, "main", return_value=0),

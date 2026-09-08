@@ -294,10 +294,12 @@ def action_findings(
     root: Path,
     workflow_directories: tuple[Path, ...],
     release_lookup: Callable[[str], sync_action_pins.ActionRelease],
+    errors: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Compare every action SHA with the exact immutable upstream release SHA."""
+    """Compare action pins without letting one upstream outage hide other drift."""
     findings: list[dict[str, str]] = []
     releases: dict[str, sync_action_pins.ActionRelease] = {}
+    failed_releases: set[str] = set()
     try:
         workflow_paths = sync_action_pins.workflow_paths(root, workflow_directories)
     except ValueError as error:
@@ -309,9 +311,18 @@ def action_findings(
             action = sync_action_pins.normalized_action_pin_part(match, "action")
             current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
             repository = sync_action_pins.action_repository(action)
+            if repository in failed_releases:
+                continue
             release = releases.get(repository)
             if release is None:
-                release = release_lookup(repository)
+                try:
+                    release = release_lookup(repository)
+                except (OSError, ValueError, AuditError) as error:
+                    if errors is None:
+                        raise
+                    failed_releases.add(repository)
+                    errors.append(str(error))
+                    continue
                 releases[repository] = release
             if current_sha.casefold() != release.sha:
                 findings.append(
@@ -506,7 +517,10 @@ def audit(
             try:
                 findings.extend(
                     action_findings(
-                        root, trackers.workflow_directories, client.latest_release
+                        root,
+                        trackers.workflow_directories,
+                        client.latest_release,
+                        errors,
                     )
                 )
             except (OSError, ValueError, AuditError) as error:
