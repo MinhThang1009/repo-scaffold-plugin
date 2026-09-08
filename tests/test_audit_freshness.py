@@ -558,6 +558,12 @@ class FreshnessTests(unittest.TestCase):
             self.assertEqual(errors, ["PyPI unavailable"])
             with self.assertRaisesRegex(freshness.AuditError, "PyPI unavailable"):
                 freshness.requirement_findings(root, sources, unavailable)
+            with self.assertRaisesRegex(freshness.AuditError, "requirements file"):
+                freshness.requirement_findings(
+                    root,
+                    (freshness.RequirementSource(Path("missing.in"), ()),),
+                    unavailable,
+                )
 
     def test_optional_release_please_and_ci_toolchain_trackers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1177,6 +1183,24 @@ class FreshnessTests(unittest.TestCase):
             self.assertEqual(report["status"], "indeterminate")
             self.assertIn("workflow input unavailable", report["errors"])
 
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "requirement_findings",
+                    side_effect=freshness.AuditError(
+                        "requirements checker unavailable"
+                    ),
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("requirements checker unavailable", report["errors"])
+
         with (
             mock.patch.object(freshness, "main", return_value=0),
             self.assertRaises(SystemExit),
@@ -1247,7 +1271,12 @@ class FreshnessTests(unittest.TestCase):
                     return_value=client,
                 ),
                 mock.patch.object(
-                    freshness, "latest_pypi_release", return_value="1.0.0"
+                    freshness,
+                    "latest_pypi_release",
+                    side_effect={
+                        "mutmut": "2.0.0",
+                        "markdown-it-py": "1.0.0",
+                    }.__getitem__,
                 ),
             ):
                 report = freshness.audit(root, "synthetic-token")
@@ -1255,6 +1284,13 @@ class FreshnessTests(unittest.TestCase):
             self.assertEqual(report["status"], "indeterminate")
             self.assertTrue(
                 any("requirements file" in error for error in report["errors"])
+            )
+            self.assertIn(
+                ("python-package", "requirements-mutation.in", "mutmut"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
             )
             self.assertEqual(
                 {

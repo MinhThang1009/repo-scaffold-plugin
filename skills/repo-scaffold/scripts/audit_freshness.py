@@ -483,14 +483,22 @@ def requirement_findings(
     latest_versions: dict[str, str] = {}
     failed_lookups: set[str] = set()
     for requirement_source in sources:
-        source = tracked_path(root, requirement_source.path, kind="requirements file")
-        pins = pinned_requirements(source)
-        locks = {
-            relative: pinned_requirements(
-                tracked_path(root, relative, kind="requirements lock")
+        try:
+            source = tracked_path(
+                root, requirement_source.path, kind="requirements file"
             )
-            for relative in requirement_source.locks
-        }
+            pins = pinned_requirements(source)
+            locks = {
+                relative: pinned_requirements(
+                    tracked_path(root, relative, kind="requirements lock")
+                )
+                for relative in requirement_source.locks
+            }
+        except AuditError as error:
+            if errors is None:
+                raise
+            errors.append(str(error))
+            continue
         for key, (name, current) in pins.items():
             for lock_relative, lock_pins in locks.items():
                 locked = lock_pins.get(key)
