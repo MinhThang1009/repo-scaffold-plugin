@@ -498,17 +498,21 @@ def requirement_findings(
                 root, requirement_source.path, kind="requirements file"
             )
             pins = pinned_requirements(source)
-            locks = {
-                relative: pinned_requirements(
-                    tracked_path(root, relative, kind="requirements lock")
-                )
-                for relative in requirement_source.locks
-            }
         except AuditError as error:
             if errors is None:
                 raise
             errors.append(str(error))
             continue
+        locks: dict[Path, dict[str, tuple[str, str]]] = {}
+        for relative in requirement_source.locks:
+            try:
+                locks[relative] = pinned_requirements(
+                    tracked_path(root, relative, kind="requirements lock")
+                )
+            except AuditError as error:
+                if errors is None:
+                    raise
+                errors.append(str(error))
         for key, (name, current) in pins.items():
             for lock_relative, lock_pins in locks.items():
                 locked = lock_pins.get(key)

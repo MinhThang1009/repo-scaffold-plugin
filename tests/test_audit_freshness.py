@@ -1352,6 +1352,70 @@ class FreshnessTests(unittest.TestCase):
                 },
             )
 
+    def test_invalid_requirement_lock_does_not_skip_source_freshness(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            registry = root / freshness.DEFAULT_TRACKER_REGISTRY
+            document = json.loads(registry.read_text(encoding="utf-8"))
+            document["requirement-sources"][0]["locks"] = [
+                "missing-lock.txt",
+                "requirements-mutation.txt",
+            ]
+            registry.write_text(json.dumps(document), encoding="utf-8")
+            (root / "requirements-mutation.txt").write_text(
+                "other==1.0.0\n", encoding="utf-8"
+            )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with self.assertRaisesRegex(freshness.AuditError, "requirements lock"):
+                freshness.requirement_findings(
+                    root,
+                    trackers.requirement_sources,
+                    lambda _name: "0.2.0",
+                )
+
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.6.0", "c" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "latest_pypi_release",
+                    side_effect={
+                        "ruff": "0.2.0",
+                        "mutmut": "1.0.0",
+                        "markdown-it-py": "1.0.0",
+                    }.__getitem__,
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertTrue(
+                any("missing-lock.txt" in error for error in report["errors"])
+            )
+            self.assertIn(
+                ("python-package", "requirements-dev.in", "ruff"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
+            )
+            self.assertIn(
+                ("lock-consistency", "requirements-mutation.txt", "ruff"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
+            )
+
     def test_freshness_workflow_is_scheduled_and_non_required(self) -> None:
         workflows = (
             PLUGIN_ROOT / ".github" / "workflows" / "freshness.yml",
