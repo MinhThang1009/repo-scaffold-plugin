@@ -285,6 +285,14 @@ access alone is not treated as proof for a specific action. When an asset is
 provided through `--workflow`, the preflight derives its external-action and
 shipped issue-workflow requirements. `--require-issues` remains an explicit
 assertion for an issue-writing workflow outside the shipped asset names.
+For any supplied `pull_request` workflow with a write permission, it also
+requires `--confirm-pull-request-write-tokens`. Before passing that flag,
+verify the repository Actions setting **Send write tokens to workflows from
+pull requests** is enabled and not prohibited by organization policy. Without
+that setting GitHub can reduce a pull-request token to read-only. This is
+required for `dependabot-auto-merge.yml`; do not substitute
+`pull_request_target`, because Dependabot-triggered runs have their own token
+and secret restrictions.
 
 ```powershell
 $workflowPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/workflow_installation_preflight.py"
@@ -302,6 +310,11 @@ $workflowPreflightArguments = @(
 # detected and cannot bypass the Issues check when this stays false.
 $requiresIssueOperations = $false
 if ($requiresIssueOperations) { $workflowPreflightArguments += "--require-issues" }
+$pullRequestWriteTokensConfirmed = $false
+# Set only after verifying the repository Actions setting and applicable organization policy.
+if ($pullRequestWriteTokensConfirmed) {
+  $workflowPreflightArguments += "--confirm-pull-request-write-tokens"
+}
 $workflowPreflightOutput = python $workflowPreflight @workflowPreflightArguments 2>&1
 if ($LASTEXITCODE -ne 0) {
   throw "Workflow-installation inspection is inconclusive; do not copy the asset. $($workflowPreflightOutput | Out-String)"

@@ -166,6 +166,13 @@ because it does not infer Enterprise Cloud eligibility. Do not treat Marketplace
 verified-creator access as proof for a specific action when it has no exact
 matching pattern.
 
+For a `pull_request` workflow that declares any write permission, first verify
+that the repository's Actions setting **Send write tokens to workflows from pull
+requests** is enabled and permitted by its organization policy. Pass
+`--confirm-pull-request-write-tokens` only after that check. Without it,
+GitHub can reduce the token to read-only, so the preflight forbids installing
+the workflow. This applies to the shipped Dependabot auto-merge asset.
+
 ### 5. Configure GitHub
 
 Before GitHub configuration, read `references/github-setup.md`. Apply only

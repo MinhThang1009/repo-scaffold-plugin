@@ -64,6 +64,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
         "repository": "octo/example",
         "require_external_actions": False,
         "require_issues": False,
+        "confirm_pull_request_write_tokens": False,
         "workflow": [],
     }
     values.update(overrides)
@@ -433,7 +434,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 workflow_installation_preflight.workflow_capabilities([workflow]),
-                ([], ["ci.yml"]),
+                ([], ["ci.yml"], []),
             )
 
     def test_permission_text_outside_permission_fields_is_not_a_requirement(
@@ -449,7 +450,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 workflow_installation_preflight.workflow_capabilities([workflow]),
-                ([], []),
+                ([], [], []),
             )
 
     def test_rejects_unparseable_or_ambiguous_permission_documents(self) -> None:
@@ -513,6 +514,83 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertTrue(result["requires_external_actions"])
         self.assertFalse(result["external_actions_verified"])
+
+    def test_pull_request_write_scopes_require_explicit_confirmation(self) -> None:
+        self.configure()
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "dependabot-auto-merge.yml"
+            workflow.write_text(
+                "on: [pull_request]\n"
+                "permissions:\n"
+                "  contents: write\n"
+                "jobs:\n"
+                "  merge:\n"
+                "    runs-on: ubuntu-latest\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(workflow=[workflow])
+                )
+                confirmed = workflow_installation_preflight.run(
+                    arguments(
+                        workflow=[workflow], confirm_pull_request_write_tokens=True
+                    )
+                )
+
+        self.assertEqual(
+            result["decision"],
+            "confirm-pull-request-write-tokens-before-installing-workflows",
+        )
+        self.assertEqual(
+            result["pull_request_write_workflows"], ["dependabot-auto-merge.yml"]
+        )
+        self.assertFalse(result["pull_request_write_tokens_confirmed"])
+        self.assertEqual(confirmed["decision"], "may-install-workflow-assets")
+
+    def test_pull_request_write_token_gate_ignores_read_only_and_target_workflows(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cases = {
+                "read-only.yml": "on: pull_request\npermissions: {contents: read}\njobs: {}\n",
+                "target.yml": "on: pull_request_target\npermissions: {contents: write}\njobs: {}\n",
+                "job-scope.yml": "on: pull_request\njobs:\n  merge:\n    permissions: {pull-requests: write}\n",
+            }
+            for filename, document in cases.items():
+                with self.subTest(filename=filename):
+                    workflow = Path(directory) / filename
+                    workflow.write_text(document, encoding="utf-8")
+                    expected = filename == "job-scope.yml"
+                    self.assertEqual(
+                        workflow_installation_preflight.workflow_capabilities([workflow])[2],
+                        [filename] if expected else [],
+                    )
+
+    def test_pull_request_write_token_gate_fails_closed_for_invalid_workflows(
+        self,
+    ) -> None:
+        source = Path("workflow.yml")
+        for document, message in (
+            ("on: [", "Could not parse"),
+            ("[]", "not a YAML mapping"),
+            ("jobs: []", "invalid jobs mapping"),
+        ):
+            with self.subTest(document=document):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError, message
+                ):
+                    workflow_installation_preflight.requires_pull_request_write_tokens(
+                        document, source
+                    )
+        self.assertTrue(
+            workflow_installation_preflight.requires_pull_request_write_tokens(
+                "on: {pull_request: {}}\npermissions: write-all\njobs: {}\n",
+                source,
+            )
+        )
 
     def test_rejects_invalid_responses_and_arguments(self) -> None:
         for overrides, message in [
@@ -595,6 +673,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertEqual(parsed.repository, "octo/example")
         self.assertTrue(parsed.require_external_actions)
         self.assertTrue(parsed.require_issues)
+        self.assertFalse(parsed.confirm_pull_request_write_tokens)
         self.assertEqual(parsed.workflow, [Path("assets/workflows/ci.yml")])
         with mock.patch.object(sys, "argv", [str(SCRIPT_PATH)]):
             with self.assertRaises(SystemExit) as raised:
