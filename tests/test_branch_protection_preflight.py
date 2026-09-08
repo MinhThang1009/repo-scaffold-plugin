@@ -306,6 +306,7 @@ jobs:
                 "permissions": {"admin": True},
             },
             f"repos/{OWNER}/{REPOSITORY}/pulls/7": {
+                "state": "open",
                 "base": {"ref": "main", "repo": {"full_name": f"{OWNER}/{REPOSITORY}"}},
                 "head": {"sha": HEAD_SHA},
                 "merge_commit_sha": MERGE_SHA,
@@ -400,6 +401,25 @@ jobs:
                 ),
             ):
                 branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_rejects_non_open_representative_pull_request(self) -> None:
+        for state in (None, "closed", "all", True):
+            with self.subTest(state=state):
+                self.configure()
+                pr = cast(
+                    dict[str, Any],
+                    FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/pulls/7"],
+                )
+                pr["state"] = state
+                with (
+                    mock.patch.object(
+                        branch_protection_preflight, "GitHubClient", FakeClient
+                    ),
+                    self.assertRaisesRegex(
+                        branch_protection_preflight.InspectionError, "not open"
+                    ),
+                ):
+                    branch_protection_preflight.run(preflight_args("ci-success"))
 
     def test_run_accepts_fork_head_with_matching_base_repository(self) -> None:
         self.configure()
@@ -717,9 +737,10 @@ jobs:
         pull_endpoint = f"repos/{OWNER}/{REPOSITORY}/pulls/7"
         for payload, message in [
             ([], "response is invalid"),
-            ({"head": {}, "merge_commit_sha": MERGE_SHA}, "no head"),
+            ({"state": "open", "head": {}, "merge_commit_sha": MERGE_SHA}, "no head"),
             (
                 {
+                    "state": "open",
                     "head": {"sha": HEAD_SHA},
                     "merge_commit_sha": MERGE_SHA,
                     "mergeable": False,

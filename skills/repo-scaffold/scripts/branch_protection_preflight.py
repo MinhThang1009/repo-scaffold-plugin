@@ -303,6 +303,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     pr = client.json(f"repos/{owner}/{repo}/pulls/{args.pull_request}")
     if not isinstance(pr, dict):
         raise InspectionError("Pull request response is invalid.")
+    if pr.get("state") != "open":
+        raise InspectionError("Representative pull request is not open.")
     head = pr.get("head")
     head_sha = head.get("sha") if isinstance(head, dict) else None
     merge_sha = pr.get("merge_commit_sha")

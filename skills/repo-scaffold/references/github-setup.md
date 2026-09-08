@@ -568,7 +568,7 @@ Build the check list from contexts verified during the scaffold run, not from wo
 
 The bundled `scripts/branch_protection_preflight.py` turns this proof into a
 read-only, fail-closed gate. Run it after the final workflows are pushed to a
-mergeable representative PR and before any branch-protection mutation. It reads
+open, mergeable representative PR and before any branch-protection mutation. It reads
 the exact workflow blobs at that PR head, rejects duplicate YAML keys and
 ambiguous producers, verifies unfiltered `pull_request` coverage plus
 `merge_group` coverage when an effective merge queue applies, requires an
