@@ -492,11 +492,14 @@ def audit(
     if trackers is not None:
         try:
             client = sync_action_pins.GitHubReleaseClient(token)
-            findings.extend(
-                action_findings(
-                    root, trackers.workflow_directories, client.latest_release
+            try:
+                findings.extend(
+                    action_findings(
+                        root, trackers.workflow_directories, client.latest_release
+                    )
                 )
-            )
+            except (OSError, ValueError, AuditError) as error:
+                errors.append(str(error))
             release_please_configs = (
                 trackers.release_please_configs
                 + existing_optional_paths(

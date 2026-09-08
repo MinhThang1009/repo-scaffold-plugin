@@ -868,6 +868,45 @@ class FreshnessTests(unittest.TestCase):
                 "freshness-audit", markdown_output.read_text(encoding="utf-8")
             )
 
+    def test_action_failure_does_not_skip_release_schema_reminders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            client = mock.Mock()
+
+            def lookup(repository: str) -> Any:
+                if repository == "actions/checkout":
+                    raise ValueError("checkout release unavailable")
+                self.assertEqual(repository, "googleapis/release-please")
+                return release("v17.7.0", "b" * 40)
+
+            client.latest_release.side_effect = lookup
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertEqual(report["errors"], ["checkout release unavailable"])
+            self.assertEqual(
+                {
+                    item["path"]
+                    for item in report["findings"]
+                    if item["kind"] == "release-please-schema"
+                },
+                {
+                    "release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.vi.json",
+                },
+            )
+
     def test_audit_records_independent_upstream_errors_and_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
