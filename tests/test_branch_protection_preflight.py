@@ -300,11 +300,13 @@ jobs:
         FakeClient.responses = {
             f"repos/{OWNER}/{REPOSITORY}": {
                 "full_name": f"{OWNER}/{REPOSITORY}",
+                "default_branch": "main",
                 "archived": False,
                 "disabled": False,
                 "permissions": {"admin": True},
             },
             f"repos/{OWNER}/{REPOSITORY}/pulls/7": {
+                "base": {"ref": "main", "repo": {"full_name": f"{OWNER}/{REPOSITORY}"}},
                 "head": {"sha": HEAD_SHA},
                 "merge_commit_sha": MERGE_SHA,
                 "mergeable": True,
@@ -350,6 +352,69 @@ jobs:
                 }
             ],
         )
+
+    def test_run_rejects_stale_or_missing_default_branch(self) -> None:
+        for branch in (None, "develop", "Main", 7):
+            self.configure()
+            repository = cast(
+                dict[str, Any], FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}"]
+            )
+            repository["default_branch"] = branch
+            with (
+                self.subTest(branch=branch),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "current default branch",
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_rejects_pull_request_for_unverified_target(self) -> None:
+        for base in (
+            None,
+            {},
+            {"ref": "develop"},
+            {"ref": "Main"},
+            {"ref": "main", "repo": None},
+            {"ref": "main", "repo": {}},
+            {"ref": "main", "repo": {"full_name": 7}},
+            {"ref": "main", "repo": {"full_name": "octo/other"}},
+        ):
+            self.configure()
+            pr = cast(
+                dict[str, Any],
+                FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/pulls/7"],
+            )
+            pr["base"] = base
+            with (
+                self.subTest(base=base),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "target repository and branch",
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_accepts_fork_head_with_matching_base_repository(self) -> None:
+        self.configure()
+        pr = cast(
+            dict[str, Any], FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/pulls/7"]
+        )
+        pr["base"]["repo"]["full_name"] = "OCTO/EXAMPLE"
+        pr["head"]["repo"] = {"full_name": "contributor/example"}
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            self.assertEqual(
+                branch_protection_preflight.run(preflight_args("ci-success"))[
+                    "decision"
+                ],
+                "may-configure-classic-protection",
+            )
 
     def test_run_rejects_ineligible_repository_or_default_branch(self) -> None:
         self.configure()

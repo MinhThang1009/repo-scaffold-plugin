@@ -295,6 +295,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Repository administration permission is required to change protection."
         )
+    if repository.get("default_branch") != args.default_branch:
+        raise InspectionError(
+            "Requested branch is not the verified current default branch."
+        )
     pr = client.json(f"repos/{owner}/{repo}/pulls/{args.pull_request}")
     if not isinstance(pr, dict):
         raise InspectionError("Pull request response is invalid.")
@@ -307,6 +311,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     if pr.get("mergeable") is not True:
         raise InspectionError("Representative pull request is not confirmed mergeable.")
+    base = pr.get("base")
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+    if (
+        not isinstance(base, dict)
+        or base.get("ref") != args.default_branch
+        or not isinstance(base_name, str)
+        or base_name.casefold() != args.repository.casefold()
+    ):
+        raise InspectionError(
+            "Representative pull request does not verify the target repository and branch."
+        )
     rules = client.json(
         f"repos/{owner}/{repo}/rules/branches/"
         f"{quote(args.default_branch, safe='')}?per_page=100"
