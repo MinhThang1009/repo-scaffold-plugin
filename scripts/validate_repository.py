@@ -4939,6 +4939,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 },
                 "github-community-profile-metrics-api": {
                     "skills/repo-scaffold/scripts/check_community_health.py",
+                    "skills/repo-scaffold/references/github-setup.md",
                 },
                 "github-repository-license-api": {
                     "skills/repo-scaffold/references/github-setup.md",
@@ -4982,6 +4983,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/scripts/check_community_health.py",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                     "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
                 },
                 "github-git-blobs-api": {
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",

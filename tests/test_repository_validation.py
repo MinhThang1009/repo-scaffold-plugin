@@ -7690,7 +7690,10 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/scripts/codeql_preflight.py",
                 ],
                 "github-repository-contents-api": "skills/repo-scaffold/scripts/codeql_preflight.py",
-                "github-community-profile-metrics-api": "skills/repo-scaffold/scripts/check_community_health.py",
+                "github-community-profile-metrics-api": [
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
                 "github-repository-license-api": "skills/repo-scaffold/references/github-setup.md",
                 "github-action-pin-repository-tags-api": "skills/repo-scaffold/scripts/sync_action_pins.py",
                 "github-git-refs-api": "skills/repo-scaffold/assets/workflows/release.yml",
@@ -7709,6 +7712,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/scripts/check_community_health.py",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                     "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
                 ],
                 "github-git-blobs-api": [
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",

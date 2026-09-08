@@ -456,7 +456,8 @@
       "url": "https://docs.github.com/en/rest/metrics/community",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
-        "skills/repo-scaffold/scripts/check_community_health.py"
+        "skills/repo-scaffold/scripts/check_community_health.py",
+        "skills/repo-scaffold/references/github-setup.md"
       ],
       "required-markers": [
         "Get community profile metrics",
@@ -616,7 +617,8 @@
       "paths": [
         "skills/repo-scaffold/scripts/check_community_health.py",
         "skills/repo-scaffold/scripts/branch_protection_preflight.py",
-        "skills/repo-scaffold/scripts/codeql_preflight.py"
+        "skills/repo-scaffold/scripts/codeql_preflight.py",
+        "skills/repo-scaffold/references/github-setup.md"
       ],
       "required-markers": [
         "Get a tree",
