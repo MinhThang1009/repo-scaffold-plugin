@@ -777,6 +777,23 @@
       "review-period-days": 90
     },
     {
+      "id": "github-repository-security-features-api",
+      "label": "GitHub repository security features API",
+      "url": "https://docs.github.com/en/rest/repos",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/security_features_preflight.py"
+      ],
+      "required-markers": [
+        "Check if Dependabot security updates are enabled for a repository",
+        "Enable private vulnerability reporting for a repository",
+        "Enable vulnerability alerts"
+      ],
+      "reviewed-on": "2026-09-08",
+      "review-period-days": 90
+    },
+    {
       "id": "github-artifact-attestations",
       "label": "GitHub artifact-attestation eligibility",
       "url": "https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations",

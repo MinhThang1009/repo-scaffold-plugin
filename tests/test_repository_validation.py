@@ -7736,6 +7736,10 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/assets/workflows/auto-merge.yml",
                 ],
                 "github-security-analysis-settings": "skills/repo-scaffold/scripts/security_features_preflight.py",
+                "github-repository-security-features-api": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/security_features_preflight.py",
+                ],
                 "github-artifact-attestations": "skills/repo-scaffold/scripts/release_preflight.py",
                 "github-actions-secrets-api": "skills/repo-scaffold/scripts/release_preflight.py",
                 "github-repository-settings-api": [
@@ -8001,6 +8005,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-effective-branch-rules-api",
             "github-merge-queue-auto-merge",
             "github-security-analysis-settings",
+            "github-repository-security-features-api",
             "github-artifact-attestations",
             "github-actions-secrets-api",
             "github-repository-settings-api",
