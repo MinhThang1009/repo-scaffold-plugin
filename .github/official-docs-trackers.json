@@ -794,6 +794,22 @@
       "review-period-days": 90
     },
     {
+      "id": "github-users-api",
+      "label": "GitHub Users API",
+      "url": "https://docs.github.com/en/rest/users/users",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md"
+      ],
+      "required-markers": [
+        "Get a user",
+        "get/users/{username}",
+        "type"
+      ],
+      "reviewed-on": "2026-09-08",
+      "review-period-days": 90
+    },
+    {
       "id": "github-artifact-attestations",
       "label": "GitHub artifact-attestation eligibility",
       "url": "https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations",

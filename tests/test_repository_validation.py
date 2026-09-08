@@ -7740,6 +7740,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/security_features_preflight.py",
                 ],
+                "github-users-api": "skills/repo-scaffold/references/github-setup.md",
                 "github-artifact-attestations": "skills/repo-scaffold/scripts/release_preflight.py",
                 "github-actions-secrets-api": "skills/repo-scaffold/scripts/release_preflight.py",
                 "github-repository-settings-api": [
@@ -8006,6 +8007,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-merge-queue-auto-merge",
             "github-security-analysis-settings",
             "github-repository-security-features-api",
+            "github-users-api",
             "github-artifact-attestations",
             "github-actions-secrets-api",
             "github-repository-settings-api",
