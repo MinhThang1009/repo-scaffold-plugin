@@ -627,6 +627,11 @@ jobs:
         base = cast(dict[str, Any], valid["check_runs"][0])
         evidence_updates: list[tuple[dict[str, Any], str]] = [
             ({"app": {}}, "incomplete"),
+            ({"app": {"id": True}}, "incomplete"),
+            ({"app": {"id": False}}, "incomplete"),
+            ({"app": {"id": "15368"}}, "incomplete"),
+            ({"app": {"id": 0}}, "incomplete"),
+            ({"app": {"id": -1}}, "incomplete"),
             ({"completed_at": "not-a-time"}, "invalid completion"),
             ({"completed_at": "2026-01-01T00:00:00"}, "timezone-less"),
         ]

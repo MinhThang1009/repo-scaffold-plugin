@@ -177,6 +177,7 @@ def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
         completed_at = item.get("completed_at")
         if (
             not isinstance(app_id, int)
+            or isinstance(app_id, bool)
             or app_id <= 0
             or not isinstance(completed_at, str)
         ):
