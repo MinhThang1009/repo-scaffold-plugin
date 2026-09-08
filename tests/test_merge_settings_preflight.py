@@ -83,6 +83,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         FakeClient.responses = {
             "repos/octo/example": {
                 "full_name": "octo/example",
+                "default_branch": "main",
                 "archived": False,
                 "disabled": False,
                 "permissions": {"admin": True},
@@ -102,6 +103,43 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 },
             },
         }
+
+    def test_rejects_unverified_default_branch_before_reading_rules(self) -> None:
+        for branch in (None, "develop", "Main", 7):
+            self.configure(rules=[])
+            repository = FakeClient.responses["repos/octo/example"]
+            assert isinstance(repository, dict)
+            repository["default_branch"] = branch
+            del FakeClient.responses[
+                "repos/octo/example/rules/branches/main?per_page=100"
+            ]
+            with (
+                self.subTest(branch=branch),
+                mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient),
+                self.assertRaisesRegex(
+                    merge_settings_preflight.InspectionError, "current default branch"
+                ),
+            ):
+                merge_settings_preflight.run(arguments())
+
+    def test_rejects_missing_or_malformed_rule_type(self) -> None:
+        rules: tuple[dict[str, object], ...] = (
+            {},
+            {"type": None},
+            {"type": 7},
+            {"type": []},
+            {"type": {}},
+            {"type": ""},
+            {"type": " "},
+        )
+        for rule in rules:
+            with (
+                self.subTest(rule=rule),
+                self.assertRaisesRegex(
+                    merge_settings_preflight.InspectionError, "rule type"
+                ),
+            ):
+                merge_settings_preflight.parse_effective_rules([rule])
 
     def test_requires_separate_confirmation_before_disabling_methods(self) -> None:
         self.configure(rules=[], rebase=True)
@@ -503,6 +541,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                     "disabled": False,
                     "permissions": {"admin": True},
                     "allow_squash_merge": "yes",
+                    "default_branch": "main",
                     "allow_merge_commit": False,
                     "allow_rebase_merge": False,
                     "allow_auto_merge": True,
@@ -519,6 +558,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                     "allow_merge_commit": False,
                     "allow_rebase_merge": False,
                     "allow_auto_merge": "yes",
+                    "default_branch": "main",
                 },
                 "allow_auto_merge",
             ),

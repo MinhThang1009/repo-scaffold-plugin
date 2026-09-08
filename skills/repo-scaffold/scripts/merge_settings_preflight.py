@@ -50,6 +50,8 @@ def parse_effective_rules(payload: Any) -> tuple[set[str], bool, bool]:
         if not isinstance(rule, dict):
             raise InspectionError("Effective rules response has an invalid rule.")
         rule_type = rule.get("type")
+        if not isinstance(rule_type, str) or not rule_type.strip():
+            raise InspectionError("Effective rules response has an invalid rule type.")
         if rule_type not in {
             "merge_queue",
             "pull_request",
@@ -186,6 +188,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "Repository administration permission is required to change merge settings."
         )
 
+    if repository.get("default_branch") != args.default_branch:
+        raise InspectionError(
+            "Requested branch is not the verified current default branch."
+        )
     rules = client.json(
         f"repos/{owner}/{repo}/rules/branches/"
         f"{quote(args.default_branch, safe='')}?per_page=100"
