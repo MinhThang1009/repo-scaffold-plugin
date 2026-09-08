@@ -206,6 +206,55 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(result["external_actions_verified"])
         self.assertEqual(result["unapproved_action_references"], [])
 
+    def test_selected_actions_approval_does_not_bypass_issues_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "reminder.yml"
+            for inferred in (False, True):
+                workflow.write_text(
+                    ("permissions: {issues: write}\n" if inferred else "") + "steps:\n"
+                    "  - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                    encoding="utf-8",
+                )
+                for approved in (False, True):
+                    for issues_enabled in (False, True):
+                        self.configure(
+                            allowed_actions="selected", issues_enabled=issues_enabled
+                        )
+                        FakeClient.responses[
+                            "repos/octo/example/actions/permissions/selected-actions"
+                        ] = {
+                            "github_owned_allowed": approved,
+                            "verified_allowed": False,
+                            "patterns_allowed": [],
+                        }
+                        with (
+                            self.subTest(
+                                inferred=inferred,
+                                approved=approved,
+                                issues_enabled=issues_enabled,
+                            ),
+                            mock.patch.object(
+                                workflow_installation_preflight,
+                                "GitHubClient",
+                                FakeClient,
+                            ),
+                        ):
+                            result = workflow_installation_preflight.run(
+                                arguments(
+                                    workflow=[workflow], require_issues=not inferred
+                                )
+                            )
+                            expected = (
+                                "allow-selected-actions-before-installing-workflows"
+                            )
+                            if approved:
+                                expected = (
+                                    "may-install-workflow-assets"
+                                    if issues_enabled
+                                    else "enable-issues-before-installing-issue-workflows"
+                                )
+                            self.assertEqual(result["decision"], expected)
+
     def test_selected_policy_fails_closed_for_missing_or_unsafe_workflow_inputs(
         self,
     ) -> None:

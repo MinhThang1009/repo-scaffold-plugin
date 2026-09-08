@@ -221,12 +221,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         decision = "enable-github-actions-before-installing-workflows"
     elif requires_external_actions and allowed_actions == "local_only":
         decision = "allow-external-actions-before-installing-workflows"
-    elif requires_external_actions and allowed_actions == "selected":
-        decision = (
-            "may-install-workflow-assets"
-            if external_actions_verified
-            else "allow-selected-actions-before-installing-workflows"
-        )
+    elif (
+        requires_external_actions
+        and allowed_actions == "selected"
+        and not external_actions_verified
+    ):
+        decision = "allow-selected-actions-before-installing-workflows"
     elif not issue_workflows_eligible:
         decision = "enable-issues-before-installing-issue-workflows"
     else:
