@@ -339,34 +339,45 @@ def action_findings(
 
 
 def release_please_findings(
-    root: Path, configs: tuple[Path, ...], latest_tag: str
+    root: Path,
+    configs: tuple[Path, ...],
+    latest_tag: str,
+    errors: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Compare configured schema versions with the latest Release Please release."""
+    """Compare schemas without letting one invalid config hide other drift."""
     findings: list[dict[str, str]] = []
     for relative in configs:
-        path = tracked_path(root, relative, kind="Release Please config")
         try:
-            document = json.loads(
-                path.read_text(encoding="utf-8"),
-                object_pairs_hook=unique_json_object,
+            path = tracked_path(root, relative, kind="Release Please config")
+            try:
+                document = json.loads(
+                    path.read_text(encoding="utf-8"),
+                    object_pairs_hook=unique_json_object,
+                )
+            except (
+                OSError,
+                UnicodeError,
+                ValueError,
+                RecursionError,
+            ) as cause:
+                raise AuditError(
+                    f"could not read Release Please config {relative}: {cause}"
+                ) from cause
+            schema = document.get("$schema") if isinstance(document, dict) else None
+            match = (
+                RELEASE_PLEASE_SCHEMA.fullmatch(schema)
+                if isinstance(schema, str)
+                else None
             )
-        except (
-            OSError,
-            UnicodeError,
-            ValueError,
-            RecursionError,
-        ) as error:
-            raise AuditError(
-                f"could not read Release Please config {relative}: {error}"
-            ) from error
-        schema = document.get("$schema") if isinstance(document, dict) else None
-        match = (
-            RELEASE_PLEASE_SCHEMA.fullmatch(schema) if isinstance(schema, str) else None
-        )
-        if match is None:
-            raise AuditError(
-                f"Release Please config has an unsupported $schema: {relative}"
-            )
+            if match is None:
+                raise AuditError(
+                    f"Release Please config has an unsupported $schema: {relative}"
+                )
+        except AuditError as error:
+            if errors is None:
+                raise
+            errors.append(str(error))
+            continue
         if match.group("version") != latest_tag:
             findings.append(
                 {
@@ -549,6 +560,7 @@ def audit(
                         root,
                         release_please_configs,
                         client.latest_release("googleapis/release-please").tag,
+                        errors,
                     )
                 )
         except (OSError, ValueError, AuditError) as error:

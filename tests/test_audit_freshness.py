@@ -1050,6 +1050,44 @@ class FreshnessTests(unittest.TestCase):
                 },
             )
 
+    def test_invalid_release_please_config_does_not_skip_other_schema_reminders(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            (root / "release-please-config.json").write_text("{}\n", encoding="utf-8")
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.7.0", "b" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("release-please-config.json", report["errors"][0])
+            self.assertEqual(
+                {
+                    item["path"]
+                    for item in report["findings"]
+                    if item["kind"] == "release-please-schema"
+                },
+                {
+                    "skills/repo-scaffold/assets/release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.vi.json",
+                },
+            )
+
     def test_audit_records_independent_upstream_errors_and_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
