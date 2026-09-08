@@ -431,10 +431,12 @@ def requirement_findings(
     root: Path,
     sources: tuple[RequirementSource, ...],
     latest_lookup: Callable[[str], str],
+    errors: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Compare direct requirements to PyPI and ensure their locks carry the pin."""
+    """Compare direct pins without letting one upstream outage hide other reminders."""
     findings: list[dict[str, str]] = []
     latest_versions: dict[str, str] = {}
+    failed_lookups: set[str] = set()
     for requirement_source in sources:
         source = tracked_path(root, requirement_source.path, kind="requirements file")
         pins = pinned_requirements(source)
@@ -445,20 +447,6 @@ def requirement_findings(
             for relative in requirement_source.locks
         }
         for key, (name, current) in pins.items():
-            if key not in latest_versions:
-                latest_versions[key] = latest_lookup(name)
-            latest = latest_versions[key]
-            if current != latest:
-                findings.append(
-                    {
-                        "kind": "python-package",
-                        "path": requirement_source.path.as_posix(),
-                        "subject": name,
-                        "current": current,
-                        "latest": latest,
-                        "details": "Direct pin differs from PyPI's current release.",
-                    }
-                )
             for lock_relative, lock_pins in locks.items():
                 locked = lock_pins.get(key)
                 if locked is None or locked[1] != current:
@@ -475,6 +463,29 @@ def requirement_findings(
                             ),
                         }
                     )
+            if key in failed_lookups:
+                continue
+            if key not in latest_versions:
+                try:
+                    latest_versions[key] = latest_lookup(name)
+                except AuditError as error:
+                    if errors is None:
+                        raise
+                    failed_lookups.add(key)
+                    errors.append(str(error))
+                    continue
+            latest = latest_versions[key]
+            if current != latest:
+                findings.append(
+                    {
+                        "kind": "python-package",
+                        "path": requirement_source.path.as_posix(),
+                        "subject": name,
+                        "current": current,
+                        "latest": latest,
+                        "details": "Direct pin differs from PyPI's current release.",
+                    }
+                )
     return findings
 
 
@@ -519,7 +530,10 @@ def audit(
         try:
             findings.extend(
                 requirement_findings(
-                    root, trackers.requirement_sources, latest_pypi_release
+                    root,
+                    trackers.requirement_sources,
+                    latest_pypi_release,
+                    errors,
                 )
             )
         except AuditError as error:

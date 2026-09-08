@@ -450,7 +450,9 @@ class FreshnessTests(unittest.TestCase):
             inconsistent = freshness.requirement_findings(
                 root, trackers.requirement_sources, versions.__getitem__
             )
-            self.assertEqual(inconsistent[-1]["kind"], "lock-consistency")
+            self.assertTrue(
+                any(item["kind"] == "lock-consistency" for item in inconsistent)
+            )
 
     def test_requirement_findings_reuses_latest_lookup_for_duplicate_pins(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -473,6 +475,27 @@ class FreshnessTests(unittest.TestCase):
                 freshness.requirement_findings(root, sources, latest_lookup), []
             )
             self.assertEqual(calls, ["ruff"])
+
+    def test_requirement_findings_records_one_lookup_error_per_package(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for filename in ("first.in", "second.in"):
+                (root / filename).write_text("ruff==0.1.0\n", encoding="utf-8")
+            sources = tuple(
+                freshness.RequirementSource(Path(filename), ())
+                for filename in ("first.in", "second.in")
+            )
+            errors: list[str] = []
+
+            def unavailable(_name: str) -> str:
+                raise freshness.AuditError("PyPI unavailable")
+
+            self.assertEqual(
+                freshness.requirement_findings(root, sources, unavailable, errors), []
+            )
+            self.assertEqual(errors, ["PyPI unavailable"])
+            with self.assertRaisesRegex(freshness.AuditError, "PyPI unavailable"):
+                freshness.requirement_findings(root, sources, unavailable)
 
     def test_optional_release_please_and_ci_toolchain_trackers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -925,13 +948,99 @@ class FreshnessTests(unittest.TestCase):
             ):
                 report = freshness.audit(root, "")
             self.assertEqual(report["status"], "indeterminate")
-            self.assertEqual(len(report["errors"]), 2)
+            self.assertEqual(len(report["errors"]), 4)
 
         with (
             mock.patch.object(freshness, "main", return_value=0),
             self.assertRaises(SystemExit),
         ):
             runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+
+    def test_pypi_failure_does_not_skip_other_packages_or_lock_reminders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            (root / "requirements-dev.txt").write_text(
+                "other==1.0.0\n", encoding="utf-8"
+            )
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.6.0", "b" * 40),
+            }[repository]
+
+            def latest(name: str) -> str:
+                if name == "ruff":
+                    raise freshness.AuditError("PyPI unavailable for ruff")
+                return {"mutmut": "2.0.0", "markdown-it-py": "1.0.0"}[name]
+
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(freshness, "latest_pypi_release", side_effect=latest),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertEqual(report["errors"], ["PyPI unavailable for ruff"])
+            self.assertIn(
+                ("lock-consistency", "requirements-dev.txt", "ruff"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
+            )
+            self.assertIn(
+                ("python-package", "requirements-mutation.in", "mutmut"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
+            )
+
+    def test_requirement_input_error_does_not_skip_other_freshness_domains(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            (root / "requirements-dev.in").unlink()
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.7.0", "b" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertTrue(
+                any("requirements file" in error for error in report["errors"])
+            )
+            self.assertEqual(
+                {
+                    item["path"]
+                    for item in report["findings"]
+                    if item["kind"] == "release-please-schema"
+                },
+                {
+                    "release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.vi.json",
+                },
+            )
 
     def test_freshness_workflow_is_scheduled_and_non_required(self) -> None:
         workflows = (
