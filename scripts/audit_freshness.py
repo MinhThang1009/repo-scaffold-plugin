@@ -585,7 +585,7 @@ def markdown_report(report: dict[str, Any]) -> str:
                 "",
             ]
         )
-    else:
+    elif not report["errors"]:
         lines.extend(["No stale versioned inputs were found.", ""])
     errors = report["errors"]
     if errors:

@@ -858,9 +858,14 @@ class FreshnessTests(unittest.TestCase):
                 "`package\\|name next` | `1\\|0 next` | `2\\|0 next` |",
                 freshness.markdown_report(report),
             )
+            report["findings"] = []
             report["errors"] = ["offline"]
             report["status"] = "indeterminate"
-            self.assertIn("## Indeterminate", freshness.markdown_report(report))
+            indeterminate_markdown = freshness.markdown_report(report)
+            self.assertIn("## Indeterminate", indeterminate_markdown)
+            self.assertNotIn(
+                "No stale versioned inputs were found.", indeterminate_markdown
+            )
 
             json_output = root / "report.json"
             markdown_output = root / "report.md"
