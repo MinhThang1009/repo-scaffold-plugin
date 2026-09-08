@@ -566,7 +566,8 @@
       "allowed-hosts": ["docs.github.com"],
       "paths": [
         "scripts/check_code_scanning_alerts.py",
-        "skills/repo-scaffold/scripts/branch_protection_preflight.py"
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+        "skills/repo-scaffold/references/github-setup.md"
       ],
       "required-markers": [
         "Get a pull request",
@@ -651,7 +652,8 @@
       "url": "https://docs.github.com/en/rest/checks/runs",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
-        "skills/repo-scaffold/scripts/branch_protection_preflight.py"
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+        "skills/repo-scaffold/references/github-setup.md"
       ],
       "required-markers": [
         "List check runs for a Git reference",
@@ -667,7 +669,8 @@
       "url": "https://docs.github.com/en/rest/commits/statuses",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
-        "skills/repo-scaffold/scripts/branch_protection_preflight.py"
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+        "skills/repo-scaffold/references/github-setup.md"
       ],
       "required-markers": [
         "Get the combined status for a specific reference",

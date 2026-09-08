@@ -7702,6 +7702,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-pull-requests-api": [
                     "scripts/check_code_scanning_alerts.py",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
                 ],
                 "github-git-commits-api": [
                     "scripts/check_code_scanning_alerts.py",
@@ -7718,8 +7719,14 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                     "skills/repo-scaffold/scripts/codeql_preflight.py",
                 ],
-                "github-check-runs-api": "skills/repo-scaffold/scripts/branch_protection_preflight.py",
-                "github-commit-statuses-api": "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                "github-check-runs-api": [
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
+                "github-commit-statuses-api": [
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
                 "github-reminder-issues-api": "skills/repo-scaffold/assets/workflows/freshness.yml",
                 "github-repository-labels-api": "skills/repo-scaffold/references/github-setup.md",
                 "github-branch-protection-status-checks": [

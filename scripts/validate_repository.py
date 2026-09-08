@@ -4971,6 +4971,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 "github-pull-requests-api": {
                     "scripts/check_code_scanning_alerts.py",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
                 },
                 "github-git-commits-api": {
                     "scripts/check_code_scanning_alerts.py",
@@ -4991,9 +4992,11 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 },
                 "github-check-runs-api": {
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
                 },
                 "github-commit-statuses-api": {
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
                 },
                 "github-reminder-issues-api": {
                     ".github/workflows/ci.yml",
