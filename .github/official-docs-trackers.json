@@ -444,7 +444,7 @@
       ],
       "required-markers": [
         "Get repository content",
-        "Contents repository permissions (read)",
+        "\"Contents\" repository permissions (read)",
         "ref"
       ],
       "reviewed-on": "2026-09-08",
@@ -477,7 +477,7 @@
       ],
       "required-markers": [
         "Get the license for a repository",
-        "get/repos/{owner}/{repo}/license",
+        "repos/{owner}/{repo}/license",
         "spdx_id"
       ],
       "reviewed-on": "2026-09-08",
@@ -833,7 +833,7 @@
       ],
       "required-markers": [
         "Get a user",
-        "get/users/{username}",
+        "users/{username}",
         "type"
       ],
       "reviewed-on": "2026-09-08",

@@ -279,6 +279,63 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 "https://docs.example.test/guide", ("docs.example.test",)
             )
 
+    def test_github_rest_fetch_preserves_html_only_contract_markers(self) -> None:
+        url = "https://docs.github.com/en/rest/git/refs"
+        payload = b"<p>&quot;Contents&quot; permissions; tags/&lt;tag name&gt;</p>"
+        for source, accept, content in (
+            (url, "text/html", '<p>"Contents" permissions; tags/<tag name></p>'),
+            (
+                "https://docs.example.test/en/rest/refs",
+                "text/markdown,text/html;q=0.9",
+                payload.decode(),
+            ),
+            (
+                "https://docs.github.com/en/actions/guide",
+                "text/markdown,text/html;q=0.9",
+                payload.decode(),
+            ),
+        ):
+            opener = FakeOpener(FakeResponse(payload, source))
+            with (
+                self.subTest(source=source),
+                mock.patch.object(official_docs, "build_opener", return_value=opener),
+            ):
+                self.assertEqual(
+                    official_docs.read_document(source, ("docs.github.com",)),
+                    (source, content),
+                )
+                assert isinstance(opener.request, official_docs.Request)
+                self.assertEqual(opener.request.get_header("Accept"), accept)
+
+    def test_rest_registry_markers_match_reviewed_endpoint_excerpts(self) -> None:
+        # Minimal excerpts from the official pages retrieved on 2026-09-08.
+        excerpts = {
+            "github-repository-contents-api": (
+                'Get repository content\n"Contents" repository permissions (read)\nref'
+            ),
+            "github-repository-license-api": (
+                "Get the license for a repository\n"
+                "GET /repos/{owner}/{repo}/license\nspdx_id"
+            ),
+            "github-users-api": "Get a user\nGET /users/{username}\ntype",
+        }
+        claims = {
+            claim.identifier: claim
+            for claim in official_docs.load_trackers(PLUGIN_ROOT)
+        }
+        for identifier, content in excerpts.items():
+            claim = claims[identifier]
+            with (
+                self.subTest(identifier=identifier),
+                mock.patch.object(
+                    official_docs, "read_document", return_value=(claim.url, content)
+                ),
+            ):
+                self.assertEqual(
+                    official_docs.claim_findings(PLUGIN_ROOT, claim, date(2026, 9, 8)),
+                    [],
+                )
+
     def test_redirect_handler_rejects_unapproved_destination_before_fetching(
         self,
     ) -> None:
