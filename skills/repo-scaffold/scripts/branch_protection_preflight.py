@@ -194,8 +194,8 @@ def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
                 f"Required check {context!r} has a timezone-less completion time."
             )
         app_ids.add(app_id)
-        success |= item.get("conclusion") == "success" and completed >= now - timedelta(
-            days=7
+        success |= item.get("conclusion") == "success" and (
+            now - timedelta(days=7) <= completed <= now
         )
     if len(app_ids) != 1:
         raise InspectionError(
@@ -317,9 +317,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Effective rules response may be paginated; inspection is inconclusive."
         )
-    queue_required = any(
-        isinstance(rule, dict) and rule.get("type") == "merge_queue" for rule in rules
-    )
+    for rule in rules:
+        if (
+            not isinstance(rule, dict)
+            or not isinstance(rule.get("type"), str)
+            or not rule["type"].strip()
+        ):
+            raise InspectionError("Effective rule has an invalid or missing type.")
+    queue_required = any(rule["type"] == "merge_queue" for rule in rules)
     producers = workflow_producers(client, owner, repo, head_sha)
     now = datetime.now(timezone.utc)
     verified: list[dict[str, Any]] = []

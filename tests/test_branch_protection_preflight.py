@@ -5,7 +5,7 @@ import importlib.util
 import runpy
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
@@ -491,6 +491,54 @@ jobs:
         with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
             with self.assertRaisesRegex(
                 branch_protection_preflight.InspectionError, "merge_group"
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_check_run_freshness_has_both_time_boundaries(self) -> None:
+        now = datetime(2026, 9, 8, tzinfo=timezone.utc)
+        for offset, accepted in (
+            (timedelta(days=-7), True),
+            (timedelta(0), True),
+            (timedelta(days=-7, microseconds=-1), False),
+            (timedelta(microseconds=1), False),
+        ):
+            payload = check_runs("ci-success")
+            payload["check_runs"][0]["completed_at"] = (now + offset).isoformat()
+            with self.subTest(offset=offset):
+                if accepted:
+                    self.assertEqual(
+                        branch_protection_preflight.app_id_for_check(
+                            payload, "ci-success", now
+                        ),
+                        15368,
+                    )
+                else:
+                    with self.assertRaises(branch_protection_preflight.InspectionError):
+                        branch_protection_preflight.app_id_for_check(
+                            payload, "ci-success", now
+                        )
+
+    def test_run_rejects_malformed_effective_rule_entries(self) -> None:
+        for rule in (
+            None,
+            "merge_queue",
+            {},
+            {"type": None},
+            {"type": 7},
+            {"type": ""},
+        ):
+            self.configure()
+            FakeClient.responses[
+                f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+            ] = [rule]
+            with (
+                self.subTest(rule=rule),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError, "Effective rule"
+                ),
             ):
                 branch_protection_preflight.run(preflight_args("ci-success"))
 
