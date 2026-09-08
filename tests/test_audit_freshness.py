@@ -310,6 +310,53 @@ class FreshnessTests(unittest.TestCase):
                 },
             )
 
+    def test_invalid_workflow_directory_does_not_skip_other_action_reminders(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            asset_workflow = root / "skills/repo-scaffold/assets/workflows/ci.yml"
+            asset_workflow.unlink()
+            asset_workflow.parent.rmdir()
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with self.assertRaisesRegex(freshness.AuditError, "workflow directory"):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
+                )
+
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v2.0.0", "b" * 40),
+                "googleapis/release-please": release("v17.6.0", "c" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertTrue(
+                any("assets/workflows" in error for error in report["errors"])
+            )
+            self.assertEqual(
+                [
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                    if item["kind"] == "action-pin"
+                ],
+                [("action-pin", ".github/workflows/ci.yml", "actions/checkout")],
+            )
+
     def test_action_findings_accepts_equivalent_uppercase_sha(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -300,52 +300,62 @@ def action_findings(
     findings: list[dict[str, str]] = []
     releases: dict[str, sync_action_pins.ActionRelease] = {}
     failed_releases: set[str] = set()
-    try:
-        workflow_paths = sync_action_pins.workflow_paths(root, workflow_directories)
-    except ValueError as error:
-        raise AuditError(str(error)) from error
-    for path in workflow_paths:
+    for workflow_directory in workflow_directories:
         try:
-            text = path.read_text(encoding="utf-8")
-            sync_action_pins.auditable_action_repositories(path, text)
-            matches = sync_action_pins.action_pin_matches(text)
-        except (OSError, UnicodeError, ValueError) as cause:
+            workflow_paths = sync_action_pins.workflow_paths(
+                root, (workflow_directory,)
+            )
+        except ValueError as cause:
             issue = AuditError(
-                "could not inspect workflow action pins "
-                f"{path.relative_to(root).as_posix()}: {cause}"
+                "could not inspect workflow action pins in "
+                f"{workflow_directory.as_posix()}: {cause}"
             )
             if errors is None:
                 raise issue from cause
             errors.append(str(issue))
             continue
-        for match in matches:
-            action = sync_action_pins.normalized_action_pin_part(match, "action")
-            current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
-            repository = sync_action_pins.action_repository(action)
-            if repository in failed_releases:
-                continue
-            release = releases.get(repository)
-            if release is None:
-                try:
-                    release = release_lookup(repository)
-                except (OSError, ValueError, AuditError) as error:
-                    if errors is None:
-                        raise
-                    failed_releases.add(repository)
-                    errors.append(str(error))
-                    continue
-                releases[repository] = release
-            if current_sha.casefold() != release.sha:
-                findings.append(
-                    {
-                        "kind": "action-pin",
-                        "path": path.relative_to(root).as_posix(),
-                        "subject": action,
-                        "current": current_sha,
-                        "latest": release.tag,
-                        "details": f"Expected immutable SHA {release.sha}.",
-                    }
+        for path in workflow_paths:
+            try:
+                text = path.read_text(encoding="utf-8")
+                sync_action_pins.auditable_action_repositories(path, text)
+                matches = sync_action_pins.action_pin_matches(text)
+            except (OSError, UnicodeError, ValueError) as cause:
+                issue = AuditError(
+                    "could not inspect workflow action pins "
+                    f"{path.relative_to(root).as_posix()}: {cause}"
                 )
+                if errors is None:
+                    raise issue from cause
+                errors.append(str(issue))
+                continue
+            for match in matches:
+                action = sync_action_pins.normalized_action_pin_part(match, "action")
+                current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
+                repository = sync_action_pins.action_repository(action)
+                if repository in failed_releases:
+                    continue
+                release = releases.get(repository)
+                if release is None:
+                    try:
+                        release = release_lookup(repository)
+                    except (OSError, ValueError, AuditError) as error:
+                        if errors is None:
+                            raise
+                        failed_releases.add(repository)
+                        errors.append(str(error))
+                        continue
+                    releases[repository] = release
+                if current_sha.casefold() != release.sha:
+                    findings.append(
+                        {
+                            "kind": "action-pin",
+                            "path": path.relative_to(root).as_posix(),
+                            "subject": action,
+                            "current": current_sha,
+                            "latest": release.tag,
+                            "details": f"Expected immutable SHA {release.sha}.",
+                        }
+                    )
     return findings
 
 
