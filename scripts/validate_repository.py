@@ -4975,6 +4975,8 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 },
                 "github-git-commits-api": {
                     "scripts/check_code_scanning_alerts.py",
+                },
+                "github-repository-commits-api": {
                     "skills/repo-scaffold/scripts/codeql_preflight.py",
                 },
                 "github-community-health-branches-api": {

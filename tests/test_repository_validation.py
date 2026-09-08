@@ -7706,8 +7706,8 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 ],
                 "github-git-commits-api": [
                     "scripts/check_code_scanning_alerts.py",
-                    "skills/repo-scaffold/scripts/codeql_preflight.py",
                 ],
+                "github-repository-commits-api": "skills/repo-scaffold/scripts/codeql_preflight.py",
                 "github-community-health-branches-api": "skills/repo-scaffold/scripts/check_community_health.py",
                 "github-community-health-git-trees-api": [
                     "skills/repo-scaffold/scripts/check_community_health.py",
@@ -8007,6 +8007,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-releases-api",
             "github-pull-requests-api",
             "github-git-commits-api",
+            "github-repository-commits-api",
             "github-community-health-branches-api",
             "github-community-health-git-trees-api",
             "github-git-blobs-api",

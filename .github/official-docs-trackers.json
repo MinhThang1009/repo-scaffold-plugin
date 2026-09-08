@@ -583,14 +583,23 @@
       "url": "https://docs.github.com/en/rest/git/commits",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
-        "scripts/check_code_scanning_alerts.py",
-        "skills/repo-scaffold/scripts/codeql_preflight.py"
+        "scripts/check_code_scanning_alerts.py"
       ],
       "required-markers": [
         "Get a commit object",
         "parents",
         "Contents"
       ],
+      "reviewed-on": "2026-09-08",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-repository-commits-api",
+      "label": "GitHub repository commit resolution API",
+      "url": "https://docs.github.com/en/rest/commits/commits",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": ["skills/repo-scaffold/scripts/codeql_preflight.py"],
+      "required-markers": ["Get a commit", "repos/{owner}/{repo}/commits/{ref}"],
       "reviewed-on": "2026-09-08",
       "review-period-days": 90
     },
