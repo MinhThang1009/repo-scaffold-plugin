@@ -4940,6 +4940,9 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 "github-community-profile-metrics-api": {
                     "skills/repo-scaffold/scripts/check_community_health.py",
                 },
+                "github-repository-license-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
                 "github-action-pin-repository-tags-api": {
                     "scripts/sync_action_pins.py",
                     "skills/repo-scaffold/scripts/sync_action_pins.py",

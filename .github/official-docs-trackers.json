@@ -467,6 +467,22 @@
       "review-period-days": 90
     },
     {
+      "id": "github-repository-license-api",
+      "label": "GitHub repository license API",
+      "url": "https://docs.github.com/en/rest/licenses/licenses",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md"
+      ],
+      "required-markers": [
+        "Get the license for a repository",
+        "get/repos/{owner}/{repo}/license",
+        "spdx_id"
+      ],
+      "reviewed-on": "2026-09-08",
+      "review-period-days": 90
+    },
+    {
       "id": "github-action-pin-repository-tags-api",
       "label": "GitHub repository tags API for action pins",
       "url": "https://docs.github.com/en/rest/repos",
