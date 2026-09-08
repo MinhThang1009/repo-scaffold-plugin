@@ -429,6 +429,18 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
             ):
                 official_docs.claim_findings(root, claim, date(2026, 8, 27))
 
+    def test_current_report_confirms_review_period_only_without_errors(self) -> None:
+        report = {
+            "checked-at": "2026-09-08T00:00:00+00:00",
+            "status": "current",
+            "findings": [],
+            "errors": [],
+        }
+        self.assertIn(
+            "All official-documentation claims are within their review period.",
+            official_docs.markdown_report(report),
+        )
+
     def test_audit_report_and_main_preserve_indeterminate_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -464,6 +476,10 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 report = official_docs.audit(root, today=date(2026, 8, 25))
             self.assertEqual(report["status"], "indeterminate")
             self.assertIn("Indeterminate", official_docs.markdown_report(report))
+            self.assertNotIn(
+                "All official-documentation claims are within their review period.",
+                official_docs.markdown_report(report),
+            )
 
             output_json = root / "report.json"
             output_markdown = root / "report.md"

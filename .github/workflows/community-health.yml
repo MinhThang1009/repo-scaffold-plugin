@@ -69,11 +69,15 @@ jobs:
           set -euo pipefail
           marker='<!-- repo-scaffold-community-health-drift -->'
           title='Community-health upstream update required'
-          mapfile -t issue_numbers < <(
+          issue_numbers_output=$(
             gh api --hostname github.com --paginate \
               "repos/${REPOSITORY}/issues?state=open&per_page=100" \
               --jq '.[] | select(.pull_request == null) | select((.body // "") | contains("<!-- repo-scaffold-community-health-drift -->")) | .number'
           )
+          issue_numbers=()
+          if [[ -n "$issue_numbers_output" ]]; then
+            mapfile -t issue_numbers <<< "$issue_numbers_output"
+          fi
           if (( ${#issue_numbers[@]} > 1 )); then
             printf 'Found multiple open community-health reminder issues.\n' >&2
             exit 1

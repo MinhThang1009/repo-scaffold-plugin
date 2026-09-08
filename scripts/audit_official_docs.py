@@ -426,7 +426,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             for finding in findings
         )
         lines.append("")
-    else:
+    elif not report["errors"]:
         lines.extend(
             ["All official-documentation claims are within their review period.", ""]
         )
