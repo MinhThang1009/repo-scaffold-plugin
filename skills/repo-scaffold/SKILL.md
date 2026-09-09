@@ -185,6 +185,9 @@ freshness audit, and reconcile marker issues through real
 `gh issue create` or `gh issue edit --repo ... --body-file` commands. The
 preflight requires an explicit repository binding and rejects untrusted-trigger,
 comment-only, or otherwise incomplete reminder scaffolds.
+It also requires the canonical `freshness.yml` filename and the audit's
+repository-root, JSON-output, and Markdown-output arguments, and rejects
+external `docker://` references unless they use a full SHA-256 digest.
 The reconciliation job itself must inherit or declare `issues: write`; granting
 that permission only to a different job does not satisfy the companion contract.
 

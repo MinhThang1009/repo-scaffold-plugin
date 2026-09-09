@@ -543,7 +543,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  audit:\n"
                 "    steps:\n"
                 "      - run: |\n"
-                "          python scripts/audit_freshness.py\n"
+                "          python scripts/audit_freshness.py \\\n"
+                "            --repository-root . \\\n"
+                "            --json-output report.json \\\n"
+                "            --markdown-output report.md\n"
                 "          marker='repo-scaffold-freshness-audit'\n"
                 '          gh issue create --repo "$REPOSITORY" --body-file report.md\n',
                 encoding="utf-8",
@@ -608,7 +611,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  audit:\n"
                 "    steps:\n"
                 "      - run: |\n"
-                "          python scripts/audit_freshness.py\n"
+                "          python scripts/audit_freshness.py \\\n"
+                "            --repository-root . \\\n"
+                "            --json-output report.json \\\n"
+                "            --markdown-output report.md\n"
                 "          marker='repo-scaffold-freshness-audit'\n"
                 '          gh issue create --repo "$REPOSITORY" --body-file report.md\n',
                 encoding="utf-8",
@@ -630,6 +636,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     )
 
     def test_freshness_companion_requires_scheduled_issue_reconciliation(self) -> None:
+        audit_command = (
+            "          python scripts/audit_freshness.py \\\n"
+            "            --repository-root . \\\n"
+            "            --json-output report.json \\\n"
+            "            --markdown-output report.md\n"
+        )
         valid = (
             "on:\n"
             "  schedule:\n"
@@ -641,9 +653,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "  audit:\n"
             "    steps:\n"
             "      - run: |\n"
-            "          python scripts/audit_freshness.py\n"
-            "          marker='repo-scaffold-freshness-audit'\n"
-            '          gh issue create --repo "$REPOSITORY" --body-file report.md\n'
+            + audit_command
+            + "          marker='repo-scaffold-freshness-audit'\n"
+            + '          gh issue create --repo "$REPOSITORY" --body-file report.md\n'
         )
         body_command = (
             '          gh issue create --repo "$REPOSITORY" --body-file report.md\n'
@@ -703,15 +715,22 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          echo --body-file report.md\n",
             ),
             "comment-only command": valid.replace(
-                "          python scripts/audit_freshness.py\n"
-                "          marker='repo-scaffold-freshness-audit'\n" + body_command,
+                audit_command
+                + "          marker='repo-scaffold-freshness-audit'\n"
+                + body_command,
                 "          # python scripts/audit_freshness.py\n"
+                "          # --repository-root .\n"
+                "          # --json-output report.json\n"
+                "          # --markdown-output report.md\n"
                 "          # marker='repo-scaffold-freshness-audit'\n"
                 '          # gh issue create --repo "$REPOSITORY" --body-file report.md\n',
             ),
             "echo-only command": valid.replace(
-                "          python scripts/audit_freshness.py\n",
+                audit_command,
                 "          echo 'python scripts/audit_freshness.py'\n",
+            ),
+            "without audit output": valid.replace(
+                "            --markdown-output report.md\n", ""
             ),
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -725,6 +744,40 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         ),
                         name == "valid",
                     )
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    valid, source.with_name("reminder.yml")
+                )
+            )
+
+    def test_rejects_mutable_external_container_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / "container.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  build:\n"
+                "    steps:\n"
+                "      - uses: docker://alpine:latest\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "full sha256 digest",
+            ):
+                workflow_installation_preflight.workflow_capabilities([workflow])
+
+            workflow.write_text(
+                "jobs:\n"
+                "  build:\n"
+                "    steps:\n"
+                "      - uses: docker://alpine@sha256:" + "a" * 64 + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                workflow_installation_preflight.workflow_capabilities([workflow]),
+                ([], [], [], [], False),
+            )
 
     def test_code_scanning_allowlist_validation_rejects_unsafe_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

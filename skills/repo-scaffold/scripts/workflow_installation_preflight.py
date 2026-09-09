@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import re
 import shlex
 import stat
+from collections.abc import Iterator
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -34,6 +36,14 @@ FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
 FRESHNESS_REMINDER_REPOSITORY_OPTION = "--repo"
 FRESHNESS_REMINDER_BODY_FILE = "--body-file"
 FRESHNESS_REMINDER_SUBCOMMANDS = frozenset({"create", "edit"})
+FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
+    "--repository-root",
+    "--json-output",
+    "--markdown-output",
+)
+CONTAINER_REFERENCE_PATTERN = re.compile(
+    r"docker://[^\s@]+@sha256:[0-9a-f]{64}\Z"
+)
 
 
 class DuplicateJsonMember(ValueError):
@@ -142,6 +152,63 @@ def has_issue_body_file_reconciliation(command: str) -> bool:
     return False
 
 
+def has_freshness_audit_invocation(command: str) -> bool:
+    """Require the freshness checker and all of its report output options."""
+    lines = executable_shell_lines(command)
+    for index, line in enumerate(lines):
+        first_line = line.rstrip()
+        if first_line.endswith("\\"):
+            first_line = first_line[:-1].rstrip()
+        try:
+            first_tokens = shlex.split(first_line, comments=True, posix=True)
+        except ValueError:
+            continue
+        if first_tokens[:2] != FRESHNESS_AUDIT_COMMAND.split():
+            continue
+        command_parts = [line.rstrip()]
+        cursor = index
+        while command_parts[-1].endswith("\\") and cursor + 1 < len(lines):
+            command_parts[-1] = command_parts[-1][:-1].rstrip()
+            cursor += 1
+            command_parts.append(lines[cursor])
+        try:
+            tokens = shlex.split(" ".join(command_parts), comments=True, posix=True)
+        except ValueError:
+            continue
+        if all(
+            has_nonempty_option_value(tokens, option)
+            for option in FRESHNESS_AUDIT_REQUIRED_OPTIONS
+        ):
+            return True
+    return False
+
+
+def workflow_uses_values(value: Any) -> Iterator[Any]:
+    """Yield every parsed workflow ``uses`` value, including nested mappings."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "uses":
+                yield child
+            yield from workflow_uses_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from workflow_uses_values(child)
+
+
+def validate_container_references(
+    document: dict[str, Any], source: Path
+) -> None:
+    """Reject external container tags before workflow assets are installed."""
+    for reference in workflow_uses_values(document):
+        if not isinstance(reference, str) or not reference.startswith("docker://"):
+            continue
+        if CONTAINER_REFERENCE_PATTERN.fullmatch(reference) is None:
+            raise InspectionError(
+                f"Workflow {source} external container reference must use a full "
+                f"sha256 digest: {reference}"
+            )
+
+
 def local_reusable_workflow_names(document: dict[str, Any], source: Path) -> list[str]:
     """Return local reusable workflow inputs that must be preflighted together."""
     jobs = document.get("jobs", {})
@@ -231,6 +298,8 @@ def is_code_scanning_gate(text: str, source: Path) -> bool:
 
 def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
     """Identify the scheduled reminder that audits code-scanning exception dates."""
+    if source.name.casefold() != "freshness.yml":
+        return False
     document = workflow_document(text, source)
     triggers = document.get("on")
     if (
@@ -270,7 +339,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
             reconciliation_supplied = True
     lines = [line for command in commands for line in executable_shell_lines(command)]
     return (
-        any(line.startswith(FRESHNESS_AUDIT_COMMAND) for line in lines)
+        any(has_freshness_audit_invocation(command) for command in commands)
         and any(FRESHNESS_REMINDER_MARKER in line for line in lines)
         and reconciliation_supplied
     )
@@ -477,6 +546,7 @@ def workflow_capabilities(
                 f"Workflow input is missing or unsafe: {workflow}"
             ) from exc
         document = workflow_document(text, workflow)
+        validate_container_references(document, workflow)
         for local_name in local_reusable_workflow_names(document, workflow):
             if local_name not in workflow_inputs:
                 raise InspectionError(
