@@ -532,12 +532,19 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             reminder = root / "freshness.yml"
             reminder.write_text(
+                "on:\n"
+                "  schedule:\n"
+                "    - cron: '17 6 * * 5'\n"
+                "  workflow_dispatch:\n"
+                "permissions:\n"
+                "  issues: write\n"
                 "jobs:\n"
                 "  audit:\n"
                 "    steps:\n"
                 "      - run: |\n"
                 "          python scripts/audit_freshness.py\n"
-                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          gh issue create --body-file report.md\n",
                 encoding="utf-8",
             )
             allowlist = root / "code-scanning-allowlist.json"
@@ -590,12 +597,19 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             reminder = root / "freshness.yml"
             reminder.write_text(
+                "on:\n"
+                "  schedule:\n"
+                "    - cron: '17 6 * * 5'\n"
+                "  workflow_dispatch:\n"
+                "permissions:\n"
+                "  issues: write\n"
                 "jobs:\n"
                 "  audit:\n"
                 "    steps:\n"
                 "      - run: |\n"
                 "          python scripts/audit_freshness.py\n"
-                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          gh issue create --body-file report.md\n",
                 encoding="utf-8",
             )
             invalid_allowlist = root / "code-scanning-allowlist.json"
@@ -612,6 +626,58 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                             workflow=[gate, reminder],
                             code_scanning_allowlist=invalid_allowlist,
                         )
+                    )
+
+    def test_freshness_companion_requires_scheduled_issue_reconciliation(self) -> None:
+        valid = (
+            "on:\n"
+            "  schedule:\n"
+            "    - cron: '17 6 * * 5'\n"
+            "  workflow_dispatch:\n"
+            "permissions:\n"
+            "  issues: write\n"
+            "jobs:\n"
+            "  audit:\n"
+            "    steps:\n"
+            "      - run: |\n"
+            "          python scripts/audit_freshness.py\n"
+            "          marker='repo-scaffold-freshness-audit'\n"
+            "          gh issue create --body-file report.md\n"
+        )
+        cases = {
+            "valid": valid,
+            "without schedule": valid.replace(
+                "  schedule:\n    - cron: '17 6 * * 5'\n",
+                "",
+            ),
+            "without manual dispatch": valid.replace("  workflow_dispatch:\n", ""),
+            "without issue write": valid.replace("  issues: write\n", ""),
+            "without durable body": valid.replace(
+                "          gh issue create --body-file report.md\n", ""
+            ),
+            "comment-only command": valid.replace(
+                "          python scripts/audit_freshness.py\n"
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          gh issue create --body-file report.md\n",
+                "          # python scripts/audit_freshness.py\n"
+                "          # marker='repo-scaffold-freshness-audit'\n"
+                "          # gh issue create --body-file report.md\n",
+            ),
+            "echo-only command": valid.replace(
+                "          python scripts/audit_freshness.py\n",
+                "          echo 'python scripts/audit_freshness.py'\n",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "freshness.yml"
+            for name, text in cases.items():
+                with self.subTest(name=name):
+                    source.write_text(text, encoding="utf-8")
+                    self.assertEqual(
+                        workflow_installation_preflight.is_freshness_reminder_workflow(
+                            text, source
+                        ),
+                        name == "valid",
                     )
 
     def test_code_scanning_allowlist_validation_rejects_unsafe_inputs(self) -> None:

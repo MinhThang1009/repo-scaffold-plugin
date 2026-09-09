@@ -27,6 +27,7 @@ MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
 FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
+FRESHNESS_REMINDER_BODY_FILE = "--body-file"
 
 
 class DuplicateJsonMember(ValueError):
@@ -64,7 +65,7 @@ def workflow_document(text: str, source: Path) -> dict[str, Any]:
 
 
 def workflow_run_commands(document: dict[str, Any]) -> list[str]:
-    """Return shell commands from workflow steps, excluding comments and metadata."""
+    """Return shell command scalars from workflow steps."""
     jobs = document.get("jobs", {})
     assert isinstance(jobs, dict)
     commands: list[str] = []
@@ -77,6 +78,15 @@ def workflow_run_commands(document: dict[str, Any]) -> list[str]:
             if isinstance(step, dict) and isinstance(step.get("run"), str):
                 commands.append(step["run"])
     return commands
+
+
+def executable_shell_lines(command: str) -> list[str]:
+    """Return non-empty shell lines whose first token is not a comment."""
+    return [
+        line.lstrip()
+        for line in command.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
 
 def local_reusable_workflow_names(document: dict[str, Any], source: Path) -> list[str]:
@@ -156,9 +166,24 @@ def is_code_scanning_gate(text: str, source: Path) -> bool:
 
 def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
     """Identify the scheduled reminder that audits code-scanning exception dates."""
-    commands = workflow_run_commands(workflow_document(text, source))
-    return any(FRESHNESS_AUDIT_COMMAND in command for command in commands) and any(
-        FRESHNESS_REMINDER_MARKER in command for command in commands
+    document = workflow_document(text, source)
+    triggers = document.get("on")
+    if (
+        not isinstance(triggers, dict)
+        or "schedule" not in triggers
+        or "workflow_dispatch" not in triggers
+        or not requires_issue_write(text, source)
+    ):
+        return False
+    lines = [
+        line
+        for command in workflow_run_commands(document)
+        for line in executable_shell_lines(command)
+    ]
+    return (
+        any(line.startswith(FRESHNESS_AUDIT_COMMAND) for line in lines)
+        and any(FRESHNESS_REMINDER_MARKER in line for line in lines)
+        and any(FRESHNESS_REMINDER_BODY_FILE in line for line in lines)
     )
 
 

@@ -333,7 +333,10 @@ When installing `code-scanning-gate.yml`, pass both the gate and
 `freshness.yml` as `--workflow` inputs in the same preflight invocation, then
 pass `assets/code-scanning-allowlist.json` with `--code-scanning-allowlist`.
 The preflight rejects a gate plan without both companions, so copy all three
-verified inputs only after it returns `may-install-workflow-assets`.
+verified inputs only after it returns `may-install-workflow-assets`. The supplied
+freshness workflow must use scheduled and manual triggers, request `issues: write`,
+execute the freshness checker, and reconcile a marker issue through `--body-file`;
+comments or an incomplete reminder do not satisfy the companion requirement.
 
 ## Inherited community-health policy
 
