@@ -193,6 +193,15 @@ shell-ambiguous, or otherwise incomplete reminder scaffolds.
 It also requires the canonical `freshness.yml` filename and the audit's
 repository-root, JSON-output, and Markdown-output arguments, and rejects
 external `docker://` references unless they use a full SHA-256 digest.
+The audit must run from the checkout root with `--repository-root .`; if a
+`--tracker-registry` override is present, it must name
+`.github/freshness-trackers.json`. Directory-changing commands and workflow,
+job, or step `working-directory` overrides are rejected.
+Job-level reusable-workflow calls are also rejected so every freshness command
+and Issue mutation remains directly inspectable in the supplied workflow.
+The checked-in tracker registry must retain every shipped workflow, release,
+allowlist, and requirement input; emptying a category to suppress a check is
+invalid.
 The reconciliation job itself must inherit or declare `issues: write`; granting
 that permission only to a different job does not satisfy the companion contract.
 It must be named `freshness-audit` and set `timeout-minutes: 15`.

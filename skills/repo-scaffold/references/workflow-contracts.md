@@ -37,9 +37,17 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   mutations through `gh api`, state-changing calls through known direct HTTP
   clients (`curl`, `wget`, and PowerShell REST cmdlets), path-qualified `gh`
   executables, and shell wrappers or dynamic executors that hide GitHub
-  commands are ambiguous and must fail closed. Freshness must retain the
-  Release Please schema tracker and CI-toolchain policy tracker shipped with the
-  scaffold so installed inputs receive the same reminder coverage as action pins.
+  commands are ambiguous and must fail closed. The audit must run from the
+  checkout root with `--repository-root .`; if a `--tracker-registry` override
+  is present, it must name `.github/freshness-trackers.json`. Directory-changing
+  commands and workflow, job, or step `working-directory` overrides must fail
+  closed. Job-level reusable-workflow calls must also fail closed so all
+  freshness commands and Issue mutations remain directly inspectable. Freshness
+  must retain the Release Please schema tracker and CI-toolchain policy tracker
+  shipped with the scaffold so installed inputs receive the same reminder
+  coverage as action pins.
+  The checked-in registry must retain every shipped workflow, release, allowlist,
+  and requirement input; do not empty a category to suppress a check.
   Code-scanning allowlist exceptions must also carry a bounded review date and
   be tracked by freshness; do not install the code-scanning gate without its
   matching allowlist and freshness reminder.

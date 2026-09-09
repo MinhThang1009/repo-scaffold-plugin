@@ -78,6 +78,11 @@ FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
     "--json-output",
     "--markdown-output",
 )
+FRESHNESS_AUDIT_REPOSITORY_ROOT = "."
+FRESHNESS_AUDIT_TRACKER_REGISTRY = ".github/freshness-trackers.json"
+SHELL_DIRECTORY_CHANGE_COMMANDS = frozenset(
+    {"cd", "chdir", "popd", "pushd", "set-location", "sl", "sls"}
+)
 GITHUB_API_READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
 GITHUB_API_BODY_OPTIONS = frozenset({"--field", "--input", "--raw-field", "-F", "-f"})
 GITHUB_API_METHOD_OPTIONS = frozenset({"--method", "-X"})
@@ -669,11 +674,67 @@ def shell_command_prefix(segment: list[str]) -> list[str]:
     return normalized
 
 
+def has_directory_change_command(tokens: list[str]) -> bool:
+    """Reject commands that can move the checker away from the repository root."""
+    return any(
+        executable_basename(token) in SHELL_DIRECTORY_CHANGE_COMMANDS
+        for token in tokens
+    )
+
+
+def has_repository_root_working_directory(document: dict[str, Any]) -> bool:
+    """Require every freshness run step to inherit the repository root directory."""
+    scopes: list[Any] = [document]
+    jobs = document.get("jobs", {})
+    if not isinstance(jobs, dict) or not jobs:
+        return False
+    scopes.extend(jobs.values())
+    for scope in scopes:
+        if not isinstance(scope, dict):
+            return False
+        defaults = scope.get("defaults")
+        if defaults is not None:
+            if not isinstance(defaults, dict):
+                return False
+            run_defaults = defaults.get("run")
+            if run_defaults is not None:
+                if not isinstance(run_defaults, dict):
+                    return False
+                if (
+                    "working-directory" in run_defaults
+                    and run_defaults["working-directory"] != "."
+                ):
+                    return False
+        steps = scope.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        if any(
+            isinstance(step, dict)
+            and "working-directory" in step
+            and step["working-directory"] != "."
+            for step in steps
+        ):
+            return False
+    return True
+
+
+def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
+    """Require freshness jobs to expose their run commands for inspection."""
+    jobs = document.get("jobs", {})
+    return (
+        isinstance(jobs, dict)
+        and bool(jobs)
+        and all(isinstance(job, dict) and "uses" not in job for job in jobs.values())
+    )
+
+
 def option_values(tokens: list[str], option: str) -> tuple[str, ...] | None:
     """Return unambiguous values for one option, or ``None`` on malformed use."""
     option_prefix = f"{option}="
     values: list[str] = []
     for index, token in enumerate(tokens):
+        if token == "--":
+            break
         if token.startswith(option_prefix):
             value = token.partition("=")[2].strip()
             if not value:
@@ -952,7 +1013,11 @@ def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
         return None
     for segment in segments:
         tokens = shell_command_prefix(segment)
-        if has_embedded_command(tokens) or has_dynamic_shell_executor(tokens):
+        if (
+            has_embedded_command(tokens)
+            or has_dynamic_shell_executor(tokens)
+            or has_directory_change_command(tokens)
+        ):
             return None
         audit_positions = [
             index
@@ -970,6 +1035,17 @@ def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
         }
         if any(value is None or len(value) != 1 for value in values.values()):
             return None
+        repository_root = values["--repository-root"]
+        tracker_registry = option_values(tokens, "--tracker-registry")
+        if (
+            repository_root is None
+            or repository_root[0] != FRESHNESS_AUDIT_REPOSITORY_ROOT
+            or tracker_registry is None
+            or len(tracker_registry) > 1
+            or tracker_registry
+            and tracker_registry[0] != FRESHNESS_AUDIT_TRACKER_REGISTRY
+        ):
+            return None
         json_output = values["--json-output"]
         markdown_output = values["--markdown-output"]
         assert json_output is not None and markdown_output is not None
@@ -984,6 +1060,8 @@ def has_freshness_job_reconciliation(workflow: object, text: str) -> bool:
     if (
         not isinstance(workflow, dict)
         or not has_least_privileged_freshness_permissions(workflow)
+        or not has_repository_root_working_directory(workflow)
+        or not has_direct_freshness_jobs(workflow)
         or not has_repo_bound_issue_reconciliation(text)
     ):
         return False
@@ -5384,9 +5462,39 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             {"path": "requirements-docs.txt", "locks": []},
         ],
     }
+    expected_root_registry = {
+        "schema-version": 1,
+        "workflow-directories": [
+            ".github/workflows",
+            "skills/repo-scaffold/assets/workflows",
+        ],
+        "release-please-configs": [
+            "release-please-config.json",
+            "skills/repo-scaffold/assets/release-please-config.json",
+            "skills/repo-scaffold/assets/release-please-config.vi.json",
+        ],
+        "optional-release-please-configs": [],
+        "ci-toolchain-policies": [],
+        "code-scanning-allowlists": [".github/code-scanning-allowlist.json"],
+        "optional-code-scanning-allowlists": [],
+        "requirement-sources": [
+            {
+                "path": "requirements-dev.in",
+                "locks": ["requirements-dev.txt", "requirements-mutation.txt"],
+            },
+            {
+                "path": "requirements-mutation.in",
+                "locks": ["requirements-mutation.txt"],
+            },
+            {
+                "path": "skills/repo-scaffold/assets/requirements-docs.txt",
+                "locks": [],
+            },
+        ],
+    }
     for path, expected in (
         (asset_registry, expected_asset_registry),
-        (root_registry, None),
+        (root_registry, expected_root_registry),
     ):
         relative = path.relative_to(repository_root).as_posix()
         try:
@@ -5396,7 +5504,7 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             continue
         if expected is not None and registry != expected:
             problems.append(
-                f"{relative}: scaffold freshness registry must track its shipped inputs"
+                f"{relative}: freshness registry must track its shipped inputs"
             )
         if path == root_registry and (
             not isinstance(registry, dict)

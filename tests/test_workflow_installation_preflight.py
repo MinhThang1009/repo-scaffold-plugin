@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 
@@ -818,6 +819,35 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "without audit output": valid.replace(
                 "            --markdown-output report.md\n", ""
             ),
+            "audit uses another repository root": valid.replace(
+                "            --repository-root . \\\n",
+                "            --repository-root other \\\n",
+            ),
+            "audit uses another tracker registry": valid.replace(
+                "            --repository-root . \\\n",
+                "            --repository-root . \\\n"
+                "            --tracker-registry other.json \\\n",
+            ),
+            "audit changes directory": valid.replace(
+                audit_command,
+                "          cd other\n" + audit_command,
+            ),
+            "conditional directory change": valid.replace(
+                audit_command,
+                "          if cd other; then\n" + audit_command + "          fi\n",
+            ),
+            "audit working directory override": valid.replace(
+                "    steps:\n",
+                "    defaults:\n"
+                "      run:\n"
+                "        working-directory: other\n"
+                "    steps:\n",
+                1,
+            ),
+            "hidden reusable workflow job": valid
+            + "  hidden:\n"
+            + "    uses: owner/repository/.github/workflows/reusable.yml@"
+            + "0123456789abcdef0123456789abcdef01234567\n",
             "JSON and Markdown outputs collide": valid.replace(
                 "            --json-output report.json \\\n",
                 "            --json-output report.md \\\n",
@@ -1231,6 +1261,21 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
         )
         self.assertFalse(workflow_installation_preflight.has_dynamic_shell_executor([]))
+        for tokens, expected in (
+            ([], False),
+            (["FOO=bar", "cd", "other"], True),
+            (["1=bad", "cd", "other"], True),
+            (["FOO=bar"], False),
+            (["if", "cd", "other"], True),
+            (["Set-Location", "other"], True),
+        ):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(
+                    workflow_installation_preflight.has_directory_change_command(
+                        tokens
+                    ),
+                    expected,
+                )
         self.assertTrue(
             workflow_installation_preflight.has_dynamic_shell_executor(
                 ["env", "--", "bash"]
@@ -1276,6 +1321,27 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 audit_command
             )
         )
+        self.assertEqual(
+            workflow_installation_preflight.freshness_audit_markdown_outputs(
+                audit_command + " --tracker-registry .github/freshness-trackers.json"
+            ),
+            {"report.md"},
+        )
+        self.assertIsNone(
+            workflow_installation_preflight.freshness_audit_markdown_outputs(
+                audit_command.replace("--repository-root .", "--repository-root other")
+            )
+        )
+        self.assertIsNone(
+            workflow_installation_preflight.freshness_audit_markdown_outputs(
+                audit_command + " --tracker-registry other.json"
+            )
+        )
+        self.assertIsNone(
+            workflow_installation_preflight.freshness_audit_markdown_outputs(
+                "cd other\n" + audit_command
+            )
+        )
         self.assertFalse(
             workflow_installation_preflight.has_freshness_audit_invocation("echo ready")
         )
@@ -1309,9 +1375,64 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ),
             ("one", "two"),
         )
+        self.assertEqual(
+            workflow_installation_preflight.option_values(
+                ["--repo", "one", "--", "--repo", "two"], "--repo"
+            ),
+            ("one",),
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_repository_root_working_directory(
+                {
+                    "jobs": {
+                        "audit": {
+                            "defaults": {"run": {"working-directory": "."}},
+                            "steps": [{"working-directory": "."}],
+                        }
+                    }
+                }
+            )
+        )
+        working_directory_documents: tuple[dict[str, Any], ...] = (
+            {},
+            {"jobs": []},
+            {"jobs": {"audit": []}},
+            {"jobs": {"audit": {"defaults": []}}},
+            {"jobs": {"audit": {"defaults": {"run": []}}}},
+            {"jobs": {"audit": {"defaults": {}, "steps": {}}}},
+            {"jobs": {"audit": {"defaults": {"run": {"working-directory": "other"}}}}},
+            {"jobs": {"audit": {"steps": [{"working-directory": "other"}]}}},
+        )
+        for document in working_directory_documents:
+            with self.subTest(document=document):
+                self.assertFalse(
+                    workflow_installation_preflight.has_repository_root_working_directory(
+                        document
+                    )
+                )
         self.assertFalse(
             workflow_installation_preflight.option_has_one_value(
                 ["--repo", "one", "--repo", "two"], "--repo"
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_direct_freshness_jobs(
+                {"jobs": {"audit": {"steps": []}}}
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_direct_freshness_jobs(
+                {
+                    "jobs": {
+                        "audit": {"steps": []},
+                        "hidden": {"uses": "./.github/workflows/reusable.yml"},
+                    }
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_issue_body_file_reconciliation(
+                "gh issue create -- --repo r --title t --body-file report.md"
             )
         )
         for tokens, expected in (
@@ -1372,7 +1493,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 }
             )
         )
-        for document in (
+        permission_documents: tuple[dict[str, Any], ...] = (
             {"permissions": {"issues": "write"}, "jobs": {}},
             {
                 "permissions": {"contents": "read", "issues": "write"},
@@ -1398,7 +1519,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "permissions": {"contents": "read", "issues": "write"},
                 "jobs": {"audit": {"permissions": {"actions": "read"}}},
             },
-        ):
+        )
+        for document in permission_documents:
             with self.subTest(document=document):
                 self.assertFalse(
                     workflow_installation_preflight.has_least_privileged_freshness_permissions(

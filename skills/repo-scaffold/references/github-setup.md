@@ -352,6 +352,14 @@ the same job. Direct REST mutations through `gh api`, including body-bearing
 default-`POST` calls, state-changing calls through known direct HTTP clients
 (`curl`, `wget`, and PowerShell REST cmdlets), path-qualified `gh` executables,
 and shell wrappers or dynamic executors that hide GitHub commands are rejected.
+The audit must run from the checkout root with `--repository-root .`; if a
+`--tracker-registry` override is present, it must name
+`.github/freshness-trackers.json`. Directory-changing commands and workflow,
+job, or step `working-directory` overrides are rejected.
+Job-level reusable-workflow calls are also rejected so every freshness command
+and Issue mutation remains directly inspectable in the supplied workflow.
+The checked-in tracker registry must retain every shipped workflow, release,
+allowlist, and requirement input; do not empty a category to suppress a check.
 The reconciliation job itself
 must inherit or declare
 `issues: write`, be named `freshness-audit`, and use `timeout-minutes: 15`; a

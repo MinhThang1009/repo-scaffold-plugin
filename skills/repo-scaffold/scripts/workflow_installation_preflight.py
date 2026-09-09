@@ -107,6 +107,11 @@ FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
     "--json-output",
     "--markdown-output",
 )
+FRESHNESS_AUDIT_REPOSITORY_ROOT = "."
+FRESHNESS_AUDIT_TRACKER_REGISTRY = ".github/freshness-trackers.json"
+SHELL_DIRECTORY_CHANGE_COMMANDS = frozenset(
+    {"cd", "chdir", "popd", "pushd", "set-location", "sl", "sls"}
+)
 CONTAINER_REFERENCE_PATTERN = re.compile(r"docker://[^\s@]+@sha256:[0-9a-f]{64}\Z")
 
 
@@ -190,6 +195,8 @@ def option_values(tokens: list[str], option: str) -> tuple[str, ...] | None:
     option_prefix = f"{option}="
     values: list[str] = []
     for index, token in enumerate(tokens):
+        if token == "--":
+            break
         if token.startswith(option_prefix):
             value = token.partition("=")[2].strip()
             if not value:
@@ -456,6 +463,60 @@ def shell_command_prefix(segment: list[str]) -> list[str]:
     return normalized
 
 
+def has_directory_change_command(tokens: list[str]) -> bool:
+    """Reject commands that can move the checker away from the repository root."""
+    return any(
+        executable_basename(token) in SHELL_DIRECTORY_CHANGE_COMMANDS
+        for token in tokens
+    )
+
+
+def has_repository_root_working_directory(document: dict[str, Any]) -> bool:
+    """Require every freshness run step to inherit the repository root directory."""
+    scopes: list[Any] = [document]
+    jobs = document.get("jobs", {})
+    if not isinstance(jobs, dict) or not jobs:
+        return False
+    scopes.extend(jobs.values())
+    for scope in scopes:
+        if not isinstance(scope, dict):
+            return False
+        defaults = scope.get("defaults")
+        if defaults is not None:
+            if not isinstance(defaults, dict):
+                return False
+            run_defaults = defaults.get("run")
+            if run_defaults is not None:
+                if not isinstance(run_defaults, dict):
+                    return False
+                if (
+                    "working-directory" in run_defaults
+                    and run_defaults["working-directory"] != "."
+                ):
+                    return False
+        steps = scope.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        if any(
+            isinstance(step, dict)
+            and "working-directory" in step
+            and step["working-directory"] != "."
+            for step in steps
+        ):
+            return False
+    return True
+
+
+def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
+    """Require freshness jobs to expose their run commands for inspection."""
+    jobs = document.get("jobs", {})
+    return (
+        isinstance(jobs, dict)
+        and bool(jobs)
+        and all(isinstance(job, dict) and "uses" not in job for job in jobs.values())
+    )
+
+
 def issue_mutation_command_blocks(command: str) -> list[tuple[str, list[str]]]:
     """Return parsed ``gh issue`` mutation command blocks from shell text."""
     blocks: list[tuple[str, list[str]]] = []
@@ -554,7 +615,11 @@ def freshness_audit_markdown_outputs(command: str) -> set[str] | None:
             return None
         for segment in segments:
             tokens = shell_command_prefix(segment)
-            if has_embedded_command(tokens) or has_dynamic_shell_executor(tokens):
+            if (
+                has_embedded_command(tokens)
+                or has_dynamic_shell_executor(tokens)
+                or has_directory_change_command(tokens)
+            ):
                 return None
             audit_positions = [
                 index
@@ -571,6 +636,17 @@ def freshness_audit_markdown_outputs(command: str) -> set[str] | None:
                 for option in FRESHNESS_AUDIT_REQUIRED_OPTIONS
             }
             if any(value is None or len(value) != 1 for value in values.values()):
+                return None
+            repository_root = values["--repository-root"]
+            tracker_registry = option_values(tokens, "--tracker-registry")
+            if (
+                repository_root is None
+                or repository_root[0] != FRESHNESS_AUDIT_REPOSITORY_ROOT
+                or tracker_registry is None
+                or len(tracker_registry) > 1
+                or tracker_registry
+                and tracker_registry[0] != FRESHNESS_AUDIT_TRACKER_REGISTRY
+            ):
                 return None
             json_output = values["--json-output"]
             markdown_output = values["--markdown-output"]
@@ -753,6 +829,8 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
         )
         or not has_repository_scoped_concurrency(document)
         or not has_least_privileged_freshness_permissions(document)
+        or not has_repository_root_working_directory(document)
+        or not has_direct_freshness_jobs(document)
         or not requires_issue_write(text, source)
     ):
         return False

@@ -7747,6 +7747,51 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             )
         )
 
+    def test_root_freshness_registry_cannot_disable_shipped_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            registry_path = root / ".github/freshness-trackers.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["workflow-directories"] = [".github/workflows"]
+            registry["release-please-configs"] = []
+            registry["requirement-sources"] = []
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+
+        self.assertIn(
+            ".github/freshness-trackers.json: freshness registry must track its shipped inputs",
+            problems,
+        )
+
+    def test_freshness_workflow_cannot_hide_a_job_behind_reusable_workflow(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            for relative in (
+                ".github/workflows/freshness.yml",
+                "skills/repo-scaffold/assets/workflows/freshness.yml",
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8")
+                    + "\n  hidden:\n"
+                    + "    uses: owner/repository/.github/workflows/reusable.yml@"
+                    + "0123456789abcdef0123456789abcdef01234567\n",
+                    encoding="utf-8",
+                )
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+
+        self.assertEqual(
+            sum(
+                "freshness workflow must run the checker" in problem
+                for problem in problems
+            ),
+            2,
+        )
+
     def test_missing_freshness_tracking_contract_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             problems = validate_repository.validate_freshness_tracking_contract(
@@ -7920,6 +7965,12 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "echo `gh issue close 1`"
             )
         )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --title reminder --body-file report.md "
+                "-- --repo $REPOSITORY"
+            )
+        )
         for command in (
             "/usr/bin/gh issue create --repo r --title t --body-file report.md",
             "gh.exe issue create --repo r --title t --body-file report.md",
@@ -7947,12 +7998,30 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             )
         )
         self.assertIsNone(validate_repository.option_values(["--repo="], "--repo"))
+        self.assertEqual(
+            validate_repository.option_values(
+                ["--repo", "one", "--", "--repo", "two"], "--repo"
+            ),
+            ("one",),
+        )
         self.assertFalse(
             validate_repository.has_value_bearing_option(
                 "gh issue create --repo", "--repo"
             )
         )
         self.assertFalse(validate_repository.has_dynamic_shell_executor([]))
+        for tokens, expected in (
+            ([], False),
+            (["FOO=bar", "cd", "other"], True),
+            (["1=bad", "cd", "other"], True),
+            (["FOO=bar"], False),
+            (["if", "cd", "other"], True),
+            (["Set-Location", "other"], True),
+        ):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(
+                    validate_repository.has_directory_change_command(tokens), expected
+                )
         self.assertTrue(
             validate_repository.has_dynamic_shell_executor(["env", "--", "bash"])
         )
@@ -8005,9 +8074,79 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             ),
             {"report.md"},
         )
+        self.assertEqual(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md "
+                "--tracker-registry .github/freshness-trackers.json"
+            ),
+            {"report.md"},
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root other "
+                "--json-output report.json --markdown-output report.md"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md "
+                "--tracker-registry other.json"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "cd other\n"
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md"
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repository_root_working_directory(
+                {
+                    "jobs": {
+                        "audit": {
+                            "defaults": {"run": {"working-directory": "."}},
+                            "steps": [{"working-directory": "."}],
+                        }
+                    }
+                }
+            )
+        )
+        working_directory_documents: tuple[dict[str, Any], ...] = (
+            {},
+            {"jobs": []},
+            {"jobs": {"audit": []}},
+            {"jobs": {"audit": {"defaults": []}}},
+            {"jobs": {"audit": {"defaults": {"run": []}}}},
+            {"jobs": {"audit": {"defaults": {}, "steps": {}}}},
+            {"jobs": {"audit": {"defaults": {"run": {"working-directory": "other"}}}}},
+            {"jobs": {"audit": {"steps": [{"working-directory": "other"}]}}},
+        )
+        for document in working_directory_documents:
+            with self.subTest(document=document):
+                self.assertFalse(
+                    validate_repository.has_repository_root_working_directory(document)
+                )
         self.assertIsNone(
             validate_repository.freshness_audit_markdown_outputs(
                 "python scripts/audit_freshness.py --repository-root ."
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_direct_freshness_jobs(
+                {"jobs": {"audit": {"steps": []}}}
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_direct_freshness_jobs(
+                {
+                    "jobs": {
+                        "audit": {"steps": []},
+                        "hidden": {"uses": "./.github/workflows/reusable.yml"},
+                    }
+                }
             )
         )
         self.assertIsNone(
@@ -8048,7 +8187,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 contract_workflow
             )
         )
-        for document in (
+        permission_documents: tuple[dict[str, Any], ...] = (
             {"permissions": {"issues": "write"}, "jobs": {}},
             {"permissions": {"contents": "read", "issues": "write"}, "jobs": []},
             {
@@ -8071,7 +8210,8 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "permissions": {"contents": "read", "issues": "write"},
                 "jobs": {"audit": {"permissions": {"actions": "read"}}},
             },
-        ):
+        )
+        for document in permission_documents:
             with self.subTest(document=document):
                 self.assertFalse(
                     validate_repository.has_least_privileged_freshness_permissions(
