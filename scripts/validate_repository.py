@@ -46,7 +46,32 @@ CACHE_DIRECTORIES = {
 COVERAGE_FAIL_UNDER = 100
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
-REMINDER_ISSUE_MUTATION_SUBCOMMANDS = frozenset({"create", "edit", "close"})
+REMINDER_ISSUE_MUTATION_SUBCOMMANDS = frozenset(
+    {
+        "close",
+        "comment",
+        "create",
+        "delete",
+        "develop",
+        "edit",
+        "lock",
+        "new",
+        "pin",
+        "reopen",
+        "transfer",
+        "unlock",
+        "unpin",
+    }
+)
+REMINDER_ISSUE_ALLOWED_MUTATIONS = frozenset({"create", "edit", "close"})
+REMINDER_ISSUE_BODY_MUTATIONS = frozenset({"create", "edit"})
+REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "view"})
+REMINDER_WORKFLOW_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.repository }}"
+POLICY_REMINDER_CONCURRENCY_GROUP = (
+    "${{ github.workflow }}-policy-drift-${{ github.repository }}"
+)
+SHELL_CONTROL_CHARACTERS = frozenset(";()<>|&")
+SHELL_COMMAND_PREFIXES = frozenset({"!", "then", "do", "else"})
 COMMONMARK = MarkdownIt("commonmark")
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -487,27 +512,85 @@ def has_explicit_repository_binding(text: str) -> bool:
     return has_value_bearing_option(text, "--repo")
 
 
+def shell_command_segments(text: str) -> list[list[str]] | None:
+    """Tokenize shell lines and split them at control operators."""
+    normalized = re.sub(r"\\\r?\n", " ", text)
+    segments: list[list[str]] = []
+    for line in normalized.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            return None
+        current: list[str] = []
+        for token in [*tokens, ";"]:
+            if token and all(
+                character in SHELL_CONTROL_CHARACTERS for character in token
+            ):
+                if current:
+                    segments.append(current)
+                    current = []
+            else:
+                current.append(token)
+    return segments
+
+
+def shell_command_prefix(segment: list[str]) -> list[str]:
+    """Remove shell grammar words that can precede a command body."""
+    normalized = list(segment)
+    while normalized and normalized[0] in SHELL_COMMAND_PREFIXES:
+        normalized.pop(0)
+    return normalized
+
+
 def has_repo_bound_issue_reconciliation(text: str) -> bool:
     """Require every reminder issue mutation to bind its repository."""
-    normalized = re.sub(r"\\\r?\n", " ", text)
-    commands = []
-    for line in normalized.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    commands: list[tuple[str, list[str]]] = []
+    for segment in segments:
+        tokens = shell_command_prefix(segment)
+        issue_positions = [
+            index
+            for index in range(len(tokens) - 1)
+            if tokens[index : index + 2] == ["gh", "issue"]
+        ]
+        if not issue_positions:
             continue
-        if re.search(
-            rf"(?<![\w-])gh\s+issue\s+(?:{'|'.join(sorted(REMINDER_ISSUE_MUTATION_SUBCOMMANDS))})(?=\s|$)",
-            stripped,
+        if issue_positions[0] != 0 or len(tokens) < 3:
+            return False
+        subcommand = tokens[2]
+        if subcommand in REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS:
+            continue
+        if (
+            subcommand not in REMINDER_ISSUE_MUTATION_SUBCOMMANDS
+            or len(issue_positions) != 1
         ):
-            commands.append(stripped)
+            return False
+        commands.append((subcommand, tokens))
     body_commands = [
-        command
-        for command in commands
-        if re.search(r"(?<![\w-])gh\s+issue\s+(?:create|edit)(?=\s|$)", command)
-        and has_value_bearing_option(command, "--body-file")
+        (subcommand, tokens)
+        for subcommand, tokens in commands
+        if subcommand in REMINDER_ISSUE_BODY_MUTATIONS
+        and has_value_bearing_option(" ".join(tokens), "--body-file")
     ]
     return bool(body_commands) and all(
-        has_explicit_repository_binding(command) for command in commands
+        subcommand in REMINDER_ISSUE_ALLOWED_MUTATIONS
+        and has_value_bearing_option(" ".join(tokens), "--repo")
+        and (
+            subcommand == "close"
+            or has_value_bearing_option(" ".join(tokens), "--body-file")
+        )
+        and (
+            subcommand != "create"
+            or has_value_bearing_option(" ".join(tokens), "--title")
+        )
+        for subcommand, tokens in commands
     )
 
 
@@ -1436,6 +1519,15 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
         return [
             ".github/workflows/ci.yml: policy drift reminder must depend on both "
             "scheduled canaries with least-privilege issue access"
+        ]
+    if (
+        not isinstance(job.get("concurrency"), dict)
+        or job["concurrency"].get("group") != POLICY_REMINDER_CONCURRENCY_GROUP
+        or job["concurrency"].get("cancel-in-progress") != "false"
+    ):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder must use a "
+            "repository-scoped non-cancelling concurrency group"
         ]
     for fragment in (
         "repo-scaffold-ci-policy-drift",
@@ -4767,6 +4859,13 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
         ):
             problems.append(f"{relative}: concurrent reminder runs must not cancel")
         if (
+            not isinstance(concurrency, dict)
+            or concurrency.get("group") != REMINDER_WORKFLOW_CONCURRENCY_GROUP
+        ):
+            problems.append(
+                f"{relative}: concurrent reminder runs must serialize repository issue state"
+            )
+        if (
             not isinstance(job, dict)
             or job.get("name") != "community-health-upstream"
             or job.get("timeout-minutes") != "10"
@@ -4906,6 +5005,16 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         if workflow.get("permissions") != {"contents": "read", "issues": "write"}:
             problems.append(
                 f"{relative}: freshness workflow must use contents: read and issues: write"
+            )
+        concurrency = workflow.get("concurrency")
+        if (
+            not isinstance(concurrency, dict)
+            or concurrency.get("group") != REMINDER_WORKFLOW_CONCURRENCY_GROUP
+            or concurrency.get("cancel-in-progress") != "false"
+        ):
+            problems.append(
+                f"{relative}: freshness reminder must use a repository-scoped "
+                "non-cancelling concurrency group"
             )
         jobs = workflow.get("jobs")
         audit_job = jobs.get("audit") if isinstance(jobs, dict) else None
@@ -5266,6 +5375,14 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
     ):
         problems.append(
             ".github/workflows/official-docs.yml: reminder concurrency or audit job contract is invalid"
+        )
+    if (
+        not isinstance(concurrency, dict)
+        or concurrency.get("group") != REMINDER_WORKFLOW_CONCURRENCY_GROUP
+    ):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder runs must serialize "
+            "repository issue state"
         )
     elif not job_effective_issue_write(workflow, job):
         problems.append(

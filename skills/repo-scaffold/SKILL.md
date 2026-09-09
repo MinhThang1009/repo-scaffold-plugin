@@ -182,10 +182,13 @@ when the local call cannot be resolved to one supplied input.
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
 only scheduled and manual triggers, request Issues write permission, execute the
 freshness audit, and reconcile marker issues through real
-`gh issue create` or `gh issue edit --repo ... --body-file` commands. Any
-`gh issue close` mutation must also use an explicit `--repo` binding. The
-preflight rejects untrusted-trigger, comment-only, or otherwise incomplete
-reminder scaffolds.
+`gh issue create` or `gh issue edit --repo ... --body-file` commands. Every
+`create` or `edit` mutation must use `--body-file`, `create` must provide a
+non-empty `--title`, and any `gh issue close` mutation must also use an
+explicit `--repo` binding. The reminder must use a repository-scoped
+non-cancelling concurrency group so manual runs on another ref cannot race
+the scheduled run. The preflight rejects untrusted-trigger, comment-only,
+shell-ambiguous, or otherwise incomplete reminder scaffolds.
 It also requires the canonical `freshness.yml` filename and the audit's
 repository-root, JSON-output, and Markdown-output arguments, and rejects
 external `docker://` references unless they use a full SHA-256 digest.

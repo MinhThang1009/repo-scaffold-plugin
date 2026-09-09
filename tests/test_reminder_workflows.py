@@ -29,6 +29,25 @@ if BASH is None and os.name == "nt":
 
 
 class ReminderWorkflowTests(unittest.TestCase):
+    def test_reminder_workflows_serialize_repository_issue_state(self) -> None:
+        for relative in WORKFLOWS:
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            if relative == ".github/workflows/ci.yml":
+                concurrency = document["jobs"]["policy-drift-reminder"]["concurrency"]
+                expected_group = (
+                    "${{ github.workflow }}-policy-drift-${{ github.repository }}"
+                )
+            else:
+                concurrency = document["concurrency"]
+                expected_group = "${{ github.workflow }}-${{ github.repository }}"
+            self.assertEqual(
+                concurrency,
+                {"group": expected_group, "cancel-in-progress": "false"},
+                relative,
+            )
+
     @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
     def test_issue_lookup_must_succeed_before_any_reminder_mutation(self) -> None:
         for relative in WORKFLOWS:

@@ -7762,13 +7762,15 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertTrue(
             validate_repository.has_repo_bound_issue_reconciliation(
-                "gh issue create --repo $REPOSITORY --body-file report.md"
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md"
             )
         )
         self.assertTrue(
             validate_repository.has_repo_bound_issue_reconciliation(
                 r"""gh issue create \
   --repo $REPOSITORY \
+  --title reminder \
   --body-file report.md"""
             )
         )
@@ -7780,7 +7782,8 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             validate_repository.has_repo_bound_issue_reconciliation(
                 "gh issue close 1 --repo $REPOSITORY\n"
-                "gh issue create --repo $REPOSITORY --body-file report.md"
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md"
             )
         )
         self.assertFalse(
@@ -7803,6 +7806,40 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertFalse(
             validate_repository.has_repo_bound_issue_reconciliation(
                 "# gh issue create --repo $REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation("gh issue")
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create 'unterminated"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "echo gh issue create"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation("gh issue list")
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue archive 1 --repo $REPOSITORY"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md; gh issue close 1"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "gh issue edit 1 --repo $REPOSITORY --body stale"
             )
         )
         self.assertFalse(validate_repository.permissions_grant_issue_write(None))
@@ -7927,6 +7964,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             "must use schema-version 1",
             "use only schedule",
             "must use contents",
+            "repository-scoped",
             "reconcile one marker issue",
             "workflow must be a mapping",
         ):
@@ -8744,6 +8782,29 @@ class PolicyDriftReminderContractTests(unittest.TestCase):
             [
                 ".github/workflows/ci.yml: policy drift reminder must reconcile "
                 "one marker issue from both canary results"
+            ],
+        )
+
+    def test_policy_drift_reminder_requires_repository_scoped_concurrency(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            workflow_text = (
+                PLUGIN_ROOT / ".github" / "workflows" / "ci.yml"
+            ).read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(
+                "${{ github.workflow }}-policy-drift-${{ github.repository }}",
+                "${{ github.workflow }}-policy-drift-${{ github.ref }}",
+            )
+            (workflow_directory / "ci.yml").write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_policy_drift_reminder_contract(root)
+
+        self.assertEqual(
+            problems,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must use a "
+                "repository-scoped non-cancelling concurrency group"
             ],
         )
 

@@ -35,8 +35,12 @@ FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
 FRESHNESS_REMINDER_REPOSITORY_OPTION = "--repo"
 FRESHNESS_REMINDER_BODY_FILE = "--body-file"
+FRESHNESS_REMINDER_TITLE_OPTION = "--title"
 FRESHNESS_REMINDER_MUTATION_SUBCOMMANDS = frozenset({"create", "edit", "close"})
 FRESHNESS_REMINDER_BODY_SUBCOMMANDS = frozenset({"create", "edit"})
+FRESHNESS_REMINDER_ALLOWED_MUTATION_SUBCOMMANDS = frozenset({"create", "edit", "close"})
+FRESHNESS_REMINDER_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "view"})
+FRESHNESS_REMINDER_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.repository }}"
 FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
     "--repository-root",
     "--json-output",
@@ -117,35 +121,82 @@ def has_nonempty_option_value(tokens: list[str], option: str) -> bool:
     return False
 
 
+SHELL_CONTROL_CHARACTERS = frozenset(";()<>|&")
+SHELL_COMMAND_PREFIXES = frozenset({"!", "then", "do", "else"})
+INVALID_ISSUE_MUTATION = "__invalid__"
+
+
+def shell_logical_lines(command: str) -> Iterator[str]:
+    """Join shell continuation lines without merging separate commands."""
+    lines = executable_shell_lines(command)
+    index = 0
+    while index < len(lines):
+        parts = [lines[index].rstrip()]
+        cursor = index
+        while parts[-1].endswith("\\") and cursor + 1 < len(lines):
+            parts[-1] = parts[-1][:-1].rstrip()
+            cursor += 1
+            parts.append(lines[cursor])
+        yield " ".join(parts)
+        index = cursor + 1
+
+
+def shell_command_segments(command: str) -> list[list[str]] | None:
+    """Tokenize shell commands and split them at control operators."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in [*tokens, ";"]:
+        if token and all(character in SHELL_CONTROL_CHARACTERS for character in token):
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    return segments
+
+
+def shell_command_prefix(segment: list[str]) -> list[str]:
+    """Remove shell grammar words that can precede a command body."""
+    normalized = list(segment)
+    while normalized and normalized[0] in SHELL_COMMAND_PREFIXES:
+        normalized.pop(0)
+    return normalized
+
+
 def issue_mutation_command_blocks(command: str) -> list[tuple[str, list[str]]]:
     """Return parsed ``gh issue`` mutation command blocks from shell text."""
-    lines = executable_shell_lines(command)
     blocks: list[tuple[str, list[str]]] = []
-    for index, line in enumerate(lines):
-        first_line = line.rstrip()
-        if first_line.endswith("\\"):
-            first_line = first_line[:-1].rstrip()
-        try:
-            first_tokens = shlex.split(first_line, comments=True, posix=True)
-        except ValueError:
-            continue
-        if (
-            len(first_tokens) < 3
-            or first_tokens[:2] != ["gh", "issue"]
-            or first_tokens[2] not in FRESHNESS_REMINDER_MUTATION_SUBCOMMANDS
-        ):
-            continue
-        command_parts = [line.rstrip()]
-        cursor = index
-        while command_parts[-1].endswith("\\") and cursor + 1 < len(lines):
-            command_parts[-1] = command_parts[-1][:-1].rstrip()
-            cursor += 1
-            command_parts.append(lines[cursor])
-        try:
-            tokens = shlex.split(" ".join(command_parts), comments=True, posix=True)
-        except ValueError:
-            continue
-        blocks.append((tokens[2], tokens))
+    for logical_line in shell_logical_lines(command):
+        segments = shell_command_segments(logical_line)
+        if segments is None:
+            return [(INVALID_ISSUE_MUTATION, [])]
+        for segment in segments:
+            tokens = shell_command_prefix(segment)
+            issue_positions = [
+                index
+                for index in range(len(tokens) - 1)
+                if tokens[index : index + 2] == ["gh", "issue"]
+            ]
+            if not issue_positions:
+                continue
+            if issue_positions[0] != 0 or len(tokens) < 3:
+                return [(INVALID_ISSUE_MUTATION, [])]
+            subcommand = tokens[2]
+            if subcommand in FRESHNESS_REMINDER_READ_ONLY_SUBCOMMANDS:
+                continue
+            if (
+                subcommand not in FRESHNESS_REMINDER_MUTATION_SUBCOMMANDS
+                or len(issue_positions) != 1
+            ):
+                return [(INVALID_ISSUE_MUTATION, [])]
+            blocks.append((subcommand, tokens))
     return blocks
 
 
@@ -159,41 +210,47 @@ def has_issue_body_file_reconciliation(command: str) -> bool:
             for subcommand, tokens in blocks
         )
         and all(
-            has_nonempty_option_value(tokens, FRESHNESS_REMINDER_REPOSITORY_OPTION)
-            for _, tokens in blocks
+            subcommand in FRESHNESS_REMINDER_ALLOWED_MUTATION_SUBCOMMANDS
+            and has_nonempty_option_value(tokens, FRESHNESS_REMINDER_REPOSITORY_OPTION)
+            and (
+                subcommand == "close"
+                or has_nonempty_option_value(tokens, FRESHNESS_REMINDER_BODY_FILE)
+            )
+            and (
+                subcommand != "create"
+                or has_nonempty_option_value(tokens, FRESHNESS_REMINDER_TITLE_OPTION)
+            )
+            for subcommand, tokens in blocks
         )
     )
 
 
 def has_freshness_audit_invocation(command: str) -> bool:
     """Require the freshness checker and all of its report output options."""
-    lines = executable_shell_lines(command)
-    for index, line in enumerate(lines):
-        first_line = line.rstrip()
-        if first_line.endswith("\\"):
-            first_line = first_line[:-1].rstrip()
-        try:
-            first_tokens = shlex.split(first_line, comments=True, posix=True)
-        except ValueError:
-            continue
-        if first_tokens[:2] != FRESHNESS_AUDIT_COMMAND.split():
-            continue
-        command_parts = [line.rstrip()]
-        cursor = index
-        while command_parts[-1].endswith("\\") and cursor + 1 < len(lines):
-            command_parts[-1] = command_parts[-1][:-1].rstrip()
-            cursor += 1
-            command_parts.append(lines[cursor])
-        try:
-            tokens = shlex.split(" ".join(command_parts), comments=True, posix=True)
-        except ValueError:
-            continue
-        if all(
-            has_nonempty_option_value(tokens, option)
-            for option in FRESHNESS_AUDIT_REQUIRED_OPTIONS
-        ):
-            return True
+    for logical_line in shell_logical_lines(command):
+        segments = shell_command_segments(logical_line)
+        if segments is None:
+            return False
+        for segment in segments:
+            tokens = shell_command_prefix(segment)
+            if tokens[:2] != FRESHNESS_AUDIT_COMMAND.split():
+                continue
+            if all(
+                has_nonempty_option_value(tokens, option)
+                for option in FRESHNESS_AUDIT_REQUIRED_OPTIONS
+            ):
+                return True
     return False
+
+
+def has_repository_scoped_concurrency(document: dict[str, Any]) -> bool:
+    """Require reminder runs to serialize shared repository Issue state."""
+    concurrency = document.get("concurrency")
+    return (
+        isinstance(concurrency, dict)
+        and concurrency.get("group") == FRESHNESS_REMINDER_CONCURRENCY_GROUP
+        and concurrency.get("cancel-in-progress") == "false"
+    )
 
 
 def workflow_uses_values(value: Any) -> Iterator[Any]:
@@ -324,6 +381,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
             or not entry["cron"].strip()
             for entry in triggers["schedule"]
         )
+        or not has_repository_scoped_concurrency(document)
         or not requires_issue_write(text, source)
     ):
         return False

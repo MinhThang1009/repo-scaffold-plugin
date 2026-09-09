@@ -329,9 +329,10 @@ two mirrored documentation packages are grouped explicitly.
 The non-required weekly [freshness workflow](.github/workflows/freshness.yml)
 reads the reviewed [freshness tracker registry](.github/freshness-trackers.json)
 and independently reports direct-PyPI-pin and lock-consistency drift, plus any
-versioned input the PR synchronizer could not make current. It opens or updates
-one marker Issue when attention is required and closes it only after a clean
-scheduled/manual result. The
+versioned input the PR synchronizer could not make current. It serializes
+scheduled and manual runs per repository, opens or updates one marker Issue
+when attention is required, and closes it only after a clean scheduled/manual
+result. The
 scaffold ships the same registry-driven checker and workflow to generated
 repositories when Issues are available. Track only sources with an
 authoritative owner and deterministic version resolver; community-health policy

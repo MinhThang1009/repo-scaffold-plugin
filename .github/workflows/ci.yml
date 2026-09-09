@@ -316,6 +316,9 @@ jobs:
     permissions:
       contents: read
       issues: write
+    concurrency:
+      group: ${{ github.workflow }}-policy-drift-${{ github.repository }}
+      cancel-in-progress: false
     steps:
       - name: Reconcile policy-drift reminder issue
         env:

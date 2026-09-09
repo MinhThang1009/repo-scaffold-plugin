@@ -539,6 +539,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  workflow_dispatch:\n"
                 "permissions:\n"
                 "  issues: write\n"
+                "concurrency:\n"
+                "  group: ${{ github.workflow }}-${{ github.repository }}\n"
+                "  cancel-in-progress: false\n"
                 "jobs:\n"
                 "  audit:\n"
                 "    steps:\n"
@@ -548,7 +551,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            --json-output report.json \\\n"
                 "            --markdown-output report.md\n"
                 "          marker='repo-scaffold-freshness-audit'\n"
-                '          gh issue create --repo "$REPOSITORY" --body-file report.md\n',
+                '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n',
                 encoding="utf-8",
             )
             allowlist = root / "code-scanning-allowlist.json"
@@ -607,6 +610,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  workflow_dispatch:\n"
                 "permissions:\n"
                 "  issues: write\n"
+                "concurrency:\n"
+                "  group: ${{ github.workflow }}-${{ github.repository }}\n"
+                "  cancel-in-progress: false\n"
                 "jobs:\n"
                 "  audit:\n"
                 "    steps:\n"
@@ -616,7 +622,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            --json-output report.json \\\n"
                 "            --markdown-output report.md\n"
                 "          marker='repo-scaffold-freshness-audit'\n"
-                '          gh issue create --repo "$REPOSITORY" --body-file report.md\n',
+                '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n',
                 encoding="utf-8",
             )
             invalid_allowlist = root / "code-scanning-allowlist.json"
@@ -649,24 +655,45 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "  workflow_dispatch:\n"
             "permissions:\n"
             "  issues: write\n"
+            "concurrency:\n"
+            "  group: ${{ github.workflow }}-${{ github.repository }}\n"
+            "  cancel-in-progress: false\n"
             "jobs:\n"
             "  audit:\n"
             "    steps:\n"
             "      - run: |\n"
             + audit_command
             + "          marker='repo-scaffold-freshness-audit'\n"
-            + '          gh issue create --repo "$REPOSITORY" --body-file report.md\n'
+            + '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n'
         )
-        body_command = (
-            '          gh issue create --repo "$REPOSITORY" --body-file report.md\n'
-        )
+        body_command = '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n'
         cases = {
             "valid": valid,
+            "branch-scoped concurrency": valid.replace(
+                "${{ github.repository }}", "${{ github.ref }}"
+            ),
+            "cancelling concurrency": valid.replace(
+                "  cancel-in-progress: false", "  cancel-in-progress: true"
+            ),
             "unbound close mutation": valid.replace(
                 "          marker='repo-scaffold-freshness-audit'\n",
                 "          gh issue close 1\n"
                 "          marker='repo-scaffold-freshness-audit'\n",
             ),
+            "same-line unbound close mutation": valid.replace(
+                body_command,
+                body_command.rstrip("\n") + "; gh issue close 1\n",
+            ),
+            "unbound edit body": valid.replace(
+                body_command,
+                body_command
+                + '          gh issue edit 1 --repo "$REPOSITORY" --body stale\n',
+            ),
+            "unsupported issue mutation": valid.replace(
+                body_command,
+                body_command + '          gh issue reopen 1 --repo "$REPOSITORY"\n',
+            ),
+            "create without title": valid.replace(" --title reminder", ""),
             "unbound close in separate step": valid.replace(
                 "    steps:\n      - run: |\n",
                 "    steps:\n      - run: gh issue close 1\n      - run: |\n",
@@ -748,6 +775,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            --repository-root . \\\n"
                 "            --json-output 'report.json \\\n"
                 "            --markdown-output report.md\n",
+            ),
+            "audit options from another command": valid.replace(
+                audit_command,
+                "          python scripts/audit_freshness.py --repository-root .\n"
+                "          echo --json-output report.json --markdown-output report.md\n",
             ),
             "without audit output": valid.replace(
                 "            --markdown-output report.md\n", ""
@@ -995,6 +1027,16 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             workflow_installation_preflight.has_issue_body_file_reconciliation(
                 'gh issue create \\\n  --body-file "unterminated'
             )
+        )
+        self.assertEqual(
+            workflow_installation_preflight.issue_mutation_command_blocks("gh issue"),
+            [("__invalid__", [])],
+        )
+        self.assertEqual(
+            workflow_installation_preflight.issue_mutation_command_blocks(
+                "echo gh issue create"
+            ),
+            [("__invalid__", [])],
         )
         self.assertTrue(
             workflow_installation_preflight.has_nonempty_option_value(
