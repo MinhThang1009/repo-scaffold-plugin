@@ -66,6 +66,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
         "require_issues": False,
         "confirm_pull_request_write_tokens": False,
         "workflow": [],
+        "code_scanning_allowlist": None,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -434,7 +435,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 workflow_installation_preflight.workflow_capabilities([workflow]),
-                ([], ["ci.yml"], []),
+                ([], ["ci.yml"], [], [], False),
             )
 
     def test_permission_text_outside_permission_fields_is_not_a_requirement(
@@ -450,7 +451,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 workflow_installation_preflight.workflow_capabilities([workflow]),
-                ([], [], []),
+                ([], [], [], [], False),
             )
 
     def test_rejects_unparseable_or_ambiguous_permission_documents(self) -> None:
@@ -514,6 +515,183 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertTrue(result["requires_external_actions"])
         self.assertFalse(result["external_actions_verified"])
+
+    def test_code_scanning_gate_requires_freshness_and_allowlist_companions(
+        self,
+    ) -> None:
+        self.configure()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gate = root / "code-scanning-gate.yml"
+            gate.write_text(
+                "jobs:\n"
+                "  gate:\n"
+                "    steps:\n"
+                "      - run: python scripts/check_code_scanning_alerts.py\n",
+                encoding="utf-8",
+            )
+            reminder = root / "freshness.yml"
+            reminder.write_text(
+                "jobs:\n"
+                "  audit:\n"
+                "    steps:\n"
+                "      - run: |\n"
+                "          python scripts/audit_freshness.py\n"
+                "          marker='repo-scaffold-freshness-audit'\n",
+                encoding="utf-8",
+            )
+            allowlist = root / "code-scanning-allowlist.json"
+            allowlist.write_text(
+                '{"schema-version": 3, "allowlist": []}\n', encoding="utf-8"
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                missing_all = workflow_installation_preflight.run(
+                    arguments(workflow=[gate])
+                )
+                missing_allowlist = workflow_installation_preflight.run(
+                    arguments(workflow=[gate, reminder])
+                )
+                ready = workflow_installation_preflight.run(
+                    arguments(
+                        workflow=[gate, reminder], code_scanning_allowlist=allowlist
+                    )
+                )
+
+        for result in (missing_all, missing_allowlist):
+            self.assertEqual(
+                result["decision"],
+                "include-code-scanning-companions-before-installing-workflows",
+            )
+            self.assertTrue(result["requires_code_scanning_companions"])
+            self.assertEqual(
+                result["code_scanning_gate_workflows"], ["code-scanning-gate.yml"]
+            )
+            self.assertFalse(result["code_scanning_companions_verified"])
+        self.assertFalse(missing_all["freshness_reminder_supplied"])
+        self.assertFalse(missing_all["code_scanning_allowlist_supplied"])
+        self.assertTrue(missing_allowlist["freshness_reminder_supplied"])
+        self.assertFalse(missing_allowlist["code_scanning_allowlist_supplied"])
+        self.assertEqual(ready["decision"], "may-install-workflow-assets")
+        self.assertTrue(ready["code_scanning_companions_verified"])
+
+    def test_code_scanning_gate_rejects_invalid_allowlist_companion(self) -> None:
+        self.configure()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gate = root / "code-scanning-gate.yml"
+            gate.write_text(
+                "jobs:\n"
+                "  gate:\n"
+                "    steps:\n"
+                "      - run: python scripts/check_code_scanning_alerts.py\n",
+                encoding="utf-8",
+            )
+            reminder = root / "freshness.yml"
+            reminder.write_text(
+                "jobs:\n"
+                "  audit:\n"
+                "    steps:\n"
+                "      - run: |\n"
+                "          python scripts/audit_freshness.py\n"
+                "          marker='repo-scaffold-freshness-audit'\n",
+                encoding="utf-8",
+            )
+            invalid_allowlist = root / "code-scanning-allowlist.json"
+            invalid_allowlist.write_text("{}\n", encoding="utf-8")
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError,
+                    "schema-version 3",
+                ):
+                    workflow_installation_preflight.run(
+                        arguments(
+                            workflow=[gate, reminder],
+                            code_scanning_allowlist=invalid_allowlist,
+                        )
+                    )
+
+    def test_code_scanning_allowlist_validation_rejects_unsafe_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError, "missing or unsafe"
+            ):
+                workflow_installation_preflight.validate_code_scanning_allowlist(root)
+
+            allowlist = root / "code-scanning-allowlist.json"
+            allowlist.write_text(
+                '{"schema-version": 3, "schema-version": 3, "allowlist": []}\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError, "missing or unsafe"
+            ):
+                workflow_installation_preflight.validate_code_scanning_allowlist(
+                    allowlist
+                )
+
+            metadata = allowlist.stat()
+            allowlist.write_text('{"schema-version": 3}\n', encoding="utf-8")
+            with (
+                mock.patch.object(
+                    workflow_installation_preflight,
+                    "MAX_CODE_SCANNING_ALLOWLIST_BYTES",
+                    1,
+                ),
+                mock.patch.object(
+                    Path,
+                    "lstat",
+                    return_value=mock.Mock(
+                        st_mode=metadata.st_mode,
+                        st_size=0,
+                        st_file_attributes=0,
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError, "missing or unsafe"
+                ),
+            ):
+                workflow_installation_preflight.validate_code_scanning_allowlist(
+                    allowlist
+                )
+
+    def test_companion_helpers_reject_ambiguous_json_and_nonstep_lists(self) -> None:
+        with self.assertRaisesRegex(
+            workflow_installation_preflight.DuplicateJsonMember, "duplicate"
+        ):
+            workflow_installation_preflight.unique_json_object(
+                [("schema-version", 3), ("schema-version", 3)]
+            )
+        self.assertEqual(
+            workflow_installation_preflight.workflow_run_commands(
+                {"jobs": {"audit": {"steps": {}}}}
+            ),
+            [],
+        )
+
+    def test_shipped_code_scanning_companions_are_accepted_together(self) -> None:
+        self.configure()
+        assets = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
+        with mock.patch.object(
+            workflow_installation_preflight, "GitHubClient", FakeClient
+        ):
+            result = workflow_installation_preflight.run(
+                arguments(
+                    workflow=[
+                        assets / "workflows" / "code-scanning-gate.yml",
+                        assets / "workflows" / "freshness.yml",
+                    ],
+                    code_scanning_allowlist=assets / "code-scanning-allowlist.json",
+                )
+            )
+
+        self.assertEqual(result["decision"], "may-install-workflow-assets")
+        self.assertTrue(result["freshness_reminder_supplied"])
+        self.assertTrue(result["code_scanning_companions_verified"])
 
     def test_pull_request_write_scopes_require_explicit_confirmation(self) -> None:
         self.configure()
@@ -668,6 +846,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "--require-issues",
                 "--workflow",
                 "assets/workflows/ci.yml",
+                "--code-scanning-allowlist",
+                "assets/code-scanning-allowlist.json",
             ],
         ):
             parsed = workflow_installation_preflight.parse_args()
@@ -677,6 +857,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(parsed.require_issues)
         self.assertFalse(parsed.confirm_pull_request_write_tokens)
         self.assertEqual(parsed.workflow, [Path("assets/workflows/ci.yml")])
+        self.assertEqual(
+            parsed.code_scanning_allowlist,
+            Path("assets/code-scanning-allowlist.json"),
+        )
         with mock.patch.object(sys, "argv", [str(SCRIPT_PATH)]):
             with self.assertRaises(SystemExit) as raised:
                 runpy.run_path(str(SCRIPT_PATH), run_name="__main__")

@@ -22,10 +22,29 @@ import sync_action_pins
 
 
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
+CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION = 3
+MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
+CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
+FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
+FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
 
 
-def requires_issue_write(text: str, source: Path) -> bool:
-    """Inspect YAML permission fields without treating comments or scripts as policy."""
+class DuplicateJsonMember(ValueError):
+    """Raised when a JSON companion file contains ambiguous duplicate keys."""
+
+
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting ambiguous duplicate member names."""
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
+        document[key] = value
+    return document
+
+
+def workflow_document(text: str, source: Path) -> dict[str, Any]:
+    """Parse one workflow mapping without silently accepting duplicate keys."""
     try:
         loader = UniqueKeyBaseLoader(text)
         try:
@@ -41,6 +60,30 @@ def requires_issue_write(text: str, source: Path) -> bool:
         not isinstance(job, dict) for job in jobs.values()
     ):
         raise InspectionError(f"Workflow {source} has an invalid jobs mapping.")
+    return document
+
+
+def workflow_run_commands(document: dict[str, Any]) -> list[str]:
+    """Return shell commands from workflow steps, excluding comments and metadata."""
+    jobs = document.get("jobs", {})
+    assert isinstance(jobs, dict)
+    commands: list[str] = []
+    for job in jobs.values():
+        assert isinstance(job, dict)
+        steps = job.get("steps", [])
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if isinstance(step, dict) and isinstance(step.get("run"), str):
+                commands.append(step["run"])
+    return commands
+
+
+def requires_issue_write(text: str, source: Path) -> bool:
+    """Inspect YAML permission fields without treating comments or scripts as policy."""
+    document = workflow_document(text, source)
+    jobs = document.get("jobs", {})
+    assert isinstance(jobs, dict)
     for scope in [document, *jobs.values()]:
         permissions = scope.get("permissions", {})
         if permissions == "write-all" or (
@@ -52,21 +95,9 @@ def requires_issue_write(text: str, source: Path) -> bool:
 
 def requires_pull_request_write_tokens(text: str, source: Path) -> bool:
     """Detect pull-request workflows whose write scopes need an explicit check."""
-    try:
-        loader = UniqueKeyBaseLoader(text)
-        try:
-            document = loader.get_single_data()
-        finally:
-            loader.dispose()
-    except (yaml.YAMLError, InspectionError, RecursionError) as exc:
-        raise InspectionError(f"Could not parse workflow {source}: {exc}") from exc
-    if not isinstance(document, dict):
-        raise InspectionError(f"Workflow {source} is not a YAML mapping.")
+    document = workflow_document(text, source)
     jobs = document.get("jobs", {})
-    if not isinstance(jobs, dict) or any(
-        not isinstance(job, dict) for job in jobs.values()
-    ):
-        raise InspectionError(f"Workflow {source} has an invalid jobs mapping.")
+    assert isinstance(jobs, dict)
     triggers = document.get("on")
     if isinstance(triggers, str):
         pull_request_trigger = triggers == "pull_request"
@@ -85,6 +116,53 @@ def requires_pull_request_write_tokens(text: str, source: Path) -> bool:
         ):
             return True
     return False
+
+
+def is_code_scanning_gate(text: str, source: Path) -> bool:
+    """Identify a gate that requires the shipped allowlist freshness reminder."""
+    return any(
+        CODE_SCANNING_GATE_COMMAND in command
+        for command in workflow_run_commands(workflow_document(text, source))
+    )
+
+
+def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
+    """Identify the scheduled reminder that audits code-scanning exception dates."""
+    commands = workflow_run_commands(workflow_document(text, source))
+    return any(FRESHNESS_AUDIT_COMMAND in command for command in commands) and any(
+        FRESHNESS_REMINDER_MARKER in command for command in commands
+    )
+
+
+def validate_code_scanning_allowlist(path: Path) -> None:
+    """Require a bounded schema-v3 allowlist companion before gate installation."""
+    try:
+        metadata = path.lstat()
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or path.is_symlink()
+            or bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+            or metadata.st_size > MAX_CODE_SCANNING_ALLOWLIST_BYTES
+        ):
+            raise OSError("not a regular allowlist file")
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_CODE_SCANNING_ALLOWLIST_BYTES + 1)
+        if len(raw) > MAX_CODE_SCANNING_ALLOWLIST_BYTES:
+            raise OSError("allowlist exceeds the byte safety cap")
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_json_object)
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+        raise InspectionError(
+            f"Code-scanning allowlist input is missing or unsafe: {path}"
+        ) from exc
+    if (
+        not isinstance(document, dict)
+        or document.get("schema-version") != CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION
+        or not isinstance(document.get("allowlist"), list)
+    ):
+        raise InspectionError(
+            "Code-scanning allowlist input must use schema-version 3 and an allowlist array."
+        )
 
 
 def require_boolean(document: dict[str, Any], field: str) -> bool:
@@ -137,7 +215,7 @@ def selected_actions_policy(document: Any) -> dict[str, bool | list[str]]:
 
 def workflow_capabilities(
     workflows: list[Path],
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[str], bool]:
     """Read external references and workflow capabilities that require confirmation."""
     if not workflows:
         raise InspectionError(
@@ -146,6 +224,8 @@ def workflow_capabilities(
     references: set[str] = set()
     issue_workflows: set[str] = set()
     pull_request_write_workflows: set[str] = set()
+    code_scanning_gate_workflows: set[str] = set()
+    freshness_reminder_supplied = False
     for workflow in workflows:
         try:
             metadata = workflow.lstat()
@@ -177,6 +257,10 @@ def workflow_capabilities(
             issue_workflows.add(workflow.name)
         if requires_pull_request_write_tokens(text, workflow):
             pull_request_write_workflows.add(workflow.name)
+        if is_code_scanning_gate(text, workflow):
+            code_scanning_gate_workflows.add(workflow.name)
+        if is_freshness_reminder_workflow(text, workflow):
+            freshness_reminder_supplied = True
         direct_references = {
             sync_action_pins.normalized_uses_reference(match)
             for match in sync_action_pins.workflow_uses_matches(text)
@@ -198,6 +282,8 @@ def workflow_capabilities(
         sorted(references, key=str.casefold),
         sorted(issue_workflows, key=str.casefold),
         sorted(pull_request_write_workflows, key=str.casefold),
+        sorted(code_scanning_gate_workflows, key=str.casefold),
+        freshness_reminder_supplied,
     )
 
 
@@ -253,7 +339,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         external_action_references,
         detected_issue_workflows,
         pull_request_write_workflows,
-    ) = workflow_capabilities(args.workflow) if args.workflow else ([], [], [])
+        code_scanning_gate_workflows,
+        freshness_reminder_supplied,
+    ) = (
+        workflow_capabilities(args.workflow)
+        if args.workflow
+        else ([], [], [], [], False)
+    )
     requires_external_actions = args.require_external_actions or bool(
         external_action_references
     )
@@ -277,6 +369,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 external_action_references,
                 detected_issue_workflows,
                 pull_request_write_workflows,
+                code_scanning_gate_workflows,
+                freshness_reminder_supplied,
             ) = workflow_capabilities(args.workflow)
         unapproved_action_references = [
             reference
@@ -300,6 +394,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     pull_request_write_tokens_confirmed = (
         not pull_request_write_workflows or args.confirm_pull_request_write_tokens
     )
+    code_scanning_allowlist_supplied = args.code_scanning_allowlist is not None
+    if code_scanning_gate_workflows and args.code_scanning_allowlist is not None:
+        validate_code_scanning_allowlist(args.code_scanning_allowlist)
+    code_scanning_companions_verified = not code_scanning_gate_workflows or (
+        freshness_reminder_supplied and code_scanning_allowlist_supplied
+    )
     if not actions_enabled:
         decision = "enable-github-actions-before-installing-workflows"
     elif requires_external_actions and allowed_actions == "local_only":
@@ -314,6 +414,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         decision = "enable-issues-before-installing-issue-workflows"
     elif not pull_request_write_tokens_confirmed:
         decision = "confirm-pull-request-write-tokens-before-installing-workflows"
+    elif not code_scanning_companions_verified:
+        decision = "include-code-scanning-companions-before-installing-workflows"
     else:
         decision = "may-install-workflow-assets"
     return {
@@ -335,6 +437,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "requires_pull_request_write_tokens": bool(pull_request_write_workflows),
         "pull_request_write_workflows": pull_request_write_workflows,
         "pull_request_write_tokens_confirmed": pull_request_write_tokens_confirmed,
+        "requires_code_scanning_companions": bool(code_scanning_gate_workflows),
+        "code_scanning_gate_workflows": code_scanning_gate_workflows,
+        "freshness_reminder_supplied": freshness_reminder_supplied,
+        "code_scanning_allowlist_supplied": code_scanning_allowlist_supplied,
+        "code_scanning_companions_verified": code_scanning_companions_verified,
         "github_api_requests": client.request_count,
     }
 
@@ -347,6 +454,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-issues", action="store_true")
     parser.add_argument("--confirm-pull-request-write-tokens", action="store_true")
     parser.add_argument("--workflow", type=Path, action="append", default=[])
+    parser.add_argument("--code-scanning-allowlist", type=Path)
     return parser.parse_args()
 
 

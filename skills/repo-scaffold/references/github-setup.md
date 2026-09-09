@@ -326,6 +326,12 @@ if (-not $workflowPreflightResult.inspection_complete -or
 }
 ```
 
+When installing `code-scanning-gate.yml`, pass both the gate and
+`freshness.yml` as `--workflow` inputs in the same preflight invocation, then
+pass `assets/code-scanning-allowlist.json` with `--code-scanning-allowlist`.
+The preflight rejects a gate plan without both companions, so copy all three
+verified inputs only after it returns `may-install-workflow-assets`.
+
 ## Inherited community-health policy
 
 Before proposing local community files, inspect defaults inherited from the account's **public** `.github` repository. GitHub.com does not apply account defaults from an internal or private `.github` repository. Local files override defaults, and any local `.github/ISSUE_TEMPLATE` file disables the inherited issue-template directory as a set.
