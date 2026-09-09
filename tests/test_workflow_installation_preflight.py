@@ -545,7 +545,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "      - run: |\n"
                 "          python scripts/audit_freshness.py\n"
                 "          marker='repo-scaffold-freshness-audit'\n"
-                "          gh issue create --body-file report.md\n",
+                '          gh issue create --repo "$REPOSITORY" --body-file report.md\n',
                 encoding="utf-8",
             )
             allowlist = root / "code-scanning-allowlist.json"
@@ -610,7 +610,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "      - run: |\n"
                 "          python scripts/audit_freshness.py\n"
                 "          marker='repo-scaffold-freshness-audit'\n"
-                "          gh issue create --body-file report.md\n",
+                '          gh issue create --repo "$REPOSITORY" --body-file report.md\n',
                 encoding="utf-8",
             )
             invalid_allowlist = root / "code-scanning-allowlist.json"
@@ -643,7 +643,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "      - run: |\n"
             "          python scripts/audit_freshness.py\n"
             "          marker='repo-scaffold-freshness-audit'\n"
-            "          gh issue create --body-file report.md\n"
+            '          gh issue create --repo "$REPOSITORY" --body-file report.md\n'
+        )
+        body_command = (
+            '          gh issue create --repo "$REPOSITORY" --body-file report.md\n'
         )
         cases = {
             "valid": valid,
@@ -674,25 +677,25 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  audit:\n    permissions: {}\n    steps:\n",
             )
             + "  permissioned:\n    permissions:\n      issues: write\n",
-            "without durable body": valid.replace(
-                "          gh issue create --body-file report.md\n", ""
+            "without explicit repository": valid.replace(
+                body_command, "          gh issue create --body-file report.md\n"
             ),
+            "without durable body": valid.replace(body_command, ""),
             "issue listing is not reconciliation": valid.replace(
-                "          gh issue create --body-file report.md\n",
+                body_command,
                 "          gh issue list --body-file report.md\n",
             ),
             "body file belongs to another command": valid.replace(
-                "          gh issue create --body-file report.md\n",
+                body_command,
                 "          gh issue create --title reminder\n"
                 "          echo --body-file report.md\n",
             ),
             "comment-only command": valid.replace(
                 "          python scripts/audit_freshness.py\n"
-                "          marker='repo-scaffold-freshness-audit'\n"
-                "          gh issue create --body-file report.md\n",
+                "          marker='repo-scaffold-freshness-audit'\n" + body_command,
                 "          # python scripts/audit_freshness.py\n"
                 "          # marker='repo-scaffold-freshness-audit'\n"
-                "          # gh issue create --body-file report.md\n",
+                '          # gh issue create --repo "$REPOSITORY" --body-file report.md\n',
             ),
             "echo-only command": valid.replace(
                 "          python scripts/audit_freshness.py\n",
@@ -777,6 +780,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
 
             write([valid_entry])
             workflow_installation_preflight.validate_code_scanning_allowlist(allowlist)
+            write([{**valid_entry, "path": None}])
+            workflow_installation_preflight.validate_code_scanning_allowlist(allowlist)
 
             invalid_entries = (
                 ("missing selector field", [{**valid_entry, "reason": None}], "entry"),
@@ -797,6 +802,16 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     "numbers must be unique",
                 ),
                 (
+                    "non-positive alert number",
+                    [{**valid_entry, "number": 0}],
+                    "positive integer",
+                ),
+                (
+                    "empty path",
+                    [{**valid_entry, "path": ""}],
+                    "non-empty canonical POSIX",
+                ),
+                (
                     "non-canonical path",
                     [{**valid_entry, "path": "../escape"}],
                     "canonical POSIX",
@@ -810,6 +825,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     "invalid review date",
                     [{**valid_entry, "reviewed-on": "not-a-date"}],
                     "ISO date",
+                ),
+                (
+                    "empty review date",
+                    [{**valid_entry, "reviewed-on": ""}],
+                    "non-empty ISO date",
                 ),
                 (
                     "future review date",

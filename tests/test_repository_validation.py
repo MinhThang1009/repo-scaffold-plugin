@@ -7574,6 +7574,29 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
         for fragment in expected:
             self.assertTrue(any(fragment in problem for problem in problems), fragment)
 
+    def test_reconciliation_job_must_keep_effective_issue_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/community-health.yml"
+            workflow_text = installed.read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(
+                "  upstream-drift:\n    name: community-health-upstream\n",
+                "  upstream-drift:\n"
+                "    name: community-health-upstream\n"
+                "    permissions:\n"
+                "      contents: read\n",
+                1,
+            )
+            installed.write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any("effective issues: write permission" in problem for problem in problems)
+        )
+
 
 class FreshnessTrackingContractTests(unittest.TestCase):
     def copy_contract(self, root: Path) -> None:
@@ -7605,6 +7628,123 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 Path(directory)
             )
         self.assertTrue(any("freshness" in problem for problem in problems))
+
+    def test_issue_permission_helpers_resolve_effective_job_scope(self) -> None:
+        self.assertTrue(
+            validate_repository.has_explicit_repository_binding(
+                'gh issue create --repo "$REPOSITORY" --body-file report.md'
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_explicit_repository_binding(
+                "gh issue edit --repo=$REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_explicit_repository_binding(
+                "python audit.py --repository-root ."
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                r"""gh issue create \
+  --repo $REPOSITORY \
+  --body-file report.md"""
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue close 1 --repo $REPOSITORY"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --body-file report.md\n"
+                "gh issue edit --repo $REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "# gh issue create --repo $REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(validate_repository.permissions_grant_issue_write(None))
+        self.assertFalse(
+            validate_repository.permissions_grant_issue_write({"permissions": {}})
+        )
+        self.assertTrue(
+            validate_repository.permissions_grant_issue_write(
+                {"permissions": "write-all"}
+            )
+        )
+        self.assertTrue(
+            validate_repository.permissions_grant_issue_write(
+                {"permissions": {"issues": "write"}}
+            )
+        )
+        self.assertFalse(
+            validate_repository.permissions_grant_issue_write(
+                {"permissions": {"issues": "read"}}
+            )
+        )
+        self.assertFalse(validate_repository.job_effective_issue_write(None, {}))
+        self.assertFalse(validate_repository.job_effective_issue_write({}, None))
+        self.assertTrue(
+            validate_repository.job_effective_issue_write(
+                {"permissions": {"issues": "write"}}, {}
+            )
+        )
+        self.assertTrue(
+            validate_repository.job_effective_issue_write(
+                {}, {"permissions": "write-all"}
+            )
+        )
+        self.assertFalse(
+            validate_repository.job_effective_issue_write(
+                {"permissions": {"issues": "write"}},
+                {"permissions": {"issues": "read"}},
+            )
+        )
+
+    def test_freshness_reconciliation_requires_effective_permission_and_repo_binding(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/freshness.yml"
+            workflow_text = installed.read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(
+                "  audit:\n    name: freshness-audit\n",
+                "  audit:\n"
+                "    name: freshness-audit\n"
+                "    permissions:\n"
+                "      contents: read\n",
+                1,
+            ).replace(
+                '--repo "github.com/${REPOSITORY}"',
+                '--repository "github.com/${REPOSITORY}"',
+            )
+            installed.write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+
+        self.assertTrue(
+            any(
+                "audit job must have effective issues: write permission" in problem
+                for problem in problems
+            )
+        )
+        self.assertTrue(
+            any(
+                "reminder mutations must bind an explicit repository" in problem
+                for problem in problems
+            )
+        )
 
     def test_freshness_contract_drift_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -7681,6 +7821,31 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
         self.assertEqual(
             validate_repository.validate_official_docs_tracking_contract(PLUGIN_ROOT),
             [],
+        )
+
+    def test_reconciliation_job_must_keep_effective_issue_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/official-docs.yml"
+            workflow_text = workflow.read_text(encoding="utf-8").replace(
+                "  audit:\n    name: official-docs-review\n",
+                "  audit:\n"
+                "    name: official-docs-review\n"
+                "    permissions:\n"
+                "      contents: read\n",
+                1,
+            )
+            workflow.write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "audit job must have effective issues: write permission" in problem
+                for problem in problems
+            )
         )
 
     def test_critical_policy_claims_must_track_every_affected_path(self) -> None:
@@ -8424,6 +8589,30 @@ class PolicyDriftReminderContractTests(unittest.TestCase):
             unreadable[0].startswith(
                 ".github/workflows/ci.yml: could not verify policy reminder:"
             )
+        )
+
+    def test_policy_drift_reminder_requires_explicit_repository_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            workflow_path = workflow_directory / "ci.yml"
+            workflow_text = (
+                PLUGIN_ROOT / ".github" / "workflows" / "ci.yml"
+            ).read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(
+                '--repo "github.com/${REPOSITORY}"',
+                '--repository "github.com/${REPOSITORY}"',
+            )
+            workflow_path.write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_policy_drift_reminder_contract(root)
+
+        self.assertEqual(
+            problems,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must reconcile "
+                "one marker issue from both canary results"
+            ],
         )
 
 

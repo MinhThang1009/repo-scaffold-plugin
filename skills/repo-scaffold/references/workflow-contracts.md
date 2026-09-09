@@ -24,7 +24,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   PR head code, and require one trusted marker plus all required headings/items.
 - Links, community-health, and freshness: keep network/upstream checks advisory;
   reminder workflows run only on trusted scheduled/manual events and maintain one
-  idempotent issue when Issues are enabled. Freshness must retain the optional
+  idempotent issue when Issues are enabled. Every reminder mutation must use an
+  explicit repository binding, and the reconciliation job must have effective
+  `issues: write` permission. Freshness must retain the optional
   Release Please schema tracker and CI-toolchain policy tracker shipped with the
   scaffold so installed inputs receive the same reminder coverage as action pins.
   Code-scanning allowlist exceptions must also carry a bounded review date and

@@ -444,6 +444,44 @@ def load_yaml(path: Path) -> Any:
     return load_yaml_text(path.read_text(encoding="utf-8"))
 
 
+def permissions_grant_issue_write(scope: object) -> bool:
+    """Return whether one workflow or job permission scope grants Issues write."""
+    if not isinstance(scope, dict):
+        return False
+    permissions = scope.get("permissions", {})
+    return permissions == "write-all" or (
+        isinstance(permissions, dict) and permissions.get("issues") == "write"
+    )
+
+
+def job_effective_issue_write(workflow: object, job: object) -> bool:
+    """Resolve the Issues permission inherited by one reminder job."""
+    if not isinstance(workflow, dict) or not isinstance(job, dict):
+        return False
+    return permissions_grant_issue_write(job if "permissions" in job else workflow)
+
+
+def has_explicit_repository_binding(text: str) -> bool:
+    """Return whether shell text contains a value-bearing ``gh --repo`` option."""
+    return re.search(r"(?<![\w-])--repo(?:=|\s+)(?=\S)", text) is not None
+
+
+def has_repo_bound_issue_reconciliation(text: str) -> bool:
+    """Require each issue create/edit body mutation to bind its repository."""
+    normalized = re.sub(r"\\\r?\n", " ", text)
+    commands = []
+    for line in normalized.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if re.search(r"(?<![\w-])gh\s+issue\s+(?:create|edit)(?=\s|$)", stripped):
+            commands.append(stripped)
+    body_commands = [command for command in commands if "--body-file" in command]
+    return bool(body_commands) and all(
+        has_explicit_repository_binding(command) for command in body_commands
+    )
+
+
 def reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """Build a JSON object while rejecting duplicate member names."""
     result: dict[str, Any] = {}
@@ -1368,6 +1406,11 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
                 ".github/workflows/ci.yml: policy drift reminder must reconcile "
                 "one marker issue from both canary results"
             ]
+    if not has_repo_bound_issue_reconciliation(workflow_text):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder must reconcile "
+            "one marker issue from both canary results"
+        ]
     return []
 
 
@@ -4685,6 +4728,10 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
             or job.get("timeout-minutes") != "10"
         ):
             problems.append(f"{relative}: upstream-drift job contract is invalid")
+        elif not job_effective_issue_write(workflow, job):
+            problems.append(
+                f"{relative}: upstream-drift job must have effective issues: write permission"
+            )
         expected_script = (
             "scripts/check_community_health.py"
             if path == asset_workflow
@@ -4697,6 +4744,10 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
         ):
             problems.append(
                 f"{relative}: workflow must run the checker and reconcile one marker issue"
+            )
+        if not has_repo_bound_issue_reconciliation(text):
+            problems.append(
+                f"{relative}: reminder mutations must bind an explicit repository"
             )
     return problems
 
@@ -4812,6 +4863,12 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             problems.append(
                 f"{relative}: freshness workflow must use contents: read and issues: write"
             )
+        jobs = workflow.get("jobs")
+        audit_job = jobs.get("audit") if isinstance(jobs, dict) else None
+        if not job_effective_issue_write(workflow, audit_job):
+            problems.append(
+                f"{relative}: audit job must have effective issues: write permission"
+            )
         if (
             "python scripts/audit_freshness.py" not in text
             or "repo-scaffold-freshness-audit" not in text
@@ -4819,6 +4876,10 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         ):
             problems.append(
                 f"{relative}: freshness workflow must run the checker and reconcile one marker issue"
+            )
+        if not has_repo_bound_issue_reconciliation(text):
+            problems.append(
+                f"{relative}: reminder mutations must bind an explicit repository"
             )
     if len(texts) == 2 and texts[0] != texts[1]:
         problems.append("freshness workflow must match its scaffold asset")
@@ -5162,6 +5223,10 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
         problems.append(
             ".github/workflows/official-docs.yml: reminder concurrency or audit job contract is invalid"
         )
+    elif not job_effective_issue_write(workflow, job):
+        problems.append(
+            ".github/workflows/official-docs.yml: audit job must have effective issues: write permission"
+        )
     for fragment in (
         "python scripts/audit_official_docs.py",
         "repo-scaffold-official-docs-audit",
@@ -5172,6 +5237,10 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 ".github/workflows/official-docs.yml: must run the checker and reconcile one marker issue"
             )
             break
+    if not has_repo_bound_issue_reconciliation(workflow_text):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder mutations must bind an explicit repository"
+        )
     try:
         ci_text = ci_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:

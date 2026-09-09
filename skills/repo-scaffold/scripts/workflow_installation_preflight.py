@@ -31,6 +31,7 @@ MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
 FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
+FRESHNESS_REMINDER_REPOSITORY_OPTION = "--repo"
 FRESHNESS_REMINDER_BODY_FILE = "--body-file"
 FRESHNESS_REMINDER_SUBCOMMANDS = frozenset({"create", "edit"})
 
@@ -95,7 +96,7 @@ def executable_shell_lines(command: str) -> list[str]:
 
 
 def has_issue_body_file_reconciliation(command: str) -> bool:
-    """Require a real ``gh issue create/edit --body-file`` command block."""
+    """Require a real repo-bound ``gh issue create/edit --body-file`` command."""
     lines = executable_shell_lines(command)
     for index, line in enumerate(lines):
         first_line = line.rstrip()
@@ -121,10 +122,30 @@ def has_issue_body_file_reconciliation(command: str) -> bool:
             tokens = shlex.split(" ".join(command_parts), comments=True, posix=True)
         except ValueError:
             continue
-        if any(
-            token == FRESHNESS_REMINDER_BODY_FILE
-            or token.startswith(f"{FRESHNESS_REMINDER_BODY_FILE}=")
-            for token in tokens
+        repository_option = next(
+            (
+                token
+                for token in tokens
+                if token.startswith(f"{FRESHNESS_REMINDER_REPOSITORY_OPTION}=")
+            ),
+            None,
+        )
+        has_repository = bool(
+            repository_option and repository_option.partition("=")[2].strip()
+        ) or any(
+            token == FRESHNESS_REMINDER_REPOSITORY_OPTION
+            and index + 1 < len(tokens)
+            and bool(tokens[index + 1].strip())
+            and not tokens[index + 1].startswith("-")
+            for index, token in enumerate(tokens)
+        )
+        if (
+            any(
+                token == FRESHNESS_REMINDER_BODY_FILE
+                or token.startswith(f"{FRESHNESS_REMINDER_BODY_FILE}=")
+                for token in tokens
+            )
+            and has_repository
         ):
             return True
     return False

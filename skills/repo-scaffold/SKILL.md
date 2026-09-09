@@ -182,8 +182,9 @@ when the local call cannot be resolved to one supplied input.
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
 only scheduled and manual triggers, request Issues write permission, execute the
 freshness audit, and reconcile marker issues through real
-`gh issue create` or `gh issue edit --body-file` commands. The preflight rejects
-untrusted-trigger, comment-only, or otherwise incomplete reminder scaffolds.
+`gh issue create` or `gh issue edit --repo ... --body-file` commands. The
+preflight requires an explicit repository binding and rejects untrusted-trigger,
+comment-only, or otherwise incomplete reminder scaffolds.
 The reconciliation job itself must inherit or declare `issues: write`; granting
 that permission only to a different job does not satisfy the companion contract.
 
