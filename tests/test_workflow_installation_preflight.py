@@ -791,7 +791,18 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 )
 
             write([valid_entry])
-            workflow_installation_preflight.validate_code_scanning_allowlist(allowlist)
+            with mock.patch.object(
+                workflow_installation_preflight, "datetime"
+            ) as clock:
+                clock.now.return_value.date.return_value = (
+                    workflow_installation_preflight.date(2026, 9, 9)
+                )
+                workflow_installation_preflight.validate_code_scanning_allowlist(
+                    allowlist
+                )
+                clock.now.assert_called_once_with(
+                    workflow_installation_preflight.timezone.utc
+                )
             write([{**valid_entry, "path": None}])
             workflow_installation_preflight.validate_code_scanning_allowlist(allowlist)
 

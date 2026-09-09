@@ -5232,6 +5232,82 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("reviewed-on must use ISO" in item for item in invalid_review_date)
             )
 
+            valid_entry = {
+                "number": 1,
+                "tool": "CodeQL",
+                "rule": "py/example",
+                "path": None,
+                "reason": "Reviewed.",
+                "reviewed-on": "2000-01-01",
+                "review-period-days": 90,
+            }
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [valid_entry, {**valid_entry}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(validate_repository, "datetime") as clock:
+                clock.now.return_value.date.return_value = validate_repository.date(
+                    2026, 9, 9
+                )
+                duplicate_numbers = (
+                    validate_repository.validate_code_scanning_gate_contract(root)
+                )
+                clock.now.assert_called_once_with(validate_repository.timezone.utc)
+            self.assertTrue(
+                any(
+                    "alert numbers must be unique" in item for item in duplicate_numbers
+                )
+            )
+
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [
+                            {**valid_entry, "number": number}
+                            for number in range(
+                                1,
+                                validate_repository.MAX_CODE_SCANNING_ALLOWLIST_ENTRIES
+                                + 2,
+                            )
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            oversized = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertTrue(
+                any(
+                    f"exceeds the {validate_repository.MAX_CODE_SCANNING_ALLOWLIST_ENTRIES}-entry limit"
+                    in item
+                    for item in oversized
+                )
+            )
+
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid_entry, "reviewed-on": "2999-01-01"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            future_review_date = (
+                validate_repository.validate_code_scanning_gate_contract(root)
+            )
+            self.assertTrue(
+                any(
+                    "reviewed-on cannot be in the future" in item
+                    for item in future_review_date
+                )
+            )
+
             source_paths = (
                 PLUGIN_ROOT / ".github" / "workflows" / "code-scanning-gate.yml",
                 PLUGIN_ROOT

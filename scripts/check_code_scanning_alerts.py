@@ -10,7 +10,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -180,7 +180,7 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
                 raise GateError(
                     "code-scanning allowlist reviewed-on must use ISO date format"
                 ) from error
-            if reviewed_date > date.today():
+            if reviewed_date > datetime.now(timezone.utc).date():
                 raise GateError(
                     "code-scanning allowlist reviewed-on cannot be in the future"
                 )

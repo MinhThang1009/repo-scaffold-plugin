@@ -108,7 +108,10 @@ class CodeScanningGateTests(unittest.TestCase):
                 json.dumps({"schema-version": 3, "allowlist": [valid]}),
                 encoding="utf-8",
             )
-            self.assertEqual(len(gate.load_allowlist(path)), 1)
+            with mock.patch.object(gate, "datetime") as clock:
+                clock.now.return_value.date.return_value = gate.date(2026, 9, 9)
+                self.assertEqual(len(gate.load_allowlist(path)), 1)
+                clock.now.assert_called_once_with(gate.timezone.utc)
 
             for field, value in (
                 ("reviewed-on", "not-a-date"),

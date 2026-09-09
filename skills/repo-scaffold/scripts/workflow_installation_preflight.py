@@ -8,7 +8,7 @@ import fnmatch
 import json
 import shlex
 import stat
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -373,7 +373,7 @@ def validate_code_scanning_allowlist(path: Path) -> None:
             raise InspectionError(
                 f"{location} reviewed-on must use ISO date format."
             ) from error
-        if reviewed_date > date.today():
+        if reviewed_date > datetime.now(timezone.utc).date():
             raise InspectionError(f"{location} reviewed-on cannot be in the future.")
 
         review_period_days = entry["review-period-days"]

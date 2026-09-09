@@ -17,7 +17,7 @@ import sys
 import tempfile
 import zipfile
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -44,6 +44,8 @@ CACHE_DIRECTORIES = {
     ".venv",
 }
 COVERAGE_FAIL_UNDER = 100
+MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
+MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 COMMONMARK = MarkdownIt("commonmark")
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -5310,6 +5312,11 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             problems.append(
                 ".github/code-scanning-allowlist.json: require schema-version 3 and an allowlist"
             )
+        elif len(entries) > MAX_CODE_SCANNING_ALLOWLIST_ENTRIES:
+            problems.append(
+                ".github/code-scanning-allowlist.json: allowlist exceeds the "
+                f"{MAX_CODE_SCANNING_ALLOWLIST_ENTRIES}-entry limit"
+            )
         elif any(
             not isinstance(entry, dict)
             or set(entry)
@@ -5336,19 +5343,35 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             or not entry["reviewed-on"].strip()
             or not isinstance(entry.get("review-period-days"), int)
             or isinstance(entry["review-period-days"], bool)
-            or not 1 <= entry["review-period-days"] <= 366
+            or not 1
+            <= entry["review-period-days"]
+            <= MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS
             for entry in entries
         ):
             problems.append(
                 ".github/code-scanning-allowlist.json: each entry must use an exact positive alert selector and review period"
             )
         else:
+            seen_numbers: set[int] = set()
+            today = datetime.now(timezone.utc).date()
             for entry in entries:
+                number = entry["number"]
+                if number in seen_numbers:
+                    problems.append(
+                        ".github/code-scanning-allowlist.json: alert numbers must be unique"
+                    )
+                    break
+                seen_numbers.add(number)
                 try:
-                    date.fromisoformat(entry["reviewed-on"])
+                    reviewed_date = date.fromisoformat(entry["reviewed-on"])
                 except ValueError:
                     problems.append(
                         ".github/code-scanning-allowlist.json: reviewed-on must use ISO date format"
+                    )
+                    break
+                if reviewed_date > today:
+                    problems.append(
+                        ".github/code-scanning-allowlist.json: reviewed-on cannot be in the future"
                     )
                     break
     expected_permissions = {
