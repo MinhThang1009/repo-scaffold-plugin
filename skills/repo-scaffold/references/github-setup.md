@@ -349,9 +349,13 @@ ref cannot race the scheduled run. Untrusted triggers, comments, shell-
 ambiguous commands, or an incomplete reminder do not satisfy the companion
 requirement. The `--body-file` value must match the audit's Markdown output in
 the same job. Direct REST mutations through `gh api`, including body-bearing
-default-`POST` calls, and shell wrappers or dynamic executors that hide GitHub
-commands are rejected. The reconciliation job itself must inherit or declare
-`issues: write`; a grant on another job is insufficient.
+default-`POST` calls, state-changing calls through known direct HTTP clients
+(`curl`, `wget`, and PowerShell REST cmdlets), path-qualified `gh` executables,
+and shell wrappers or dynamic executors that hide GitHub commands are rejected.
+The reconciliation job itself
+must inherit or declare
+`issues: write`, be named `freshness-audit`, and use `timeout-minutes: 15`; a
+grant on another job is insufficient.
 
 ## Inherited community-health policy
 

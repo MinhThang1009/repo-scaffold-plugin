@@ -67,6 +67,8 @@ REMINDER_ISSUE_ALLOWED_MUTATIONS = frozenset({"create", "edit", "close"})
 REMINDER_ISSUE_BODY_MUTATIONS = frozenset({"create", "edit"})
 REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "view"})
 REMINDER_WORKFLOW_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.repository }}"
+FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
+FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
 POLICY_REMINDER_CONCURRENCY_GROUP = (
     "${{ github.workflow }}-policy-drift-${{ github.repository }}"
 )
@@ -79,8 +81,9 @@ FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
 GITHUB_API_READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
 GITHUB_API_BODY_OPTIONS = frozenset({"--field", "--input", "--raw-field", "-F", "-f"})
 GITHUB_API_METHOD_OPTIONS = frozenset({"--method", "-X"})
+GITHUB_CLI_EXECUTABLE_NAMES = frozenset({"gh", "gh.exe"})
 EMBEDDED_GITHUB_COMMAND_PATTERN = re.compile(
-    r"(?:^|[\s`$(&|;])gh\s+(?:api|issue)(?:\s|$)"
+    r"(?i)(?:^|[\s`$(&|;/\\])(?:[^`$(&|;]*[/\\])?gh(?:\.exe)?\s+(?:api|issue)(?:\s|$)"
 )
 EMBEDDED_FRESHNESS_AUDIT_PATTERN = re.compile(
     r"(?<!\S)python\s+scripts/audit_freshness\.py(?:\s|$)"
@@ -100,8 +103,65 @@ DYNAMIC_SHELL_EXECUTORS = frozenset(
     }
 )
 SHELL_COMMAND_WRAPPERS = frozenset({"command", "env", "nice", "nohup", "sudo", "time"})
-SHELL_CONTROL_CHARACTERS = frozenset(";()<>|&")
+UNSAFE_NETWORK_EXECUTORS = frozenset(
+    {
+        "curl",
+        "curl.exe",
+        "irm",
+        "invoke-restmethod",
+        "invoke-webrequest",
+        "iwr",
+        "wget",
+        "wget.exe",
+    }
+)
+NETWORK_METHOD_OPTIONS = frozenset({"--method", "--request", "-method", "-request"})
+NETWORK_BODY_OPTIONS = frozenset(
+    {
+        "--body",
+        "--data",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--form",
+        "--form-string",
+        "--json",
+        "--post-data",
+        "--post-file",
+        "--upload-file",
+        "-body",
+        "-d",
+        "-form",
+        "-infile",
+        "-post-data",
+        "-post-file",
+    }
+)
+SHELL_CONTROL_CHARACTERS = frozenset(";()|&")
 SHELL_COMMAND_PREFIXES = frozenset({"!", "then", "do", "else"})
+SHELL_TEST_OPERATORS = frozenset(
+    {
+        "=",
+        "==",
+        "!=",
+        "-d",
+        "-e",
+        "-eq",
+        "-f",
+        "-ge",
+        "-gt",
+        "-le",
+        "-lt",
+        "-n",
+        "-ne",
+        "-r",
+        "-s",
+        "-v",
+        "-w",
+        "-x",
+        "-z",
+    }
+)
 COMMONMARK = MarkdownIt("commonmark")
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -591,6 +651,16 @@ def shell_command_segments(text: str) -> list[list[str]] | None:
     return segments
 
 
+def executable_basename(token: str) -> str:
+    """Return a case-insensitive executable basename from either path style."""
+    return re.split(r"[/\\]", token)[-1].casefold()
+
+
+def is_github_cli_executable(token: str) -> bool:
+    """Return whether a token invokes gh, including path-qualified Windows forms."""
+    return executable_basename(token) in GITHUB_CLI_EXECUTABLE_NAMES
+
+
 def shell_command_prefix(segment: list[str]) -> list[str]:
     """Remove shell grammar words that can precede a command body."""
     normalized = list(segment)
@@ -635,18 +705,16 @@ def option_has_one_value(
 def has_embedded_command(tokens: list[str]) -> bool:
     """Reject quoted command text that the shell tokenizer cannot execute safely."""
     patterns = (EMBEDDED_GITHUB_COMMAND_PATTERN, EMBEDDED_FRESHNESS_AUDIT_PATTERN)
-    if any(
-        pattern.search(token)
-        for token in tokens
-        if any(character.isspace() for character in token)
-        for pattern in patterns
-    ):
-        return True
-    direct_command = tuple(tokens[:2]) in {
-        ("gh", "api"),
-        ("gh", "issue"),
-        ("python", "scripts/audit_freshness.py"),
-    }
+    for token in tokens:
+        if not any(character.isspace() for character in token):
+            continue
+        if any(pattern.search(token) for pattern in patterns):
+            return True
+    direct_command = len(tokens) >= 2 and (
+        tokens[0] == "gh"
+        and tokens[1] in {"api", "issue"}
+        or tuple(tokens[:2]) == ("python", "scripts/audit_freshness.py")
+    )
     return not direct_command and any(
         pattern.search(" ".join(tokens)) for pattern in patterns
     )
@@ -664,10 +732,80 @@ def has_dynamic_shell_executor(tokens: list[str]) -> bool:
         index += 1
     if index >= len(tokens):
         return False
-    command = tokens[index].casefold()
-    if command in SHELL_COMMAND_WRAPPERS:
+    command = executable_basename(tokens[index])
+    if command in SHELL_COMMAND_WRAPPERS or command in {
+        "call",
+        "iex",
+        "invoke-expression",
+        "start",
+        "start-process",
+    }:
         return True
-    return command in DYNAMIC_SHELL_EXECUTORS
+    if command in DYNAMIC_SHELL_EXECUTORS:
+        return True
+    if not command.startswith(("$", "`")) or command in {"${", "$("}:
+        return False
+    if tokens[index].startswith("${{") or (
+        len(tokens) > index + 1 and tokens[index + 1].casefold() in SHELL_TEST_OPERATORS
+    ):
+        return False
+    if len(tokens) > 1:
+        return True
+    return re.fullmatch(r"\$[A-Z_][A-Z0-9_]*", tokens[index]) is None
+
+
+def network_client_is_mutation(tokens: list[str]) -> bool:
+    """Reject state-changing calls through known direct HTTP clients."""
+    if not tokens or executable_basename(tokens[0]) not in UNSAFE_NETWORK_EXECUTORS:
+        return False
+    methods: list[str | None] = []
+    has_body = False
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        normalized = token.casefold()
+        if token == "-X" or normalized in NETWORK_METHOD_OPTIONS:
+            if index + 1 >= len(tokens):
+                methods.append(None)
+            else:
+                methods.append(tokens[index + 1])
+                index += 1
+        elif any(
+            normalized.startswith(f"{option}=") for option in NETWORK_METHOD_OPTIONS
+        ):
+            methods.append(token.partition("=")[2])
+        elif token.startswith("-X") and token != "-X":
+            methods.append(token[2:].lstrip("="))
+        elif token == "-G" or normalized == "--get":
+            methods.append("GET")
+        elif token == "-I" or normalized == "--head":
+            methods.append("HEAD")
+        elif (
+            normalized in NETWORK_BODY_OPTIONS
+            or any(
+                normalized.startswith(option)
+                for option in (
+                    "--data=",
+                    "--data-",
+                    "--form=",
+                    "--post-data=",
+                    "--post-file=",
+                    "--upload-file=",
+                )
+            )
+            or token == "-d"
+            or token == "-F"
+            or token == "-T"
+            or token.startswith(("-d", "-F", "-T"))
+        ):
+            has_body = True
+        index += 1
+    if any(
+        method is None or method.strip().upper() not in GITHUB_API_READ_ONLY_METHODS
+        for method in methods
+    ):
+        return True
+    return has_body and not methods
 
 
 def github_api_is_mutation(tokens: list[str], position: int) -> bool:
@@ -711,11 +849,11 @@ def issue_subcommand_positions(tokens: list[str]) -> tuple[int, ...] | None:
     """Return literal ``gh issue`` positions, including the global ``--repo`` form."""
     if not tokens:
         return ()
-    if tokens[0] != "gh":
+    if not is_github_cli_executable(tokens[0]):
         return (
             None
             if any(
-                tokens[index : index + 2] == ["gh", "issue"]
+                is_github_cli_executable(tokens[index]) and tokens[index + 1] == "issue"
                 for index in range(1, len(tokens) - 1)
             )
             else ()
@@ -731,12 +869,14 @@ def issue_subcommand_positions(tokens: list[str]) -> tuple[int, ...] | None:
     adjacent_positions = [
         index
         for index in range(len(tokens) - 1)
-        if tokens[index : index + 2] == ["gh", "issue"]
+        if is_github_cli_executable(tokens[index]) and tokens[index + 1] == "issue"
     ]
     if any(index != 0 for index in adjacent_positions):
         return None
     if issue_position < len(tokens) and tokens[issue_position] == "issue":
         return (issue_position,)
+    if "issue" in tokens[issue_position + 1 :]:
+        return None
     return ()
 
 
@@ -752,10 +892,12 @@ def reminder_issue_mutation_blocks(
         tokens = shell_command_prefix(segment)
         if has_embedded_command(tokens) or has_dynamic_shell_executor(tokens):
             return None
+        if network_client_is_mutation(tokens):
+            return None
         api_positions = [
             index
             for index in range(len(tokens) - 1)
-            if tokens[index : index + 2] == ["gh", "api"]
+            if is_github_cli_executable(tokens[index]) and tokens[index + 1] == "api"
         ]
         if any(github_api_is_mutation(tokens, position) for position in api_positions):
             return None
@@ -880,6 +1022,8 @@ def has_freshness_job_reconciliation(workflow: object, text: str) -> bool:
             markdown_outputs
             and any("repo-scaffold-freshness-audit" in line for line in lines)
             and has_repo_bound_issue_reconciliation(job_text, markdown_outputs)
+            and job.get("name") == FRESHNESS_REMINDER_JOB_NAME
+            and job.get("timeout-minutes") == FRESHNESS_REMINDER_TIMEOUT_MINUTES
         ):
             reconciliation_jobs += 1
     return reconciliation_jobs == 1 and mutation_jobs == 1
@@ -5309,6 +5453,16 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             )
         jobs = workflow.get("jobs")
         audit_job = jobs.get("audit") if isinstance(jobs, dict) else None
+        if (
+            not isinstance(audit_job, dict)
+            or audit_job.get("name") != FRESHNESS_REMINDER_JOB_NAME
+            or audit_job.get("timeout-minutes") != FRESHNESS_REMINDER_TIMEOUT_MINUTES
+        ):
+            problems.append(
+                f"{relative}: freshness audit job must use the "
+                f"{FRESHNESS_REMINDER_JOB_NAME!r} name and a "
+                f"{FRESHNESS_REMINDER_TIMEOUT_MINUTES}-minute timeout"
+            )
         if not job_effective_issue_write(workflow, audit_job):
             problems.append(
                 f"{relative}: audit job must have effective issues: write permission"

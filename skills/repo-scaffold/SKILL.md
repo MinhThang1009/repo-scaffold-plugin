@@ -195,10 +195,13 @@ repository-root, JSON-output, and Markdown-output arguments, and rejects
 external `docker://` references unless they use a full SHA-256 digest.
 The reconciliation job itself must inherit or declare `issues: write`; granting
 that permission only to a different job does not satisfy the companion contract.
+It must be named `freshness-audit` and set `timeout-minutes: 15`.
 The body file must be the same Markdown output path produced by the audit in that
 job. Direct REST mutations through `gh api`, body-bearing default-`POST` API
-calls, and shell wrappers or dynamic executors that hide GitHub commands are
-rejected as ambiguous.
+calls, state-changing calls through known direct HTTP clients (`curl`, `wget`,
+and PowerShell REST cmdlets),
+path-qualified `gh` executables, and shell wrappers or dynamic executors that
+hide GitHub commands are rejected as ambiguous.
 
 For a `pull_request` workflow that declares any write permission, first verify
 that the repository's Actions setting **Send write tokens to workflows from pull

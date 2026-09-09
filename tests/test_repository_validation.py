@@ -7722,6 +7722,31 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             [],
         )
 
+    def test_freshness_job_runtime_contract_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            for relative in (
+                ".github/workflows/freshness.yml",
+                "skills/repo-scaffold/assets/workflows/freshness.yml",
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8")
+                    .replace("    name: freshness-audit\n", "    name: reminder\n")
+                    .replace("    timeout-minutes: 15\n", ""),
+                    encoding="utf-8",
+                )
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+
+        self.assertTrue(
+            any(
+                "freshness audit job must use the 'freshness-audit' name and a "
+                "15-minute timeout" in problem
+                for problem in problems
+            )
+        )
+
     def test_missing_freshness_tracking_contract_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             problems = validate_repository.validate_freshness_tracking_contract(
@@ -7760,6 +7785,13 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "python audit.py --repository-root ."
             )
         )
+        self.assertTrue(
+            validate_repository.has_embedded_command(
+                ["echo", r"C:\Program Files\gh.exe issue close 1"]
+            )
+        )
+        self.assertFalse(validate_repository.has_dynamic_shell_executor(["${{"]))
+        self.assertFalse(validate_repository.has_dynamic_shell_executor(["$UPPER"]))
         self.assertTrue(
             validate_repository.has_repo_bound_issue_reconciliation(
                 "gh issue create --repo $REPOSITORY --title reminder "
@@ -7870,6 +7902,11 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "gh --repo $REPOSITORY issue reopen 1"
             )
         )
+        self.assertIsNone(
+            validate_repository.reminder_issue_mutation_blocks(
+                "gh --hostname github.com issue close 1"
+            )
+        )
         self.assertTrue(
             validate_repository.has_repo_bound_issue_reconciliation(
                 "gh --repo $REPOSITORY issue create --title reminder "
@@ -7883,6 +7920,25 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "echo `gh issue close 1`"
             )
         )
+        for command in (
+            "/usr/bin/gh issue create --repo r --title t --body-file report.md",
+            "gh.exe issue create --repo r --title t --body-file report.md",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(
+                    validate_repository.has_repo_bound_issue_reconciliation(command)
+                )
+        for command in (
+            "$command issue create --repo r --title t --body-file report.md",
+            "Start-Process gh -ArgumentList 'issue create --repo r --title t --body-file report.md'",
+            "curl -X POST https://api.github.com/repos/r/issues",
+            "Invoke-RestMethod -Method Post -Uri https://api.github.com/repos/r/issues",
+            "iwr -Method Post https://api.github.com/repos/r/issues",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(
+                    validate_repository.reminder_issue_mutation_blocks(command)
+                )
         self.assertTrue(
             validate_repository.has_repo_bound_issue_reconciliation(
                 "gh issue create --repo $REPOSITORY --title reminder "
@@ -7901,11 +7957,13 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             validate_repository.has_dynamic_shell_executor(["env", "--", "bash"])
         )
         self.assertTrue(validate_repository.has_dynamic_shell_executor(["env"]))
+        self.assertTrue(validate_repository.has_dynamic_shell_executor(["bash"]))
         self.assertFalse(
             validate_repository.has_dynamic_shell_executor(["1=bad", "bash"])
         )
         for tokens, expected in (
             (["gh", "api", "repos/example/issues", "--method="], True),
+            (["/usr/bin/gh", "api", "repos/example/issues", "-f", "title=x"], True),
             (["gh", "api", "repos/example/issues", "-XDELETE"], True),
             (["gh", "api", "repos/example/issues", "-X", "HEAD"], False),
             (["gh", "api", "repos/example/issues", "--method"], True),
@@ -7913,6 +7971,32 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             with self.subTest(tokens=tokens):
                 self.assertEqual(
                     validate_repository.github_api_is_mutation(tokens, 0), expected
+                )
+        for tokens, expected in (
+            (["curl", "--fail", "https://example.test"], False),
+            (["curl", "-x", "proxy", "https://example.test"], False),
+            (["curl", "-f", "https://example.test"], False),
+            (["curl", "-X", "GET", "https://example.test"], False),
+            (["curl", "-XPOST", "https://example.test"], True),
+            (["curl", "-d", "title=x", "https://example.test"], True),
+            (["curl", "-F", "title=x", "https://example.test"], True),
+            (["curl", "-T", "payload", "https://example.test"], True),
+            (["curl", "--upload-file=payload", "https://example.test"], True),
+            (["curl", "--json", '{"title":"x"}', "https://example.test"], True),
+            (["curl", "-g", "-d", "q=x", "https://example.test"], True),
+            (["curl", "-i", "-d", "q=x", "https://example.test"], True),
+            (["curl", "-G", "-d", "q=x", "https://example.test"], False),
+            (["curl", "-I", "-d", "q=x", "https://example.test"], False),
+            (["curl", "--get", "--data", "q=x", "https://example.test"], False),
+            (["curl", "--head", "https://example.test"], False),
+            (["curl", "--method=POST", "https://example.test"], True),
+            (["curl", "-X"], True),
+            (["Invoke-WebRequest", "-Method=Post", "https://example.test"], True),
+            (["wget", "--post-data=x", "https://example.test"], True),
+        ):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(
+                    validate_repository.network_client_is_mutation(tokens), expected
                 )
         self.assertEqual(
             validate_repository.freshness_audit_markdown_outputs(
@@ -8064,6 +8148,18 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 ["gh", "--repo=r", "issue", "create"]
             ),
             (2,),
+        )
+        self.assertEqual(
+            validate_repository.issue_subcommand_positions(
+                ["/usr/bin/gh", "issue", "create"]
+            ),
+            (1,),
+        )
+        self.assertEqual(
+            validate_repository.issue_subcommand_positions(
+                ["gh.exe", "issue", "create"]
+            ),
+            (1,),
         )
         self.assertIsNone(
             validate_repository.issue_subcommand_positions(

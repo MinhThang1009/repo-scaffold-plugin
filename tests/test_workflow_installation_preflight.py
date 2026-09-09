@@ -545,6 +545,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  cancel-in-progress: false\n"
                 "jobs:\n"
                 "  audit:\n"
+                "    name: freshness-audit\n"
+                "    timeout-minutes: 15\n"
                 "    steps:\n"
                 "      - run: |\n"
                 "          python scripts/audit_freshness.py \\\n"
@@ -616,6 +618,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  cancel-in-progress: false\n"
                 "jobs:\n"
                 "  audit:\n"
+                "    name: freshness-audit\n"
+                "    timeout-minutes: 15\n"
                 "    steps:\n"
                 "      - run: |\n"
                 "          python scripts/audit_freshness.py \\\n"
@@ -662,6 +666,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "  cancel-in-progress: false\n"
             "jobs:\n"
             "  audit:\n"
+            "    name: freshness-audit\n"
+            "    timeout-minutes: 15\n"
             "    steps:\n"
             "      - run: |\n"
             + audit_command
@@ -671,6 +677,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         body_command = '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n'
         cases = {
             "valid": valid,
+            "missing freshness timeout": valid.replace("    timeout-minutes: 15\n", ""),
+            "wrong freshness job name": valid.replace(
+                "    name: freshness-audit\n", "    name: reminder\n"
+            ),
             "branch-scoped concurrency": valid.replace(
                 "${{ github.repository }}", "${{ github.ref }}"
             ),
@@ -682,8 +692,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "permissions:\n  contents: write\n  issues: write",
             ),
             "overbroad job permissions": valid.replace(
-                "  audit:\n    steps:\n",
-                "  audit:\n    permissions: write-all\n    steps:\n",
+                "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    steps:\n",
+                "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    permissions: write-all\n    steps:\n",
             ),
             "unbound close mutation": valid.replace(
                 "          marker='repo-scaffold-freshness-audit'\n",
@@ -698,6 +708,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          marker='repo-scaffold-freshness-audit'\n",
                 "          marker='repo-scaffold-freshness-audit'\n"
                 '          gh --repo "$REPOSITORY" issue reopen 1\n',
+            ),
+            "hidden issue after unsupported global option": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          gh --hostname github.com issue close 1\n",
             ),
             "unbound edit body": valid.replace(
                 body_command,
@@ -730,14 +745,14 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ),
             "without issue write": valid.replace("  issues: write\n", ""),
             "reconciliation job overrides issue write": valid.replace(
-                "  audit:\n    steps:\n",
-                "  audit:\n    permissions:\n      contents: read\n    steps:\n",
+                "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    steps:\n",
+                "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    permissions:\n      contents: read\n    steps:\n",
             ),
             "issue write belongs to another job": valid.replace(
                 "  issues: write\n", "  issues: read\n"
             ).replace(
-                "  audit:\n    steps:\n",
-                "  audit:\n    permissions: {}\n    steps:\n",
+                "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    steps:\n",
+                "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    permissions: {}\n    steps:\n",
             )
             + "  permissioned:\n    permissions:\n      issues: write\n",
             "without explicit repository": valid.replace(
@@ -817,6 +832,16 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          marker='repo-scaffold-freshness-audit'\n"
                 "          gh api repos/${REPOSITORY}/issues --input issue.json\n",
             ),
+            "path-qualified issue mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          /usr/bin/gh issue close 1\n",
+            ),
+            "Windows gh executable mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          gh.exe issue close 1\n",
+            ),
             "quoted issue mutation": valid.replace(
                 "          marker='repo-scaffold-freshness-audit'\n",
                 "          marker='repo-scaffold-freshness-audit'\n"
@@ -837,18 +862,38 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          marker='repo-scaffold-freshness-audit'\n"
                 '          env bash -c "$COMMAND"\n',
             ),
+            "dynamic command variable mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          $command issue close 1 --repo repo\n",
+            ),
+            "PowerShell process mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          Start-Process gh -ArgumentList 'issue close 1 --repo repo'\n",
+            ),
+            "direct HTTP mutation client": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          curl -X POST https://api.github.com/repos/r/issues\n",
+            ),
+            "PowerShell HTTP mutation client": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          Invoke-RestMethod -Method Post -Uri https://api.github.com/repos/r/issues\n",
+            ),
             "audit and reconciliation in different jobs": valid.replace(
                 body_command,
                 "",
             ).replace(
-                "  audit:\n    steps:\n",
+                "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    steps:\n",
                 "  reconcile:\n"
                 "    permissions:\n"
                 "      issues: write\n"
                 "    steps:\n"
                 "      - run: |\n"
                 '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n'
-                "  audit:\n    steps:\n",
+                "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    steps:\n",
             ),
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -1084,6 +1129,17 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ),
             [],
         )
+        self.assertTrue(
+            workflow_installation_preflight.has_embedded_command(
+                ["echo", r"C:\Program Files\gh.exe issue close 1"]
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_dynamic_shell_executor(["${{"])
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_dynamic_shell_executor(["$UPPER"])
+        )
         self.assertFalse(
             workflow_installation_preflight.has_issue_body_file_reconciliation(
                 "gh issue create 'unterminated"
@@ -1126,6 +1182,29 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "gh --repo=r issue create --title t --body-file report.md"
             )
         )
+        for command in (
+            "/usr/bin/gh issue create --repo r --title t --body-file report.md",
+            "gh.exe issue create --repo r --title t --body-file report.md",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(
+                    workflow_installation_preflight.has_issue_body_file_reconciliation(
+                        command
+                    )
+                )
+        for command in (
+            "$command issue create --repo r --title t --body-file report.md",
+            "Start-Process gh -ArgumentList 'issue create --repo r --title t --body-file report.md'",
+            "curl -X POST https://api.github.com/repos/r/issues",
+            "Invoke-RestMethod -Method Post -Uri https://api.github.com/repos/r/issues",
+            "irm -Method Post https://api.github.com/repos/r/issues",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(
+                    workflow_installation_preflight.has_issue_body_file_reconciliation(
+                        command
+                    )
+                )
         self.assertTrue(
             workflow_installation_preflight.has_nonempty_option_value(
                 ["--repo", "owner/repository"], "--repo"
@@ -1169,6 +1248,18 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             workflow_installation_preflight.issue_subcommand_positions(
                 ["gh", "issue", "create", "gh", "issue", "close"]
             )
+        )
+        self.assertEqual(
+            workflow_installation_preflight.issue_subcommand_positions(
+                ["/usr/bin/gh", "issue", "create"]
+            ),
+            (1,),
+        )
+        self.assertEqual(
+            workflow_installation_preflight.issue_subcommand_positions(
+                ["gh.exe", "issue", "create"]
+            ),
+            (1,),
         )
         self.assertEqual(
             workflow_installation_preflight.issue_mutation_command_blocks(
@@ -1225,6 +1316,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         for tokens, expected in (
             (["gh", "api", "repos/example/issues"], False),
+            (["/usr/bin/gh", "api", "repos/example/issues", "-f", "title=x"], True),
             (["gh", "api", "repos/example/issues", "-f", "title=x"], True),
             (
                 ["gh", "api", "repos/example/issues", "--method", "GET", "-f", "q=x"],
@@ -1239,6 +1331,33 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             with self.subTest(tokens=tokens):
                 self.assertEqual(
                     workflow_installation_preflight.github_api_is_mutation(tokens, 0),
+                    expected,
+                )
+        for tokens, expected in (
+            (["curl", "--fail", "https://example.test"], False),
+            (["curl", "-x", "proxy", "https://example.test"], False),
+            (["curl", "-f", "https://example.test"], False),
+            (["curl", "-X", "GET", "https://example.test"], False),
+            (["curl", "-XPOST", "https://example.test"], True),
+            (["curl", "-d", "title=x", "https://example.test"], True),
+            (["curl", "-F", "title=x", "https://example.test"], True),
+            (["curl", "-T", "payload", "https://example.test"], True),
+            (["curl", "--upload-file=payload", "https://example.test"], True),
+            (["curl", "--json", '{"title":"x"}', "https://example.test"], True),
+            (["curl", "-g", "-d", "q=x", "https://example.test"], True),
+            (["curl", "-i", "-d", "q=x", "https://example.test"], True),
+            (["curl", "-G", "-d", "q=x", "https://example.test"], False),
+            (["curl", "-I", "-d", "q=x", "https://example.test"], False),
+            (["curl", "--get", "--data", "q=x", "https://example.test"], False),
+            (["curl", "--head", "https://example.test"], False),
+            (["curl", "--method=POST", "https://example.test"], True),
+            (["curl", "-X"], True),
+            (["Invoke-RestMethod", "-Method=Post", "https://example.test"], True),
+            (["wget", "--post-data=x", "https://example.test"], True),
+        ):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(
+                    workflow_installation_preflight.network_client_is_mutation(tokens),
                     expected,
                 )
         self.assertTrue(
