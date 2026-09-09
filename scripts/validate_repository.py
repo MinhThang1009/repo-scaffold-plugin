@@ -461,9 +461,14 @@ def job_effective_issue_write(workflow: object, job: object) -> bool:
     return permissions_grant_issue_write(job if "permissions" in job else workflow)
 
 
+def has_value_bearing_option(text: str, option: str) -> bool:
+    """Return whether shell text contains a value-bearing CLI option token."""
+    return re.search(rf"(?<![\w-]){re.escape(option)}(?:=|\s+)(?=\S)", text) is not None
+
+
 def has_explicit_repository_binding(text: str) -> bool:
     """Return whether shell text contains a value-bearing ``gh --repo`` option."""
-    return re.search(r"(?<![\w-])--repo(?:=|\s+)(?=\S)", text) is not None
+    return has_value_bearing_option(text, "--repo")
 
 
 def has_repo_bound_issue_reconciliation(text: str) -> bool:
@@ -476,7 +481,11 @@ def has_repo_bound_issue_reconciliation(text: str) -> bool:
             continue
         if re.search(r"(?<![\w-])gh\s+issue\s+(?:create|edit)(?=\s|$)", stripped):
             commands.append(stripped)
-    body_commands = [command for command in commands if "--body-file" in command]
+    body_commands = [
+        command
+        for command in commands
+        if has_value_bearing_option(command, "--body-file")
+    ]
     return bool(body_commands) and all(
         has_explicit_repository_binding(command) for command in body_commands
     )

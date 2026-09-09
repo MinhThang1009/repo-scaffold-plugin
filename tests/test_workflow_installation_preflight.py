@@ -680,6 +680,18 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "without explicit repository": valid.replace(
                 body_command, "          gh issue create --body-file report.md\n"
             ),
+            "without repository value": valid.replace(
+                body_command,
+                "          gh issue create --repo= --body-file report.md\n",
+            ),
+            "repository option consumes another option": valid.replace(
+                body_command,
+                "          gh issue create --repo --body-file report.md\n",
+            ),
+            "without body-file value": valid.replace(
+                body_command,
+                '          gh issue create --repo "$REPOSITORY" --body-file=\n',
+            ),
             "without durable body": valid.replace(body_command, ""),
             "issue listing is not reconciliation": valid.replace(
                 body_command,
@@ -901,6 +913,31 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertFalse(
             workflow_installation_preflight.has_issue_body_file_reconciliation(
                 'gh issue create \\\n  --body-file "unterminated'
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_nonempty_option_value(
+                ["--repo", "owner/repository"], "--repo"
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_nonempty_option_value(
+                ["--repo=owner/repository"], "--repo"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_nonempty_option_value(
+                ["--repo="], "--repo"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_nonempty_option_value(
+                ["--repo", "--title"], "--repo"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_nonempty_option_value(
+                ["--repo"], "--repo"
             )
         )
 

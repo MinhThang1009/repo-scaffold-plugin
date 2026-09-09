@@ -95,6 +95,19 @@ def executable_shell_lines(command: str) -> list[str]:
     ]
 
 
+def has_nonempty_option_value(tokens: list[str], option: str) -> bool:
+    """Return whether parsed shell tokens contain a non-empty option value."""
+    option_prefix = f"{option}="
+    for index, token in enumerate(tokens):
+        if token.startswith(option_prefix):
+            return bool(token.partition("=")[2].strip())
+        if token == option and index + 1 < len(tokens):
+            value = tokens[index + 1].strip()
+            if value and not value.startswith("-"):
+                return True
+    return False
+
+
 def has_issue_body_file_reconciliation(command: str) -> bool:
     """Require a real repo-bound ``gh issue create/edit --body-file`` command."""
     lines = executable_shell_lines(command)
@@ -122,31 +135,9 @@ def has_issue_body_file_reconciliation(command: str) -> bool:
             tokens = shlex.split(" ".join(command_parts), comments=True, posix=True)
         except ValueError:
             continue
-        repository_option = next(
-            (
-                token
-                for token in tokens
-                if token.startswith(f"{FRESHNESS_REMINDER_REPOSITORY_OPTION}=")
-            ),
-            None,
-        )
-        has_repository = bool(
-            repository_option and repository_option.partition("=")[2].strip()
-        ) or any(
-            token == FRESHNESS_REMINDER_REPOSITORY_OPTION
-            and index + 1 < len(tokens)
-            and bool(tokens[index + 1].strip())
-            and not tokens[index + 1].startswith("-")
-            for index, token in enumerate(tokens)
-        )
-        if (
-            any(
-                token == FRESHNESS_REMINDER_BODY_FILE
-                or token.startswith(f"{FRESHNESS_REMINDER_BODY_FILE}=")
-                for token in tokens
-            )
-            and has_repository
-        ):
+        if has_nonempty_option_value(
+            tokens, FRESHNESS_REMINDER_REPOSITORY_OPTION
+        ) and has_nonempty_option_value(tokens, FRESHNESS_REMINDER_BODY_FILE):
             return True
     return False
 
