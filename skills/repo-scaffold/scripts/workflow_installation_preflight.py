@@ -27,6 +27,7 @@ MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
 FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
+FRESHNESS_REMINDER_ISSUE_COMMAND = "gh issue"
 FRESHNESS_REMINDER_BODY_FILE = "--body-file"
 
 
@@ -175,15 +176,22 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
         or not requires_issue_write(text, source)
     ):
         return False
-    lines = [
-        line
-        for command in workflow_run_commands(document)
-        for line in executable_shell_lines(command)
-    ]
+    commands = workflow_run_commands(document)
+    lines = [line for command in commands for line in executable_shell_lines(command)]
     return (
         any(line.startswith(FRESHNESS_AUDIT_COMMAND) for line in lines)
         and any(FRESHNESS_REMINDER_MARKER in line for line in lines)
-        and any(FRESHNESS_REMINDER_BODY_FILE in line for line in lines)
+        and any(
+            any(
+                line.startswith(FRESHNESS_REMINDER_ISSUE_COMMAND)
+                for line in executable_shell_lines(command)
+            )
+            and any(
+                FRESHNESS_REMINDER_BODY_FILE in line
+                for line in executable_shell_lines(command)
+            )
+            for command in commands
+        )
     )
 
 
