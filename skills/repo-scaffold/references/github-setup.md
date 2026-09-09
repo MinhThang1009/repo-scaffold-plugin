@@ -340,8 +340,9 @@ review periods from 1 to 366 days; malformed entries fail before approval. The
 freshness workflow must use only scheduled and manual triggers, request
 `issues: write`, execute the freshness checker, and reconcile a marker issue
 through a real repo-bound `gh issue create` or `gh issue edit --repo ...
---body-file` command; untrusted triggers, comments, or an incomplete reminder
-do not satisfy the companion requirement. The reconciliation job itself must
+--body-file` command. Any `gh issue close` mutation must also use an explicit
+`--repo` binding. Untrusted triggers, comments, or an incomplete reminder do
+not satisfy the companion requirement. The reconciliation job itself must
 inherit or declare `issues: write`; a grant on another job is insufficient.
 
 ## Inherited community-health policy

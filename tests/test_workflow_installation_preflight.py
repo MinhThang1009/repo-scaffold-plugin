@@ -662,6 +662,15 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         cases = {
             "valid": valid,
+            "unbound close mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          gh issue close 1\n"
+                "          marker='repo-scaffold-freshness-audit'\n",
+            ),
+            "unbound close in separate step": valid.replace(
+                "    steps:\n      - run: |\n",
+                "    steps:\n      - run: gh issue close 1\n      - run: |\n",
+            ),
             "without schedule": valid.replace(
                 "  schedule:\n    - cron: '17 6 * * 5'\n",
                 "",

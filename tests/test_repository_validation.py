@@ -7777,6 +7777,18 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "gh issue close 1 --repo $REPOSITORY"
             )
         )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue close 1 --repo $REPOSITORY\n"
+                "gh issue create --repo $REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue close 1\n"
+                "gh issue create --repo $REPOSITORY --body-file report.md"
+            )
+        )
         self.assertFalse(
             validate_repository.has_repo_bound_issue_reconciliation(
                 "gh issue create --body-file report.md\n"

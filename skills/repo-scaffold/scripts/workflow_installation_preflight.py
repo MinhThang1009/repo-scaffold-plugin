@@ -35,7 +35,8 @@ FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
 FRESHNESS_REMINDER_REPOSITORY_OPTION = "--repo"
 FRESHNESS_REMINDER_BODY_FILE = "--body-file"
-FRESHNESS_REMINDER_SUBCOMMANDS = frozenset({"create", "edit"})
+FRESHNESS_REMINDER_MUTATION_SUBCOMMANDS = frozenset({"create", "edit", "close"})
+FRESHNESS_REMINDER_BODY_SUBCOMMANDS = frozenset({"create", "edit"})
 FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
     "--repository-root",
     "--json-output",
@@ -116,9 +117,10 @@ def has_nonempty_option_value(tokens: list[str], option: str) -> bool:
     return False
 
 
-def has_issue_body_file_reconciliation(command: str) -> bool:
-    """Require a real repo-bound ``gh issue create/edit --body-file`` command."""
+def issue_mutation_command_blocks(command: str) -> list[tuple[str, list[str]]]:
+    """Return parsed ``gh issue`` mutation command blocks from shell text."""
     lines = executable_shell_lines(command)
+    blocks: list[tuple[str, list[str]]] = []
     for index, line in enumerate(lines):
         first_line = line.rstrip()
         if first_line.endswith("\\"):
@@ -130,7 +132,7 @@ def has_issue_body_file_reconciliation(command: str) -> bool:
         if (
             len(first_tokens) < 3
             or first_tokens[:2] != ["gh", "issue"]
-            or first_tokens[2] not in FRESHNESS_REMINDER_SUBCOMMANDS
+            or first_tokens[2] not in FRESHNESS_REMINDER_MUTATION_SUBCOMMANDS
         ):
             continue
         command_parts = [line.rstrip()]
@@ -143,11 +145,24 @@ def has_issue_body_file_reconciliation(command: str) -> bool:
             tokens = shlex.split(" ".join(command_parts), comments=True, posix=True)
         except ValueError:
             continue
-        if has_nonempty_option_value(
-            tokens, FRESHNESS_REMINDER_REPOSITORY_OPTION
-        ) and has_nonempty_option_value(tokens, FRESHNESS_REMINDER_BODY_FILE):
-            return True
-    return False
+        blocks.append((tokens[2], tokens))
+    return blocks
+
+
+def has_issue_body_file_reconciliation(command: str) -> bool:
+    """Require a body-backed issue reconciliation with bound mutations."""
+    blocks = issue_mutation_command_blocks(command)
+    return bool(
+        any(
+            subcommand in FRESHNESS_REMINDER_BODY_SUBCOMMANDS
+            and has_nonempty_option_value(tokens, FRESHNESS_REMINDER_BODY_FILE)
+            for subcommand, tokens in blocks
+        )
+        and all(
+            has_nonempty_option_value(tokens, FRESHNESS_REMINDER_REPOSITORY_OPTION)
+            for _, tokens in blocks
+        )
+    )
 
 
 def has_freshness_audit_invocation(command: str) -> bool:
@@ -315,7 +330,6 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
     jobs = document.get("jobs", {})
     assert isinstance(jobs, dict)
     commands: list[str] = []
-    reconciliation_supplied = False
     for job in jobs.values():
         assert isinstance(job, dict)
         steps = job.get("steps", [])
@@ -329,15 +343,14 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
             else []
         )
         commands.extend(job_commands)
-        if any(has_issue_body_file_reconciliation(command) for command in job_commands):
+        if issue_mutation_command_blocks("\n".join(job_commands)):
             if not job_effective_issue_write(document, job):
                 return False
-            reconciliation_supplied = True
     lines = [line for command in commands for line in executable_shell_lines(command)]
     return (
         any(has_freshness_audit_invocation(command) for command in commands)
         and any(FRESHNESS_REMINDER_MARKER in line for line in lines)
-        and reconciliation_supplied
+        and has_issue_body_file_reconciliation("\n".join(commands))
     )
 
 

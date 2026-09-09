@@ -46,6 +46,7 @@ CACHE_DIRECTORIES = {
 COVERAGE_FAIL_UNDER = 100
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
+REMINDER_ISSUE_MUTATION_SUBCOMMANDS = frozenset({"create", "edit", "close"})
 COMMONMARK = MarkdownIt("commonmark")
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -487,22 +488,26 @@ def has_explicit_repository_binding(text: str) -> bool:
 
 
 def has_repo_bound_issue_reconciliation(text: str) -> bool:
-    """Require each issue create/edit body mutation to bind its repository."""
+    """Require every reminder issue mutation to bind its repository."""
     normalized = re.sub(r"\\\r?\n", " ", text)
     commands = []
     for line in normalized.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if re.search(r"(?<![\w-])gh\s+issue\s+(?:create|edit)(?=\s|$)", stripped):
+        if re.search(
+            rf"(?<![\w-])gh\s+issue\s+(?:{'|'.join(sorted(REMINDER_ISSUE_MUTATION_SUBCOMMANDS))})(?=\s|$)",
+            stripped,
+        ):
             commands.append(stripped)
     body_commands = [
         command
         for command in commands
-        if has_value_bearing_option(command, "--body-file")
+        if re.search(r"(?<![\w-])gh\s+issue\s+(?:create|edit)(?=\s|$)", command)
+        and has_value_bearing_option(command, "--body-file")
     ]
     return bool(body_commands) and all(
-        has_explicit_repository_binding(command) for command in body_commands
+        has_explicit_repository_binding(command) for command in commands
     )
 
 
