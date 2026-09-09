@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import runpy
 import sys
 import tempfile
@@ -743,6 +744,110 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 workflow_installation_preflight.validate_code_scanning_allowlist(
                     allowlist
                 )
+
+    def test_code_scanning_allowlist_validation_rejects_invalid_entries(self) -> None:
+        valid_entry = {
+            "number": 1,
+            "tool": "CodeQL",
+            "rule": "py/example",
+            "path": "scripts/example.py",
+            "reason": "Reviewed.",
+            "reviewed-on": "2000-01-01",
+            "review-period-days": 90,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            allowlist = Path(directory) / "code-scanning-allowlist.json"
+
+            def write(entries: object) -> None:
+                allowlist.write_text(
+                    json.dumps({"schema-version": 3, "allowlist": entries}),
+                    encoding="utf-8",
+                )
+
+            write([valid_entry])
+            workflow_installation_preflight.validate_code_scanning_allowlist(allowlist)
+
+            invalid_entries = (
+                ("missing selector field", [{**valid_entry, "reason": None}], "entry"),
+                (
+                    "missing required field",
+                    [
+                        {
+                            key: value
+                            for key, value in valid_entry.items()
+                            if key != "rule"
+                        }
+                    ],
+                    "exact selector",
+                ),
+                (
+                    "duplicate alert number",
+                    [valid_entry, {**valid_entry, "tool": "Semgrep"}],
+                    "numbers must be unique",
+                ),
+                (
+                    "non-canonical path",
+                    [{**valid_entry, "path": "../escape"}],
+                    "canonical POSIX",
+                ),
+                (
+                    "windows path",
+                    [{**valid_entry, "path": "C:/example.py"}],
+                    "canonical POSIX",
+                ),
+                (
+                    "invalid review date",
+                    [{**valid_entry, "reviewed-on": "not-a-date"}],
+                    "ISO date",
+                ),
+                (
+                    "future review date",
+                    [{**valid_entry, "reviewed-on": "2999-01-01"}],
+                    "future",
+                ),
+                (
+                    "zero review period",
+                    [{**valid_entry, "review-period-days": 0}],
+                    "review period",
+                ),
+                (
+                    "boolean review period",
+                    [{**valid_entry, "review-period-days": True}],
+                    "review period",
+                ),
+                (
+                    "excessive review period",
+                    [{**valid_entry, "review-period-days": 367}],
+                    "review period",
+                ),
+            )
+            for name, entries, message in invalid_entries:
+                with self.subTest(name=name):
+                    write(entries)
+                    with self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError, message
+                    ):
+                        workflow_installation_preflight.validate_code_scanning_allowlist(
+                            allowlist
+                        )
+
+            with self.subTest(name="entry limit"):
+                write(
+                    [
+                        {**valid_entry, "number": number}
+                        for number in range(
+                            1,
+                            workflow_installation_preflight.MAX_CODE_SCANNING_ALLOWLIST_ENTRIES
+                            + 2,
+                        )
+                    ]
+                )
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError, "entry limit"
+                ):
+                    workflow_installation_preflight.validate_code_scanning_allowlist(
+                        allowlist
+                    )
 
     def test_companion_helpers_reject_ambiguous_json_and_nonstep_lists(self) -> None:
         with self.assertRaisesRegex(

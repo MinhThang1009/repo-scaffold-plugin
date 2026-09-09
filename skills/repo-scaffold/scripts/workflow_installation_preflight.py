@@ -8,7 +8,8 @@ import fnmatch
 import json
 import shlex
 import stat
-from pathlib import Path, PurePosixPath
+from datetime import date
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from codeql_preflight import (
@@ -25,6 +26,8 @@ import sync_action_pins
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
 CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION = 3
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
+MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
+MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
 FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
@@ -258,6 +261,88 @@ def validate_code_scanning_allowlist(path: Path) -> None:
         raise InspectionError(
             "Code-scanning allowlist input must use schema-version 3 and an allowlist array."
         )
+    entries = document["allowlist"]
+    assert isinstance(entries, list)
+    if len(entries) > MAX_CODE_SCANNING_ALLOWLIST_ENTRIES:
+        raise InspectionError(
+            "Code-scanning allowlist exceeds the "
+            f"{MAX_CODE_SCANNING_ALLOWLIST_ENTRIES}-entry limit."
+        )
+
+    required_fields = {
+        "number",
+        "tool",
+        "rule",
+        "path",
+        "reason",
+        "reviewed-on",
+        "review-period-days",
+    }
+    seen_numbers: set[int] = set()
+    for index, entry in enumerate(entries, start=1):
+        location = f"Code-scanning allowlist entry {index}"
+        if not isinstance(entry, dict) or set(entry) != required_fields:
+            raise InspectionError(
+                f"{location} must use the exact selector and review-period fields."
+            )
+
+        number = entry["number"]
+        if type(number) is not int or number < 1:
+            raise InspectionError(f"{location} number must be a positive integer.")
+        if number in seen_numbers:
+            raise InspectionError(
+                f"{location} repeats alert number {number}; numbers must be unique."
+            )
+
+        for field in ("tool", "rule", "reason"):
+            value = entry[field]
+            if not isinstance(value, str) or not value.strip():
+                raise InspectionError(f"{location} {field} must be a non-empty string.")
+
+        path_value = entry["path"]
+        if path_value is not None:
+            if not isinstance(path_value, str) or not path_value.strip():
+                raise InspectionError(
+                    f"{location} path must be null or a non-empty canonical POSIX path."
+                )
+            path_value_as_posix = PurePosixPath(path_value)
+            if (
+                not path_value_as_posix.parts
+                or path_value_as_posix.is_absolute()
+                or ".." in path_value_as_posix.parts
+                or "\\" in path_value
+                or any(
+                    PureWindowsPath(part).drive for part in path_value_as_posix.parts
+                )
+                or path_value_as_posix.as_posix() != path_value
+            ):
+                raise InspectionError(f"{location} path must be canonical POSIX.")
+
+        reviewed_on = entry["reviewed-on"]
+        if not isinstance(reviewed_on, str) or not reviewed_on.strip():
+            raise InspectionError(
+                f"{location} reviewed-on must be a non-empty ISO date."
+            )
+        try:
+            reviewed_date = date.fromisoformat(reviewed_on)
+        except ValueError as error:
+            raise InspectionError(
+                f"{location} reviewed-on must use ISO date format."
+            ) from error
+        if reviewed_date > date.today():
+            raise InspectionError(f"{location} reviewed-on cannot be in the future.")
+
+        review_period_days = entry["review-period-days"]
+        if (
+            not isinstance(review_period_days, int)
+            or isinstance(review_period_days, bool)
+            or not 1 <= review_period_days <= MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS
+        ):
+            raise InspectionError(
+                f"{location} review period must be between 1 and "
+                f"{MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS} days."
+            )
+        seen_numbers.add(number)
 
 
 def require_boolean(document: dict[str, Any], field: str) -> bool:

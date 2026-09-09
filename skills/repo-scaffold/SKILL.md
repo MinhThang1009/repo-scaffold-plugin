@@ -98,6 +98,9 @@ Before installing `code-scanning-gate.yml`, run the workflow-installation
 preflight in one invocation with both the gate and `freshness.yml` passed as
 `--workflow`, plus its matching `code-scanning-allowlist.json` passed as
 `--code-scanning-allowlist`. The preflight refuses an incomplete companion set.
+It also validates every schema-v3 exception before approval: exact selector
+fields, unique positive alert numbers, canonical POSIX paths, non-future ISO
+review dates, and review periods from 1 to 366 days.
 The gate is only a fail-closed enforcement layer for a verified CodeQL producer;
 use the CodeQL and branch-protection preflights before making its context
 required.

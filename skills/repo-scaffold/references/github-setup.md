@@ -334,6 +334,9 @@ When installing `code-scanning-gate.yml`, pass both the gate and
 pass `assets/code-scanning-allowlist.json` with `--code-scanning-allowlist`.
 The preflight rejects a gate plan without both companions, so copy all three
 verified inputs only after it returns `may-install-workflow-assets`. The supplied
+allowlist must contain only schema-v3 entries with exact selector fields, unique
+positive alert numbers, canonical POSIX paths, non-future ISO review dates, and
+review periods from 1 to 366 days; malformed entries fail before approval. The
 freshness workflow must use only scheduled and manual triggers, request
 `issues: write`, execute the freshness checker, and reconcile a marker issue
 through a real `gh issue create` or `gh issue edit --body-file` command;
