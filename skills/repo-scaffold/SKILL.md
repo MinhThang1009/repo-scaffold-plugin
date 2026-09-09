@@ -172,7 +172,9 @@ every `--workflow` input, so a missing flag cannot bypass those checks. This
 preflight accepts pattern matches only for public repositories,
 because it does not infer Enterprise Cloud eligibility. Do not treat Marketplace
 verified-creator access as proof for a specific action when it has no exact
-matching pattern.
+matching pattern. If a supplied workflow calls a local reusable workflow, pass
+that called workflow in the same invocation as well; the preflight fails closed
+when the local call cannot be resolved to one supplied input.
 
 For a `pull_request` workflow that declares any write permission, first verify
 that the repository's Actions setting **Send write tokens to workflows from pull

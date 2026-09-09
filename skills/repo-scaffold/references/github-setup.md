@@ -285,6 +285,9 @@ access alone is not treated as proof for a specific action. When an asset is
 provided through `--workflow`, the preflight derives its external-action and
 shipped issue-workflow requirements. `--require-issues` remains an explicit
 assertion for an issue-writing workflow outside the shipped asset names.
+If a supplied workflow calls a local reusable workflow, pass the called
+workflow as another `--workflow` input in the same invocation; unresolved local
+calls are rejected before the action policy can be approved.
 For any supplied `pull_request` workflow with a write permission, it also
 requires `--confirm-pull-request-write-tokens`. Before passing that flag,
 verify the repository Actions setting **Send write tokens to workflows from

@@ -673,6 +673,61 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             [],
         )
 
+    def test_local_reusable_workflows_are_required_as_preflight_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            caller = root / "release-please.yml"
+            caller.write_text(
+                "jobs:\n  publish:\n    uses: ./.github/workflows/release.yml\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "pass it as another --workflow",
+            ):
+                workflow_installation_preflight.workflow_capabilities([caller])
+
+    def test_unsafe_local_reusable_workflow_references_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            caller = root / "caller.yml"
+            caller.write_text(
+                "jobs:\n  publish:\n    uses: ./.github/workflows/../release.yml\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "unsafe local reusable-workflow reference",
+            ):
+                workflow_installation_preflight.workflow_capabilities([caller])
+
+    def test_duplicate_workflow_input_names_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "one" / "shared.yml"
+            second = root / "two" / "shared.yml"
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "unique filenames",
+            ):
+                workflow_installation_preflight.workflow_capabilities([first, second])
+
+    def test_shipped_release_caller_and_reusable_workflow_are_resolved_together(
+        self,
+    ) -> None:
+        assets = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "workflows"
+        capabilities = workflow_installation_preflight.workflow_capabilities(
+            [assets / "release-please.yml", assets / "release.yml"]
+        )
+        self.assertIn(
+            "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7",
+            capabilities[0],
+        )
+        self.assertIn(
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            capabilities[0],
+        )
+
     def test_shipped_code_scanning_companions_are_accepted_together(self) -> None:
         self.configure()
         assets = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"

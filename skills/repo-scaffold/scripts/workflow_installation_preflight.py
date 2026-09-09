@@ -7,7 +7,7 @@ import argparse
 import fnmatch
 import json
 import stat
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from codeql_preflight import (
@@ -77,6 +77,34 @@ def workflow_run_commands(document: dict[str, Any]) -> list[str]:
             if isinstance(step, dict) and isinstance(step.get("run"), str):
                 commands.append(step["run"])
     return commands
+
+
+def local_reusable_workflow_names(document: dict[str, Any], source: Path) -> list[str]:
+    """Return local reusable workflow inputs that must be preflighted together."""
+    jobs = document.get("jobs", {})
+    assert isinstance(jobs, dict)
+    names: list[str] = []
+    for job_name, job in jobs.items():
+        assert isinstance(job, dict)
+        call = job.get("uses")
+        if call is None or not isinstance(call, str) or not call.startswith("./"):
+            continue
+        relative = call[2:]
+        path = PurePosixPath(relative)
+        if (
+            not relative
+            or "\\" in relative
+            or "\x00" in relative
+            or path.as_posix() != relative
+            or path.parts[:2] != (".github", "workflows")
+            or len(path.parts) != 3
+            or path.suffix.casefold() not in {".yml", ".yaml"}
+        ):
+            raise InspectionError(
+                f"Workflow {source} job {job_name!r} has an unsafe local reusable-workflow reference."
+            )
+        names.append(path.name)
+    return names
 
 
 def requires_issue_write(text: str, source: Path) -> bool:
@@ -226,6 +254,11 @@ def workflow_capabilities(
     pull_request_write_workflows: set[str] = set()
     code_scanning_gate_workflows: set[str] = set()
     freshness_reminder_supplied = False
+    workflow_inputs = {workflow.name: workflow for workflow in workflows}
+    if len(workflow_inputs) != len(workflows):
+        raise InspectionError(
+            "Workflow inputs must have unique filenames for local reusable-workflow resolution."
+        )
     for workflow in workflows:
         try:
             metadata = workflow.lstat()
@@ -247,6 +280,13 @@ def workflow_capabilities(
             raise InspectionError(
                 f"Workflow input is missing or unsafe: {workflow}"
             ) from exc
+        document = workflow_document(text, workflow)
+        for local_name in local_reusable_workflow_names(document, workflow):
+            if local_name not in workflow_inputs:
+                raise InspectionError(
+                    f"Workflow {workflow} calls local reusable workflow {local_name!r}; "
+                    "pass it as another --workflow input."
+                )
         try:
             # This rejects aliases, unpinned actions, and non-action `uses:` forms
             # before the exact references below are compared with GitHub's policy.
