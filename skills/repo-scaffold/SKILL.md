@@ -176,10 +176,11 @@ matching pattern. If a supplied workflow calls a local reusable workflow, pass
 that called workflow in the same invocation as well; the preflight fails closed
 when the local call cannot be resolved to one supplied input.
 
-When a code-scanning gate is supplied, its `freshness.yml` companion must retain
-the scheduled and manual triggers, Issues write permission, an executable
-freshness audit, and durable marker-issue reconciliation. The preflight rejects
-comment-only or otherwise incomplete reminder scaffolds.
+When a code-scanning gate is supplied, its `freshness.yml` companion must use
+only scheduled and manual triggers, request Issues write permission, execute the
+freshness audit, and reconcile marker issues through real
+`gh issue create` or `gh issue edit --body-file` commands. The preflight rejects
+untrusted-trigger, comment-only, or otherwise incomplete reminder scaffolds.
 
 For a `pull_request` workflow that declares any write permission, first verify
 that the repository's Actions setting **Send write tokens to workflows from pull

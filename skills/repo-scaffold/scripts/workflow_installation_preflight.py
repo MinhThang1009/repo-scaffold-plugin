@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import shlex
 import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -27,8 +28,8 @@ MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
 FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
-FRESHNESS_REMINDER_ISSUE_COMMAND = "gh issue"
 FRESHNESS_REMINDER_BODY_FILE = "--body-file"
+FRESHNESS_REMINDER_SUBCOMMANDS = frozenset({"create", "edit"})
 
 
 class DuplicateJsonMember(ValueError):
@@ -88,6 +89,42 @@ def executable_shell_lines(command: str) -> list[str]:
         for line in command.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
+
+
+def has_issue_body_file_reconciliation(command: str) -> bool:
+    """Require a real ``gh issue create/edit --body-file`` command block."""
+    lines = executable_shell_lines(command)
+    for index, line in enumerate(lines):
+        first_line = line.rstrip()
+        if first_line.endswith("\\"):
+            first_line = first_line[:-1].rstrip()
+        try:
+            first_tokens = shlex.split(first_line, comments=True, posix=True)
+        except ValueError:
+            continue
+        if (
+            len(first_tokens) < 3
+            or first_tokens[:2] != ["gh", "issue"]
+            or first_tokens[2] not in FRESHNESS_REMINDER_SUBCOMMANDS
+        ):
+            continue
+        command_parts = [line.rstrip()]
+        cursor = index
+        while command_parts[-1].endswith("\\") and cursor + 1 < len(lines):
+            command_parts[-1] = command_parts[-1][:-1].rstrip()
+            cursor += 1
+            command_parts.append(lines[cursor])
+        try:
+            tokens = shlex.split(" ".join(command_parts), comments=True, posix=True)
+        except ValueError:
+            continue
+        if any(
+            token == FRESHNESS_REMINDER_BODY_FILE
+            or token.startswith(f"{FRESHNESS_REMINDER_BODY_FILE}=")
+            for token in tokens
+        ):
+            return True
+    return False
 
 
 def local_reusable_workflow_names(document: dict[str, Any], source: Path) -> list[str]:
@@ -171,8 +208,15 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
     triggers = document.get("on")
     if (
         not isinstance(triggers, dict)
-        or "schedule" not in triggers
-        or "workflow_dispatch" not in triggers
+        or set(triggers) != {"schedule", "workflow_dispatch"}
+        or not isinstance(triggers.get("schedule"), list)
+        or not triggers["schedule"]
+        or any(
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("cron"), str)
+            or not entry["cron"].strip()
+            for entry in triggers["schedule"]
+        )
         or not requires_issue_write(text, source)
     ):
         return False
@@ -181,17 +225,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
     return (
         any(line.startswith(FRESHNESS_AUDIT_COMMAND) for line in lines)
         and any(FRESHNESS_REMINDER_MARKER in line for line in lines)
-        and any(
-            any(
-                line.startswith(FRESHNESS_REMINDER_ISSUE_COMMAND)
-                for line in executable_shell_lines(command)
-            )
-            and any(
-                FRESHNESS_REMINDER_BODY_FILE in line
-                for line in executable_shell_lines(command)
-            )
-            for command in commands
-        )
+        and any(has_issue_body_file_reconciliation(command) for command in commands)
     )
 
 

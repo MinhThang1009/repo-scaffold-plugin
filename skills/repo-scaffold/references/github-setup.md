@@ -334,9 +334,11 @@ When installing `code-scanning-gate.yml`, pass both the gate and
 pass `assets/code-scanning-allowlist.json` with `--code-scanning-allowlist`.
 The preflight rejects a gate plan without both companions, so copy all three
 verified inputs only after it returns `may-install-workflow-assets`. The supplied
-freshness workflow must use scheduled and manual triggers, request `issues: write`,
-execute the freshness checker, and reconcile a marker issue through `--body-file`;
-comments or an incomplete reminder do not satisfy the companion requirement.
+freshness workflow must use only scheduled and manual triggers, request
+`issues: write`, execute the freshness checker, and reconcile a marker issue
+through a real `gh issue create` or `gh issue edit --body-file` command;
+untrusted triggers, comments, or an incomplete reminder do not satisfy the
+companion requirement.
 
 ## Inherited community-health policy
 

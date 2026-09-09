@@ -651,9 +651,28 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "",
             ),
             "without manual dispatch": valid.replace("  workflow_dispatch:\n", ""),
+            "with untrusted trigger": valid.replace(
+                "  workflow_dispatch:\n",
+                "  workflow_dispatch:\n  pull_request_target:\n",
+            ),
+            "with empty schedule": valid.replace(
+                "  schedule:\n    - cron: '17 6 * * 5'\n", "  schedule: []\n"
+            ),
+            "with malformed schedule": valid.replace(
+                "  schedule:\n    - cron: '17 6 * * 5'\n", "  schedule: bad\n"
+            ),
             "without issue write": valid.replace("  issues: write\n", ""),
             "without durable body": valid.replace(
                 "          gh issue create --body-file report.md\n", ""
+            ),
+            "issue listing is not reconciliation": valid.replace(
+                "          gh issue create --body-file report.md\n",
+                "          gh issue list --body-file report.md\n",
+            ),
+            "body file belongs to another command": valid.replace(
+                "          gh issue create --body-file report.md\n",
+                "          gh issue create --title reminder\n"
+                "          echo --body-file report.md\n",
             ),
             "comment-only command": valid.replace(
                 "          python scripts/audit_freshness.py\n"
@@ -737,6 +756,16 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 {"jobs": {"audit": {"steps": {}}}}
             ),
             [],
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_issue_body_file_reconciliation(
+                "gh issue create 'unterminated"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_issue_body_file_reconciliation(
+                'gh issue create \\\n  --body-file "unterminated'
+            )
         )
 
     def test_local_reusable_workflows_are_required_as_preflight_inputs(self) -> None:
