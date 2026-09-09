@@ -337,8 +337,9 @@ verified inputs only after it returns `may-install-workflow-assets`. The supplie
 allowlist must contain only schema-v3 entries with exact selector fields, unique
 positive alert numbers, canonical POSIX paths, non-future ISO review dates, and
 review periods from 1 to 366 days; malformed entries fail before approval. The
-freshness workflow must use only scheduled and manual triggers, request
-`issues: write`, execute the freshness checker, and reconcile a marker issue
+freshness workflow must use only scheduled and manual triggers, request only
+`contents: read` and `issues: write` permissions, execute the freshness checker,
+and reconcile a marker issue
 through a real repo-bound `gh issue create` or `gh issue edit --repo ...
 --body-file` command. Every `create` or `edit` mutation must use
 `--body-file`, `create` must provide a non-empty `--title`, and any `gh issue
@@ -346,7 +347,10 @@ close` mutation must also use an explicit `--repo` binding. Its concurrency
 group must be repository-scoped and non-cancelling so a manual run on another
 ref cannot race the scheduled run. Untrusted triggers, comments, shell-
 ambiguous commands, or an incomplete reminder do not satisfy the companion
-requirement. The reconciliation job itself must inherit or declare
+requirement. The `--body-file` value must match the audit's Markdown output in
+the same job. Direct REST mutations through `gh api`, including body-bearing
+default-`POST` calls, and shell wrappers or dynamic executors that hide GitHub
+commands are rejected. The reconciliation job itself must inherit or declare
 `issues: write`; a grant on another job is insufficient.
 
 ## Inherited community-health policy

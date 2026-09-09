@@ -70,6 +70,36 @@ REMINDER_WORKFLOW_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.reposit
 POLICY_REMINDER_CONCURRENCY_GROUP = (
     "${{ github.workflow }}-policy-drift-${{ github.repository }}"
 )
+FRESHNESS_AUDIT_COMMAND = ("python", "scripts/audit_freshness.py")
+FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
+    "--repository-root",
+    "--json-output",
+    "--markdown-output",
+)
+GITHUB_API_READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
+GITHUB_API_BODY_OPTIONS = frozenset({"--field", "--input", "--raw-field", "-F", "-f"})
+GITHUB_API_METHOD_OPTIONS = frozenset({"--method", "-X"})
+EMBEDDED_GITHUB_COMMAND_PATTERN = re.compile(
+    r"(?:^|[\s`$(&|;])gh\s+(?:api|issue)(?:\s|$)"
+)
+EMBEDDED_FRESHNESS_AUDIT_PATTERN = re.compile(
+    r"(?<!\S)python\s+scripts/audit_freshness\.py(?:\s|$)"
+)
+DYNAMIC_SHELL_EXECUTORS = frozenset(
+    {
+        "bash",
+        "cmd",
+        "dash",
+        "eval",
+        "fish",
+        "powershell",
+        "pwsh",
+        "sh",
+        "xargs",
+        "zsh",
+    }
+)
+SHELL_COMMAND_WRAPPERS = frozenset({"command", "env", "nice", "nohup", "sudo", "time"})
 SHELL_CONTROL_CHARACTERS = frozenset(";()<>|&")
 SHELL_COMMAND_PREFIXES = frozenset({"!", "then", "do", "else"})
 COMMONMARK = MarkdownIt("commonmark")
@@ -490,21 +520,43 @@ def job_effective_issue_write(workflow: object, job: object) -> bool:
     return permissions_grant_issue_write(job if "permissions" in job else workflow)
 
 
+def has_least_privileged_freshness_permissions(workflow: object) -> bool:
+    """Allow only read-only contents and Issue-write permissions for reminders."""
+    if not isinstance(workflow, dict) or workflow.get("permissions") != {
+        "contents": "read",
+        "issues": "write",
+    }:
+        return False
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return False
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            return False
+        if "permissions" not in job:
+            continue
+        permissions = job["permissions"]
+        if not isinstance(permissions, dict):
+            return False
+        if any(
+            scope not in {"contents", "issues"}
+            or value not in {"none", "read", "write"}
+            or value == "write"
+            and scope != "issues"
+            for scope, value in permissions.items()
+        ):
+            return False
+    return True
+
+
 def has_value_bearing_option(text: str, option: str) -> bool:
     """Return whether shell text contains a value-bearing CLI option token."""
     try:
         tokens = shlex.split(text, comments=True, posix=True)
     except ValueError:
         return False
-    option_prefix = f"{option}="
-    for index, token in enumerate(tokens):
-        if token.startswith(option_prefix):
-            return bool(token.partition("=")[2].strip())
-        if token == option and index + 1 < len(tokens):
-            value = tokens[index + 1].strip()
-            if value and not value.startswith("-"):
-                return True
-    return False
+    values = option_values(tokens, option)
+    return values is not None and bool(values)
 
 
 def has_explicit_repository_binding(text: str) -> bool:
@@ -547,51 +599,290 @@ def shell_command_prefix(segment: list[str]) -> list[str]:
     return normalized
 
 
-def has_repo_bound_issue_reconciliation(text: str) -> bool:
-    """Require every reminder issue mutation to bind its repository."""
+def option_values(tokens: list[str], option: str) -> tuple[str, ...] | None:
+    """Return unambiguous values for one option, or ``None`` on malformed use."""
+    option_prefix = f"{option}="
+    values: list[str] = []
+    for index, token in enumerate(tokens):
+        if token.startswith(option_prefix):
+            value = token.partition("=")[2].strip()
+            if not value:
+                return None
+            values.append(value)
+            continue
+        if token == option and index + 1 < len(tokens):
+            value = tokens[index + 1].strip()
+            if not value or value.startswith("-"):
+                return None
+            values.append(value)
+        elif token == option:
+            return None
+    return tuple(values)
+
+
+def option_has_one_value(
+    tokens: list[str], option: str, expected_values: set[str] | None = None
+) -> bool:
+    """Return whether one option has exactly one optionally expected value."""
+    values = option_values(tokens, option)
+    return bool(
+        values
+        and len(values) == 1
+        and (expected_values is None or values[0] in expected_values)
+    )
+
+
+def has_embedded_command(tokens: list[str]) -> bool:
+    """Reject quoted command text that the shell tokenizer cannot execute safely."""
+    patterns = (EMBEDDED_GITHUB_COMMAND_PATTERN, EMBEDDED_FRESHNESS_AUDIT_PATTERN)
+    if any(
+        pattern.search(token)
+        for token in tokens
+        if any(character.isspace() for character in token)
+        for pattern in patterns
+    ):
+        return True
+    direct_command = tuple(tokens[:2]) in {
+        ("gh", "api"),
+        ("gh", "issue"),
+        ("python", "scripts/audit_freshness.py"),
+    }
+    return not direct_command and any(
+        pattern.search(" ".join(tokens)) for pattern in patterns
+    )
+
+
+def has_dynamic_shell_executor(tokens: list[str]) -> bool:
+    """Reject command interpreters that could hide an unparseable mutation."""
+    index = 0
+    while index < len(tokens):
+        if "=" not in tokens[index]:
+            break
+        assignment_name = tokens[index].partition("=")[0]
+        if not assignment_name.isidentifier():
+            break
+        index += 1
+    if index >= len(tokens):
+        return False
+    command = tokens[index].casefold()
+    if command in SHELL_COMMAND_WRAPPERS:
+        return True
+    return command in DYNAMIC_SHELL_EXECUTORS
+
+
+def github_api_is_mutation(tokens: list[str], position: int) -> bool:
+    """Return whether one ``gh api`` invocation can issue a state-changing request."""
+    api_tokens = tokens[position:]
+    methods: list[str | None] = []
+    has_body = False
+    index = 2
+    while index < len(api_tokens):
+        token = api_tokens[index]
+        if token in GITHUB_API_METHOD_OPTIONS:
+            if index + 1 >= len(api_tokens):
+                methods.append(None)
+            else:
+                methods.append(api_tokens[index + 1])
+                index += 1
+        elif token.startswith("--method="):
+            methods.append(token.partition("=")[2])
+        elif token.startswith("-X") and token != "-X":
+            methods.append(token[2:].lstrip("="))
+        elif (
+            token in GITHUB_API_BODY_OPTIONS
+            or any(
+                token.startswith(f"{option}=")
+                for option in {"--field", "--input", "--raw-field"}
+            )
+            or (token.startswith("-f") and token != "-f")
+            or (token.startswith("-F") and token != "-F")
+        ):
+            has_body = True
+        index += 1
+    if any(
+        method is None or method.strip().upper() not in GITHUB_API_READ_ONLY_METHODS
+        for method in methods
+    ):
+        return True
+    return has_body and not methods
+
+
+def issue_subcommand_positions(tokens: list[str]) -> tuple[int, ...] | None:
+    """Return literal ``gh issue`` positions, including the global ``--repo`` form."""
+    if not tokens:
+        return ()
+    if tokens[0] != "gh":
+        return (
+            None
+            if any(
+                tokens[index : index + 2] == ["gh", "issue"]
+                for index in range(1, len(tokens) - 1)
+            )
+            else ()
+        )
+    issue_position = 1
+    if issue_position < len(tokens) and tokens[issue_position] in {"--repo", "-R"}:
+        issue_position += 2
+    elif issue_position < len(tokens) and (
+        tokens[issue_position].startswith("--repo=")
+        or (tokens[issue_position].startswith("-R") and tokens[issue_position] != "-R")
+    ):
+        issue_position += 1
+    adjacent_positions = [
+        index
+        for index in range(len(tokens) - 1)
+        if tokens[index : index + 2] == ["gh", "issue"]
+    ]
+    if any(index != 0 for index in adjacent_positions):
+        return None
+    if issue_position < len(tokens) and tokens[issue_position] == "issue":
+        return (issue_position,)
+    return ()
+
+
+def reminder_issue_mutation_blocks(
+    text: str,
+) -> list[tuple[str, list[str]]] | None:
+    """Return parsed reminder mutations, or ``None`` for ambiguous shell text."""
     segments = shell_command_segments(text)
     if segments is None:
-        return False
+        return None
     commands: list[tuple[str, list[str]]] = []
     for segment in segments:
         tokens = shell_command_prefix(segment)
-        issue_positions = [
+        if has_embedded_command(tokens) or has_dynamic_shell_executor(tokens):
+            return None
+        api_positions = [
             index
             for index in range(len(tokens) - 1)
-            if tokens[index : index + 2] == ["gh", "issue"]
+            if tokens[index : index + 2] == ["gh", "api"]
         ]
+        if any(github_api_is_mutation(tokens, position) for position in api_positions):
+            return None
+        issue_positions = issue_subcommand_positions(tokens)
+        if issue_positions is None:
+            return None
         if not issue_positions:
             continue
-        if issue_positions[0] != 0 or len(tokens) < 3:
-            return False
-        subcommand = tokens[2]
+        issue_position = issue_positions[0]
+        if tokens[issue_position] != "issue" or len(tokens) <= issue_position + 1:
+            return None
+        subcommand = tokens[issue_position + 1]
         if subcommand in REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS:
             continue
-        if (
-            subcommand not in REMINDER_ISSUE_MUTATION_SUBCOMMANDS
-            or len(issue_positions) != 1
-        ):
-            return False
+        if subcommand not in REMINDER_ISSUE_MUTATION_SUBCOMMANDS:
+            return None
         commands.append((subcommand, tokens))
+    return commands
+
+
+def has_repo_bound_issue_reconciliation(
+    text: str, expected_body_files: set[str] | None = None
+) -> bool:
+    """Require every reminder issue mutation to bind its repository."""
+    commands = reminder_issue_mutation_blocks(text)
+    if commands is None:
+        return False
     body_commands = [
         (subcommand, tokens)
         for subcommand, tokens in commands
         if subcommand in REMINDER_ISSUE_BODY_MUTATIONS
-        and has_value_bearing_option(" ".join(tokens), "--body-file")
+        and option_has_one_value(tokens, "--body-file", expected_body_files)
     ]
     return bool(body_commands) and all(
         subcommand in REMINDER_ISSUE_ALLOWED_MUTATIONS
-        and has_value_bearing_option(" ".join(tokens), "--repo")
+        and option_has_one_value(tokens, "--repo")
         and (
             subcommand == "close"
-            or has_value_bearing_option(" ".join(tokens), "--body-file")
+            or option_has_one_value(tokens, "--body-file", expected_body_files)
         )
-        and (
-            subcommand != "create"
-            or has_value_bearing_option(" ".join(tokens), "--title")
-        )
+        and (subcommand != "create" or option_has_one_value(tokens, "--title"))
         for subcommand, tokens in commands
     )
+
+
+def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
+    """Return checker Markdown outputs, or ``None`` for an ambiguous invocation."""
+    outputs: set[str] = set()
+    saw_audit = False
+    segments = shell_command_segments(text)
+    if segments is None:
+        return None
+    for segment in segments:
+        tokens = shell_command_prefix(segment)
+        if has_embedded_command(tokens) or has_dynamic_shell_executor(tokens):
+            return None
+        audit_positions = [
+            index
+            for index in range(len(tokens) - 1)
+            if tokens[index : index + 2] == list(FRESHNESS_AUDIT_COMMAND)
+        ]
+        if not audit_positions:
+            continue
+        if audit_positions[0] != 0 or len(audit_positions) != 1:
+            return None
+        saw_audit = True
+        values = {
+            option: option_values(tokens, option)
+            for option in FRESHNESS_AUDIT_REQUIRED_OPTIONS
+        }
+        if any(value is None or len(value) != 1 for value in values.values()):
+            return None
+        json_output = values["--json-output"]
+        markdown_output = values["--markdown-output"]
+        assert json_output is not None and markdown_output is not None
+        if json_output[0] == markdown_output[0]:
+            return None
+        outputs.add(markdown_output[0])
+    return outputs if saw_audit else set()
+
+
+def has_freshness_job_reconciliation(workflow: object, text: str) -> bool:
+    """Require one job to publish and reconcile the same freshness report."""
+    if (
+        not isinstance(workflow, dict)
+        or not has_least_privileged_freshness_permissions(workflow)
+        or not has_repo_bound_issue_reconciliation(text)
+    ):
+        return False
+    jobs = workflow.get("jobs", {})
+    assert isinstance(jobs, dict)
+    reconciliation_jobs = 0
+    mutation_jobs = 0
+    for job in jobs.values():
+        assert isinstance(job, dict)
+        steps = job.get("steps", [])
+        job_commands = (
+            [
+                step["run"]
+                for step in steps
+                if isinstance(step, dict) and isinstance(step.get("run"), str)
+            ]
+            if isinstance(steps, list)
+            else []
+        )
+        job_text = "\n".join(job_commands)
+        blocks = reminder_issue_mutation_blocks(job_text)
+        if blocks is None:
+            return False
+        if blocks:
+            mutation_jobs += 1
+            if not job_effective_issue_write(workflow, job):
+                return False
+        markdown_outputs = freshness_audit_markdown_outputs(job_text)
+        lines = [
+            line
+            for command in job_commands
+            for line in command.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if (
+            markdown_outputs
+            and any("repo-scaffold-freshness-audit" in line for line in lines)
+            and has_repo_bound_issue_reconciliation(job_text, markdown_outputs)
+        ):
+            reconciliation_jobs += 1
+    return reconciliation_jobs == 1 and mutation_jobs == 1
 
 
 def is_canonical_allowlist_path(value: object) -> bool:
@@ -5026,9 +5317,10 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             "python scripts/audit_freshness.py" not in text
             or "repo-scaffold-freshness-audit" not in text
             or "--body-file" not in text
+            or not has_freshness_job_reconciliation(workflow, text)
         ):
             problems.append(
-                f"{relative}: freshness workflow must run the checker and reconcile one marker issue"
+                f"{relative}: freshness workflow must run the checker and reconcile one marker issue from its report"
             )
         if not has_repo_bound_issue_reconciliation(text):
             problems.append(

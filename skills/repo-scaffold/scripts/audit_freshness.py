@@ -803,7 +803,23 @@ def audit(
 
 def markdown_table_cell(value: object) -> str:
     """Render one value without permitting it to add Markdown table cells/rows."""
-    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def markdown_code_span(value: object) -> str:
+    """Render an untrusted value in a code span with a safe delimiter length."""
+    text = markdown_table_cell(value)
+    longest_backtick_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    if longest_backtick_run:
+        delimiter = "`" * (longest_backtick_run + 1)
+        return f"{delimiter} {text} {delimiter}"
+    return f"`{text}`"
 
 
 def markdown_report(report: dict[str, Any]) -> str:
@@ -812,21 +828,28 @@ def markdown_report(report: dict[str, Any]) -> str:
         "<!-- repo-scaffold-freshness-audit -->",
         "# Repository freshness report",
         "",
-        f"- Checked: `{report['checked-at']}`",
-        f"- Overall status: **{report['status']}**",
+        f"- Checked: {markdown_code_span(report['checked-at'])}",
+        f"- Overall status: **{markdown_code_span(report['status'])}**",
         "",
     ]
     findings = report["findings"]
     if findings:
         lines.extend(
             [
-                "| Check | Path | Subject | Current | Latest |",
-                "| --- | --- | --- | --- | --- |",
+                "| Check | Path | Subject | Current | Latest | Details |",
+                "| --- | --- | --- | --- | --- | --- |",
                 *[
-                    "| {kind} | `{path}` | `{subject}` | `{current}` | `{latest}` |".format(
+                    "| {kind} | {path} | {subject} | {current} | {latest} | {details} |".format(
                         **{
-                            key: markdown_table_cell(value)
-                            for key, value in finding.items()
+                            key: markdown_code_span(finding.get(key, ""))
+                            for key in {
+                                "kind",
+                                "path",
+                                "subject",
+                                "current",
+                                "latest",
+                                "details",
+                            }
                         }
                     )
                     for finding in findings
@@ -839,7 +862,12 @@ def markdown_report(report: dict[str, Any]) -> str:
     errors = report["errors"]
     if errors:
         lines.extend(
-            ["## Indeterminate checks", "", *[f"- {error}" for error in errors], ""]
+            [
+                "## Indeterminate checks",
+                "",
+                *[f"- {markdown_code_span(error)}" for error in errors],
+                "",
+            ]
         )
     return "\n".join(lines)
 

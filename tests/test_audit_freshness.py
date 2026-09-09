@@ -16,6 +16,8 @@ from typing import Any, ClassVar
 from unittest import mock
 from urllib.request import Request
 
+from markdown_it import MarkdownIt
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "audit_freshness.py"
@@ -1271,9 +1273,32 @@ class FreshnessTests(unittest.TestCase):
                 }
             ]
             self.assertIn(
-                "| python\\|package next | `requirements\\|dev.in next` | "
-                "`package\\|name next` | `1\\|0 next` | `2\\|0 next` |",
+                "| `python\\|package next` | `requirements\\|dev.in next` | "
+                "`package\\|name next` | `1\\|0 next` | `2\\|0 next` | `outdated` |",
                 freshness.markdown_report(report),
+            )
+            unsafe_report = {
+                "checked-at": "2026-09-09",
+                "status": "indeterminate",
+                "findings": [
+                    {
+                        "kind": "x` | [link](https://example.test)",
+                        "path": "path` | [link](https://example.test)",
+                        "subject": "subject`",
+                        "current": "current",
+                        "latest": "latest",
+                        "details": "details` | [link](https://example.test)",
+                    }
+                ],
+                "errors": ["error`\n- [link](https://example.test)"],
+            }
+            unsafe_markdown = freshness.markdown_report(unsafe_report)
+            self.assertIn("`` x` \\| [link](https://example.test) ``", unsafe_markdown)
+            self.assertIn(
+                "- `` error` - [link](https://example.test) ``", unsafe_markdown
+            )
+            self.assertNotIn(
+                "<a href=", MarkdownIt("commonmark").render(unsafe_markdown)
             )
             report["findings"] = []
             report["errors"] = ["offline"]

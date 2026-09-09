@@ -7842,6 +7842,264 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "gh issue edit 1 --repo $REPOSITORY --body stale"
             )
         )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "gh api --method POST repos/$REPOSITORY/issues -f title=x"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "bash -c 'gh issue close 1'"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                'env bash -c "$COMMAND"'
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "gh --repo $REPOSITORY issue reopen 1"
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh --repo $REPOSITORY issue create --title reminder "
+                "--body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "echo `gh issue close 1`"
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "gh api repos/$REPOSITORY/issues --method GET -f q=x"
+            )
+        )
+        self.assertIsNone(validate_repository.option_values(["--repo="], "--repo"))
+        self.assertFalse(
+            validate_repository.has_value_bearing_option(
+                "gh issue create --repo", "--repo"
+            )
+        )
+        self.assertFalse(validate_repository.has_dynamic_shell_executor([]))
+        self.assertTrue(
+            validate_repository.has_dynamic_shell_executor(["env", "--", "bash"])
+        )
+        self.assertTrue(validate_repository.has_dynamic_shell_executor(["env"]))
+        self.assertFalse(
+            validate_repository.has_dynamic_shell_executor(["1=bad", "bash"])
+        )
+        for tokens, expected in (
+            (["gh", "api", "repos/example/issues", "--method="], True),
+            (["gh", "api", "repos/example/issues", "-XDELETE"], True),
+            (["gh", "api", "repos/example/issues", "-X", "HEAD"], False),
+            (["gh", "api", "repos/example/issues", "--method"], True),
+        ):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(
+                    validate_repository.github_api_is_mutation(tokens, 0), expected
+                )
+        self.assertEqual(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md"
+            ),
+            {"report.md"},
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root ."
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.md --markdown-output report.md"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py 'unterminated"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "bash -c 'python scripts/audit_freshness.py --repository-root .'"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md "
+                "python scripts/audit_freshness.py"
+            )
+        )
+        self.assertEqual(
+            validate_repository.freshness_audit_markdown_outputs("echo ready"),
+            set(),
+        )
+        contract_workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        )
+        contract_text = (PLUGIN_ROOT / ".github/workflows/freshness.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertTrue(
+            validate_repository.has_least_privileged_freshness_permissions(
+                contract_workflow
+            )
+        )
+        for document in (
+            {"permissions": {"issues": "write"}, "jobs": {}},
+            {"permissions": {"contents": "read", "issues": "write"}, "jobs": []},
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": "not-a-job"},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": "write-all"}},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"contents": "write"}}},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"issues": "admin"}}},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"actions": "read"}}},
+            },
+        ):
+            with self.subTest(document=document):
+                self.assertFalse(
+                    validate_repository.has_least_privileged_freshness_permissions(
+                        document
+                    )
+                )
+        self.assertTrue(
+            validate_repository.has_freshness_job_reconciliation(
+                contract_workflow, contract_text
+            )
+        )
+        modified_text = contract_text.replace(
+            '--body-file "$RUNNER_TEMP/freshness.md"',
+            '--body-file "$RUNNER_TEMP/other.md"',
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(modified_text), modified_text
+            )
+        )
+        workflow_with_noop = dict(contract_workflow)
+        workflow_with_noop["jobs"] = {
+            **contract_workflow["jobs"],
+            "noop": {"steps": []},
+        }
+        self.assertTrue(
+            validate_repository.has_freshness_job_reconciliation(
+                workflow_with_noop, contract_text
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                {
+                    "permissions": {"contents": "read", "issues": "write"},
+                    "jobs": [],
+                },
+                contract_text,
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(None, contract_text)
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                {
+                    "permissions": {"contents": "read", "issues": "write"},
+                    "jobs": {"audit": {"steps": [{}]}},
+                },
+                "echo ready",
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                {
+                    "permissions": {"contents": "read", "issues": "write"},
+                    "jobs": {"audit": "not-a-job"},
+                },
+                contract_text,
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                {
+                    "permissions": {"contents": "read", "issues": "write"},
+                    "jobs": {
+                        "audit": {"steps": [{"run": "gh issue create 'unterminated"}]}
+                    },
+                },
+                contract_text,
+            )
+        )
+        self.assertEqual(
+            validate_repository.issue_subcommand_positions(
+                ["gh", "--repo=r", "issue", "create"]
+            ),
+            (2,),
+        )
+        self.assertIsNone(
+            validate_repository.issue_subcommand_positions(
+                ["gh", "issue", "create", "gh", "issue", "close"]
+            )
+        )
+        self.assertIsNone(
+            validate_repository.reminder_issue_mutation_blocks("echo gh issue create")
+        )
+        self.assertIsNone(
+            validate_repository.reminder_issue_mutation_blocks(
+                "gh issue create gh issue close"
+            )
+        )
+        no_permission_workflow = {
+            "permissions": {"contents": "read", "issues": "write"},
+            "jobs": {
+                "audit": {
+                    "permissions": {"contents": "read"},
+                    "steps": [
+                        {
+                            "run": (
+                                "gh issue create --repo r --title t "
+                                "--body-file report.md"
+                            )
+                        }
+                    ],
+                }
+            },
+        }
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                no_permission_workflow,
+                "gh issue create --repo r --title t --body-file report.md",
+            )
+        )
         self.assertFalse(validate_repository.permissions_grant_issue_write(None))
         self.assertFalse(
             validate_repository.permissions_grant_issue_write({"permissions": {}})

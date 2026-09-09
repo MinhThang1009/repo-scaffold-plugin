@@ -31,7 +31,10 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   Every reminder mutation must use an explicit repository binding, and every
   freshness `create` or `edit` mutation must use a durable `--body-file` (with a
   non-empty `--title` for `create`). The reconciliation job must have effective
-  `issues: write` permission. Freshness must retain the optional
+  `issues: write` permission with read-only contents access. Freshness must retain the optional
+  audit Markdown output as the body file in the same job; direct REST issue
+  mutations through `gh api` and shell wrappers or dynamic executors that hide
+  GitHub commands are ambiguous and must fail closed. Freshness must retain the
   Release Please schema tracker and CI-toolchain policy tracker shipped with the
   scaffold so installed inputs receive the same reminder coverage as action pins.
   Code-scanning allowlist exceptions must also carry a bounded review date and

@@ -180,9 +180,10 @@ that called workflow in the same invocation as well; the preflight fails closed
 when the local call cannot be resolved to one supplied input.
 
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
-only scheduled and manual triggers, request Issues write permission, execute the
-freshness audit, and reconcile marker issues through real
-`gh issue create` or `gh issue edit --repo ... --body-file` commands. Every
+only scheduled and manual triggers, request only `contents: read` and
+`issues: write` permissions, execute the freshness audit, and reconcile marker
+issues through real `gh issue create` or `gh issue edit --repo ... --body-file`
+commands. Every
 `create` or `edit` mutation must use `--body-file`, `create` must provide a
 non-empty `--title`, and any `gh issue close` mutation must also use an
 explicit `--repo` binding. The reminder must use a repository-scoped
@@ -194,6 +195,10 @@ repository-root, JSON-output, and Markdown-output arguments, and rejects
 external `docker://` references unless they use a full SHA-256 digest.
 The reconciliation job itself must inherit or declare `issues: write`; granting
 that permission only to a different job does not satisfy the companion contract.
+The body file must be the same Markdown output path produced by the audit in that
+job. Direct REST mutations through `gh api`, body-bearing default-`POST` API
+calls, and shell wrappers or dynamic executors that hide GitHub commands are
+rejected as ambiguous.
 
 For a `pull_request` workflow that declares any write permission, first verify
 that the repository's Actions setting **Send write tokens to workflows from pull

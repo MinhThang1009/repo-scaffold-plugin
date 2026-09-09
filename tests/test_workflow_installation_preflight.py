@@ -538,6 +538,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "    - cron: '17 6 * * 5'\n"
                 "  workflow_dispatch:\n"
                 "permissions:\n"
+                "  contents: read\n"
                 "  issues: write\n"
                 "concurrency:\n"
                 "  group: ${{ github.workflow }}-${{ github.repository }}\n"
@@ -654,6 +655,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "    - cron: '17 6 * * 5'\n"
             "  workflow_dispatch:\n"
             "permissions:\n"
+            "  contents: read\n"
             "  issues: write\n"
             "concurrency:\n"
             "  group: ${{ github.workflow }}-${{ github.repository }}\n"
@@ -675,6 +677,14 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "cancelling concurrency": valid.replace(
                 "  cancel-in-progress: false", "  cancel-in-progress: true"
             ),
+            "overbroad workflow permissions": valid.replace(
+                "permissions:\n  contents: read\n  issues: write",
+                "permissions:\n  contents: write\n  issues: write",
+            ),
+            "overbroad job permissions": valid.replace(
+                "  audit:\n    steps:\n",
+                "  audit:\n    permissions: write-all\n    steps:\n",
+            ),
             "unbound close mutation": valid.replace(
                 "          marker='repo-scaffold-freshness-audit'\n",
                 "          gh issue close 1\n"
@@ -683,6 +693,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "same-line unbound close mutation": valid.replace(
                 body_command,
                 body_command.rstrip("\n") + "; gh issue close 1\n",
+            ),
+            "global repo unsupported mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                '          gh --repo "$REPOSITORY" issue reopen 1\n',
             ),
             "unbound edit body": valid.replace(
                 body_command,
@@ -740,6 +755,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 body_command,
                 '          gh issue create --repo "$REPOSITORY" --body-file=\n',
             ),
+            "body file is not checker report": valid.replace(
+                body_command,
+                '          gh issue create --repo "$REPOSITORY" --title reminder --body-file other.md\n',
+            ),
             "without durable body": valid.replace(body_command, ""),
             "issue listing is not reconciliation": valid.replace(
                 body_command,
@@ -783,6 +802,53 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ),
             "without audit output": valid.replace(
                 "            --markdown-output report.md\n", ""
+            ),
+            "JSON and Markdown outputs collide": valid.replace(
+                "            --json-output report.json \\\n",
+                "            --json-output report.md \\\n",
+            ),
+            "REST issue mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          gh api --method POST repos/${REPOSITORY}/issues -f title=x\n",
+            ),
+            "REST body mutation with default method": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          gh api repos/${REPOSITORY}/issues --input issue.json\n",
+            ),
+            "quoted issue mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          bash -c 'gh issue close 1'\n",
+            ),
+            "backtick issue mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          echo `gh issue close 1`\n",
+            ),
+            "dynamic shell mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                '          bash -c "$COMMAND"\n',
+            ),
+            "wrapped dynamic shell mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                '          env bash -c "$COMMAND"\n',
+            ),
+            "audit and reconciliation in different jobs": valid.replace(
+                body_command,
+                "",
+            ).replace(
+                "  audit:\n    steps:\n",
+                "  reconcile:\n"
+                "    permissions:\n"
+                "      issues: write\n"
+                "    steps:\n"
+                "      - run: |\n"
+                '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n'
+                "  audit:\n    steps:\n",
             ),
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -1039,6 +1105,28 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             [("__invalid__", [])],
         )
         self.assertTrue(
+            workflow_installation_preflight.has_issue_body_file_reconciliation_for_files(
+                "gh issue create --repo r --title t --body-file report.md",
+                {"report.md"},
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_issue_body_file_reconciliation_for_files(
+                "gh issue create --repo r --title t --body-file other.md",
+                {"report.md"},
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_issue_body_file_reconciliation(
+                "gh --repo r issue create --title t --body-file report.md"
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_issue_body_file_reconciliation(
+                "gh --repo=r issue create --title t --body-file report.md"
+            )
+        )
+        self.assertTrue(
             workflow_installation_preflight.has_nonempty_option_value(
                 ["--repo", "owner/repository"], "--repo"
             )
@@ -1063,6 +1151,141 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 ["--repo"], "--repo"
             )
         )
+        self.assertFalse(workflow_installation_preflight.has_dynamic_shell_executor([]))
+        self.assertTrue(
+            workflow_installation_preflight.has_dynamic_shell_executor(
+                ["env", "--", "bash"]
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_dynamic_shell_executor(["env"])
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_dynamic_shell_executor(
+                ["1=bad", "bash"]
+            )
+        )
+        self.assertIsNone(
+            workflow_installation_preflight.issue_subcommand_positions(
+                ["gh", "issue", "create", "gh", "issue", "close"]
+            )
+        )
+        self.assertEqual(
+            workflow_installation_preflight.issue_mutation_command_blocks(
+                "gh issue create gh issue close"
+            ),
+            [("__invalid__", [])],
+        )
+        audit_command = (
+            "python scripts/audit_freshness.py --repository-root . "
+            "--json-output report.json --markdown-output report.md"
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_freshness_audit_invocation(
+                audit_command
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_audit_invocation("echo ready")
+        )
+        self.assertIsNone(
+            workflow_installation_preflight.freshness_audit_markdown_outputs(
+                audit_command + " " + audit_command
+            )
+        )
+        self.assertEqual(
+            workflow_installation_preflight.option_values(
+                ["--repo", "owner/repository"], "--repo"
+            ),
+            ("owner/repository",),
+        )
+        self.assertEqual(
+            workflow_installation_preflight.option_values(
+                ["--repo=owner/repository"], "--repo"
+            ),
+            ("owner/repository",),
+        )
+        self.assertIsNone(
+            workflow_installation_preflight.option_values(["--repo="], "--repo")
+        )
+        self.assertEqual(
+            workflow_installation_preflight.option_values(["--other"], "--repo"),
+            (),
+        )
+        self.assertEqual(
+            workflow_installation_preflight.option_values(
+                ["--repo", "one", "--repo", "two"], "--repo"
+            ),
+            ("one", "two"),
+        )
+        self.assertFalse(
+            workflow_installation_preflight.option_has_one_value(
+                ["--repo", "one", "--repo", "two"], "--repo"
+            )
+        )
+        for tokens, expected in (
+            (["gh", "api", "repos/example/issues"], False),
+            (["gh", "api", "repos/example/issues", "-f", "title=x"], True),
+            (
+                ["gh", "api", "repos/example/issues", "--method", "GET", "-f", "q=x"],
+                False,
+            ),
+            (["gh", "api", "repos/example/issues", "--method", "POST"], True),
+            (["gh", "api", "repos/example/issues", "--method="], True),
+            (["gh", "api", "repos/example/issues", "-XDELETE"], True),
+            (["gh", "api", "repos/example/issues", "-X", "HEAD"], False),
+            (["gh", "api", "repos/example/issues", "--method"], True),
+        ):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(
+                    workflow_installation_preflight.github_api_is_mutation(tokens, 0),
+                    expected,
+                )
+        self.assertTrue(
+            workflow_installation_preflight.has_least_privileged_freshness_permissions(
+                {
+                    "permissions": {"contents": "read", "issues": "write"},
+                    "jobs": {
+                        "audit": {
+                            "permissions": {"contents": "read", "issues": "write"}
+                        }
+                    },
+                }
+            )
+        )
+        for document in (
+            {"permissions": {"issues": "write"}, "jobs": {}},
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": [],
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": "not-a-job"},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": "write-all"}},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"contents": "write"}}},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"issues": "admin"}}},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"actions": "read"}}},
+            },
+        ):
+            with self.subTest(document=document):
+                self.assertFalse(
+                    workflow_installation_preflight.has_least_privileged_freshness_permissions(
+                        document
+                    )
+                )
 
     def test_local_reusable_workflows_are_required_as_preflight_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
