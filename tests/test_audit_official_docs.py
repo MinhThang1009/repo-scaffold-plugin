@@ -336,6 +336,26 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                     [],
                 )
 
+    def test_workflow_permission_claim_tracks_pull_request_write_token_setting(
+        self,
+    ) -> None:
+        claim = next(
+            candidate
+            for candidate in official_docs.load_trackers(PLUGIN_ROOT)
+            if candidate.identifier == "github-actions-workflow-permissions-syntax"
+        )
+        marker = "Send write tokens to workflows from pull requests"
+        self.assertIn(marker, claim.markers)
+        content = "\n".join(value for value in claim.markers if value != marker)
+        with mock.patch.object(
+            official_docs, "read_document", return_value=(claim.url, content)
+        ):
+            findings = official_docs.claim_findings(
+                PLUGIN_ROOT, claim, date(2026, 9, 8)
+            )
+        self.assertEqual(findings[0]["kind"], "official-docs-marker")
+        self.assertIn(marker, findings[0]["details"])
+
     def test_redirect_handler_rejects_unapproved_destination_before_fetching(
         self,
     ) -> None:
