@@ -729,6 +729,17 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 audit_command,
                 "          echo 'python scripts/audit_freshness.py'\n",
             ),
+            "malformed audit command": valid.replace(
+                audit_command,
+                "          python scripts/audit_freshness.py 'unterminated\n",
+            ),
+            "malformed audit arguments": valid.replace(
+                audit_command,
+                "          python scripts/audit_freshness.py \\\n"
+                "            --repository-root . \\\n"
+                "            --json-output 'report.json \\\n"
+                "            --markdown-output report.md\n",
+            ),
             "without audit output": valid.replace(
                 "            --markdown-output report.md\n", ""
             ),
@@ -755,10 +766,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             root = Path(directory)
             workflow = root / "container.yml"
             workflow.write_text(
-                "jobs:\n"
-                "  build:\n"
-                "    steps:\n"
-                "      - uses: docker://alpine:latest\n",
+                "jobs:\n  build:\n    steps:\n      - uses: docker://alpine:latest\n",
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(

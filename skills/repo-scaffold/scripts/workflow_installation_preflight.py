@@ -41,9 +41,7 @@ FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
     "--json-output",
     "--markdown-output",
 )
-CONTAINER_REFERENCE_PATTERN = re.compile(
-    r"docker://[^\s@]+@sha256:[0-9a-f]{64}\Z"
-)
+CONTAINER_REFERENCE_PATTERN = re.compile(r"docker://[^\s@]+@sha256:[0-9a-f]{64}\Z")
 
 
 class DuplicateJsonMember(ValueError):
@@ -195,9 +193,7 @@ def workflow_uses_values(value: Any) -> Iterator[Any]:
             yield from workflow_uses_values(child)
 
 
-def validate_container_references(
-    document: dict[str, Any], source: Path
-) -> None:
+def validate_container_references(document: dict[str, Any], source: Path) -> None:
     """Reject external container tags before workflow assets are installed."""
     for reference in workflow_uses_values(document):
         if not isinstance(reference, str) or not reference.startswith("docker://"):
