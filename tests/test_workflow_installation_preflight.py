@@ -565,7 +565,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     workflow.write_text(document, encoding="utf-8")
                     expected = filename == "job-scope.yml"
                     self.assertEqual(
-                        workflow_installation_preflight.workflow_capabilities([workflow])[2],
+                        workflow_installation_preflight.workflow_capabilities(
+                            [workflow]
+                        )[2],
                         [filename] if expected else [],
                     )
 

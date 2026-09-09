@@ -253,9 +253,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         external_action_references,
         detected_issue_workflows,
         pull_request_write_workflows,
-    ) = (
-        workflow_capabilities(args.workflow) if args.workflow else ([], [], [])
-    )
+    ) = workflow_capabilities(args.workflow) if args.workflow else ([], [], [])
     requires_external_actions = args.require_external_actions or bool(
         external_action_references
     )
