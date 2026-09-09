@@ -4749,7 +4749,8 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         "release-please-configs": [],
         "optional-release-please-configs": ["release-please-config.json"],
         "ci-toolchain-policies": [".github/ci-toolchain.json"],
-        "code-scanning-allowlists": [".github/code-scanning-allowlist.json"],
+        "code-scanning-allowlists": [],
+        "optional-code-scanning-allowlists": [".github/code-scanning-allowlist.json"],
         "requirement-sources": [
             {"path": "requirements-docs.txt", "locks": []},
         ],

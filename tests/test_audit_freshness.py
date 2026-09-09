@@ -622,6 +622,10 @@ class FreshnessTests(unittest.TestCase):
             document["release-please-configs"] = []
             document["optional-release-please-configs"] = ["release-please-config.json"]
             document["ci-toolchain-policies"] = [".github/ci-toolchain.json"]
+            document["code-scanning-allowlists"] = []
+            document["optional-code-scanning-allowlists"] = [
+                ".github/code-scanning-allowlist.json"
+            ]
             registry.write_text(json.dumps(document), encoding="utf-8")
             policy = root / ".github/ci-toolchain.json"
             policy.write_text("{}\n", encoding="utf-8")
@@ -644,6 +648,33 @@ class FreshnessTests(unittest.TestCase):
                 (),
             )
             self.assertEqual(freshness.ci_toolchain_findings(root, ()), [])
+            self.assertEqual(
+                freshness.existing_optional_paths(
+                    root, trackers.optional_code_scanning_allowlists
+                ),
+                (),
+            )
+            self.assertEqual(
+                freshness.code_scanning_allowlist_findings(
+                    root,
+                    trackers.code_scanning_allowlists
+                    + freshness.existing_optional_paths(
+                        root, trackers.optional_code_scanning_allowlists
+                    ),
+                    date(2026, 9, 9),
+                ),
+                [],
+            )
+            (root / ".github/code-scanning-allowlist.json").write_text(
+                json.dumps({"schema-version": 3, "allowlist": []}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                freshness.existing_optional_paths(
+                    root, trackers.optional_code_scanning_allowlists
+                ),
+                (Path(".github/code-scanning-allowlist.json"),),
+            )
 
             current = mock.Mock(returncode=0, stderr="", stdout="current")
             with mock.patch.object(freshness.subprocess, "run", return_value=current):
@@ -870,7 +901,7 @@ class FreshnessTests(unittest.TestCase):
                 "reviewed-on": "2026-09-01",
                 "review-period-days": 90,
             }
-            invalid_documents = (
+            invalid_documents: tuple[tuple[object, str], ...] = (
                 ([], "must be an object"),
                 ({"schema-version": 1, "allowlist": []}, "schema-version 3"),
                 ({"schema-version": 3, "allowlist": {}}, "must be a list"),
@@ -939,6 +970,7 @@ class FreshnessTests(unittest.TestCase):
                 code_scanning_allowlists=(
                     Path(".github/code-scanning-allowlist.json"),
                 ),
+                optional_code_scanning_allowlists=(),
                 requirement_sources=(),
             )
             with (

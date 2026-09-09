@@ -40,7 +40,8 @@ its exact alert number, selector, reason, `reviewed-on`, and
 `review-period-days`. Never reuse an exception for a new alert, even when its
 tool, rule, and path match a prior alert. The freshness reminder reopens review
 when an exception reaches its review date; retain `freshness.yml` whenever this
-gate is installed.
+gate is installed. Its tracker treats the allowlist as optional until the
+CodeQL or code-scanning gate asset creates it.
 The gate polls the Pull Request API for GitHub's mergeable test commit before
 checking CodeQL uploads. Do not substitute the event payload's
 `merge_commit_sha`, which can be absent while GitHub is calculating mergeability.

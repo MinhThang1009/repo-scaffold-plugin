@@ -82,6 +82,7 @@ class FreshnessTrackers:
     optional_release_please_configs: tuple[Path, ...]
     ci_toolchain_policies: tuple[Path, ...]
     code_scanning_allowlists: tuple[Path, ...]
+    optional_code_scanning_allowlists: tuple[Path, ...]
     requirement_sources: tuple[RequirementSource, ...]
 
 
@@ -218,6 +219,11 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         ),
         code_scanning_allowlists=paths(
             "code-scanning-allowlists", allow_empty=True, default_empty=True
+        ),
+        optional_code_scanning_allowlists=paths(
+            "optional-code-scanning-allowlists",
+            allow_empty=True,
+            default_empty=True,
         ),
         requirement_sources=tuple(requirement_sources),
     )
@@ -757,7 +763,10 @@ def audit(
             findings.extend(
                 code_scanning_allowlist_findings(
                     root,
-                    trackers.code_scanning_allowlists,
+                    trackers.code_scanning_allowlists
+                    + existing_optional_paths(
+                        root, trackers.optional_code_scanning_allowlists
+                    ),
                     datetime.now(timezone.utc).date(),
                     errors,
                 )
