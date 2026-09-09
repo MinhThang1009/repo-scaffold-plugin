@@ -910,6 +910,31 @@ class FreshnessTests(unittest.TestCase):
                     "invalid selector",
                 ),
                 (
+                    {"schema-version": 3, "allowlist": [{**valid, "path": ""}]},
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "path": "../escape"}],
+                    },
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "path": "C:/example.py"}],
+                    },
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "path": "scripts//example.py"}],
+                    },
+                    "invalid selector",
+                ),
+                (
                     {
                         "schema-version": 3,
                         "allowlist": [{**valid, "reviewed-on": "not-a-date"}],

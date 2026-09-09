@@ -113,6 +113,21 @@ def safe_relative_path(value: object, *, field: str) -> Path:
     return Path(value)
 
 
+def is_canonical_allowlist_path(value: object) -> bool:
+    """Return whether an alert path uses the same safe POSIX form as preflight."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    path = PurePosixPath(value)
+    return (
+        bool(path.parts)
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and "\\" not in value
+        and not any(PureWindowsPath(part).drive for part in path.parts)
+        and path.as_posix() == value
+    )
+
+
 def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
     """Resolve a configured path only when it remains inside the repository."""
     path = root / relative
@@ -573,7 +588,10 @@ def code_scanning_allowlist_findings(
                         isinstance(value, str) and value.strip()
                         for value in (tool, rule, reason, reviewed_on)
                     )
-                    or (path_value is not None and not isinstance(path_value, str))
+                    or (
+                        path_value is not None
+                        and not is_canonical_allowlist_path(path_value)
+                    )
                     or not isinstance(review_period_days, int)
                     or isinstance(review_period_days, bool)
                     or not 1

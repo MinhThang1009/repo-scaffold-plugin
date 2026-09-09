@@ -5194,6 +5194,30 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("exact positive alert selector" in item for item in boolean_number)
             )
 
+            for invalid_path in (
+                "",
+                "../escape",
+                "C:/example.py",
+                "scripts//example.py",
+            ):
+                with self.subTest(invalid_path=invalid_path):
+                    allowlist.write_text(
+                        '{"schema-version": 3, "allowlist": ['
+                        '{"number": 1, "tool": "CodeQL", "rule": "x", '
+                        f'"path": {json.dumps(invalid_path)}, "reason": "x", '
+                        '"reviewed-on": "2026-09-09", "review-period-days": 90}]}',
+                        encoding="utf-8",
+                    )
+                    invalid_path_result = (
+                        validate_repository.validate_code_scanning_gate_contract(root)
+                    )
+                    self.assertTrue(
+                        any(
+                            "exact positive alert selector" in item
+                            for item in invalid_path_result
+                        )
+                    )
+
             allowlist.write_text(
                 '{"schema-version": 3, "allowlist": ['
                 '{"number": 1, "tool": "CodeQL", "rule": "x", '
@@ -7642,6 +7666,21 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertFalse(
             validate_repository.has_explicit_repository_binding(
+                'gh issue create --repo "" --body-file report.md'
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_explicit_repository_binding(
+                "gh issue create --repo --title reminder --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_explicit_repository_binding(
+                'gh issue create --repo "unterminated'
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_explicit_repository_binding(
                 "python audit.py --repository-root ."
             )
         )
@@ -7666,6 +7705,11 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             validate_repository.has_repo_bound_issue_reconciliation(
                 "gh issue create --body-file report.md\n"
                 "gh issue edit --repo $REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                'gh issue create --repo "$REPOSITORY" --body-file ""'
             )
         )
         self.assertFalse(

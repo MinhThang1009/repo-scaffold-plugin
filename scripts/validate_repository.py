@@ -9,6 +9,7 @@ import importlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -17,7 +18,7 @@ import tempfile
 import zipfile
 from collections.abc import Iterable
 from datetime import date
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -463,7 +464,19 @@ def job_effective_issue_write(workflow: object, job: object) -> bool:
 
 def has_value_bearing_option(text: str, option: str) -> bool:
     """Return whether shell text contains a value-bearing CLI option token."""
-    return re.search(rf"(?<![\w-]){re.escape(option)}(?:=|\s+)(?=\S)", text) is not None
+    try:
+        tokens = shlex.split(text, comments=True, posix=True)
+    except ValueError:
+        return False
+    option_prefix = f"{option}="
+    for index, token in enumerate(tokens):
+        if token.startswith(option_prefix):
+            return bool(token.partition("=")[2].strip())
+        if token == option and index + 1 < len(tokens):
+            value = tokens[index + 1].strip()
+            if value and not value.startswith("-"):
+                return True
+    return False
 
 
 def has_explicit_repository_binding(text: str) -> bool:
@@ -488,6 +501,21 @@ def has_repo_bound_issue_reconciliation(text: str) -> bool:
     ]
     return bool(body_commands) and all(
         has_explicit_repository_binding(command) for command in body_commands
+    )
+
+
+def is_canonical_allowlist_path(value: object) -> bool:
+    """Return whether an alert path uses the same safe POSIX form as preflight."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    path = PurePosixPath(value)
+    return (
+        bool(path.parts)
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and "\\" not in value
+        and not any(PureWindowsPath(part).drive for part in path.parts)
+        and path.as_posix() == value
     )
 
 
@@ -5301,7 +5329,8 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
                 for field in ("tool", "rule", "reason")
             )
             or (
-                entry.get("path") is not None and not isinstance(entry.get("path"), str)
+                entry.get("path") is not None
+                and not is_canonical_allowlist_path(entry.get("path"))
             )
             or not isinstance(entry.get("reviewed-on"), str)
             or not entry["reviewed-on"].strip()
