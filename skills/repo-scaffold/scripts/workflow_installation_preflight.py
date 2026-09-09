@@ -164,12 +164,24 @@ def requires_issue_write(text: str, source: Path) -> bool:
     jobs = document.get("jobs", {})
     assert isinstance(jobs, dict)
     for scope in [document, *jobs.values()]:
-        permissions = scope.get("permissions", {})
-        if permissions == "write-all" or (
-            isinstance(permissions, dict) and permissions.get("issues") == "write"
-        ):
+        if permissions_grant_issue_write(scope):
             return True
     return False
+
+
+def permissions_grant_issue_write(scope: dict[str, Any]) -> bool:
+    """Return whether one workflow or job permission scope grants Issues write."""
+    permissions = scope.get("permissions", {})
+    return permissions == "write-all" or (
+        isinstance(permissions, dict) and permissions.get("issues") == "write"
+    )
+
+
+def job_effective_issue_write(document: dict[str, Any], job: dict[str, Any]) -> bool:
+    """Resolve the Issues permission inherited by one job from workflow scope."""
+    if "permissions" in job:
+        return permissions_grant_issue_write(job)
+    return permissions_grant_issue_write(document)
 
 
 def requires_pull_request_write_tokens(text: str, source: Path) -> bool:
@@ -223,12 +235,32 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
         or not requires_issue_write(text, source)
     ):
         return False
-    commands = workflow_run_commands(document)
+    jobs = document.get("jobs", {})
+    assert isinstance(jobs, dict)
+    commands: list[str] = []
+    reconciliation_supplied = False
+    for job in jobs.values():
+        assert isinstance(job, dict)
+        steps = job.get("steps", [])
+        job_commands = (
+            [
+                step["run"]
+                for step in steps
+                if isinstance(step, dict) and isinstance(step.get("run"), str)
+            ]
+            if isinstance(steps, list)
+            else []
+        )
+        commands.extend(job_commands)
+        if any(has_issue_body_file_reconciliation(command) for command in job_commands):
+            if not job_effective_issue_write(document, job):
+                return False
+            reconciliation_supplied = True
     lines = [line for command in commands for line in executable_shell_lines(command)]
     return (
         any(line.startswith(FRESHNESS_AUDIT_COMMAND) for line in lines)
         and any(FRESHNESS_REMINDER_MARKER in line for line in lines)
-        and any(has_issue_body_file_reconciliation(command) for command in commands)
+        and reconciliation_supplied
     )
 
 

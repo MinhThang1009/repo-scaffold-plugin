@@ -341,7 +341,8 @@ freshness workflow must use only scheduled and manual triggers, request
 `issues: write`, execute the freshness checker, and reconcile a marker issue
 through a real `gh issue create` or `gh issue edit --body-file` command;
 untrusted triggers, comments, or an incomplete reminder do not satisfy the
-companion requirement.
+companion requirement. The reconciliation job itself must inherit or declare
+`issues: write`; a grant on another job is insufficient.
 
 ## Inherited community-health policy
 

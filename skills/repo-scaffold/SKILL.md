@@ -184,6 +184,8 @@ only scheduled and manual triggers, request Issues write permission, execute the
 freshness audit, and reconcile marker issues through real
 `gh issue create` or `gh issue edit --body-file` commands. The preflight rejects
 untrusted-trigger, comment-only, or otherwise incomplete reminder scaffolds.
+The reconciliation job itself must inherit or declare `issues: write`; granting
+that permission only to a different job does not satisfy the companion contract.
 
 For a `pull_request` workflow that declares any write permission, first verify
 that the repository's Actions setting **Send write tokens to workflows from pull

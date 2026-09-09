@@ -663,6 +663,17 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  schedule:\n    - cron: '17 6 * * 5'\n", "  schedule: bad\n"
             ),
             "without issue write": valid.replace("  issues: write\n", ""),
+            "reconciliation job overrides issue write": valid.replace(
+                "  audit:\n    steps:\n",
+                "  audit:\n    permissions:\n      contents: read\n    steps:\n",
+            ),
+            "issue write belongs to another job": valid.replace(
+                "  issues: write\n", "  issues: read\n"
+            ).replace(
+                "  audit:\n    steps:\n",
+                "  audit:\n    permissions: {}\n    steps:\n",
+            )
+            + "  permissioned:\n    permissions:\n      issues: write\n",
             "without durable body": valid.replace(
                 "          gh issue create --body-file report.md\n", ""
             ),
