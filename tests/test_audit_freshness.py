@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import date
 from io import BytesIO, StringIO
 from pathlib import Path
 from types import ModuleType
@@ -790,6 +791,167 @@ class FreshnessTests(unittest.TestCase):
                 )
             self.assertIn("missing or unsafe", errors[0])
             self.assertEqual(findings[0]["path"], ".github/second-toolchain.json")
+
+    def test_code_scanning_allowlist_review_dates_and_legacy_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            allowlist = root / ".github/code-scanning-allowlist.json"
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [
+                            {
+                                "number": 7,
+                                "tool": "CodeQL",
+                                "rule": "py/example",
+                                "path": "scripts/example.py",
+                                "reason": "Reviewed exception.",
+                                "reviewed-on": "2026-06-01",
+                                "review-period-days": 90,
+                            },
+                            {
+                                "number": 8,
+                                "tool": "CodeQL",
+                                "rule": "py/current",
+                                "path": None,
+                                "reason": "Recently reviewed exception.",
+                                "reviewed-on": "2026-09-01",
+                                "review-period-days": 90,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            findings = freshness.code_scanning_allowlist_findings(
+                root,
+                (Path(".github/code-scanning-allowlist.json"),),
+                date(2026, 9, 9),
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["kind"], "code-scanning-allowlist-review")
+            self.assertEqual(findings[0]["subject"], "alert #7: CodeQL/py/example")
+
+            allowlist.write_text(
+                json.dumps({"schema-version": 2, "allowlist": []}),
+                encoding="utf-8",
+            )
+            legacy = freshness.code_scanning_allowlist_findings(
+                root,
+                (Path(".github/code-scanning-allowlist.json"),),
+                date(2026, 9, 9),
+            )
+            self.assertEqual(legacy[0]["kind"], "code-scanning-allowlist-schema")
+
+            allowlist.write_text(
+                json.dumps({"schema-version": 3, "allowlist": [{"number": 1}]}),
+                encoding="utf-8",
+            )
+            errors: list[str] = []
+            self.assertEqual(
+                freshness.code_scanning_allowlist_findings(
+                    root,
+                    (Path(".github/code-scanning-allowlist.json"),),
+                    date(2026, 9, 9),
+                    errors,
+                ),
+                [],
+            )
+            self.assertIn("review period", errors[0])
+
+            valid = {
+                "number": 1,
+                "tool": "CodeQL",
+                "rule": "py/example",
+                "path": None,
+                "reason": "Reviewed exception.",
+                "reviewed-on": "2026-09-01",
+                "review-period-days": 90,
+            }
+            invalid_documents = (
+                ([], "must be an object"),
+                ({"schema-version": 1, "allowlist": []}, "schema-version 3"),
+                ({"schema-version": 3, "allowlist": {}}, "must be a list"),
+                (
+                    {"schema-version": 3, "allowlist": [{**valid, "number": True}]},
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "reviewed-on": "not-a-date"}],
+                    },
+                    "ISO date",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "reviewed-on": "2999-01-01"}],
+                    },
+                    "future",
+                ),
+            )
+            for document, message in invalid_documents:
+                with self.subTest(document=document):
+                    allowlist.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(freshness.AuditError, message):
+                        freshness.code_scanning_allowlist_findings(
+                            root,
+                            (Path(".github/code-scanning-allowlist.json"),),
+                            date(2026, 9, 9),
+                        )
+
+            allowlist.write_text(
+                json.dumps({"schema-version": 3, "allowlist": [valid]}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(freshness, "MAX_CODE_SCANNING_ALLOWLIST_ENTRIES", 0):
+                with self.assertRaisesRegex(freshness.AuditError, "entry limit"):
+                    freshness.code_scanning_allowlist_findings(
+                        root,
+                        (Path(".github/code-scanning-allowlist.json"),),
+                        date(2026, 9, 9),
+                    )
+            with mock.patch.object(freshness, "MAX_CODE_SCANNING_ALLOWLIST_BYTES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "size limit"):
+                    freshness.code_scanning_allowlist_findings(
+                        root,
+                        (Path(".github/code-scanning-allowlist.json"),),
+                        date(2026, 9, 9),
+                    )
+            with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
+                freshness.code_scanning_allowlist_findings(
+                    root,
+                    (Path(".github/missing-code-scanning-allowlist.json"),),
+                    date(2026, 9, 9),
+                )
+
+    def test_code_scanning_allowlist_audit_failure_is_indeterminate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trackers = freshness.FreshnessTrackers(
+                workflow_directories=(),
+                release_please_configs=(),
+                optional_release_please_configs=(),
+                ci_toolchain_policies=(),
+                code_scanning_allowlists=(
+                    Path(".github/code-scanning-allowlist.json"),
+                ),
+                requirement_sources=(),
+            )
+            with (
+                mock.patch.object(freshness, "load_trackers", return_value=trackers),
+                mock.patch.object(
+                    freshness,
+                    "code_scanning_allowlist_findings",
+                    side_effect=freshness.AuditError("allowlist unavailable"),
+                ),
+            ):
+                report = freshness.audit(root, "token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("allowlist unavailable", report["errors"])
 
     def test_tracker_registry_rejects_invalid_and_unsafe_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

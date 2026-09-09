@@ -16,6 +16,7 @@ import sys
 import tempfile
 import zipfile
 from collections.abc import Iterable
+from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -207,6 +208,13 @@ if find dist ! -type d ! -type f -print -quit | grep -q .; then
 fi
 """
 WORKFLOW_SCRIPT_COPY_CONTRACT = (
+    (
+        Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+        Path("skills/repo-scaffold/assets/code-scanning-allowlist.json"),
+        "assets/code-scanning-allowlist.json",
+        Path(".github/code-scanning-allowlist.json"),
+        False,
+    ),
     (
         Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
         Path("scripts/check_code_scanning_alerts.py"),
@@ -4728,10 +4736,11 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             "load_trackers" not in current_text
             or "--tracker-registry" not in current_text
             or "auditable_action_repositories" not in current_text
+            or "code_scanning_allowlist_findings" not in current_text
         ):
             problems.append(
                 "freshness tracking: checker must load an explicit tracker registry "
-                "and audit generic pinned actions"
+                "and audit generic pinned actions plus code-scanning exceptions"
             )
 
     expected_asset_registry = {
@@ -4740,6 +4749,7 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         "release-please-configs": [],
         "optional-release-please-configs": ["release-please-config.json"],
         "ci-toolchain-policies": [".github/ci-toolchain.json"],
+        "code-scanning-allowlists": [".github/code-scanning-allowlist.json"],
         "requirement-sources": [
             {"path": "requirements-docs.txt", "locks": []},
         ],
@@ -4757,6 +4767,14 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         if expected is not None and registry != expected:
             problems.append(
                 f"{relative}: scaffold freshness registry must track its shipped inputs"
+            )
+        if path == root_registry and (
+            not isinstance(registry, dict)
+            or registry.get("code-scanning-allowlists")
+            != [".github/code-scanning-allowlist.json"]
+        ):
+            problems.append(
+                f"{relative}: must track code-scanning allowlist review dates"
             )
         if not isinstance(registry, dict) or registry.get("schema-version") != 1:
             problems.append(f"{relative}: freshness registry must use schema-version 1")
@@ -5181,13 +5199,22 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         schema_version = (
             allowlist.get("schema-version") if isinstance(allowlist, dict) else None
         )
-        if schema_version != 2 or not isinstance(entries, list):
+        if schema_version != 3 or not isinstance(entries, list):
             problems.append(
-                ".github/code-scanning-allowlist.json: require schema-version 2 and an allowlist"
+                ".github/code-scanning-allowlist.json: require schema-version 3 and an allowlist"
             )
         elif any(
             not isinstance(entry, dict)
-            or set(entry) != {"number", "tool", "rule", "path", "reason"}
+            or set(entry)
+            != {
+                "number",
+                "tool",
+                "rule",
+                "path",
+                "reason",
+                "reviewed-on",
+                "review-period-days",
+            }
             or type(entry.get("number")) is not int
             or entry["number"] < 1
             or not all(
@@ -5197,11 +5224,25 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             or (
                 entry.get("path") is not None and not isinstance(entry.get("path"), str)
             )
+            or not isinstance(entry.get("reviewed-on"), str)
+            or not entry["reviewed-on"].strip()
+            or not isinstance(entry.get("review-period-days"), int)
+            or isinstance(entry["review-period-days"], bool)
+            or not 1 <= entry["review-period-days"] <= 366
             for entry in entries
         ):
             problems.append(
-                ".github/code-scanning-allowlist.json: each entry must use an exact positive alert number and selector"
+                ".github/code-scanning-allowlist.json: each entry must use an exact positive alert selector and review period"
             )
+        else:
+            for entry in entries:
+                try:
+                    date.fromisoformat(entry["reviewed-on"])
+                except ValueError:
+                    problems.append(
+                        ".github/code-scanning-allowlist.json: reviewed-on must use ISO date format"
+                    )
+                    break
     expected_permissions = {
         "contents": "read",
         "pull-requests": "read",

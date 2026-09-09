@@ -11,7 +11,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -24,6 +24,9 @@ PYPI_ROOT = "https://pypi.org/pypi"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
+MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
+MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
+MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PINNED_REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\#]+)"
@@ -78,6 +81,7 @@ class FreshnessTrackers:
     release_please_configs: tuple[Path, ...]
     optional_release_please_configs: tuple[Path, ...]
     ci_toolchain_policies: tuple[Path, ...]
+    code_scanning_allowlists: tuple[Path, ...]
     requirement_sources: tuple[RequirementSource, ...]
 
 
@@ -211,6 +215,9 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         ),
         ci_toolchain_policies=paths(
             "ci-toolchain-policies", allow_empty=True, default_empty=True
+        ),
+        code_scanning_allowlists=paths(
+            "code-scanning-allowlists", allow_empty=True, default_empty=True
         ),
         requirement_sources=tuple(requirement_sources),
     )
@@ -482,6 +489,137 @@ def ci_toolchain_findings(
     return findings
 
 
+def code_scanning_allowlist_findings(
+    root: Path,
+    allowlists: tuple[Path, ...],
+    today: date,
+    errors: list[str] | None = None,
+) -> list[dict[str, str]]:
+    """Remind maintainers to re-review time-bounded scanning exceptions."""
+    findings: list[dict[str, str]] = []
+    for relative in allowlists:
+        try:
+            path = tracked_path(root, relative, kind="code-scanning allowlist")
+            if path.stat().st_size > MAX_CODE_SCANNING_ALLOWLIST_BYTES:
+                raise AuditError(
+                    f"code-scanning allowlist exceeds the size limit: {relative}"
+                )
+            document = json.loads(
+                path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            )
+            if not isinstance(document, dict):
+                raise AuditError(
+                    f"code-scanning allowlist must be an object: {relative}"
+                )
+            schema_version = document.get("schema-version")
+            entries = document.get("allowlist")
+            if schema_version != 3:
+                if schema_version == 2:
+                    findings.append(
+                        {
+                            "kind": "code-scanning-allowlist-schema",
+                            "path": relative.as_posix(),
+                            "subject": "allowlist schema",
+                            "current": "2",
+                            "latest": "3",
+                            "details": "Add reviewed-on and review-period-days to every exception.",
+                        }
+                    )
+                    continue
+                raise AuditError(
+                    f"code-scanning allowlist must use schema-version 3: {relative}"
+                )
+            if not isinstance(entries, list):
+                raise AuditError(
+                    f"code-scanning allowlist allowlist must be a list: {relative}"
+                )
+            if len(entries) > MAX_CODE_SCANNING_ALLOWLIST_ENTRIES:
+                raise AuditError(
+                    f"code-scanning allowlist exceeds the entry limit: {relative}"
+                )
+            seen_numbers: set[int] = set()
+            for entry in entries:
+                if not isinstance(entry, dict) or set(entry) != {
+                    "number",
+                    "tool",
+                    "rule",
+                    "path",
+                    "reason",
+                    "reviewed-on",
+                    "review-period-days",
+                }:
+                    raise AuditError(
+                        "each code-scanning allowlist entry must include an exact "
+                        "selector and review period"
+                    )
+                number = entry["number"]
+                tool = entry["tool"]
+                rule = entry["rule"]
+                reason = entry["reason"]
+                path_value = entry["path"]
+                reviewed_on = entry["reviewed-on"]
+                review_period_days = entry["review-period-days"]
+                if (
+                    type(number) is not int
+                    or number < 1
+                    or number in seen_numbers
+                    or not all(
+                        isinstance(value, str) and value.strip()
+                        for value in (tool, rule, reason, reviewed_on)
+                    )
+                    or (path_value is not None and not isinstance(path_value, str))
+                    or not isinstance(review_period_days, int)
+                    or isinstance(review_period_days, bool)
+                    or not 1
+                    <= review_period_days
+                    <= MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS
+                ):
+                    raise AuditError(
+                        "code-scanning allowlist entry has an invalid selector or review period"
+                    )
+                try:
+                    reviewed_date = date.fromisoformat(reviewed_on)
+                except ValueError as cause:
+                    raise AuditError(
+                        "code-scanning allowlist reviewed-on must use ISO date format"
+                    ) from cause
+                if reviewed_date > today:
+                    raise AuditError(
+                        "code-scanning allowlist reviewed-on cannot be in the future"
+                    )
+                seen_numbers.add(number)
+                due_on = reviewed_date + timedelta(days=review_period_days)
+                if due_on <= today:
+                    findings.append(
+                        {
+                            "kind": "code-scanning-allowlist-review",
+                            "path": relative.as_posix(),
+                            "subject": f"alert #{number}: {tool}/{rule}",
+                            "current": reviewed_on,
+                            "latest": due_on.isoformat(),
+                            "details": "Re-review the exception or remove it when the alert is resolved.",
+                        }
+                    )
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            RecursionError,
+            AuditError,
+        ) as cause:
+            issue = (
+                cause
+                if isinstance(cause, AuditError)
+                else AuditError(
+                    f"could not read code-scanning allowlist {relative}: {cause}"
+                )
+            )
+            if errors is None:
+                raise issue
+            errors.append(str(issue))
+    return findings
+
+
 def requirement_findings(
     root: Path,
     sources: tuple[RequirementSource, ...],
@@ -612,6 +750,17 @@ def audit(
         try:
             findings.extend(
                 ci_toolchain_findings(root, trackers.ci_toolchain_policies, errors)
+            )
+        except AuditError as error:
+            errors.append(str(error))
+        try:
+            findings.extend(
+                code_scanning_allowlist_findings(
+                    root,
+                    trackers.code_scanning_allowlists,
+                    datetime.now(timezone.utc).date(),
+                    errors,
+                )
             )
         except AuditError as error:
             errors.append(str(error))

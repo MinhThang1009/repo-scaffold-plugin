@@ -91,6 +91,40 @@ class CodeScanningGateTests(unittest.TestCase):
             1,
         )
 
+    def test_schema_version_three_requires_a_valid_review_period(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            valid = {
+                "number": 1,
+                "tool": "CodeQL",
+                "rule": "py/example",
+                "path": "scripts/example.py",
+                "reason": "Reviewed.",
+                "reviewed-on": "2026-09-09",
+                "review-period-days": 90,
+            }
+            path = root / "allowlist.json"
+            path.write_text(
+                json.dumps({"schema-version": 3, "allowlist": [valid]}),
+                encoding="utf-8",
+            )
+            self.assertEqual(len(gate.load_allowlist(path)), 1)
+
+            for field, value in (
+                ("reviewed-on", "not-a-date"),
+                ("review-period-days", 0),
+                ("review-period-days", True),
+                ("reviewed-on", "2999-01-01"),
+            ):
+                with self.subTest(field=field, value=value):
+                    invalid = {**valid, field: value}
+                    path.write_text(
+                        json.dumps({"schema-version": 3, "allowlist": [invalid]}),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(gate.GateError, "review"):
+                        gate.load_allowlist(path)
+
     def test_checked_in_allowlist_approves_reviewed_default_branch_checkout(
         self,
     ) -> None:

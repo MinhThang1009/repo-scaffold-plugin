@@ -27,6 +27,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   idempotent issue when Issues are enabled. Freshness must retain the optional
   Release Please schema tracker and CI-toolchain policy tracker shipped with the
   scaffold so installed inputs receive the same reminder coverage as action pins.
+  Code-scanning allowlist exceptions must also carry a bounded review date and
+  be tracked by freshness; do not install the code-scanning gate without its
+  matching allowlist and freshness reminder.
 - CI: create or adapt a stack-valid workflow with real commands and a stable
   aggregate gate. Do not require it while the scaffold sentinel remains. Use one
   machine-readable runtime policy and dependency caching appropriate to the stack.

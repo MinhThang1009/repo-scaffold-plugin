@@ -94,6 +94,12 @@ without GitHub Code Security, disabled GitHub Actions, default setup, and
 existing advanced-upload evidence. Run the workflow-installation preflight as
 well, because it verifies the Actions policy for the asset's exact action pins.
 
+Before installing `code-scanning-gate.yml`, run the workflow-installation
+preflight for its exact action pins and install its matching
+`code-scanning-allowlist.json` plus the freshness reminder. The gate is only a
+fail-closed enforcement layer for a verified CodeQL producer; use the CodeQL
+and branch-protection preflights before making its context required.
+
 Before installing `scorecard.yml`, run the fail-closed
 `scripts/scorecard_preflight.py`. It requires GitHub Actions and, for a private
 or internal repository, an organization-owned target with GitHub Code Security

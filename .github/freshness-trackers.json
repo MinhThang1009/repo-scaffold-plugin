@@ -11,6 +11,7 @@
   ],
   "optional-release-please-configs": [],
   "ci-toolchain-policies": [],
+  "code-scanning-allowlists": [".github/code-scanning-allowlist.json"],
   "requirement-sources": [
     {
       "path": "requirements-dev.in",

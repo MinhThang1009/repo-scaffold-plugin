@@ -16,6 +16,7 @@ destination:
 
 | Workflow asset | Bundled source | Generated destination |
 | --- | --- | --- |
+| `assets/workflows/code-scanning-gate.yml` | `assets/code-scanning-allowlist.json` | `.github/code-scanning-allowlist.json` |
 | `assets/workflows/code-scanning-gate.yml` | `../../../scripts/check_code_scanning_alerts.py` | `scripts/check_code_scanning_alerts.py` |
 | `assets/workflows/community-health.yml` | `../scripts/check_community_health.py` | `scripts/check_community_health.py` |
 | `assets/workflows/community-health.yml` | `assets/community-health-trackers.json` | `.github/community-health-trackers.json` |
@@ -31,12 +32,15 @@ destination:
 | `assets/workflows/labeler.yml` | `assets/labeler.yml` | `.github/labeler.yml` |
 | Pull-request preflight | `../scripts/pr_template_preflight.py` | `scripts/pr_template_preflight.py` |
 
-When installing the CodeQL asset, also copy
+When installing the CodeQL or code-scanning gate asset, also copy
 `assets/code-scanning-allowlist.json` to
 `.github/code-scanning-allowlist.json`. Keep the scaffold allowlist empty unless
 the target repository has independently reviewed a specific alert and recorded
-its exact alert number, selector, and reason. Never reuse an exception for a
-new alert, even when its tool, rule, and path match a prior alert.
+its exact alert number, selector, reason, `reviewed-on`, and
+`review-period-days`. Never reuse an exception for a new alert, even when its
+tool, rule, and path match a prior alert. The freshness reminder reopens review
+when an exception reaches its review date; retain `freshness.yml` whenever this
+gate is installed.
 The gate polls the Pull Request API for GitHub's mergeable test commit before
 checking CodeQL uploads. Do not substitute the event payload's
 `merge_commit_sha`, which can be absent while GitHub is calculating mergeability.

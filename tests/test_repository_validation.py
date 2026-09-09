@@ -5165,29 +5165,47 @@ class CodeScanningGateContractTests(unittest.TestCase):
             )
 
             allowlist.write_text(
-                '{"schema-version": 2, "allowlist": ['
+                '{"schema-version": 3, "allowlist": ['
                 '{"number": 0, "tool": "CodeQL", "rule": "x", '
-                '"path": null, "reason": "x"}]}',
+                '"path": null, "reason": "x", "reviewed-on": "2026-09-09", '
+                '"review-period-days": 90}]}',
                 encoding="utf-8",
             )
             invalid_selector = validate_repository.validate_code_scanning_gate_contract(
                 root
             )
             self.assertTrue(
-                any("exact positive alert number" in item for item in invalid_selector)
+                any(
+                    "exact positive alert selector" in item for item in invalid_selector
+                )
             )
 
             allowlist.write_text(
-                '{"schema-version": 2, "allowlist": ['
+                '{"schema-version": 3, "allowlist": ['
                 '{"number": true, "tool": "CodeQL", "rule": "x", '
-                '"path": null, "reason": "x"}]}',
+                '"path": null, "reason": "x", "reviewed-on": "2026-09-09", '
+                '"review-period-days": 90}]}',
                 encoding="utf-8",
             )
             boolean_number = validate_repository.validate_code_scanning_gate_contract(
                 root
             )
             self.assertTrue(
-                any("exact positive alert number" in item for item in boolean_number)
+                any("exact positive alert selector" in item for item in boolean_number)
+            )
+
+            allowlist.write_text(
+                '{"schema-version": 3, "allowlist": ['
+                '{"number": 1, "tool": "CodeQL", "rule": "x", '
+                '"path": null, "reason": "x", "reviewed-on": "not-a-date", '
+                '"review-period-days": 90}]}',
+                encoding="utf-8",
+            )
+            invalid_review_date = (
+                validate_repository.validate_code_scanning_gate_contract(root)
+            )
+            self.assertTrue(
+                any("reviewed-on must use ISO" in item for item in invalid_review_date)
             )
 
             source_paths = (
@@ -5207,7 +5225,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
                     encoding="utf-8",
                 )
             allowlist.write_text(
-                '{"schema-version": 2, "allowlist": []}', encoding="utf-8"
+                '{"schema-version": 3, "allowlist": []}', encoding="utf-8"
             )
             unsafe = validate_repository.validate_code_scanning_gate_contract(root)
             self.assertTrue(
