@@ -1047,8 +1047,10 @@ def has_repo_bound_issue_reconciliation(
     )
 
 
-def has_freshness_repository_api_reads(text: str) -> bool:
-    """Require one paginated open-issue lookup for the current repository."""
+def has_freshness_repository_api_reads(
+    text: str, *, require_lookup: bool = True
+) -> bool:
+    """Validate freshness API lookups and optionally require one lookup."""
     saw_api = False
     segments = shell_command_segments(text)
     if segments is None:
@@ -1080,6 +1082,8 @@ def has_freshness_repository_api_reads(text: str) -> bool:
         ]
         for position in api_positions:
             saw_api = True
+            if has_embedded_command(tokens) or has_dynamic_shell_executor(tokens):
+                return False
             if github_api_is_mutation(tokens, position):
                 return False
             api_arguments = tokens[position + 2 :]
@@ -1122,7 +1126,7 @@ def has_freshness_repository_api_reads(text: str) -> bool:
             endpoints = [token for token in api_arguments if token.startswith("repos/")]
             if endpoints != [FRESHNESS_REMINDER_API_ENDPOINT]:
                 return False
-    return saw_api
+    return saw_api or not require_lookup
 
 
 def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
@@ -1210,10 +1214,12 @@ def has_freshness_job_reconciliation(workflow: object, text: str) -> bool:
         blocks = reminder_issue_mutation_blocks(job_text)
         if blocks is None:
             return False
+        if not has_freshness_repository_api_reads(
+            job_text, require_lookup=bool(blocks)
+        ):
+            return False
         if blocks:
             mutation_jobs += 1
-            if not has_freshness_repository_api_reads(job_text):
-                return False
             if not job_effective_issue_write(workflow, job):
                 return False
         markdown_outputs = freshness_audit_markdown_outputs(job_text)

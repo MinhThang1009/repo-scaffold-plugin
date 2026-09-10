@@ -870,6 +870,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             + "  hidden:\n"
             + "    uses: owner/repository/.github/workflows/reusable.yml@"
             + "0123456789abcdef0123456789abcdef01234567\n",
+            "hidden global API lookup": valid
+            + "  hidden-api:\n"
+            + "    steps:\n"
+            + "      - run: gh --hostname github.com api "
+            + "\"repos/attacker/repository/issues\" --jq '.number'\n",
             "JSON and Markdown outputs collide": valid.replace(
                 "            --json-output report.json \\\n",
                 "            --json-output report.md \\\n",
@@ -1408,6 +1413,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace("gh api", "echo gh api")
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
                 api_lookup.replace("--hostname github.com ", "")
             )
         )
@@ -1482,6 +1492,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
                 "echo ready"
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                "echo ready", require_lookup=False
             )
         )
         self.assertFalse(

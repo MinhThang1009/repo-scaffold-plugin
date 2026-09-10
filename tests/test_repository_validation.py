@@ -8144,6 +8144,11 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("gh api", "echo gh api")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
                 api_lookup.replace("--hostname github.com ", "")
             )
         )
@@ -8217,6 +8222,11 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads("echo ready")
+        )
+        self.assertTrue(
+            validate_repository.has_freshness_repository_api_reads(
+                "echo ready", require_lookup=False
+            )
         )
         self.assertTrue(
             validate_repository.has_repository_root_working_directory(
@@ -8403,6 +8413,20 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             validate_repository.has_freshness_job_reconciliation(
                 workflow_with_noop, contract_text
+            )
+        )
+        global_api_workflow_text = (
+            contract_text
+            + "\n"
+            + "  hidden-api:\n"
+            + "    steps:\n"
+            + "      - run: gh --hostname github.com api "
+            + "\"repos/attacker/repository/issues\" --jq '.number'\n"
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(global_api_workflow_text),
+                global_api_workflow_text,
             )
         )
         workflow_with_mutation_without_lookup = dict(contract_workflow)
