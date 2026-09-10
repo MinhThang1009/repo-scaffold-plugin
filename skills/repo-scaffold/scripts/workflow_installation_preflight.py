@@ -536,6 +536,17 @@ def has_repository_root_working_directory(document: dict[str, Any]) -> bool:
     return True
 
 
+def freshness_job_execution_is_unconditional(job: object) -> bool:
+    """Reject job or step controls that can silently skip reconciliation."""
+    if not isinstance(job, dict) or "if" in job or "continue-on-error" in job:
+        return False
+    steps = job.get("steps")
+    return isinstance(steps, list) and all(
+        isinstance(step, dict) and "if" not in step and "continue-on-error" not in step
+        for step in steps
+    )
+
+
 def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
     """Require freshness jobs to expose their run commands for inspection."""
     jobs = document.get("jobs", {})
@@ -808,15 +819,18 @@ def freshness_command_order_is_valid(command: str) -> bool:
     )
 
 
-def freshness_api_result_is_consumed(command: str) -> bool:
-    """Require the freshness API result to be assigned and consumed later."""
+def freshness_api_result_assignments(
+    command: str,
+) -> tuple[list[str], list[tuple[str, int]]] | None:
+    """Return shell tokens and assignments whose substitution invokes ``gh api``."""
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = "#"
     try:
         tokens = list(lexer)
     except ValueError:
-        return False
+        return None
+    assignments: list[tuple[str, int]] = []
     for index, token in enumerate(tokens[:-1]):
         if not token.endswith("=$"):
             continue
@@ -841,8 +855,18 @@ def freshness_api_result_is_consumed(command: str) -> bool:
                 and tokens[cursor + 1] == "api"
             ):
                 api_found = True
-        if not api_found or closing_index is None:
-            continue
+        if api_found and closing_index is not None:
+            assignments.append((variable, closing_index))
+    return tokens, assignments
+
+
+def freshness_api_result_is_consumed(command: str) -> bool:
+    """Require the freshness API result to be assigned and consumed later."""
+    parsed = freshness_api_result_assignments(command)
+    if parsed is None:
+        return False
+    tokens, assignments = parsed
+    for variable, closing_index in assignments:
         plain_reference = f"${variable}"
         braced_reference = f"${{{variable}"
         for current in tokens[closing_index + 1 :]:
@@ -858,6 +882,130 @@ def freshness_api_result_is_consumed(command: str) -> bool:
                 suffix = current[len(plain_reference) :]
                 if not suffix or not (suffix[0].isalnum() or suffix[0] == "_"):
                     return True
+    return False
+
+
+def freshness_variable_reference(token: str, variable: str) -> bool:
+    """Return whether one shell token references the named variable."""
+    plain_reference = f"${variable}"
+    if token == plain_reference:
+        return True
+    braced_reference = f"${{{variable}"
+    if token.startswith(braced_reference):
+        suffix = token[len(braced_reference) :]
+        return not suffix or suffix[0] in ":#%/^,?+-=[]}"
+    if token.startswith(plain_reference):
+        suffix = token[len(plain_reference) :]
+        return not suffix or not (suffix[0].isalnum() or suffix[0] == "_")
+    return False
+
+
+def freshness_variable_is_reassigned(tokens: list[str], variable: str) -> bool:
+    """Return whether shell tokens overwrite or unset the named variable."""
+    assignment_prefixes = (f"{variable}=", f"{variable}+=", f"{variable}[")
+    return any(token.startswith(assignment_prefixes) for token in tokens) or (
+        bool(tokens)
+        and executable_basename(tokens[0]) in {"unset", "declare", "local"}
+        and variable in tokens[1:]
+    )
+
+
+def freshness_api_result_controls_issue_selection(command: str) -> bool:
+    """Require lookup output to identify the Issue passed to a mutation."""
+    parsed = freshness_api_result_assignments(command)
+    if parsed is None:
+        return False
+    if not freshness_api_result_is_consumed(command):
+        return False
+    _, api_result_assignments = parsed
+    segments: list[list[str]] = []
+    for logical_line in shell_logical_lines(command):
+        line_segments = shell_command_segments(logical_line)
+        if line_segments is None:
+            return False
+        segments.extend(line_segments)
+    result_variables = {variable for variable, _ in api_result_assignments}
+    api_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if any(
+            is_github_cli_executable(token)
+            and index_token + 1 < len(segment)
+            and segment[index_token + 1] == "api"
+            for index_token, token in enumerate(segment)
+        )
+    ]
+    collections: list[tuple[int, str]] = []
+    for api_index in api_indices:
+        for variable in result_variables:
+            if not any(
+                freshness_variable_is_reassigned(segment, variable)
+                for segment in segments[api_index + 1 :]
+            ):
+                collections.append((api_index, variable))
+
+    for collection_index, segment in enumerate(segments):
+        command_tokens = shell_command_prefix(segment)
+        if not command_tokens or command_tokens[0] not in {"mapfile", "readarray"}:
+            continue
+        redirect_indices = [
+            index for index, token in enumerate(command_tokens) if token == "<<<"
+        ]
+        if len(redirect_indices) != 1:
+            continue
+        redirect_index = redirect_indices[0]
+        if redirect_index < 2 or redirect_index + 1 >= len(command_tokens):
+            continue
+        target = command_tokens[redirect_index - 1]
+        source = command_tokens[redirect_index + 1]
+        if not target.isidentifier():
+            continue
+        source_variables = [
+            variable
+            for variable in result_variables
+            if freshness_variable_reference(source, variable)
+        ]
+        if not source_variables:
+            continue
+        for api_index in api_indices:
+            if api_index >= collection_index:
+                continue
+            if any(
+                freshness_variable_is_reassigned(segment, variable)
+                for variable in source_variables
+                for segment in segments[api_index + 1 : collection_index]
+            ):
+                continue
+            collections.append((collection_index, target))
+            break
+
+    if not collections:
+        return False
+    for mutation_index, segment in enumerate(segments):
+        command_tokens = shell_command_prefix(segment)
+        issue_positions = issue_subcommand_positions(command_tokens)
+        if issue_positions is None:
+            return False
+        for position in issue_positions:
+            if (
+                position + 2 >= len(command_tokens)
+                or command_tokens[position + 1]
+                not in FRESHNESS_REMINDER_MUTATION_SUBCOMMANDS
+            ):
+                continue
+            issue_argument = command_tokens[position + 2]
+            for collection_index, variable in collections:
+                if (
+                    collection_index >= mutation_index
+                    or not freshness_variable_reference(issue_argument, variable)
+                ):
+                    continue
+                if any(
+                    freshness_variable_is_reassigned(segment, variable)
+                    for segment in segments[collection_index + 1 : mutation_index]
+                ):
+                    continue
+                return True
     return False
 
 
@@ -1147,7 +1295,9 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
             return False
         if blocks:
             mutation_jobs += 1
-            if not freshness_api_result_is_consumed(job_text):
+            if not freshness_job_execution_is_unconditional(
+                job
+            ) or not freshness_api_result_controls_issue_selection(job_text):
                 return False
             if not freshness_command_order_is_valid(job_text):
                 return False

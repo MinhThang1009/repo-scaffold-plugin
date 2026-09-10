@@ -563,6 +563,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 '          if [[ -n "$issue_numbers_output" ]]; then\n'
                 '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
                 "          fi\n"
+                "          if (( ${#issue_numbers[@]} == 1 )); then\n"
+                '            gh issue edit "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --body-file report.md\n'
+                "          fi\n"
                 "          marker='repo-scaffold-freshness-audit'\n"
                 '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n',
                 encoding="utf-8",
@@ -698,7 +701,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
             "          fi\n"
         )
-        body_command = '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n'
+        body_command = (
+            "          if (( ${#issue_numbers[@]} == 1 )); then\n"
+            '            gh issue edit "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --body-file report.md\n'
+            "          fi\n"
+            '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n'
+        )
         valid += repository_lookup_command + body_command
         cases = {
             "valid": valid,
@@ -715,6 +723,34 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
                 "          fi\n",
                 "",
+            ),
+            "API result only logged": valid.replace(
+                '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n',
+                '            echo "$issue_numbers_output"\n',
+            ),
+            "API result only tested": valid.replace(
+                '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n',
+                '            if [[ -n "$issue_numbers_output" ]]; then :; fi\n',
+            ),
+            "conditional audit job": valid.replace(
+                "    timeout-minutes: 15\n",
+                "    timeout-minutes: 15\n    if: false\n",
+                1,
+            ),
+            "continue-on-error audit job": valid.replace(
+                "    timeout-minutes: 15\n",
+                "    timeout-minutes: 15\n    continue-on-error: true\n",
+                1,
+            ),
+            "conditional audit step": valid.replace(
+                "      - run: |\n",
+                "      - if: false\n        run: |\n",
+                1,
+            ),
+            "continue-on-error audit step": valid.replace(
+                "      - run: |\n",
+                "      - continue-on-error: true\n        run: |\n",
+                1,
             ),
             "issue mutation before audit": valid.replace(
                 audit_command, body_command + audit_command, 1
@@ -1220,6 +1256,27 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     )
 
     def test_companion_helpers_reject_ambiguous_json_and_nonstep_lists(self) -> None:
+        self.assertTrue(
+            workflow_installation_preflight.freshness_job_execution_is_unconditional(
+                {"steps": [{}]}
+            )
+        )
+        jobs: tuple[object, ...] = (
+            None,
+            {"if": "false", "steps": []},
+            {"continue-on-error": "true", "steps": []},
+            {"steps": {}},
+            {"steps": [None]},
+            {"steps": [{"if": "false"}]},
+            {"steps": [{"continue-on-error": "true"}]},
+        )
+        for job in jobs:
+            with self.subTest(unconditional_job=job):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_job_execution_is_unconditional(
+                        job
+                    )
+                )
         with self.assertRaisesRegex(
             workflow_installation_preflight.DuplicateJsonMember, "duplicate"
         ):
@@ -1573,6 +1630,148 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 bound_api_lookup
             )
         )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                bound_api_lookup + '\ngh issue edit "${issue_numbers[0]}" --repo r '
+                "--body-file report.md"
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                'output=$(gh api)\ngh issue edit "$output" --repo r '
+                "--body-file report.md"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                'unrelated=attacker\noutput=$(gh api)\necho "$output"\n'
+                'gh issue edit "$unrelated" --repo r --body-file report.md'
+            )
+        )
+        for command in (
+            'output=$(gh api)\necho "$output"\n'
+            "gh issue create --repo r --title t --body-file report.md",
+            'output=$(gh api)\nif [[ -n "$output" ]]; then :; fi\n'
+            "gh issue create --repo r --title t --body-file report.md",
+            'output=$(gh api)\nmapfile -t ids <<< "$other"\n'
+            'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+            'output=$(gh api)\nmapfile -t 1bad <<< "$output"\n'
+            'gh issue edit "${1bad[0]}" --repo r --body-file report.md',
+            'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+            'ids=(999)\ngh issue edit "${ids[0]}" --repo r --body-file report.md',
+            'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+            'unset ids\ngh issue edit "${ids[0]}" --repo r --body-file report.md',
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                        command
+                    )
+                )
+        flow_cases = (
+            (
+                "plain variable suffix is rejected",
+                'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+                'gh issue edit "$ids_suffix" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "plain variable suffix is tracked",
+                'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+                'gh issue edit "$ids-suffix" --repo r --body-file report.md',
+                True,
+            ),
+            (
+                "malformed later shell line",
+                "output=$(gh api)\necho 'open\nclosed'\n$output",
+                False,
+            ),
+            (
+                "malformed assignment",
+                "output=$(gh api 'unterminated",
+                False,
+            ),
+            (
+                "result reassigned after an early reference",
+                'output=$(gh api)\necho "$output"\noutput=bad\n'
+                'gh issue edit "$output" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "duplicate here-string redirects",
+                'output=$(gh api)\nmapfile -t ids <<< "$output" <<< "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "here-string has no target",
+                'output=$(gh api)\nmapfile <<< "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "here-string has no source",
+                'output=$(gh api)\necho "$output"\nmapfile -t ids <<<\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "collection source is unrelated",
+                'output=$(gh api)\necho "$output"\nmapfile -t ids <<< "$other"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "invalid collection target",
+                'output=$(gh api)\nmapfile -t 1bad <<< "$output"\n'
+                'gh issue edit "${1bad[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "collection precedes lookup",
+                'mapfile -t ids <<< "$output"\noutput=$(gh api)\necho "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "lookup source is reassigned",
+                'output=$(gh api)\necho "$output"\noutput=bad\n'
+                'mapfile -t ids <<< "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "unsupported global issue option",
+                'output=$(gh api)\necho "$output"\n'
+                'gh --hostname github.com issue edit "$output" --repo r '
+                "--body-file report.md",
+                False,
+            ),
+            (
+                "read-only issue command",
+                'output=$(gh api)\necho "$output"\ngh issue list',
+                False,
+            ),
+            (
+                "mutation without issue argument",
+                'output=$(gh api)\necho "$output"\ngh issue edit',
+                False,
+            ),
+            (
+                "readarray collection",
+                'output=$(gh api)\nreadarray -t ids <<< "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                True,
+            ),
+        )
+        for name, command, expected in flow_cases:
+            with self.subTest(flow_case=name):
+                self.assertEqual(
+                    workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                        command
+                    ),
+                    expected,
+                )
         self.assertFalse(
             workflow_installation_preflight.freshness_api_result_is_consumed(api_lookup)
         )

@@ -41,7 +41,11 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   GET of open Issues, filter non-PR bodies for the freshness marker, and return
   issue numbers so reruns remain idempotent. It must use the canonical
   marker-filtering JQ expression and no extra `gh api` arguments. The lookup
-  result must be captured and consumed by the reconciliation logic. Within the
+  result must be captured and flow into the Issue number passed to a `close` or
+  `edit` mutation, directly or through an issue-number array; logging or testing
+  the result alone is insufficient. The reconciliation job and its steps may
+  not use `if` or `continue-on-error`, which could silently skip or mask the
+  reminder. Within the
   reconciliation job, the audit must complete before the lookup, and the lookup
   must complete before any Issue mutation. Pipeline, background, and
   short-circuit operators (`|`, `&`, `|&`, `&&`, and `||`) are rejected around
