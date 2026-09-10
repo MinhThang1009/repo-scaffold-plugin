@@ -189,15 +189,21 @@ non-empty `--title`, and any `gh issue close` mutation must also use an
 explicit `--repo` binding. The reminder must use a repository-scoped
 non-cancelling concurrency group so manual runs on another ref cannot race
 the scheduled run. The preflight rejects untrusted-trigger, comment-only,
-shell-ambiguous, or otherwise incomplete reminder scaffolds.
+shell-ambiguous, or otherwise incomplete reminder scaffolds. If the
+reconciliation job declares job-level permissions, it must retain effective
+`contents: read` and `issues: write` access so it can check out and reconcile
+the repository.
 Every freshness API lookup and Issue mutation must bind directly to the runner's
 `$GITHUB_REPOSITORY` value, with `github.com/` explicit for `gh issue --repo`;
 hard-coded repositories and overrides of that variable are rejected. The lookup
 must be a paginated GET of open Issues, filter non-PR bodies for the freshness
 marker, and return their issue numbers so reruns remain idempotent. It must use
 the canonical marker-filtering JQ expression and no extra `gh api` arguments.
+The lookup result must be captured and consumed by the reconciliation logic.
 Within the reconciliation job, the audit must complete before the lookup, and
-the lookup must complete before any Issue mutation.
+the lookup must complete before any Issue mutation. Pipeline, background, and
+short-circuit operators (`|`, `&`, `|&`, `&&`, and `||`) are rejected around
+these phases.
 It also requires the canonical `freshness.yml` filename and the audit's
 repository-root, JSON-output, and Markdown-output arguments, and rejects
 external `docker://` references unless they use a full SHA-256 digest.

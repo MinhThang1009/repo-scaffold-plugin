@@ -347,9 +347,12 @@ close` mutation must also use an explicit `--repo` binding. Its concurrency
 group must be repository-scoped and non-cancelling so a manual run on another
 ref cannot race the scheduled run. Untrusted triggers, comments, shell-
 ambiguous commands, or an incomplete reminder do not satisfy the companion
-requirement. The `--body-file` value must match the audit's Markdown output in
-the same job. Direct REST mutations through `gh api`, including body-bearing
-default-`POST` calls, state-changing calls through known direct HTTP clients
+requirement. If the reconciliation job declares job-level permissions, it must
+retain effective `contents: read` and `issues: write` access so it can check
+out and reconcile the repository. The `--body-file` value must match the
+audit's Markdown output in the same job. Direct REST mutations through
+`gh api`, including body-bearing default-`POST` calls, state-changing calls
+through known direct HTTP clients
 (`curl`, `wget`, and PowerShell REST cmdlets), path-qualified `gh` executables,
 and shell wrappers or dynamic executors that hide GitHub commands are rejected.
 Every freshness API lookup and Issue mutation must bind directly to the runner's
@@ -358,8 +361,11 @@ hard-coded repositories and overrides of that variable are rejected. The lookup
 must be a paginated GET of open Issues, filter non-PR bodies for the freshness
 marker, and return their issue numbers so reruns remain idempotent. It must use
 the canonical marker-filtering JQ expression and no extra `gh api` arguments.
+The lookup result must be captured and consumed by the reconciliation logic.
 Within the reconciliation job, the audit must complete before the lookup, and
-the lookup must complete before any Issue mutation.
+the lookup must complete before any Issue mutation. Pipeline, background, and
+short-circuit operators (`|`, `&`, `|&`, `&&`, and `||`) are rejected around
+these phases.
 The audit must run from the checkout root with `--repository-root .`; if a
 `--tracker-registry` override is present, it must name
 `.github/freshness-trackers.json`. Directory-changing commands and workflow,

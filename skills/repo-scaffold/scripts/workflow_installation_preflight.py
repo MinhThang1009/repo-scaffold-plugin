@@ -242,6 +242,7 @@ def option_values(tokens: list[str], option: str) -> tuple[str, ...] | None:
 
 
 SHELL_CONTROL_CHARACTERS = frozenset(";()|&")
+SHELL_UNSAFE_PHASE_OPERATORS = frozenset({"&", "|", "|&", "&&", "||"})
 SHELL_COMMAND_PREFIXES = frozenset({"!", "then", "do", "else"})
 SHELL_TEST_OPERATORS = frozenset(
     {
@@ -768,6 +769,14 @@ def freshness_command_order_is_valid(command: str) -> bool:
     api_positions: list[int] = []
     mutation_positions: list[int] = []
     command_index = 0
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        if any(token in SHELL_UNSAFE_PHASE_OPERATORS for token in lexer):
+            return False
+    except ValueError:
+        return False
     for logical_line in shell_logical_lines(command):
         segments = shell_command_segments(logical_line)
         if segments is None:
@@ -797,6 +806,59 @@ def freshness_command_order_is_valid(command: str) -> bool:
         max(audit_positions) < min(api_positions) < min(mutation_positions)
         and max(api_positions) < min(mutation_positions)
     )
+
+
+def freshness_api_result_is_consumed(command: str) -> bool:
+    """Require the freshness API result to be assigned and consumed later."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    for index, token in enumerate(tokens[:-1]):
+        if not token.endswith("=$"):
+            continue
+        variable = token[:-2]
+        if not variable.isidentifier() or tokens[index + 1] != "(":
+            continue
+        depth = 1
+        api_found = False
+        closing_index: int | None = None
+        for cursor in range(index + 2, len(tokens)):
+            current = tokens[cursor]
+            if current == "(":
+                depth += 1
+            elif current == ")":
+                depth -= 1
+                if depth == 0:
+                    closing_index = cursor
+                    break
+            elif (
+                current == "gh"
+                and cursor + 1 < len(tokens)
+                and tokens[cursor + 1] == "api"
+            ):
+                api_found = True
+        if not api_found or closing_index is None:
+            continue
+        plain_reference = f"${variable}"
+        braced_reference = f"${{{variable}"
+        for current in tokens[closing_index + 1 :]:
+            if current.startswith(f"{variable}="):
+                break
+            if current == plain_reference:
+                return True
+            if current.startswith(braced_reference):
+                suffix = current[len(braced_reference) :]
+                if not suffix or suffix[0] in "}:#%/^,?+-=":
+                    return True
+            if current.startswith(plain_reference):
+                suffix = current[len(plain_reference) :]
+                if not suffix or not (suffix[0].isalnum() or suffix[0] == "_"):
+                    return True
+    return False
 
 
 def option_has_one_value(
@@ -853,6 +915,19 @@ def freshness_audit_markdown_outputs(command: str) -> set[str] | None:
                 or tracker_registry
                 and tracker_registry[0] != FRESHNESS_AUDIT_TRACKER_REGISTRY
             ):
+                return None
+            expected_argument_count = 2
+            for option in FRESHNESS_AUDIT_REQUIRED_OPTIONS:
+                expected_argument_count += (
+                    1 if any(token.startswith(f"{option}=") for token in tokens) else 2
+                )
+            if tracker_registry:
+                expected_argument_count += (
+                    1
+                    if any(token.startswith("--tracker-registry=") for token in tokens)
+                    else 2
+                )
+            if len(tokens) != expected_argument_count:
                 return None
             json_output = values["--json-output"]
             markdown_output = values["--markdown-output"]
@@ -983,6 +1058,13 @@ def job_effective_issue_write(document: dict[str, Any], job: dict[str, Any]) -> 
     return permissions_grant_issue_write(document)
 
 
+def job_effective_contents_read(document: dict[str, Any], job: dict[str, Any]) -> bool:
+    """Resolve whether one reminder job can read the repository contents."""
+    scope = job if "permissions" in job else document
+    permissions = scope.get("permissions")
+    return isinstance(permissions, dict) and permissions.get("contents") == "read"
+
+
 def requires_pull_request_write_tokens(text: str, source: Path) -> bool:
     """Detect pull-request workflows whose write scopes need an explicit check."""
     document = workflow_document(text, source)
@@ -1065,9 +1147,14 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
             return False
         if blocks:
             mutation_jobs += 1
+            if not freshness_api_result_is_consumed(job_text):
+                return False
             if not freshness_command_order_is_valid(job_text):
                 return False
-            if not job_effective_issue_write(document, job):
+            if not (
+                job_effective_issue_write(document, job)
+                and job_effective_contents_read(document, job)
+            ):
                 return False
         markdown_outputs = freshness_audit_markdown_outputs(job_text)
         lines = [

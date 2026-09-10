@@ -554,10 +554,15 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            --repository-root . \\\n"
                 "            --json-output report.json \\\n"
                 "            --markdown-output report.md\n"
-                "          gh api --hostname github.com --paginate "
-                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
-                "--jq '.[] | select(.pull_request == null) | "
+                "          issue_numbers_output=$(\n"
+                "            gh api --hostname github.com --paginate \\\n"
+                '              "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \\\n'
+                "              --jq '.[] | select(.pull_request == null) | "
                 'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
+                "          )\n"
+                '          if [[ -n "$issue_numbers_output" ]]; then\n'
+                '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
+                "          fi\n"
                 "          marker='repo-scaffold-freshness-audit'\n"
                 '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n',
                 encoding="utf-8",
@@ -683,10 +688,15 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             + "          marker='repo-scaffold-freshness-audit'\n"
         )
         repository_lookup_command = (
-            "          gh api --hostname github.com --paginate "
-            '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
-            "--jq '.[] | select(.pull_request == null) | "
+            "          issue_numbers_output=$(\n"
+            "            gh api --hostname github.com --paginate \\\n"
+            '              "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \\\n'
+            "              --jq '.[] | select(.pull_request == null) | "
             'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
+            "          )\n"
+            '          if [[ -n "$issue_numbers_output" ]]; then\n'
+            '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
+            "          fi\n"
         )
         body_command = '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n'
         valid += repository_lookup_command + body_command
@@ -699,6 +709,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "extra API output": valid.replace(
                 repository_lookup_command,
                 repository_lookup_command.replace("| .number'\n", "| .number, 999'\n"),
+            ),
+            "API result ignored": valid.replace(
+                '          if [[ -n "$issue_numbers_output" ]]; then\n'
+                '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
+                "          fi\n",
+                "",
             ),
             "issue mutation before audit": valid.replace(
                 audit_command, body_command + audit_command, 1
@@ -726,6 +742,16 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "overbroad job permissions": valid.replace(
                 "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    steps:\n",
                 "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    permissions: write-all\n    steps:\n",
+            ),
+            "reconciliation job cannot read contents": valid.replace(
+                "  audit:\n    name: freshness-audit\n    timeout-minutes: 15\n    steps:\n",
+                "  audit:\n"
+                "    name: freshness-audit\n"
+                "    timeout-minutes: 15\n"
+                "    permissions:\n"
+                "      contents: none\n"
+                "      issues: write\n"
+                "    steps:\n",
             ),
             "unbound close mutation": valid.replace(
                 "          marker='repo-scaffold-freshness-audit'\n",
@@ -1400,6 +1426,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 audit_command.replace("--json-output report.json", "--json-output '")
             )
         )
+        self.assertIsNone(
+            workflow_installation_preflight.freshness_audit_markdown_outputs(
+                audit_command + " --unexpected ignored"
+            )
+        )
         jq_expression = (
             '.[] | select(.pull_request == null) | select((.body // "") | '
             'contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
@@ -1523,6 +1554,49 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 ordered_commands
             )
         )
+        for operator in ("&", "|", "|&", "&&", "||"):
+            with self.subTest(operator=operator):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_command_order_is_valid(
+                        f" {operator} ".join(
+                            (audit_command, api_lookup, mutation_command)
+                        )
+                    )
+                )
+        bound_api_lookup = (
+            "issue_numbers_output=$(\n  "
+            + api_lookup
+            + '\n)\nmapfile -t issue_numbers <<< "$issue_numbers_output"'
+        )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_api_result_is_consumed(
+                bound_api_lookup
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_is_consumed(api_lookup)
+        )
+        for command, expected in (
+            ("output=$(echo ready)", False),
+            ("output=$(", False),
+            ("output=$()", False),
+            ("output=$ echo ready", False),
+            ("bad-name=$(gh api)", False),
+            ("output=$(gh api 'unterminated", False),
+            ("output=$(gh api)\noutput=''\n$output", False),
+            ("output=$(gh api)\n${output}", True),
+            ("output=$(gh api)\n$output-suffix", True),
+            ("output=$(gh api)\n$output_suffix", False),
+            ("output=$(gh api)\n${outputevil}", False),
+            ("output=$(echo $(gh api) )\n$output", True),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    workflow_installation_preflight.freshness_api_result_is_consumed(
+                        command
+                    ),
+                    expected,
+                )
         for commands in (
             (mutation_command, audit_command, api_lookup),
             (api_lookup, audit_command, mutation_command),
@@ -1542,6 +1616,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertFalse(
             workflow_installation_preflight.freshness_command_order_is_valid(
                 "gh issue create gh issue close"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_command_order_is_valid(
+                "echo 'open\nclosed'"
             )
         )
         self.assertFalse(
@@ -1795,6 +1874,23 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         document
                     )
                 )
+        workflow_permissions = {"permissions": {"contents": "read", "issues": "write"}}
+        self.assertTrue(
+            workflow_installation_preflight.job_effective_contents_read(
+                workflow_permissions, {}
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.job_effective_contents_read(
+                workflow_permissions,
+                {"permissions": {"contents": "read", "issues": "write"}},
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.job_effective_contents_read(
+                workflow_permissions, {"permissions": {"issues": "write"}}
+            )
+        )
 
     def test_local_reusable_workflows_are_required_as_preflight_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

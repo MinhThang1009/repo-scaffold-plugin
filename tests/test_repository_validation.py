@@ -8113,6 +8113,13 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertIsNone(
             validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md "
+                "--unexpected ignored"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
                 "cd other\n"
                 "python scripts/audit_freshness.py --repository-root . "
                 "--json-output report.json --markdown-output report.md"
@@ -8241,6 +8248,45 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             validate_repository.freshness_command_order_is_valid(ordered_commands)
         )
+        for operator in ("&", "|", "|&", "&&", "||"):
+            with self.subTest(operator=operator):
+                self.assertFalse(
+                    validate_repository.freshness_command_order_is_valid(
+                        f" {operator} ".join(
+                            (audit_command, api_lookup, mutation_command)
+                        )
+                    )
+                )
+        bound_api_lookup = (
+            "issue_numbers_output=$(\n  "
+            + api_lookup
+            + '\n)\nmapfile -t issue_numbers <<< "$issue_numbers_output"'
+        )
+        self.assertTrue(
+            validate_repository.freshness_api_result_is_consumed(bound_api_lookup)
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_is_consumed(api_lookup)
+        )
+        for command, expected in (
+            ("output=$(echo ready)", False),
+            ("output=$(", False),
+            ("output=$()", False),
+            ("output=$ echo ready", False),
+            ("bad-name=$(gh api)", False),
+            ("output=$(gh api 'unterminated", False),
+            ("output=$(gh api)\noutput=''\n$output", False),
+            ("output=$(gh api)\n${output}", True),
+            ("output=$(gh api)\n$output-suffix", True),
+            ("output=$(gh api)\n$output_suffix", False),
+            ("output=$(gh api)\n${outputevil}", False),
+            ("output=$(echo $(gh api) )\n$output", True),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    validate_repository.freshness_api_result_is_consumed(command),
+                    expected,
+                )
         for commands in (
             (mutation_command, audit_command, api_lookup),
             (api_lookup, audit_command, mutation_command),
@@ -8261,6 +8307,9 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             validate_repository.freshness_command_order_is_valid(
                 "gh issue create gh issue close"
             )
+        )
+        self.assertFalse(
+            validate_repository.freshness_command_order_is_valid("echo 'open\nclosed'")
         )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
@@ -8443,6 +8492,33 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             validate_repository.has_freshness_job_reconciliation(
                 contract_workflow, contract_text
+            )
+        )
+        ignored_api_output_text = contract_text.replace(
+            '          if [[ -n "$issue_numbers_output" ]]; then\n'
+            '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
+            "          fi\n",
+            "",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(ignored_api_output_text),
+                ignored_api_output_text,
+            )
+        )
+        contents_none_workflow_text = contract_text.replace(
+            "    timeout-minutes: 15\n",
+            "    timeout-minutes: 15\n"
+            "    permissions:\n"
+            "      contents: none\n"
+            "      issues: write\n",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(contents_none_workflow_text),
+                contents_none_workflow_text,
             )
         )
         early_mutation = (
@@ -8666,6 +8742,23 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 {"permissions": {"issues": "read"}},
             )
         )
+        workflow_permissions = {"permissions": {"contents": "read", "issues": "write"}}
+        self.assertFalse(validate_repository.job_effective_contents_read(None, {}))
+        self.assertFalse(validate_repository.job_effective_contents_read({}, None))
+        self.assertTrue(
+            validate_repository.job_effective_contents_read(workflow_permissions, {})
+        )
+        self.assertTrue(
+            validate_repository.job_effective_contents_read(
+                workflow_permissions,
+                {"permissions": {"contents": "read", "issues": "write"}},
+            )
+        )
+        self.assertFalse(
+            validate_repository.job_effective_contents_read(
+                workflow_permissions, {"permissions": {"issues": "write"}}
+            )
+        )
 
     def test_freshness_reconciliation_requires_effective_permission_and_repo_binding(
         self,
@@ -8688,6 +8781,20 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             )
             installed.write_text(workflow_text, encoding="utf-8")
             problems = validate_repository.validate_freshness_tracking_contract(root)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/freshness.yml"
+            contents_none_text = installed.read_text(encoding="utf-8").replace(
+                "    timeout-minutes: 15\n",
+                "    timeout-minutes: 15\n"
+                "    permissions:\n"
+                "      contents: none\n"
+                "      issues: write\n",
+                1,
+            )
+            installed.write_text(contents_none_text, encoding="utf-8")
+            contents_problems = (
+                validate_repository.validate_freshness_tracking_contract(root)
+            )
 
         self.assertTrue(
             any(
@@ -8699,6 +8806,12 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             any(
                 "reminder mutations must bind the current GitHub repository" in problem
                 for problem in problems
+            )
+        )
+        self.assertTrue(
+            any(
+                "audit job must have effective contents: read permission" in problem
+                for problem in contents_problems
             )
         )
 
