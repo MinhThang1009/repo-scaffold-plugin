@@ -47,10 +47,27 @@ FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
 FRESHNESS_REMINDER_API_ENDPOINT = (
     "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"
 )
-FRESHNESS_REMINDER_API_JQ_FRAGMENTS = (
-    "select(.pull_request == null)",
-    f'contains("<!-- {FRESHNESS_REMINDER_MARKER} -->")',
-    ".number",
+FRESHNESS_REMINDER_API_JQ = (
+    ".[] | select(.pull_request == null) | "
+    f'select((.body // "") | contains("<!-- {FRESHNESS_REMINDER_MARKER} -->")) | .number'
+)
+FRESHNESS_REMINDER_API_ALLOWED_ARGUMENTS = frozenset(
+    {
+        "--hostname",
+        "github.com",
+        "--hostname=github.com",
+        "--paginate",
+        FRESHNESS_REMINDER_API_ENDPOINT,
+        "--jq",
+        FRESHNESS_REMINDER_API_JQ,
+        f"--jq={FRESHNESS_REMINDER_API_JQ}",
+        "--method",
+        "--method=GET",
+        "-X",
+        "-XGET",
+        "-X=GET",
+        "GET",
+    }
 )
 GITHUB_API_READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
 GITHUB_API_BODY_OPTIONS = frozenset({"--field", "--input", "--raw-field", "-F", "-f"})
@@ -702,27 +719,84 @@ def has_freshness_repository_api_reads(
                     for token in api_arguments
                     if token.startswith("-X") and token != "-X"
                 )
-                if any(method.strip().upper() != "GET" for method in methods):
+                if len(methods) > 1 or any(
+                    method.strip().upper() != "GET" for method in methods
+                ):
                     return False
                 hostname = option_values(api_arguments, "--hostname")
                 if hostname != ("github.com",):
                     return False
                 jq_values = option_values(api_arguments, "--jq")
-                if (
-                    jq_values is None
-                    or len(jq_values) != 1
-                    or any(
-                        fragment not in jq_values[0]
-                        for fragment in FRESHNESS_REMINDER_API_JQ_FRAGMENTS
-                    )
-                ):
+                if jq_values is None or jq_values != (FRESHNESS_REMINDER_API_JQ,):
                     return False
                 endpoints = [
                     token for token in api_arguments if token.startswith("repos/")
                 ]
                 if endpoints != [FRESHNESS_REMINDER_API_ENDPOINT]:
                     return False
+                if any(
+                    token not in FRESHNESS_REMINDER_API_ALLOWED_ARGUMENTS
+                    for token in api_arguments
+                ):
+                    return False
+                method_forms = sum(
+                    token in {"--method", "-X"}
+                    or token in {"--method=GET", "-XGET", "-X=GET"}
+                    for token in api_arguments
+                )
+                expected_argument_count = (
+                    1
+                    + 1
+                    + (2 if "--hostname" in api_arguments else 1)
+                    + (2 if "--jq" in api_arguments else 1)
+                    + (
+                        0
+                        if method_forms == 0
+                        else 2
+                        if "--method" in api_arguments or "-X" in api_arguments
+                        else 1
+                    )
+                )
+                if len(api_arguments) != expected_argument_count:
+                    return False
     return saw_api or not require_lookup
+
+
+def freshness_command_order_is_valid(command: str) -> bool:
+    """Require the audit, lookup, and mutation phases to run in that order."""
+    audit_positions: list[int] = []
+    api_positions: list[int] = []
+    mutation_positions: list[int] = []
+    command_index = 0
+    for logical_line in shell_logical_lines(command):
+        segments = shell_command_segments(logical_line)
+        if segments is None:
+            return False
+        for segment in segments:
+            tokens = shell_command_prefix(segment)
+            if tokens[:2] == FRESHNESS_AUDIT_COMMAND.split():
+                audit_positions.append(command_index)
+            api_commands = [
+                index
+                for index in range(len(tokens) - 1)
+                if is_github_cli_executable(tokens[index])
+                and tokens[index + 1] == "api"
+            ]
+            api_positions.extend(command_index for _ in api_commands)
+            issue_positions = issue_subcommand_positions(tokens)
+            if issue_positions is None:
+                return False
+            mutation_positions.extend(
+                command_index
+                for position in issue_positions
+                if position + 1 < len(tokens)
+                and tokens[position + 1] in FRESHNESS_REMINDER_MUTATION_SUBCOMMANDS
+            )
+            command_index += 1
+    return bool(audit_positions and api_positions and mutation_positions) and (
+        max(audit_positions) < min(api_positions) < min(mutation_positions)
+        and max(api_positions) < min(mutation_positions)
+    )
 
 
 def option_has_one_value(
@@ -991,6 +1065,8 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
             return False
         if blocks:
             mutation_jobs += 1
+            if not freshness_command_order_is_valid(job_text):
+                return False
             if not job_effective_issue_write(document, job):
                 return False
         markdown_outputs = freshness_audit_markdown_outputs(job_text)

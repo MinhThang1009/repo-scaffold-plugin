@@ -37,7 +37,10 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   `github.com/` explicit for `gh issue --repo`; hard-coded repositories and
   overrides of that variable must fail closed. The lookup must be a paginated
   GET of open Issues, filter non-PR bodies for the freshness marker, and return
-  issue numbers so reruns remain idempotent.
+  issue numbers so reruns remain idempotent. It must use the canonical
+  marker-filtering JQ expression and no extra `gh api` arguments. Within the
+  reconciliation job, the audit must complete before the lookup, and the lookup
+  must complete before any Issue mutation.
   Freshness must retain the optional audit Markdown output as the body file in
   the same job; direct REST issue
   mutations through `gh api`, state-changing calls through known direct HTTP

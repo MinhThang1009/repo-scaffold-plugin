@@ -681,7 +681,6 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "      - run: |\n"
             + audit_command
             + "          marker='repo-scaffold-freshness-audit'\n"
-            + '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n'
         )
         repository_lookup_command = (
             "          gh api --hostname github.com --paginate "
@@ -689,10 +688,24 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "--jq '.[] | select(.pull_request == null) | "
             'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
         )
-        valid += repository_lookup_command
         body_command = '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n'
+        valid += repository_lookup_command + body_command
         cases = {
             "valid": valid,
+            "extra API option": valid.replace(
+                repository_lookup_command,
+                repository_lookup_command.replace("--paginate ", "--paginate --slurp "),
+            ),
+            "extra API output": valid.replace(
+                repository_lookup_command,
+                repository_lookup_command.replace("| .number'\n", "| .number, 999'\n"),
+            ),
+            "issue mutation before audit": valid.replace(
+                audit_command, body_command + audit_command, 1
+            ),
+            "API lookup before audit": valid.replace(
+                audit_command, repository_lookup_command + audit_command, 1
+            ),
             "without current repository lookup": valid.replace(
                 repository_lookup_command, ""
             ),
@@ -806,12 +819,14 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "comment-only command": valid.replace(
                 audit_command
                 + "          marker='repo-scaffold-freshness-audit'\n"
+                + repository_lookup_command
                 + body_command,
                 "          # python scripts/audit_freshness.py\n"
                 "          # --repository-root .\n"
                 "          # --json-output report.json\n"
                 "          # --markdown-output report.md\n"
                 "          # marker='repo-scaffold-freshness-audit'\n"
+                "          # gh api --hostname github.com --paginate\n"
                 '          # gh issue create --repo "$REPOSITORY" --body-file report.md\n',
             ),
             "echo-only command": valid.replace(
@@ -1428,6 +1443,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace("--hostname github.com", "github.com --hostname")
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
                 api_lookup.replace("--paginate ", "")
             )
         )
@@ -1443,6 +1463,20 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 api_lookup.replace(f"--jq '{jq_expression}'", "--jq '.number'")
             )
         )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    f"--jq '{jq_expression}'", f"--jq '{jq_expression}, 999'"
+                )
+            )
+        )
+        for option in ("--slurp", "--include", "GET"):
+            with self.subTest(option=option):
+                self.assertFalse(
+                    workflow_installation_preflight.has_freshness_repository_api_reads(
+                        api_lookup.replace("--paginate ", f"--paginate {option} ")
+                    )
+                )
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
                 api_lookup.replace("--paginate ", "-- ")
@@ -1472,6 +1506,44 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         api_lookup.replace("--paginate ", f"--paginate {method} ")
                     )
                 )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    "--paginate ", "--paginate --method GET --method GET "
+                )
+            )
+        )
+        mutation_command = (
+            'gh issue create --repo "github.com/$GITHUB_REPOSITORY" '
+            "--title reminder --body-file report.md"
+        )
+        ordered_commands = "\n".join((audit_command, api_lookup, mutation_command))
+        self.assertTrue(
+            workflow_installation_preflight.freshness_command_order_is_valid(
+                ordered_commands
+            )
+        )
+        for commands in (
+            (mutation_command, audit_command, api_lookup),
+            (api_lookup, audit_command, mutation_command),
+            (audit_command, mutation_command, api_lookup),
+        ):
+            with self.subTest(commands=commands):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_command_order_is_valid(
+                        "\n".join(commands)
+                    )
+                )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_command_order_is_valid(
+                "gh issue 'unterminated"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_command_order_is_valid(
+                "gh issue create gh issue close"
+            )
+        )
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
                 "gh api --method POST repos/$GITHUB_REPOSITORY/issues"

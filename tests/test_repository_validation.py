@@ -8159,6 +8159,11 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("--hostname github.com", "github.com --hostname")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
                 api_lookup.replace("--paginate ", "")
             )
         )
@@ -8174,6 +8179,20 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 api_lookup.replace(f"--jq '{jq_expression}'", "--jq '.number'")
             )
         )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    f"--jq '{jq_expression}'", f"--jq '{jq_expression}, 999'"
+                )
+            )
+        )
+        for option in ("--slurp", "--include", "GET"):
+            with self.subTest(option=option):
+                self.assertFalse(
+                    validate_repository.has_freshness_repository_api_reads(
+                        api_lookup.replace("--paginate ", f"--paginate {option} ")
+                    )
+                )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
                 api_lookup.replace("--paginate ", "-- ")
@@ -8203,6 +8222,46 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                         api_lookup.replace("--paginate ", f"--paginate {method} ")
                     )
                 )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    "--paginate ", "--paginate --method GET --method GET "
+                )
+            )
+        )
+        audit_command = (
+            "python scripts/audit_freshness.py --repository-root . "
+            "--json-output report.json --markdown-output report.md"
+        )
+        mutation_command = (
+            'gh issue create --repo "github.com/$GITHUB_REPOSITORY" '
+            "--title reminder --body-file report.md"
+        )
+        ordered_commands = "\n".join((audit_command, api_lookup, mutation_command))
+        self.assertTrue(
+            validate_repository.freshness_command_order_is_valid(ordered_commands)
+        )
+        for commands in (
+            (mutation_command, audit_command, api_lookup),
+            (api_lookup, audit_command, mutation_command),
+            (audit_command, mutation_command, api_lookup),
+        ):
+            with self.subTest(commands=commands):
+                self.assertFalse(
+                    validate_repository.freshness_command_order_is_valid(
+                        "\n".join(commands)
+                    )
+                )
+        self.assertFalse(
+            validate_repository.freshness_command_order_is_valid(
+                "gh issue 'unterminated"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_command_order_is_valid(
+                "gh issue create gh issue close"
+            )
+        )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
                 "gh api --method POST repos/$GITHUB_REPOSITORY/issues"
@@ -8384,6 +8443,21 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             validate_repository.has_freshness_job_reconciliation(
                 contract_workflow, contract_text
+            )
+        )
+        early_mutation = (
+            '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" '
+            '--title "$title" --body-file "$RUNNER_TEMP/freshness.md"\n'
+        )
+        mutation_before_audit_text = contract_text.replace(
+            "          python scripts/audit_freshness.py \\\n",
+            early_mutation + "          python scripts/audit_freshness.py \\\n",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(mutation_before_audit_text),
+                mutation_before_audit_text,
             )
         )
         wrong_repository_text = contract_text.replace(
