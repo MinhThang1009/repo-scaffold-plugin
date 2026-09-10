@@ -32,8 +32,14 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   freshness `create` or `edit` mutation must use a durable `--body-file` (with a
   non-empty `--title` for `create`). The reconciliation job must have effective
   `issues: write` permission with read-only contents access, and must be named
-  `freshness-audit` with a 15-minute timeout. Freshness must retain the optional
-  audit Markdown output as the body file in the same job; direct REST issue
+  `freshness-audit` with a 15-minute timeout. Freshness API lookups and Issue
+  mutations must bind directly to the runner's `$GITHUB_REPOSITORY` value, with
+  `github.com/` explicit for `gh issue --repo`; hard-coded repositories and
+  overrides of that variable must fail closed. The lookup must be a paginated
+  GET of open Issues, filter non-PR bodies for the freshness marker, and return
+  issue numbers so reruns remain idempotent.
+  Freshness must retain the optional audit Markdown output as the body file in
+  the same job; direct REST issue
   mutations through `gh api`, state-changing calls through known direct HTTP
   clients (`curl`, `wget`, and PowerShell REST cmdlets), path-qualified `gh`
   executables, and shell wrappers or dynamic executors that hide GitHub

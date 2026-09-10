@@ -190,6 +190,11 @@ explicit `--repo` binding. The reminder must use a repository-scoped
 non-cancelling concurrency group so manual runs on another ref cannot race
 the scheduled run. The preflight rejects untrusted-trigger, comment-only,
 shell-ambiguous, or otherwise incomplete reminder scaffolds.
+Every freshness API lookup and Issue mutation must bind directly to the runner's
+`$GITHUB_REPOSITORY` value, with `github.com/` explicit for `gh issue --repo`;
+hard-coded repositories and overrides of that variable are rejected. The lookup
+must be a paginated GET of open Issues, filter non-PR bodies for the freshness
+marker, and return their issue numbers so reruns remain idempotent.
 It also requires the canonical `freshness.yml` filename and the audit's
 repository-root, JSON-output, and Markdown-output arguments, and rejects
 external `docker://` references unless they use a full SHA-256 digest.

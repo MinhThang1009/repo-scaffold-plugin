@@ -7845,6 +7845,20 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertTrue(
             validate_repository.has_repo_bound_issue_reconciliation(
+                'gh issue create --repo "github.com/$GITHUB_REPOSITORY" '
+                "--title reminder --body-file report.md",
+                expected_repository_values={"github.com/$GITHUB_REPOSITORY"},
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo attacker/repository --title reminder "
+                "--body-file report.md",
+                expected_repository_values={"github.com/$GITHUB_REPOSITORY"},
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
                 r"""gh issue create \
   --repo $REPOSITORY \
   --title reminder \
@@ -8027,6 +8041,8 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertTrue(validate_repository.has_dynamic_shell_executor(["env"]))
         self.assertTrue(validate_repository.has_dynamic_shell_executor(["bash"]))
+        self.assertTrue(validate_repository.has_dynamic_shell_executor(["source"]))
+        self.assertTrue(validate_repository.has_dynamic_shell_executor(["."]))
         self.assertFalse(
             validate_repository.has_dynamic_shell_executor(["1=bad", "bash"])
         )
@@ -8102,6 +8118,106 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "--json-output report.json --markdown-output report.md"
             )
         )
+        jq_expression = (
+            '.[] | select(.pull_request == null) | select((.body // "") | '
+            'contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
+        )
+        api_lookup = (
+            "gh api --hostname github.com --paginate "
+            '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+            f"--jq '{jq_expression}'"
+        )
+        self.assertTrue(
+            validate_repository.has_freshness_repository_api_reads(api_lookup)
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    "repos/$GITHUB_REPOSITORY", "repos/attacker/repository"
+                )
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("gh api", "gh --hostname github.com api")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("--hostname github.com ", "")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("github.com", "ghe.example.com")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("--paginate ", "")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    "state=open&per_page=100", "state=closed&per_page=100"
+                )
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(f"--jq '{jq_expression}'", "--jq '.number'")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("--paginate ", "-- ")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup + " --method"
+            )
+        )
+        for method in (
+            "--method HEAD",
+            "--method=HEAD",
+            "-XHEAD",
+            "-X HEAD",
+        ):
+            with self.subTest(method=method):
+                self.assertFalse(
+                    validate_repository.has_freshness_repository_api_reads(
+                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                    )
+                )
+        for method in ("--method GET", "--method=GET", "-XGET", "-X GET"):
+            with self.subTest(method=method):
+                self.assertTrue(
+                    validate_repository.has_freshness_repository_api_reads(
+                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                    )
+                )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                "gh api --method POST repos/$GITHUB_REPOSITORY/issues"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                "GITHUB_REPOSITORY=attacker/repository "
+                "gh api --hostname github.com --paginate "
+                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"'
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                "gh api 'unterminated"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads("echo ready")
+        )
         self.assertTrue(
             validate_repository.has_repository_root_working_directory(
                 {
@@ -8149,6 +8265,43 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 }
             )
         )
+        self.assertTrue(
+            validate_repository.has_freshness_repository_context(
+                {"jobs": {"audit": {"steps": []}}}
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_freshness_repository_context(
+                {"jobs": {"audit": {"env": {}}}}
+            )
+        )
+        for document in (
+            {"jobs": []},
+            {"jobs": {"audit": []}},
+            {"jobs": {"audit": {"env": []}}},
+            {"jobs": {"audit": {"env": {}, "steps": {}}}},
+            {
+                "jobs": {
+                    "audit": {
+                        "env": {"GITHUB_REPOSITORY": "attacker/repository"},
+                        "steps": [],
+                    }
+                }
+            },
+            {
+                "jobs": {
+                    "audit": {
+                        "steps": [{"env": {"GITHUB_REPOSITORY": "attacker/repository"}}]
+                    }
+                }
+            },
+            {"jobs": {"audit": {"steps": [{"env": []}]}}},
+            {"jobs": {"audit": {"steps": [[]]}}},
+        ):
+            with self.subTest(document=document):
+                self.assertFalse(
+                    validate_repository.has_freshness_repository_context(document)
+                )
         self.assertIsNone(
             validate_repository.freshness_audit_markdown_outputs(
                 "python scripts/audit_freshness.py --repository-root . "
@@ -8223,6 +8376,16 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 contract_workflow, contract_text
             )
         )
+        wrong_repository_text = contract_text.replace(
+            '--repo "github.com/$GITHUB_REPOSITORY"',
+            '--repo "attacker/repository"',
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(wrong_repository_text),
+                wrong_repository_text,
+            )
+        )
         modified_text = contract_text.replace(
             '--body-file "$RUNNER_TEMP/freshness.md"',
             '--body-file "$RUNNER_TEMP/other.md"',
@@ -8240,6 +8403,38 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             validate_repository.has_freshness_job_reconciliation(
                 workflow_with_noop, contract_text
+            )
+        )
+        workflow_with_mutation_without_lookup = dict(contract_workflow)
+        workflow_with_mutation_without_lookup["jobs"] = {
+            **contract_workflow["jobs"],
+            "mutation": {
+                "steps": [
+                    {
+                        "run": (
+                            'gh issue create --repo "github.com/$GITHUB_REPOSITORY" '
+                            "--title reminder --body-file report.md"
+                        )
+                    }
+                ]
+            },
+        }
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                workflow_with_mutation_without_lookup, contract_text
+            )
+        )
+        workflow_with_read_only_mutation = dict(contract_workflow)
+        workflow_with_read_only_mutation["jobs"] = {
+            **contract_workflow["jobs"],
+            "audit": {
+                **contract_workflow["jobs"]["audit"],
+                "permissions": {"issues": "read"},
+            },
+        }
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                workflow_with_read_only_mutation, contract_text
             )
         )
         self.assertFalse(
@@ -8390,8 +8585,8 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "      contents: read\n",
                 1,
             ).replace(
-                '--repo "github.com/${REPOSITORY}"',
-                '--repository "github.com/${REPOSITORY}"',
+                '--repo "github.com/$GITHUB_REPOSITORY"',
+                '--repository "github.com/$GITHUB_REPOSITORY"',
             )
             installed.write_text(workflow_text, encoding="utf-8")
             problems = validate_repository.validate_freshness_tracking_contract(root)
@@ -8404,7 +8599,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                "reminder mutations must bind an explicit repository" in problem
+                "reminder mutations must bind the current GitHub repository" in problem
                 for problem in problems
             )
         )

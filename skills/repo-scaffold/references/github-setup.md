@@ -352,6 +352,11 @@ the same job. Direct REST mutations through `gh api`, including body-bearing
 default-`POST` calls, state-changing calls through known direct HTTP clients
 (`curl`, `wget`, and PowerShell REST cmdlets), path-qualified `gh` executables,
 and shell wrappers or dynamic executors that hide GitHub commands are rejected.
+Every freshness API lookup and Issue mutation must bind directly to the runner's
+`$GITHUB_REPOSITORY` value, with `github.com/` explicit for `gh issue --repo`;
+hard-coded repositories and overrides of that variable are rejected. The lookup
+must be a paginated GET of open Issues, filter non-PR bodies for the freshness
+marker, and return their issue numbers so reruns remain idempotent.
 The audit must run from the checkout root with `--repository-root .`; if a
 `--tracker-registry` override is present, it must name
 `.github/freshness-trackers.json`. Directory-changing commands and workflow,

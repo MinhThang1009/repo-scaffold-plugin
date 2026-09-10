@@ -43,6 +43,15 @@ FRESHNESS_REMINDER_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "v
 FRESHNESS_REMINDER_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.repository }}"
 FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
 FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
+FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
+FRESHNESS_REMINDER_API_ENDPOINT = (
+    "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"
+)
+FRESHNESS_REMINDER_API_JQ_FRAGMENTS = (
+    "select(.pull_request == null)",
+    f'contains("<!-- {FRESHNESS_REMINDER_MARKER} -->")',
+    ".number",
+)
 GITHUB_API_READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
 GITHUB_API_BODY_OPTIONS = frozenset({"--field", "--input", "--raw-field", "-F", "-f"})
 GITHUB_API_METHOD_OPTIONS = frozenset({"--method", "-X"})
@@ -62,7 +71,9 @@ DYNAMIC_SHELL_EXECUTORS = frozenset(
         "fish",
         "powershell",
         "pwsh",
+        "source",
         "sh",
+        ".",
         "xargs",
         "zsh",
     }
@@ -517,6 +528,35 @@ def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
     )
 
 
+def has_freshness_repository_context(document: dict[str, Any]) -> bool:
+    """Reject workflow overrides of the runner's current repository variable."""
+    jobs = document.get("jobs", {})
+    if not isinstance(jobs, dict) or not jobs:
+        return False
+    for scope in [document, *jobs.values()]:
+        if not isinstance(scope, dict):
+            return False
+        environment = scope.get("env")
+        if environment is not None:
+            if not isinstance(environment, dict):
+                return False
+            if "GITHUB_REPOSITORY" in environment:
+                return False
+        steps = scope.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        for step in steps:
+            if not isinstance(step, dict):
+                return False
+            step_environment = step.get("env")
+            if step_environment is not None:
+                if not isinstance(step_environment, dict):
+                    return False
+                if "GITHUB_REPOSITORY" in step_environment:
+                    return False
+    return True
+
+
 def issue_mutation_command_blocks(command: str) -> list[tuple[str, list[str]]]:
     """Return parsed ``gh issue`` mutation command blocks from shell text."""
     blocks: list[tuple[str, list[str]]] = []
@@ -563,7 +603,9 @@ def has_issue_body_file_reconciliation(command: str) -> bool:
 
 
 def has_issue_body_file_reconciliation_for_files(
-    command: str, expected_body_files: set[str] | None = None
+    command: str,
+    expected_body_files: set[str] | None = None,
+    expected_repository_values: set[str] | None = None,
 ) -> bool:
     """Require bound issue mutations to use one of the checker report files."""
     blocks = issue_mutation_command_blocks(command)
@@ -577,7 +619,11 @@ def has_issue_body_file_reconciliation_for_files(
         )
         and all(
             subcommand in FRESHNESS_REMINDER_ALLOWED_MUTATION_SUBCOMMANDS
-            and option_has_one_value(tokens, FRESHNESS_REMINDER_REPOSITORY_OPTION)
+            and option_has_one_value(
+                tokens,
+                FRESHNESS_REMINDER_REPOSITORY_OPTION,
+                expected_repository_values,
+            )
             and (
                 subcommand == "close"
                 or option_has_one_value(
@@ -591,6 +637,88 @@ def has_issue_body_file_reconciliation_for_files(
             for subcommand, tokens in blocks
         )
     )
+
+
+def has_freshness_repository_api_reads(command: str) -> bool:
+    """Require one paginated open-issue lookup for the current repository."""
+    saw_api = False
+    for logical_line in shell_logical_lines(command):
+        segments = shell_command_segments(logical_line)
+        if segments is None:
+            return False
+        for segment in segments:
+            tokens = shell_command_prefix(segment)
+            if any(
+                token == "GITHUB_REPOSITORY"
+                or token.partition("=")[0] == "GITHUB_REPOSITORY"
+                for token in tokens
+            ):
+                return False
+            github_positions = [
+                index
+                for index, token in enumerate(tokens)
+                if is_github_cli_executable(token)
+            ]
+            if any(
+                position + 1 < len(tokens)
+                and tokens[position + 1].startswith("-")
+                and "api" in tokens[position + 2 :]
+                for position in github_positions
+            ):
+                return False
+            api_positions = [
+                index
+                for index in range(len(tokens) - 1)
+                if is_github_cli_executable(tokens[index])
+                and tokens[index + 1] == "api"
+            ]
+            for position in api_positions:
+                saw_api = True
+                if github_api_is_mutation(tokens, position):
+                    return False
+                api_arguments = tokens[position + 2 :]
+                if "--" in api_arguments:
+                    return False
+                if tuple(token for token in api_arguments if token == "--paginate") != (
+                    "--paginate",
+                ):
+                    return False
+                methods = [
+                    api_arguments[index + 1]
+                    for index, token in enumerate(api_arguments[:-1])
+                    if token in GITHUB_API_METHOD_OPTIONS
+                ]
+                methods.extend(
+                    token.partition("=")[2]
+                    for token in api_arguments
+                    if token.startswith("--method=")
+                )
+                methods.extend(
+                    token[2:].lstrip("=")
+                    for token in api_arguments
+                    if token.startswith("-X") and token != "-X"
+                )
+                if any(method.strip().upper() != "GET" for method in methods):
+                    return False
+                hostname = option_values(api_arguments, "--hostname")
+                if hostname != ("github.com",):
+                    return False
+                jq_values = option_values(api_arguments, "--jq")
+                if (
+                    jq_values is None
+                    or len(jq_values) != 1
+                    or any(
+                        fragment not in jq_values[0]
+                        for fragment in FRESHNESS_REMINDER_API_JQ_FRAGMENTS
+                    )
+                ):
+                    return False
+                endpoints = [
+                    token for token in api_arguments if token.startswith("repos/")
+                ]
+                if endpoints != [FRESHNESS_REMINDER_API_ENDPOINT]:
+                    return False
+    return saw_api
 
 
 def option_has_one_value(
@@ -831,6 +959,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
         or not has_least_privileged_freshness_permissions(document)
         or not has_repository_root_working_directory(document)
         or not has_direct_freshness_jobs(document)
+        or not has_freshness_repository_context(document)
         or not requires_issue_write(text, source)
     ):
         return False
@@ -854,6 +983,8 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
         blocks = issue_mutation_command_blocks(job_text)
         if blocks:
             mutation_jobs += 1
+            if not has_freshness_repository_api_reads(job_text):
+                return False
             if not job_effective_issue_write(document, job):
                 return False
         markdown_outputs = freshness_audit_markdown_outputs(job_text)
@@ -863,7 +994,11 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
         if (
             markdown_outputs
             and any(FRESHNESS_REMINDER_MARKER in line for line in lines)
-            and has_issue_body_file_reconciliation_for_files(job_text, markdown_outputs)
+            and has_issue_body_file_reconciliation_for_files(
+                job_text,
+                markdown_outputs,
+                {FRESHNESS_REMINDER_REPOSITORY},
+            )
             and job.get("name") == FRESHNESS_REMINDER_JOB_NAME
             and job.get("timeout-minutes") == FRESHNESS_REMINDER_TIMEOUT_MINUTES
         ):

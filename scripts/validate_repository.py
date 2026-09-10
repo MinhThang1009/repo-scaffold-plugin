@@ -66,9 +66,19 @@ REMINDER_ISSUE_MUTATION_SUBCOMMANDS = frozenset(
 REMINDER_ISSUE_ALLOWED_MUTATIONS = frozenset({"create", "edit", "close"})
 REMINDER_ISSUE_BODY_MUTATIONS = frozenset({"create", "edit"})
 REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "view"})
+FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
 REMINDER_WORKFLOW_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.repository }}"
 FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
 FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
+FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
+FRESHNESS_REMINDER_API_ENDPOINT = (
+    "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"
+)
+FRESHNESS_REMINDER_API_JQ_FRAGMENTS = (
+    "select(.pull_request == null)",
+    f'contains("<!-- {FRESHNESS_REMINDER_MARKER} -->")',
+    ".number",
+)
 POLICY_REMINDER_CONCURRENCY_GROUP = (
     "${{ github.workflow }}-policy-drift-${{ github.repository }}"
 )
@@ -102,7 +112,9 @@ DYNAMIC_SHELL_EXECUTORS = frozenset(
         "fish",
         "powershell",
         "pwsh",
+        "source",
         "sh",
+        ".",
         "xargs",
         "zsh",
     }
@@ -728,6 +740,35 @@ def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
     )
 
 
+def has_freshness_repository_context(document: dict[str, Any]) -> bool:
+    """Reject workflow overrides of the runner's current repository variable."""
+    jobs = document.get("jobs", {})
+    if not isinstance(jobs, dict) or not jobs:
+        return False
+    for scope in [document, *jobs.values()]:
+        if not isinstance(scope, dict):
+            return False
+        environment = scope.get("env")
+        if environment is not None:
+            if not isinstance(environment, dict):
+                return False
+            if "GITHUB_REPOSITORY" in environment:
+                return False
+        steps = scope.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        for step in steps:
+            if not isinstance(step, dict):
+                return False
+            step_environment = step.get("env")
+            if step_environment is not None:
+                if not isinstance(step_environment, dict):
+                    return False
+                if "GITHUB_REPOSITORY" in step_environment:
+                    return False
+    return True
+
+
 def option_values(tokens: list[str], option: str) -> tuple[str, ...] | None:
     """Return unambiguous values for one option, or ``None`` on malformed use."""
     option_prefix = f"{option}="
@@ -980,7 +1021,9 @@ def reminder_issue_mutation_blocks(
 
 
 def has_repo_bound_issue_reconciliation(
-    text: str, expected_body_files: set[str] | None = None
+    text: str,
+    expected_body_files: set[str] | None = None,
+    expected_repository_values: set[str] | None = None,
 ) -> bool:
     """Require every reminder issue mutation to bind its repository."""
     commands = reminder_issue_mutation_blocks(text)
@@ -994,7 +1037,7 @@ def has_repo_bound_issue_reconciliation(
     ]
     return bool(body_commands) and all(
         subcommand in REMINDER_ISSUE_ALLOWED_MUTATIONS
-        and option_has_one_value(tokens, "--repo")
+        and option_has_one_value(tokens, "--repo", expected_repository_values)
         and (
             subcommand == "close"
             or option_has_one_value(tokens, "--body-file", expected_body_files)
@@ -1002,6 +1045,84 @@ def has_repo_bound_issue_reconciliation(
         and (subcommand != "create" or option_has_one_value(tokens, "--title"))
         for subcommand, tokens in commands
     )
+
+
+def has_freshness_repository_api_reads(text: str) -> bool:
+    """Require one paginated open-issue lookup for the current repository."""
+    saw_api = False
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    for segment in segments:
+        tokens = shell_command_prefix(segment)
+        if any(
+            token == "GITHUB_REPOSITORY"
+            or token.partition("=")[0] == "GITHUB_REPOSITORY"
+            for token in tokens
+        ):
+            return False
+        github_positions = [
+            index
+            for index, token in enumerate(tokens)
+            if is_github_cli_executable(token)
+        ]
+        if any(
+            position + 1 < len(tokens)
+            and tokens[position + 1].startswith("-")
+            and "api" in tokens[position + 2 :]
+            for position in github_positions
+        ):
+            return False
+        api_positions = [
+            index
+            for index in range(len(tokens) - 1)
+            if is_github_cli_executable(tokens[index]) and tokens[index + 1] == "api"
+        ]
+        for position in api_positions:
+            saw_api = True
+            if github_api_is_mutation(tokens, position):
+                return False
+            api_arguments = tokens[position + 2 :]
+            if "--" in api_arguments:
+                return False
+            if tuple(token for token in api_arguments if token == "--paginate") != (
+                "--paginate",
+            ):
+                return False
+            methods = [
+                api_arguments[index + 1]
+                for index, token in enumerate(api_arguments[:-1])
+                if token in GITHUB_API_METHOD_OPTIONS
+            ]
+            methods.extend(
+                token.partition("=")[2]
+                for token in api_arguments
+                if token.startswith("--method=")
+            )
+            methods.extend(
+                token[2:].lstrip("=")
+                for token in api_arguments
+                if token.startswith("-X") and token != "-X"
+            )
+            if any(method.strip().upper() != "GET" for method in methods):
+                return False
+            hostname = option_values(api_arguments, "--hostname")
+            if hostname != ("github.com",):
+                return False
+            jq_values = option_values(api_arguments, "--jq")
+            if (
+                jq_values is None
+                or len(jq_values) != 1
+                or any(
+                    fragment not in jq_values[0]
+                    for fragment in FRESHNESS_REMINDER_API_JQ_FRAGMENTS
+                )
+            ):
+                return False
+            endpoints = [token for token in api_arguments if token.startswith("repos/")]
+            if endpoints != [FRESHNESS_REMINDER_API_ENDPOINT]:
+                return False
+    return saw_api
 
 
 def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
@@ -1062,7 +1183,11 @@ def has_freshness_job_reconciliation(workflow: object, text: str) -> bool:
         or not has_least_privileged_freshness_permissions(workflow)
         or not has_repository_root_working_directory(workflow)
         or not has_direct_freshness_jobs(workflow)
-        or not has_repo_bound_issue_reconciliation(text)
+        or not has_freshness_repository_context(workflow)
+        or not has_repo_bound_issue_reconciliation(
+            text, expected_repository_values={FRESHNESS_REMINDER_REPOSITORY}
+        )
+        or not has_freshness_repository_api_reads(text)
     ):
         return False
     jobs = workflow.get("jobs", {})
@@ -1087,6 +1212,8 @@ def has_freshness_job_reconciliation(workflow: object, text: str) -> bool:
             return False
         if blocks:
             mutation_jobs += 1
+            if not has_freshness_repository_api_reads(job_text):
+                return False
             if not job_effective_issue_write(workflow, job):
                 return False
         markdown_outputs = freshness_audit_markdown_outputs(job_text)
@@ -1099,7 +1226,11 @@ def has_freshness_job_reconciliation(workflow: object, text: str) -> bool:
         if (
             markdown_outputs
             and any("repo-scaffold-freshness-audit" in line for line in lines)
-            and has_repo_bound_issue_reconciliation(job_text, markdown_outputs)
+            and has_repo_bound_issue_reconciliation(
+                job_text,
+                markdown_outputs,
+                {FRESHNESS_REMINDER_REPOSITORY},
+            )
             and job.get("name") == FRESHNESS_REMINDER_JOB_NAME
             and job.get("timeout-minutes") == FRESHNESS_REMINDER_TIMEOUT_MINUTES
         ):
@@ -5584,9 +5715,11 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             problems.append(
                 f"{relative}: freshness workflow must run the checker and reconcile one marker issue from its report"
             )
-        if not has_repo_bound_issue_reconciliation(text):
+        if not has_repo_bound_issue_reconciliation(
+            text, expected_repository_values={FRESHNESS_REMINDER_REPOSITORY}
+        ):
             problems.append(
-                f"{relative}: reminder mutations must bind an explicit repository"
+                f"{relative}: reminder mutations must bind the current GitHub repository"
             )
     if len(texts) == 2 and texts[0] != texts[1]:
         problems.append("freshness workflow must match its scaffold asset")

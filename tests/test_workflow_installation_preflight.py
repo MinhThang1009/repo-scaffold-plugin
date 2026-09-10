@@ -554,8 +554,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            --repository-root . \\\n"
                 "            --json-output report.json \\\n"
                 "            --markdown-output report.md\n"
+                "          gh api --hostname github.com --paginate "
+                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+                "--jq '.[] | select(.pull_request == null) | "
+                'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
                 "          marker='repo-scaffold-freshness-audit'\n"
-                '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n',
+                '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n',
                 encoding="utf-8",
             )
             allowlist = root / "code-scanning-allowlist.json"
@@ -627,8 +631,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            --repository-root . \\\n"
                 "            --json-output report.json \\\n"
                 "            --markdown-output report.md\n"
+                "          gh api --hostname github.com --paginate "
+                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+                "--jq '.[] | select(.pull_request == null) | "
+                'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
                 "          marker='repo-scaffold-freshness-audit'\n"
-                '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n',
+                '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n',
                 encoding="utf-8",
             )
             invalid_allowlist = root / "code-scanning-allowlist.json"
@@ -673,11 +681,21 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "      - run: |\n"
             + audit_command
             + "          marker='repo-scaffold-freshness-audit'\n"
-            + '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n'
+            + '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n'
         )
-        body_command = '          gh issue create --repo "$REPOSITORY" --title reminder --body-file report.md\n'
+        repository_lookup_command = (
+            "          gh api --hostname github.com --paginate "
+            '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+            "--jq '.[] | select(.pull_request == null) | "
+            'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
+        )
+        valid += repository_lookup_command
+        body_command = '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n'
         cases = {
             "valid": valid,
+            "without current repository lookup": valid.replace(
+                repository_lookup_command, ""
+            ),
             "missing freshness timeout": valid.replace("    timeout-minutes: 15\n", ""),
             "wrong freshness job name": valid.replace(
                 "    name: freshness-audit\n", "    name: reminder\n"
@@ -828,6 +846,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            --repository-root . \\\n"
                 "            --tracker-registry other.json \\\n",
             ),
+            "mutation targets another repository": valid.replace(
+                ' --repo "github.com/$GITHUB_REPOSITORY"',
+                ' --repo "attacker/repository"',
+            ),
             "audit changes directory": valid.replace(
                 audit_command,
                 "          cd other\n" + audit_command,
@@ -896,6 +918,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          marker='repo-scaffold-freshness-audit'\n",
                 "          marker='repo-scaffold-freshness-audit'\n"
                 "          $command issue close 1 --repo repo\n",
+            ),
+            "sourced hidden mutation": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          source hidden.sh\n",
             ),
             "PowerShell process mutation": valid.replace(
                 "          marker='repo-scaffold-freshness-audit'\n",
@@ -1284,6 +1311,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(
             workflow_installation_preflight.has_dynamic_shell_executor(["env"])
         )
+        self.assertTrue(
+            workflow_installation_preflight.has_dynamic_shell_executor(["source"])
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_dynamic_shell_executor(["."])
+        )
         self.assertFalse(
             workflow_installation_preflight.has_dynamic_shell_executor(
                 ["1=bad", "bash"]
@@ -1340,6 +1373,115 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertIsNone(
             workflow_installation_preflight.freshness_audit_markdown_outputs(
                 "cd other\n" + audit_command
+            )
+        )
+        self.assertIsNone(
+            workflow_installation_preflight.freshness_audit_markdown_outputs(
+                audit_command.replace("--json-output report.json", "--json-output '")
+            )
+        )
+        jq_expression = (
+            '.[] | select(.pull_request == null) | select((.body // "") | '
+            'contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
+        )
+        api_lookup = (
+            "gh api --hostname github.com --paginate "
+            '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+            f"--jq '{jq_expression}'"
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    "repos/$GITHUB_REPOSITORY", "repos/attacker/repository"
+                )
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace("gh api", "gh --hostname github.com api")
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace("--hostname github.com ", "")
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace("github.com", "ghe.example.com")
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace("--paginate ", "")
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    "state=open&per_page=100", "state=closed&per_page=100"
+                )
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace(f"--jq '{jq_expression}'", "--jq '.number'")
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup.replace("--paginate ", "-- ")
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                api_lookup + " --method"
+            )
+        )
+        for method in (
+            "--method HEAD",
+            "--method=HEAD",
+            "-XHEAD",
+            "-X HEAD",
+        ):
+            with self.subTest(method=method):
+                self.assertFalse(
+                    workflow_installation_preflight.has_freshness_repository_api_reads(
+                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                    )
+                )
+        for method in ("--method GET", "--method=GET", "-XGET", "-X GET"):
+            with self.subTest(method=method):
+                self.assertTrue(
+                    workflow_installation_preflight.has_freshness_repository_api_reads(
+                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                    )
+                )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                "gh api --method POST repos/$GITHUB_REPOSITORY/issues"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                "GITHUB_REPOSITORY=attacker/repository "
+                "gh api --hostname github.com --paginate "
+                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"'
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                "gh api 'unterminated"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_freshness_repository_api_reads(
+                "echo ready"
             )
         )
         self.assertFalse(
@@ -1430,6 +1572,45 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 }
             )
         )
+        self.assertTrue(
+            workflow_installation_preflight.has_freshness_repository_context(
+                {"jobs": {"audit": {"steps": []}}}
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.has_freshness_repository_context(
+                {"jobs": {"audit": {"env": {}}}}
+            )
+        )
+        for document in (
+            {"jobs": []},
+            {"jobs": {"audit": []}},
+            {"jobs": {"audit": {"env": []}}},
+            {"jobs": {"audit": {"env": {}, "steps": {}}}},
+            {
+                "jobs": {
+                    "audit": {
+                        "env": {"GITHUB_REPOSITORY": "attacker/repository"},
+                        "steps": [],
+                    }
+                }
+            },
+            {
+                "jobs": {
+                    "audit": {
+                        "steps": [{"env": {"GITHUB_REPOSITORY": "attacker/repository"}}]
+                    }
+                }
+            },
+            {"jobs": {"audit": {"steps": [{"env": []}]}}},
+            {"jobs": {"audit": {"steps": [[]]}}},
+        ):
+            with self.subTest(document=document):
+                self.assertFalse(
+                    workflow_installation_preflight.has_freshness_repository_context(
+                        document
+                    )
+                )
         self.assertFalse(
             workflow_installation_preflight.has_issue_body_file_reconciliation(
                 "gh issue create -- --repo r --title t --body-file report.md"

@@ -90,6 +90,7 @@ class ReminderWorkflowTests(unittest.TestCase):
                         environment = {
                             **os.environ,
                             "REPOSITORY": "synthetic/example",
+                            "GITHUB_REPOSITORY": "synthetic/example",
                             "RUNNER_TEMP": ".",
                             "GITHUB_STEP_SUMMARY": "summary.md",
                             "RUN_URL": "https://example.test/run",

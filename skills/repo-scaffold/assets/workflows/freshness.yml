@@ -60,7 +60,6 @@ jobs:
       - name: Reconcile reminder issue
         env:
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
           CHECKER_EXIT: ${{ steps.audit.outputs.checker_exit }}
         shell: bash
         run: |
@@ -69,7 +68,7 @@ jobs:
           title='Repository freshness update required'
           issue_numbers_output=$(
             gh api --hostname github.com --paginate \
-              "repos/${REPOSITORY}/issues?state=open&per_page=100" \
+              "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
               --jq '.[] | select(.pull_request == null) | select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
           )
           issue_numbers=()
@@ -83,7 +82,7 @@ jobs:
           if [[ "$CHECKER_EXIT" == '0' ]]; then
             if (( ${#issue_numbers[@]} == 1 )); then
               gh issue close "${issue_numbers[0]}" \
-                --repo "github.com/${REPOSITORY}" \
+                --repo "github.com/$GITHUB_REPOSITORY" \
                 --comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'
             fi
             exit 0
@@ -91,12 +90,12 @@ jobs:
           grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"
           if (( ${#issue_numbers[@]} == 1 )); then
             gh issue edit "${issue_numbers[0]}" \
-              --repo "github.com/${REPOSITORY}" \
+              --repo "github.com/$GITHUB_REPOSITORY" \
               --title "$title" \
               --body-file "$RUNNER_TEMP/freshness.md"
           else
             gh issue create \
-              --repo "github.com/${REPOSITORY}" \
+              --repo "github.com/$GITHUB_REPOSITORY" \
               --title "$title" \
               --body-file "$RUNNER_TEMP/freshness.md"
           fi
