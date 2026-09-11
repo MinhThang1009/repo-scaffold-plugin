@@ -215,8 +215,8 @@ The audit must disable `errexit` while running the checker, capture its status,
 and restore `errexit` before publishing that output.
 The JSON and Markdown checker outputs must be exactly
 `$RUNNER_TEMP/freshness.json` and `$RUNNER_TEMP/freshness.md`; the reconciliation
-must validate the same marker with `grep` and fail closed when more than one
-open marker issue exists.
+must validate the same marker with `grep` before branching on checker status or
+mutating an Issue, and fail closed when more than one open marker issue exists.
 The `close` and `edit` issue argument must be the unmodified lookup result or
 its first array element; shell defaults and parameter transformations are not
 accepted.

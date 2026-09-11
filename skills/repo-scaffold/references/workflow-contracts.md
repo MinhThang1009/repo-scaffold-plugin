@@ -56,7 +56,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   status, and restore `errexit` before publishing that output.
   The JSON and Markdown checker outputs must be exactly
   `$RUNNER_TEMP/freshness.json` and `$RUNNER_TEMP/freshness.md`; the reconciliation
-  must validate the same marker with `grep` and reject multiple open marker issues.
+  must validate the same marker with `grep` before branching on checker status or
+  mutating an Issue, and reject multiple open marker issues.
   A `close` or `edit` Issue argument must be the unmodified lookup result or its
   first array element; shell defaults and parameter transformations must fail closed.
   The audit step's `GITHUB_TOKEN` and reconciliation step's `GH_TOKEN` must both

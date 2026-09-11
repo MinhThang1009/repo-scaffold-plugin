@@ -9367,6 +9367,19 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 ),
             ),
             (
+                "marker check after clean branch",
+                contract_job_text.replace(
+                    'grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n',
+                    "",
+                    1,
+                ).replace(
+                    "if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n",
+                    "if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
+                    '  grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n',
+                    1,
+                ),
+            ),
+            (
                 "clean close missing",
                 contract_job_text.replace(
                     f'gh issue close "{issue_id}"',

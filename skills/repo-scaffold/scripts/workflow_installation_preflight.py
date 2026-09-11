@@ -1129,7 +1129,7 @@ def freshness_shell_control_flow_is_safe(command: str) -> bool:
 
 
 def freshness_marker_check_is_safe(command: str) -> bool:
-    """Require the report marker to be validated before Issue reconciliation."""
+    """Require the report marker before status branching and Issue mutations."""
     segments: list[list[str]] = []
     for logical_line in shell_logical_lines(command):
         line_segments = shell_command_segments(logical_line)
@@ -1151,11 +1151,18 @@ def freshness_marker_check_is_safe(command: str) -> bool:
         for index, segment in enumerate(segments)
         if segment == ["grep", "-Fq", "$marker", FRESHNESS_AUDIT_MARKDOWN_OUTPUT]
     ]
+    clean_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if shell_command_prefix(segment)
+        == ["if", "[[", "$CHECKER_EXIT", "==", "0", "]]"]
+    ]
     return (
         len(marker_assignment_indices) == 1
         and len(marker_indices) == 1
         and len(grep_indices) == 1
-        and marker_indices[0] < grep_indices[0]
+        and len(clean_indices) == 1
+        and marker_indices[0] < grep_indices[0] < clean_indices[0]
     )
 
 
