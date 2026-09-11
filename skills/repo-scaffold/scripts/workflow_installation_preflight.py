@@ -155,6 +155,28 @@ FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
     "actions/checkout": {"persist-credentials": "false"},
     "actions/setup-python": {"python-version": "3.x"},
 }
+CRON_STEP = r"(?:/[1-9][0-9]*)?"
+CRON_MINUTE_VALUE = r"(?:[0-9]|[1-5][0-9])"
+CRON_HOUR_VALUE = r"(?:[0-9]|1[0-9]|2[0-3])"
+CRON_DAY_VALUE = r"(?:[1-9]|[12][0-9]|3[01])"
+CRON_MONTH_VALUE = r"(?:[1-9]|1[0-2]|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
+CRON_WEEKDAY_VALUE = r"(?:[0-6]|SUN|MON|TUE|WED|THU|FRI|SAT)"
+
+
+def cron_field_pattern(value_pattern: str) -> str:
+    """Build one POSIX cron field pattern with lists, ranges, and steps."""
+    atom = rf"(?:\*|{value_pattern}(?:-{value_pattern})?){CRON_STEP}"
+    return rf"{atom}(?:,{atom})*"
+
+
+FRESHNESS_CRON_PATTERN = re.compile(
+    rf"{cron_field_pattern(CRON_MINUTE_VALUE)} +"
+    rf"{cron_field_pattern(CRON_HOUR_VALUE)} +"
+    rf"{cron_field_pattern(CRON_DAY_VALUE)} +"
+    rf"{cron_field_pattern(CRON_MONTH_VALUE)} +"
+    rf"{cron_field_pattern(CRON_WEEKDAY_VALUE)}\Z",
+    re.IGNORECASE,
+)
 FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
     {
         f"marker={FRESHNESS_REMINDER_MARKER}",
@@ -300,6 +322,10 @@ FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES = frozenset(
         "GITHUB_ENV",
         "GITHUB_PATH",
         "GITHUB_OUTPUT",
+        "GIT_SSH_COMMAND",
+        "GH_CONFIG_DIR",
+        "HOME",
+        "LD_PRELOAD",
         "PYTHONHOME",
         "PYTHONPATH",
         "PYTHONSTARTUP",
@@ -308,6 +334,14 @@ FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES = frozenset(
 )
 FRESHNESS_SHELL_PROTECTED_ENVIRONMENT_VARIABLES = (
     FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES | {"GITHUB_TOKEN", "GH_TOKEN"}
+)
+FRESHNESS_SECRET_REFERENCE_PATTERN = re.compile(
+    r"\$(?:\{(?:GITHUB_TOKEN|GH_TOKEN)(?:[^A-Za-z0-9_}]|})|"
+    r"(?:GITHUB_TOKEN|GH_TOKEN)(?![A-Za-z0-9_]))"
+)
+FRESHNESS_INDIRECT_PARAMETER_PATTERN = re.compile(r"\$\{!")
+FRESHNESS_JOB_EXECUTION_CONTROLS = frozenset(
+    {"concurrency", "continue-on-error", "environment", "if", "needs", "strategy"}
 )
 FRESHNESS_ALLOWED_ENVIRONMENT_VARIABLES = frozenset(
     {"GITHUB_TOKEN", "GH_TOKEN", "CHECKER_EXIT"}
@@ -618,12 +652,21 @@ def has_repository_root_working_directory(document: dict[str, Any]) -> bool:
 
 def freshness_job_execution_is_unconditional(job: object) -> bool:
     """Reject job or step controls that can silently skip reconciliation."""
-    if not isinstance(job, dict) or "if" in job or "continue-on-error" in job:
+    if not isinstance(job, dict) or any(
+        control in job for control in FRESHNESS_JOB_EXECUTION_CONTROLS
+    ):
         return False
     steps = job.get("steps")
     return isinstance(steps, list) and all(
         isinstance(step, dict) and "if" not in step and "continue-on-error" not in step
         for step in steps
+    )
+
+
+def freshness_cron_syntax_is_valid(value: object) -> bool:
+    """Require a five-field POSIX cron expression for scheduled reminders."""
+    return isinstance(value, str) and bool(
+        FRESHNESS_CRON_PATTERN.fullmatch(value.strip())
     )
 
 
@@ -936,6 +979,12 @@ def freshness_checker_result_output_is_safe(command: str) -> bool:
 
 def freshness_shell_definitions_are_safe(command: str) -> bool:
     """Reject shell definitions that can shadow the checked executables."""
+    if (
+        "${{" in command
+        or FRESHNESS_SECRET_REFERENCE_PATTERN.search(command)
+        or FRESHNESS_INDIRECT_PARAMETER_PATTERN.search(command)
+    ):
+        return False
     segments: list[list[str]] = []
     for logical_line in shell_logical_lines(command):
         line_segments = shell_command_segments(logical_line)
@@ -1012,6 +1061,30 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
                 and command_tokens[executable_index : executable_index + 2]
                 == FRESHNESS_AUDIT_COMMAND.split()
             ):
+                return False
+            command_body = command_tokens[executable_index:]
+            if executable == "gh":
+                if len(command_body) < 2 or command_body[1] not in {"api", "issue"}:
+                    return False
+                if command_body[1] == "issue" and (
+                    len(command_body) < 3
+                    or command_body[2] not in {"close", "edit", "create"}
+                ):
+                    return False
+            elif executable == "grep" and command_body != [
+                "grep",
+                "-Fq",
+                "$marker",
+                FRESHNESS_AUDIT_MARKDOWN_OUTPUT,
+            ]:
+                return False
+            elif executable == "mapfile" and command_body != [
+                "mapfile",
+                "-t",
+                "issue_numbers",
+                "<<<",
+                "$issue_numbers_output",
+            ]:
                 return False
     return True
 
@@ -1260,8 +1333,8 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         and len(failure_tests) == 1
         and len(clean_exits) == 1
         and len(close_mutations) == 1
-        and edit_mutations
-        and create_mutations
+        and len(edit_mutations) == 1
+        and len(create_mutations) == 1
         and failure_exits
     ):
         return False
@@ -1653,6 +1726,11 @@ def freshness_variable_is_reassigned(tokens: list[str], variable: str) -> bool:
     assignment_prefixes = (f"{variable}=", f"{variable}+=", f"{variable}[")
     if any(token.startswith(assignment_prefixes) for token in tokens):
         return True
+    if any(
+        re.search(rf"\$\{{{re.escape(variable)}(?:\[[^]]*\])?(?::)?=", token)
+        for token in tokens
+    ):
+        return True
     if not tokens:
         return False
     executable = executable_basename(tokens[0])
@@ -1670,6 +1748,8 @@ def freshness_variable_is_reassigned(tokens: list[str], variable: str) -> bool:
         return variable in tokens[1:]
     if executable != "printf":
         return False
+    if any("%n" in token for token in tokens[1:]):
+        return True
     return any(
         (token == "-v" and index + 1 < len(tokens) and tokens[index + 1] == variable)
         or (token.startswith("-v") and token[2:] == variable)
@@ -2065,8 +2145,12 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
         or any(
             not isinstance(entry, dict)
             or not isinstance(entry.get("cron"), str)
-            or not entry["cron"].strip()
+            or not freshness_cron_syntax_is_valid(entry["cron"])
             for entry in triggers["schedule"]
+        )
+        or not (
+            triggers.get("workflow_dispatch") in ("", None, "null")
+            or isinstance(triggers.get("workflow_dispatch"), dict)
         )
         or not has_repository_scoped_concurrency(document)
         or not has_least_privileged_freshness_permissions(document)

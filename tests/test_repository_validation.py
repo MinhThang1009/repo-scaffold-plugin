@@ -9334,6 +9334,16 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             "typeset CHECKER_EXIT",
             "printf 'PATH=/tmp/fake\\n' >> $GITHUB_ENV",
             "printf '/tmp/fake\\n' >> $GITHUB_PATH",
+            "title='${{ secrets.TOP_SECRET }}'",
+            "printf '%s\\n' \"$GH_TOKEN\"",
+            "secret_copy=$GITHUB_TOKEN",
+            "gh auth token",
+            "gh issue list",
+            "grep secret /etc/passwd",
+            "mapfile -t other <<< value",
+            "printf '%s' \"${!secret_name}\"",
+            "printf '%n' CHECKER_EXIT",
+            "printf '%s' \"${CHECKER_EXIT:=0}\"",
         ):
             with self.subTest(shell_definition=definition):
                 self.assertFalse(
@@ -9347,6 +9357,20 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             validate_repository.freshness_checker_result_controls_reconciliation(
                 contract_job_text
+            )
+        )
+        create_command = (
+            "gh issue create \\\n"
+            '    --repo "github.com/$GITHUB_REPOSITORY" \\\n'
+            '    --title "$title" \\\n'
+            '    --body-file "$RUNNER_TEMP/freshness.md"'
+        )
+        duplicate_create = contract_job_text.replace(
+            create_command, create_command + "; " + create_command, 1
+        )
+        self.assertFalse(
+            validate_repository.freshness_checker_result_controls_reconciliation(
+                duplicate_create
             )
         )
         checker_flow_cases = (
@@ -9432,6 +9456,10 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             None,
             {"if": "false", "steps": []},
             {"continue-on-error": "true", "steps": []},
+            {"needs": "gate", "steps": []},
+            {"strategy": {"matrix": {"item": ["one", "two"]}}, "steps": []},
+            {"environment": "production", "steps": []},
+            {"concurrency": {"group": "other"}, "steps": []},
             {"steps": {}},
             {"steps": [None]},
             {"steps": [{"if": "false"}]},
@@ -9442,9 +9470,16 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 self.assertFalse(
                     validate_repository.freshness_job_execution_is_unconditional(job)
                 )
-        for field in ("if", "continue-on-error"):
+        for field, value in (
+            ("if", "false"),
+            ("continue-on-error", "true"),
+            ("needs", "gate"),
+            ("strategy", {"matrix": {"item": ["one", "two"]}}),
+            ("environment", "production"),
+            ("concurrency", {"group": "other"}),
+        ):
             candidate = validate_repository.load_yaml_text(contract_text)
-            candidate["jobs"]["audit"][field] = "false"
+            candidate["jobs"]["audit"][field] = value
             with self.subTest(unconditional_field=field):
                 self.assertFalse(
                     validate_repository.has_freshness_job_reconciliation(
@@ -9898,8 +9933,45 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                         command
                     )
                 )
+        for variable in ("GIT_SSH_COMMAND", "LD_PRELOAD", "GH_CONFIG_DIR", "HOME"):
+            command = binding_run.replace(
+                "gh api --hostname github.com",
+                f"{variable}=/tmp/fake gh api --hostname github.com",
+                1,
+            )
+            with self.subTest(shell_environment=variable):
+                self.assertFalse(
+                    validate_repository.freshness_shell_definitions_are_safe(command)
+                )
         self.assertTrue(
             validate_repository.freshness_shell_control_flow_is_safe(contract_job_text)
+        )
+        expression_workflow = validate_repository.load_yaml_text(
+            contract_text.replace(
+                "title='Repository freshness update required'",
+                "title='${{ secrets.TOP_SECRET }}'",
+                1,
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                expression_workflow,
+                contract_text.replace(
+                    "title='Repository freshness update required'",
+                    "title='${{ secrets.TOP_SECRET }}'",
+                    1,
+                ),
+            )
+        )
+        token_text = contract_text.replace(
+            "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+            '--comment "$GH_TOKEN"',
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(token_text), token_text
+            )
         )
         hidden_job_workflow = validate_repository.load_yaml_text(contract_text)
         hidden_job_workflow["jobs"]["hidden"] = {

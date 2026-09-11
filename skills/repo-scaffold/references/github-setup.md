@@ -337,7 +337,9 @@ verified inputs only after it returns `may-install-workflow-assets`. The supplie
 allowlist must contain only schema-v3 entries with exact selector fields, unique
 positive alert numbers, canonical POSIX paths, non-future ISO review dates, and
 review periods from 1 to 366 days; malformed entries fail before approval. The
-freshness workflow must use only scheduled and manual triggers, request only
+freshness workflow must use only scheduled and manual triggers. Each schedule
+entry must use a five-field POSIX cron expression, and `workflow_dispatch` must
+be empty or a valid input mapping. It must request only
 `contents: read` and `issues: write` permissions, execute the freshness checker,
 and reconcile a marker issue
 through a real repo-bound `gh issue create` or `gh issue edit --repo ...
@@ -369,8 +371,9 @@ The lookup result must be captured and flow into the Issue number passed to a
 or testing the result alone is insufficient.
 The reconciliation shell must start with `set -euo pipefail` and may not later
 disable any of those options.
-The reconciliation job and its steps may not use `if` or
-`continue-on-error`, which could silently skip or mask the reminder.
+The reconciliation job and its steps may not use `if`, `needs`, `strategy`,
+`environment`, `concurrency`, or `continue-on-error`, which could silently skip,
+duplicate, or mask the reminder.
 The checker exit status must drive the clean/stale split: close the existing
 issue when clean, and edit or create the report when stale before failing.
 `CHECKER_EXIT` must be bound to the audit step's `checker_exit` output, and the
@@ -386,9 +389,16 @@ its first array element; shell defaults and parameter transformations are
 rejected.
 The audit step's `GITHUB_TOKEN` and reconciliation step's `GH_TOKEN` must both
 bind to `${{ github.token }}`; runner output and temporary-report paths may not
-be overridden, including through shell assignments. `PYTHONPATH`, `PYTHONHOME`,
-and `PYTHONSTARTUP` may not be supplied to the checker. No other workflow, job,
-or step environment variables may be supplied.
+be overridden, including through shell assignments or parameter-expansion writes.
+`PYTHONPATH`, `PYTHONHOME`,
+and `PYTHONSTARTUP` may not be supplied to the checker. Shell assignments to
+process and GitHub CLI configuration variables such as `GIT_SSH_COMMAND`,
+`GH_CONFIG_DIR`, `HOME`, and `LD_PRELOAD` are also rejected. No other workflow,
+job, or step environment variables may be supplied.
+GitHub expressions are rejected inside freshness `run` blocks; only the exact
+YAML token bindings and repository-scoped concurrency expressions are allowed.
+The bound `GITHUB_TOKEN` and `GH_TOKEN` must not be referenced from a freshness
+`run` block; `gh` must inherit them only through the exact YAML bindings.
 The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
 non-Bash runner or shell overrides, workflow/job containers, and services are
 rejected. Its reviewed checkout and Python setup actions must retain the

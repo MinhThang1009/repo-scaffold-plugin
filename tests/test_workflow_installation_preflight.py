@@ -1092,6 +1092,23 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "with malformed schedule": valid.replace(
                 "  schedule:\n    - cron: '17 6 * * 5'\n", "  schedule: bad\n"
             ),
+            "with invalid cron syntax": valid.replace(
+                "    - cron: '17 6 * * 5'\n", "    - cron: 'weekly'\n"
+            ),
+            "with invalid workflow dispatch": valid.replace(
+                "  workflow_dispatch:\n", "  workflow_dispatch: false\n"
+            ),
+            "job needs skipped dependency": valid.replace(
+                "  audit:\n",
+                "  audit:\n    needs: gate\n",
+                1,
+            )
+            + "  gate:\n    if: false\n    runs-on: ubuntu-latest\n    steps: []\n",
+            "job matrix strategy": valid.replace(
+                "  audit:\n",
+                "  audit:\n    strategy:\n      matrix:\n        item: [one, two]\n",
+                1,
+            ),
             "without issue write": valid.replace("  issues: write\n", ""),
             "reconciliation job overrides issue write": valid.replace(
                 "  audit:\n    name: freshness-audit\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n",
@@ -1303,6 +1320,21 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     valid, source.with_name("reminder.yml")
                 )
             )
+
+        for value, expected in (
+            (None, False),
+            ("weekly", False),
+            ("17 6 * * 5", True),
+            ("0/15 4-6 * JAN-MAR MON-FRI", True),
+            ("0 5 * * 7", False),
+        ):
+            with self.subTest(cron=value):
+                self.assertEqual(
+                    workflow_installation_preflight.freshness_cron_syntax_is_valid(
+                        value
+                    ),
+                    expected,
+                )
 
     def test_rejects_mutable_external_container_references(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1565,6 +1597,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             None,
             {"if": "false", "steps": []},
             {"continue-on-error": "true", "steps": []},
+            {"needs": "gate", "steps": []},
+            {"strategy": {"matrix": {"item": ["one", "two"]}}, "steps": []},
+            {"environment": "production", "steps": []},
+            {"concurrency": {"group": "other"}, "steps": []},
             {"steps": {}},
             {"steps": [None]},
             {"steps": [{"if": "false"}]},
@@ -1733,6 +1769,16 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "typeset CHECKER_EXIT",
             "printf 'PATH=/tmp/fake\\n' >> $GITHUB_ENV",
             "printf '/tmp/fake\\n' >> $GITHUB_PATH",
+            "title='${{ secrets.TOP_SECRET }}'",
+            "printf '%s\\n' \"$GH_TOKEN\"",
+            "secret_copy=$GITHUB_TOKEN",
+            "gh auth token",
+            "gh issue list",
+            "grep secret /etc/passwd",
+            "mapfile -t other <<< value",
+            "printf '%s' \"${!secret_name}\"",
+            "printf '%n' CHECKER_EXIT",
+            "printf '%s' \"${CHECKER_EXIT:=0}\"",
         ):
             with self.subTest(shell_definition=definition):
                 self.assertFalse(
@@ -1748,6 +1794,20 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(
             workflow_installation_preflight.freshness_checker_result_controls_reconciliation(
                 contract_job_text
+            )
+        )
+        create_command = (
+            "gh issue create \\\n"
+            '    --repo "github.com/$GITHUB_REPOSITORY" \\\n'
+            '    --title "$title" \\\n'
+            '    --body-file "$RUNNER_TEMP/freshness.md"'
+        )
+        duplicate_create = contract_job_text.replace(
+            create_command, create_command + "; " + create_command, 1
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_checker_result_controls_reconciliation(
+                duplicate_create
             )
         )
         checker_flow_cases = (
@@ -3303,9 +3363,41 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         command
                     )
                 )
+        for variable in ("GIT_SSH_COMMAND", "LD_PRELOAD", "GH_CONFIG_DIR", "HOME"):
+            command = binding_run.replace(
+                "gh api --hostname github.com",
+                f"{variable}=/tmp/fake gh api --hostname github.com",
+                1,
+            )
+            with self.subTest(shell_environment=variable):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_shell_definitions_are_safe(
+                        command
+                    )
+                )
         self.assertTrue(
             workflow_installation_preflight.freshness_shell_control_flow_is_safe(
                 contract_job_text
+            )
+        )
+        expression_text = contract_text.replace(
+            "title='Repository freshness update required'",
+            "title='${{ secrets.TOP_SECRET }}'",
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.is_freshness_reminder_workflow(
+                expression_text, workflow_path
+            )
+        )
+        token_text = contract_text.replace(
+            "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+            '--comment "$GH_TOKEN"',
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.is_freshness_reminder_workflow(
+                token_text, workflow_path
             )
         )
         hidden_job_text = (
@@ -3682,7 +3774,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 workflow_installation_preflight,
                 "workflow_document",
                 return_value={
-                    "on": {"schedule": [{"cron": "weekly"}], "workflow_dispatch": None},
+                    "on": {
+                        "schedule": [{"cron": "17 6 * * 5"}],
+                        "workflow_dispatch": None,
+                    },
                     "jobs": {"audit": {"steps": {}}},
                 },
             ),
@@ -3708,7 +3803,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
 
         empty_job_document = {
-            "on": {"schedule": [{"cron": "weekly"}], "workflow_dispatch": None},
+            "on": {
+                "schedule": [{"cron": "17 6 * * 5"}],
+                "workflow_dispatch": None,
+            },
             "jobs": {"audit": {"steps": []}},
         }
         with (
@@ -3738,7 +3836,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
 
         mutation_document = {
-            "on": {"schedule": [{"cron": "weekly"}], "workflow_dispatch": None},
+            "on": {
+                "schedule": [{"cron": "17 6 * * 5"}],
+                "workflow_dispatch": None,
+            },
             "jobs": {"audit": {"steps": [{"run": "echo"}]}},
         }
         mutation_helpers = {

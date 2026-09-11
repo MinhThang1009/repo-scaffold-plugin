@@ -231,6 +231,10 @@ FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES = frozenset(
         "GITHUB_ENV",
         "GITHUB_PATH",
         "GITHUB_OUTPUT",
+        "GIT_SSH_COMMAND",
+        "GH_CONFIG_DIR",
+        "HOME",
+        "LD_PRELOAD",
         "PYTHONHOME",
         "PYTHONPATH",
         "PYTHONSTARTUP",
@@ -239,6 +243,14 @@ FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES = frozenset(
 )
 FRESHNESS_SHELL_PROTECTED_ENVIRONMENT_VARIABLES = (
     FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES | {"GITHUB_TOKEN", "GH_TOKEN"}
+)
+FRESHNESS_SECRET_REFERENCE_PATTERN = re.compile(
+    r"\$(?:\{(?:GITHUB_TOKEN|GH_TOKEN)(?:[^A-Za-z0-9_}]|})|"
+    r"(?:GITHUB_TOKEN|GH_TOKEN)(?![A-Za-z0-9_]))"
+)
+FRESHNESS_INDIRECT_PARAMETER_PATTERN = re.compile(r"\$\{!")
+FRESHNESS_JOB_EXECUTION_CONTROLS = frozenset(
+    {"concurrency", "continue-on-error", "environment", "if", "needs", "strategy"}
 )
 FRESHNESS_ALLOWED_ENVIRONMENT_VARIABLES = frozenset(
     {"GITHUB_TOKEN", "GH_TOKEN", "CHECKER_EXIT"}
@@ -725,7 +737,9 @@ def has_least_privileged_freshness_permissions(workflow: object) -> bool:
 
 def freshness_job_execution_is_unconditional(job: object) -> bool:
     """Reject job or step controls that can silently skip reconciliation."""
-    if not isinstance(job, dict) or "if" in job or "continue-on-error" in job:
+    if not isinstance(job, dict) or any(
+        control in job for control in FRESHNESS_JOB_EXECUTION_CONTROLS
+    ):
         return False
     steps = job.get("steps")
     return isinstance(steps, list) and all(
@@ -1040,6 +1054,12 @@ def freshness_checker_result_output_is_safe(text: str) -> bool:
 
 def freshness_shell_definitions_are_safe(text: str) -> bool:
     """Reject shell definitions that can shadow the checked executables."""
+    if (
+        "${{" in text
+        or FRESHNESS_SECRET_REFERENCE_PATTERN.search(text)
+        or FRESHNESS_INDIRECT_PARAMETER_PATTERN.search(text)
+    ):
+        return False
     segments = shell_command_segments(text)
     if segments is None:
         return False
@@ -1113,6 +1133,30 @@ def freshness_shell_definitions_are_safe(text: str) -> bool:
                 and command[executable_index : executable_index + 2]
                 == list(FRESHNESS_AUDIT_COMMAND)
             ):
+                return False
+            command_body = command[executable_index:]
+            if executable == "gh":
+                if len(command_body) < 2 or command_body[1] not in {"api", "issue"}:
+                    return False
+                if command_body[1] == "issue" and (
+                    len(command_body) < 3
+                    or command_body[2] not in {"close", "edit", "create"}
+                ):
+                    return False
+            elif executable == "grep" and command_body != [
+                "grep",
+                "-Fq",
+                "$marker",
+                FRESHNESS_AUDIT_MARKDOWN_OUTPUT,
+            ]:
+                return False
+            elif executable == "mapfile" and command_body != [
+                "mapfile",
+                "-t",
+                "issue_numbers",
+                "<<<",
+                "$issue_numbers_output",
+            ]:
                 return False
     return True
 
@@ -1348,8 +1392,8 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         and len(failure_tests) == 1
         and len(clean_exits) == 1
         and len(close_mutations) == 1
-        and edit_mutations
-        and create_mutations
+        and len(edit_mutations) == 1
+        and len(create_mutations) == 1
         and failure_exits
     ):
         return False
@@ -2044,6 +2088,11 @@ def freshness_variable_is_reassigned(tokens: list[str], variable: str) -> bool:
     assignment_prefixes = (f"{variable}=", f"{variable}+=", f"{variable}[")
     if any(token.startswith(assignment_prefixes) for token in tokens):
         return True
+    if any(
+        re.search(rf"\$\{{{re.escape(variable)}(?:\[[^]]*\])?(?::)?=", token)
+        for token in tokens
+    ):
+        return True
     if not tokens:
         return False
     executable = executable_basename(tokens[0])
@@ -2061,6 +2110,8 @@ def freshness_variable_is_reassigned(tokens: list[str], variable: str) -> bool:
         return variable in tokens[1:]
     if executable != "printf":
         return False
+    if any("%n" in token for token in tokens[1:]):
+        return True
     return any(
         (token == "-v" and index + 1 < len(tokens) and tokens[index + 1] == variable)
         or (token.startswith("-v") and token[2:] == variable)
