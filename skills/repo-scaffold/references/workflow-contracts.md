@@ -62,10 +62,15 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   The audit step's `GITHUB_TOKEN` and reconciliation step's `GH_TOKEN` must both
   bind to `${{ github.token }}`; runner output and temporary-report paths may
   not be overridden, including through shell assignments. `PYTHONPATH`,
-  `PYTHONHOME`, and `PYTHONSTARTUP` may not be supplied to the checker.
+  `PYTHONHOME`, and `PYTHONSTARTUP` may not be supplied to the checker. No
+  other workflow, job, or step environment variables may be supplied.
   The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
   non-Bash runner or shell overrides, workflow/job containers, and services must
-  fail closed.
+  fail closed. Its reviewed checkout and Python setup actions must retain the
+  canonical inputs, `persist-credentials: false` and `python-version: 3.x`; any
+  repository, ref, path, token, cache, or other input override must fail closed.
+  The job summary must publish only the checked Markdown report with
+  `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.
   Within the
   reconciliation job, the audit must complete before the lookup, and the lookup
   must complete before any Issue mutation. Pipeline, background, and

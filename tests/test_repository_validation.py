@@ -7847,6 +7847,32 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                         candidate, candidate["jobs"]["audit"]
                     )
                 )
+        for variable in ("GIT_SSH_COMMAND", "LD_PRELOAD", "GH_CONFIG_DIR", "HOME"):
+            for scope in ("workflow", "job"):
+                candidate = validate_repository.load_yaml_text(workflow_text)
+                target = (
+                    candidate if scope == "workflow" else candidate["jobs"]["audit"]
+                )
+                target["env"] = {variable: "attacker"}
+                with self.subTest(
+                    authentication_scope=scope, unexpected_environment=variable
+                ):
+                    self.assertFalse(
+                        validate_repository.freshness_authentication_bindings_are_safe(
+                            candidate, candidate["jobs"]["audit"]
+                        )
+                    )
+            candidate = validate_repository.load_yaml_text(workflow_text)
+            audit_step = candidate["jobs"]["audit"]["steps"][2]
+            audit_step["env"][variable] = "attacker"
+            with self.subTest(
+                authentication_step="audit", unexpected_environment=variable
+            ):
+                self.assertFalse(
+                    validate_repository.freshness_authentication_bindings_are_safe(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
         auth_cases = (
             (
                 "wrong audit token",
@@ -9727,6 +9753,30 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                     {"uses": "evil/action@" + "a" * 40}
                 ),
             ),
+            (
+                "unpinned freshness action",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0].update(
+                    {"uses": "actions/checkout@main"}
+                ),
+            ),
+            (
+                "checkout repository override",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0]["with"].update(
+                    {"repository": "attacker/repo"}
+                ),
+            ),
+            (
+                "checkout ref override",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0]["with"].update(
+                    {"ref": "attacker"}
+                ),
+            ),
+            (
+                "setup Python override",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][1]["with"].update(
+                    {"python-version": "attacker"}
+                ),
+            ),
         ):
             candidate = validate_repository.load_yaml_text(contract_text)
             mutate(candidate)
@@ -10045,6 +10095,21 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             for step in workflow["jobs"]["audit"]["steps"]
             if isinstance(step, dict) and isinstance(step.get("run"), str)
         )
+        self.assertTrue(
+            validate_repository.freshness_summary_output_is_safe(contract_job_text)
+        )
+        self.assertFalse(
+            validate_repository.freshness_summary_output_is_safe("echo 'unterminated")
+        )
+        self.assertFalse(
+            validate_repository.freshness_summary_output_is_safe(
+                contract_job_text.replace(
+                    'cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"',
+                    'cat "$RUNNER_TEMP/other.md" >> "$GITHUB_STEP_SUMMARY"',
+                    1,
+                )
+            )
+        )
         duplicate_guard = (
             "\n".join(
                 (
@@ -10168,6 +10233,18 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                     {"jobs": {"audit": {"steps": {}}}}, ""
                 )
             )
+        summary_candidate = validate_repository.load_yaml_text(workflow_text)
+        summary_step = next(
+            step
+            for step in summary_candidate["jobs"]["audit"]["steps"]
+            if step.get("name") == "Add report to job summary"
+        )
+        summary_step["run"] = 'cat "$RUNNER_TEMP/other.md" >> "$GITHUB_STEP_SUMMARY"'
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                summary_candidate, workflow_text
+            )
+        )
         with (
             mock.patch.multiple(validate_repository, **preconditions),
             mock.patch.object(

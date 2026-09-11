@@ -138,10 +138,23 @@ FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
 FRESHNESS_AUDIT_REPOSITORY_ROOT = "."
 FRESHNESS_AUDIT_JSON_OUTPUT = "$RUNNER_TEMP/freshness.json"
 FRESHNESS_AUDIT_MARKDOWN_OUTPUT = "$RUNNER_TEMP/freshness.md"
+FRESHNESS_SUMMARY_COMMAND = (
+    "cat",
+    FRESHNESS_AUDIT_MARKDOWN_OUTPUT,
+    ">>",
+    "$GITHUB_STEP_SUMMARY",
+)
 FRESHNESS_AUDIT_TRACKER_REGISTRY = ".github/freshness-trackers.json"
 FRESHNESS_ALLOWED_ACTION_REPOSITORIES = frozenset(
     {"actions/checkout", "actions/setup-python"}
 )
+FRESHNESS_ACTION_REFERENCE_PATTERN = re.compile(
+    r"(?:actions/checkout|actions/setup-python)@[0-9a-f]{40}\Z", re.IGNORECASE
+)
+FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
+    "actions/checkout": {"persist-credentials": "false"},
+    "actions/setup-python": {"python-version": "3.x"},
+}
 FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
     {
         f"marker={FRESHNESS_REMINDER_MARKER}",
@@ -295,6 +308,9 @@ FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES = frozenset(
 )
 FRESHNESS_SHELL_PROTECTED_ENVIRONMENT_VARIABLES = (
     FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES | {"GITHUB_TOKEN", "GH_TOKEN"}
+)
+FRESHNESS_ALLOWED_ENVIRONMENT_VARIABLES = frozenset(
+    {"GITHUB_TOKEN", "GH_TOKEN", "CHECKER_EXIT"}
 )
 FRESHNESS_TOKEN_EXPRESSION = "${{ github.token }}"
 SHELL_TEST_OPERATORS = frozenset(
@@ -656,7 +672,12 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
         if not isinstance(uses, str) or uses.count("@") != 1:
             return False
         repository = uses.partition("@")[0].casefold()
-        if repository not in FRESHNESS_ALLOWED_ACTION_REPOSITORIES:
+        if (
+            repository not in FRESHNESS_ALLOWED_ACTION_REPOSITORIES
+            or FRESHNESS_ACTION_REFERENCE_PATTERN.fullmatch(uses) is None
+        ):
+            return False
+        if step.get("with") != FRESHNESS_ALLOWED_ACTION_INPUTS[repository]:
             return False
     return True
 
@@ -669,6 +690,10 @@ def freshness_authentication_bindings_are_safe(workflow: object, job: object) ->
         environment = scope.get("env")
         if environment is not None and (
             not isinstance(environment, dict)
+            or any(
+                variable not in FRESHNESS_ALLOWED_ENVIRONMENT_VARIABLES
+                for variable in environment
+            )
             or any(variable in environment for variable in ("GITHUB_TOKEN", "GH_TOKEN"))
         ):
             return False
@@ -699,7 +724,13 @@ def freshness_authentication_bindings_are_safe(workflow: object, job: object) ->
         if not isinstance(step, dict):
             return False
         environment = step.get("env")
-        if environment is not None and not isinstance(environment, dict):
+        if environment is not None and (
+            not isinstance(environment, dict)
+            or any(
+                variable not in FRESHNESS_ALLOWED_ENVIRONMENT_VARIABLES
+                for variable in environment
+            )
+        ):
             return False
         if not isinstance(environment, dict):
             continue
@@ -1149,6 +1180,23 @@ def freshness_reconciliation_shell_options_are_safe(command: str) -> bool:
         and commands[0] == ["set", "-euo", "pipefail"]
         and set_commands == [["set", "-euo", "pipefail"]]
     )
+
+
+def freshness_summary_output_is_safe(command: str) -> bool:
+    """Require the job summary to publish only the checked Markdown report."""
+    segments: list[list[str]] = []
+    for logical_line in shell_logical_lines(command):
+        line_segments = shell_command_segments(logical_line)
+        if line_segments is None:
+            return False
+        segments.extend(line_segments)
+    cat_commands = [
+        command_tokens
+        for segment in segments
+        if (command_tokens := shell_command_prefix(segment))
+        and command_tokens[0] == "cat"
+    ]
+    return cat_commands == [list(FRESHNESS_SUMMARY_COMMAND)]
 
 
 def freshness_checker_result_controls_reconciliation(command: str) -> bool:
@@ -2053,6 +2101,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
                 or not freshness_shell_definitions_are_safe(job_text)
                 or not freshness_checker_result_controls_reconciliation(job_text)
                 or not freshness_api_result_controls_issue_selection(job_text)
+                or not freshness_summary_output_is_safe(job_text)
             ):
                 return False
             if not freshness_command_order_is_valid(job_text):

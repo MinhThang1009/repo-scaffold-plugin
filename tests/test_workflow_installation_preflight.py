@@ -566,6 +566,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            checker_exit=2\n"
                 "          fi\n"
                 '          printf \'checker_exit=%s\\n\' "$checker_exit" >> "$GITHUB_OUTPUT"\n'
+                "      - name: Add report to job summary\n"
+                "        shell: bash\n"
+                '        run: cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"\n'
                 "      - name: Reconcile reminder issue\n"
                 "        env:\n"
                 "          GH_TOKEN: ${{ github.token }}\n"
@@ -745,6 +748,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             + audit_command
             + fallback_command
             + '          printf \'checker_exit=%s\\n\' "$checker_exit" >> "$GITHUB_OUTPUT"\n'
+            + "      - name: Add report to job summary\n"
+            + "        shell: bash\n"
+            + '        run: cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"\n'
             + "      - name: Reconcile reminder issue\n"
             + "        env:\n"
             + "          GH_TOKEN: ${{ github.token }}\n"
@@ -2689,6 +2695,36 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         candidate, candidate["jobs"]["audit"]
                     )
                 )
+        for variable in ("GIT_SSH_COMMAND", "LD_PRELOAD", "GH_CONFIG_DIR", "HOME"):
+            for scope in ("workflow", "job"):
+                candidate = workflow_installation_preflight.workflow_document(
+                    workflow_text, workflow_path
+                )
+                target = (
+                    candidate if scope == "workflow" else candidate["jobs"]["audit"]
+                )
+                target["env"] = {variable: "attacker"}
+                with self.subTest(
+                    authentication_scope=scope, unexpected_environment=variable
+                ):
+                    self.assertFalse(
+                        workflow_installation_preflight.freshness_authentication_bindings_are_safe(
+                            candidate, candidate["jobs"]["audit"]
+                        )
+                    )
+            candidate = workflow_installation_preflight.workflow_document(
+                workflow_text, workflow_path
+            )
+            audit_step = candidate["jobs"]["audit"]["steps"][2]
+            audit_step["env"][variable] = "attacker"
+            with self.subTest(
+                authentication_step="audit", unexpected_environment=variable
+            ):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_authentication_bindings_are_safe(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
         auth_cases = (
             (
                 "wrong audit token",
@@ -3116,6 +3152,30 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     {"uses": "evil/action@" + "a" * 40}
                 ),
             ),
+            (
+                "unpinned freshness action",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0].update(
+                    {"uses": "actions/checkout@main"}
+                ),
+            ),
+            (
+                "checkout repository override",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0]["with"].update(
+                    {"repository": "attacker/repo"}
+                ),
+            ),
+            (
+                "checkout ref override",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0]["with"].update(
+                    {"ref": "attacker"}
+                ),
+            ),
+            (
+                "setup Python override",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][1]["with"].update(
+                    {"python-version": "attacker"}
+                ),
+            ),
         ):
             candidate = workflow_installation_preflight.workflow_document(
                 contract_text, workflow_path
@@ -3456,6 +3516,26 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             for step in workflow["jobs"]["audit"]["steps"]
             if isinstance(step, dict) and isinstance(step.get("run"), str)
         )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_summary_output_is_safe(
+                contract_job_text
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_summary_output_is_safe(
+                "echo 'unterminated"
+            )
+        )
+        summary_bypass = contract_job_text.replace(
+            'cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"',
+            'cat "$RUNNER_TEMP/other.md" >> "$GITHUB_STEP_SUMMARY"',
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_summary_output_is_safe(
+                summary_bypass
+            )
+        )
         duplicate_guard = (
             "\n".join(
                 (
@@ -3603,6 +3683,17 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 )
             )
 
+        summary_bypass = workflow_text.replace(
+            'cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"',
+            'cat "$RUNNER_TEMP/other.md" >> "$GITHUB_STEP_SUMMARY"',
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.is_freshness_reminder_workflow(
+                summary_bypass, workflow_path
+            )
+        )
+
         empty_job_document = {
             "on": {"schedule": [{"cron": "weekly"}], "workflow_dispatch": None},
             "jobs": {"audit": {"steps": []}},
@@ -3647,6 +3738,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "freshness_shell_definitions_are_safe",
                 "freshness_checker_result_controls_reconciliation",
                 "freshness_api_result_controls_issue_selection",
+                "freshness_summary_output_is_safe",
             )
         }
         with (
