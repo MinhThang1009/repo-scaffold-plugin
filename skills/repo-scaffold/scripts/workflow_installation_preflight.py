@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+from zoneinfo import available_timezones
 
 from codeql_preflight import (
     GitHubClient,
@@ -151,6 +152,10 @@ FRESHNESS_ALLOWED_ACTION_REPOSITORIES = frozenset(
 FRESHNESS_ACTION_REFERENCE_PATTERN = re.compile(
     r"(?:actions/checkout|actions/setup-python)@[0-9a-f]{40}\Z", re.IGNORECASE
 )
+FRESHNESS_REVIEWED_ACTION_REFERENCES = {
+    "actions/checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-python": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+}
 FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
     "actions/checkout": {"persist-credentials": "false"},
     "actions/setup-python": {"python-version": "3.x"},
@@ -184,6 +189,53 @@ FRESHNESS_CRON_PATTERN = re.compile(
     rf"{cron_field_pattern(CRON_WEEKDAY_VALUE)}\Z",
     re.IGNORECASE,
 )
+FRESHNESS_SCHEDULE_ENTRY_KEYS = frozenset({"cron", "timezone"})
+FRESHNESS_IANA_TIMEZONES = frozenset({"Etc/UTC"}) | frozenset(available_timezones())
+
+
+def cron_value_number(value: str, named_values: dict[str, int]) -> int:
+    """Normalize a numeric or named cron value for range validation."""
+    normalized = value.upper()
+    if normalized in named_values:
+        return named_values[normalized]
+    return int(value)
+
+
+def cron_ranges_are_ordered(expression: str) -> bool:
+    """Reject cron ranges whose start is beyond their end."""
+    named_values_by_field: tuple[dict[str, int], ...] = (
+        {},
+        {},
+        {},
+        {
+            "JAN": 1,
+            "FEB": 2,
+            "MAR": 3,
+            "APR": 4,
+            "MAY": 5,
+            "JUN": 6,
+            "JUL": 7,
+            "AUG": 8,
+            "SEP": 9,
+            "OCT": 10,
+            "NOV": 11,
+            "DEC": 12,
+        },
+        {"SUN": 0, "MON": 1, "TUE": 2, "WED": 3, "THU": 4, "FRI": 5, "SAT": 6},
+    )
+    for field, named_values in zip(expression.split(), named_values_by_field):
+        for atom in field.split(","):
+            range_part = atom.split("/", 1)[0]
+            if "-" not in range_part:
+                continue
+            start, end = range_part.split("-", 1)
+            if cron_value_number(start, named_values) > cron_value_number(
+                end, named_values
+            ):
+                return False
+    return True
+
+
 FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
     {
         f"marker={FRESHNESS_REMINDER_MARKER}",
@@ -744,9 +796,24 @@ def freshness_job_execution_is_unconditional(job: object) -> bool:
 
 def freshness_cron_syntax_is_valid(value: object) -> bool:
     """Require a five-field POSIX cron expression for scheduled reminders."""
-    return isinstance(value, str) and bool(
-        FRESHNESS_CRON_PATTERN.fullmatch(value.strip())
-    )
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip()
+    return bool(
+        FRESHNESS_CRON_PATTERN.fullmatch(normalized)
+    ) and cron_ranges_are_ordered(normalized)
+
+
+def freshness_schedule_entry_is_valid(value: object) -> bool:
+    """Require a valid cron and optional IANA timezone without extra keys."""
+    if not isinstance(value, dict) or set(value) - FRESHNESS_SCHEDULE_ENTRY_KEYS:
+        return False
+    if not freshness_cron_syntax_is_valid(value.get("cron")):
+        return False
+    if "timezone" not in value:
+        return True
+    timezone = value["timezone"]
+    return isinstance(timezone, str) and timezone in FRESHNESS_IANA_TIMEZONES
 
 
 def freshness_workflow_dispatch_is_valid(value: object) -> bool:
@@ -845,6 +912,8 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
         if (
             repository not in FRESHNESS_ALLOWED_ACTION_REPOSITORIES
             or FRESHNESS_ACTION_REFERENCE_PATTERN.fullmatch(uses) is None
+            or uses.casefold()
+            != FRESHNESS_REVIEWED_ACTION_REFERENCES[repository].casefold()
         ):
             return False
         if step.get("with") != FRESHNESS_ALLOWED_ACTION_INPUTS[repository]:
@@ -2365,9 +2434,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
         or not isinstance(triggers.get("schedule"), list)
         or not triggers["schedule"]
         or any(
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("cron"), str)
-            or not freshness_cron_syntax_is_valid(entry["cron"])
+            not freshness_schedule_entry_is_valid(entry)
             for entry in triggers["schedule"]
         )
         or not freshness_workflow_dispatch_is_valid(triggers.get("workflow_dispatch"))

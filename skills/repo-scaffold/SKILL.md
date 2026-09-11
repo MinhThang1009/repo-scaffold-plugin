@@ -181,8 +181,9 @@ that called workflow in the same invocation as well; the preflight fails closed
 when the local call cannot be resolved to one supplied input.
 
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
-  only scheduled and manual triggers. Each schedule entry must use a five-field
-  POSIX cron expression, and `workflow_dispatch` must be empty or a valid input
+only scheduled and manual triggers. Each schedule entry must use a five-field
+POSIX cron expression with an optional valid IANA timezone, and
+`workflow_dispatch` must be empty or a valid input
   mapping. A configured manual trigger may contain at most 25 named input
   mappings, using only supported fields and input types. It must request only
   `contents: read` and
@@ -242,7 +243,8 @@ The bound `GITHUB_TOKEN` and `GH_TOKEN` must not be referenced from a freshness
 The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
 non-Bash runner or shell overrides, workflow/job containers, and services are
 rejected. Its reviewed checkout and Python setup actions must retain the
-canonical inputs, `persist-credentials: false` and `python-version: 3.x`; any
+canonical full-SHA references and inputs, `persist-credentials: false` and
+`python-version: 3.x`; any
 repository, ref, path, token, cache, or other input override is rejected.
 The job summary must publish only the checked Markdown report with
 `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.

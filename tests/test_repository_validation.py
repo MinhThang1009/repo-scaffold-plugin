@@ -10276,6 +10276,24 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             validate_repository.freshness_action_steps_are_safe([{"run": "echo"}])
         )
+        for (
+            repository,
+            reference,
+        ) in validate_repository.FRESHNESS_REVIEWED_ACTION_REFERENCES.items():
+            with self.subTest(reviewed_action=repository):
+                step = {
+                    "uses": reference,
+                    "with": validate_repository.FRESHNESS_ALLOWED_ACTION_INPUTS[
+                        repository
+                    ],
+                }
+                self.assertTrue(
+                    validate_repository.freshness_action_steps_are_safe([step])
+                )
+                step["uses"] = f"{repository}@{'a' * 40}"
+                self.assertFalse(
+                    validate_repository.freshness_action_steps_are_safe([step])
+                )
 
         for definition in (
             "alias gh='echo shadowed'",

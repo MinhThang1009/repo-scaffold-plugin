@@ -1097,6 +1097,17 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "with invalid cron syntax": valid.replace(
                 "    - cron: '17 6 * * 5'\n", "    - cron: 'weekly'\n"
             ),
+            "with reversed cron range": valid.replace(
+                "    - cron: '17 6 * * 5'\n", "    - cron: '59-0 * * * *'\n"
+            ),
+            "with unknown schedule key": valid.replace(
+                "    - cron: '17 6 * * 5'\n",
+                "    - cron: '17 6 * * 5'\n      unexpected: value\n",
+            ),
+            "with invalid schedule timezone": valid.replace(
+                "    - cron: '17 6 * * 5'\n",
+                "    - cron: '17 6 * * 5'\n      timezone: Not/AZone\n",
+            ),
             "with invalid workflow dispatch": valid.replace(
                 "  workflow_dispatch:\n", "  workflow_dispatch: false\n"
             ),
@@ -1391,12 +1402,33 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ("weekly", False),
             ("17 6 * * 5", True),
             ("0/15 4-6 * JAN-MAR MON-FRI", True),
+            ("59-0 * * * *", False),
+            ("0-59 * * * *", True),
+            ("0 0 * DEC-JAN *", False),
+            ("0 0 * * FRI-MON", False),
             ("0 5 * * 7", False),
         ):
             with self.subTest(cron=value):
                 self.assertEqual(
                     workflow_installation_preflight.freshness_cron_syntax_is_valid(
                         value
+                    ),
+                    expected,
+                )
+
+        for entry, expected in (
+            ({"cron": "17 6 * * 5"}, True),
+            ({"cron": "17 6 * * 5", "timezone": "Etc/UTC"}, True),
+            ({"cron": "17 6 * * 5", "timezone": "Not/AZone"}, False),
+            ({"cron": "17 6 * * 5", "timezone": None}, False),
+            ({"cron": "17 6 * * 5", "unexpected": "value"}, False),
+            ({"cron": "59-0 * * * *"}, False),
+            (None, False),
+        ):
+            with self.subTest(schedule_entry=entry):
+                self.assertEqual(
+                    workflow_installation_preflight.freshness_schedule_entry_is_valid(
+                        entry
                     ),
                     expected,
                 )
@@ -3782,6 +3814,30 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 [{"run": "echo"}]
             )
         )
+        for (
+            repository,
+            reference,
+        ) in (
+            workflow_installation_preflight.FRESHNESS_REVIEWED_ACTION_REFERENCES.items()
+        ):
+            with self.subTest(reviewed_action=repository):
+                step = {
+                    "uses": reference,
+                    "with": workflow_installation_preflight.FRESHNESS_ALLOWED_ACTION_INPUTS[
+                        repository
+                    ],
+                }
+                self.assertTrue(
+                    workflow_installation_preflight.freshness_action_steps_are_safe(
+                        [step]
+                    )
+                )
+                step["uses"] = f"{repository}@{'a' * 40}"
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_action_steps_are_safe(
+                        [step]
+                    )
+                )
 
         for definition in (
             "alias gh='echo shadowed'",

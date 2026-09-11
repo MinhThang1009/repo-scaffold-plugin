@@ -124,6 +124,10 @@ FRESHNESS_ALLOWED_ACTION_REPOSITORIES = frozenset(
 FRESHNESS_ACTION_REFERENCE_PATTERN = re.compile(
     r"(?:actions/checkout|actions/setup-python)@[0-9a-f]{40}\Z", re.IGNORECASE
 )
+FRESHNESS_REVIEWED_ACTION_REFERENCES = {
+    "actions/checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-python": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+}
 FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
     "actions/checkout": {"persist-credentials": "false"},
     "actions/setup-python": {"python-version": "3.x"},
@@ -828,6 +832,8 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
         if (
             repository not in FRESHNESS_ALLOWED_ACTION_REPOSITORIES
             or FRESHNESS_ACTION_REFERENCE_PATTERN.fullmatch(uses) is None
+            or uses.casefold()
+            != FRESHNESS_REVIEWED_ACTION_REFERENCES[repository].casefold()
         ):
             return False
         if step.get("with") != FRESHNESS_ALLOWED_ACTION_INPUTS[repository]:

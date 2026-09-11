@@ -27,10 +27,11 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   PR head code, and require one trusted marker plus all required headings/items.
 - Links, community-health, and freshness: keep network/upstream checks advisory;
   reminder workflows run only on trusted scheduled/manual events with a
-  five-field POSIX cron schedule and a valid manual trigger shape. An empty
-  `workflow_dispatch` is allowed; when inputs are declared, it must contain at
-  most 25 named input mappings using only supported fields and input types.
-  Maintain one idempotent issue when Issues are enabled. Serialize each reminder's shared
+  five-field POSIX cron schedule with an optional valid IANA timezone, and a
+  valid manual trigger shape. An empty `workflow_dispatch` is allowed; when
+  inputs are declared, it must contain at most 25 named input mappings using
+  only supported fields and input types. Maintain one idempotent issue when
+  Issues are enabled. Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
   Every reminder mutation must use an explicit repository binding, and every
   freshness `create` or `edit` mutation must use a durable `--body-file` (with a
@@ -82,7 +83,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
   non-Bash runner or shell overrides, workflow/job containers, and services must
   fail closed. Its reviewed checkout and Python setup actions must retain the
-  canonical inputs, `persist-credentials: false` and `python-version: 3.x`; any
+  canonical full-SHA references and inputs, `persist-credentials: false` and
+  `python-version: 3.x`; any
   repository, ref, path, token, cache, or other input override must fail closed.
   The job summary must publish only the checked Markdown report with
   `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.

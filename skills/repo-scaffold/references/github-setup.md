@@ -338,7 +338,8 @@ allowlist must contain only schema-v3 entries with exact selector fields, unique
 positive alert numbers, canonical POSIX paths, non-future ISO review dates, and
 review periods from 1 to 366 days; malformed entries fail before approval. The
 freshness workflow must use only scheduled and manual triggers. Each schedule
-entry must use a five-field POSIX cron expression, and `workflow_dispatch` must
+entry must use a five-field POSIX cron expression with an optional valid IANA
+timezone, and `workflow_dispatch` must
 be empty or a valid input mapping. A configured manual trigger may contain at
 most 25 named input mappings, using only supported fields and input types. It
 must request only `contents: read` and `issues: write` permissions, execute the
@@ -406,7 +407,8 @@ The bound `GITHUB_TOKEN` and `GH_TOKEN` must not be referenced from a freshness
 The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
 non-Bash runner or shell overrides, workflow/job containers, and services are
 rejected. Its reviewed checkout and Python setup actions must retain the
-canonical inputs, `persist-credentials: false` and `python-version: 3.x`; any
+canonical full-SHA references and inputs, `persist-credentials: false` and
+`python-version: 3.x`; any
 repository, ref, path, token, cache, or other input override is rejected.
 The job summary must publish only the checked Markdown report with
 `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.
