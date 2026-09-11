@@ -204,6 +204,17 @@ The lookup result must be captured and flow into the Issue number passed to a
 or testing the result alone is insufficient.
 The reconciliation job and its steps may not use `if` or
 `continue-on-error`, which could silently skip or mask the reminder.
+The checker exit status must drive the clean/stale split: close the existing
+issue when clean, and edit or create the report when stale before failing.
+`CHECKER_EXIT` must be bound to the audit step's `checker_exit` output, and the
+audit output must derive from the checker's exit status.
+The audit must disable `errexit` while running the checker, capture its status,
+and restore `errexit` before publishing that output.
+The audit step's `GITHUB_TOKEN` and reconciliation step's `GH_TOKEN` must both
+bind to `${{ github.token }}`; runner output and temporary-report paths may not
+be overridden.
+The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
+non-Bash runner or shell overrides are rejected.
 Within the reconciliation job, the audit must complete before the lookup, and
 the lookup must complete before any Issue mutation. Pipeline, background, and
 short-circuit operators (`|`, `&`, `|&`, `&&`, and `||`) are rejected around
@@ -228,7 +239,10 @@ job. Direct REST mutations through `gh api`, body-bearing default-`POST` API
 calls, state-changing calls through known direct HTTP clients (`curl`, `wget`,
 and PowerShell REST cmdlets),
 path-qualified `gh` executables, and shell wrappers or dynamic executors that
-hide GitHub commands are rejected as ambiguous.
+hide GitHub commands are rejected as ambiguous. Shell aliases and function
+definitions that can shadow these executables are also rejected.
+Changes to command lookup through `PATH`, `BASH_ENV`, `ENV`, or the shell's
+command hash are also rejected.
 
 For a `pull_request` workflow that declares any write permission, first verify
 that the repository's Actions setting **Send write tokens to workflows from pull
