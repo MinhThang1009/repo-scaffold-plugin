@@ -210,7 +210,9 @@ or testing the result alone is insufficient.
 The reconciliation shell must start with `set -euo pipefail` and may not later
 disable any of those options.
 The reconciliation job and its steps may not use `if`, `needs`, `strategy`,
-`environment`, `concurrency`, or `continue-on-error`, which could silently skip,
+`environment`, `concurrency`, `snapshot`, `cache-mode`, or
+`continue-on-error`; steps also may not use `background`, `parallel`, `wait`,
+`wait-all`, `cancel`, or `timeout-minutes`, which could silently skip,
 duplicate, or mask the reminder.
 The checker exit status must drive the clean/stale split: close the existing
 issue when clean, and edit or create the report when stale before failing.

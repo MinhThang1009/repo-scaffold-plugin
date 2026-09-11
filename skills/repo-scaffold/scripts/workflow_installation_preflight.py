@@ -358,7 +358,28 @@ FRESHNESS_SECRET_REFERENCE_PATTERN = re.compile(
 )
 FRESHNESS_INDIRECT_PARAMETER_PATTERN = re.compile(r"\$\{!")
 FRESHNESS_JOB_EXECUTION_CONTROLS = frozenset(
-    {"concurrency", "continue-on-error", "environment", "if", "needs", "strategy"}
+    {
+        "cache-mode",
+        "concurrency",
+        "continue-on-error",
+        "environment",
+        "if",
+        "needs",
+        "snapshot",
+        "strategy",
+    }
+)
+FRESHNESS_STEP_EXECUTION_CONTROLS = frozenset(
+    {
+        "background",
+        "cancel",
+        "continue-on-error",
+        "if",
+        "parallel",
+        "timeout-minutes",
+        "wait",
+        "wait-all",
+    }
 )
 FRESHNESS_ALLOWED_ENVIRONMENT_VARIABLES = frozenset(
     {"GITHUB_TOKEN", "GH_TOKEN", "CHECKER_EXIT"}
@@ -715,7 +736,8 @@ def freshness_job_execution_is_unconditional(job: object) -> bool:
         return False
     steps = job.get("steps")
     return isinstance(steps, list) and all(
-        isinstance(step, dict) and "if" not in step and "continue-on-error" not in step
+        isinstance(step, dict)
+        and not FRESHNESS_STEP_EXECUTION_CONTROLS.intersection(step)
         for step in steps
     )
 

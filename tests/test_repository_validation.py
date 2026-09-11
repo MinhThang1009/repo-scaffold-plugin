@@ -9592,6 +9592,14 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             {"steps": [None]},
             {"steps": [{"if": "false"}]},
             {"steps": [{"continue-on-error": "true"}]},
+            {"steps": [{"background": "true"}]},
+            {"steps": [{"parallel": []}]},
+            {"steps": [{"wait": "audit"}]},
+            {"steps": [{"wait-all": "true"}]},
+            {"steps": [{"cancel": "audit"}]},
+            {"steps": [{"timeout-minutes": "1"}]},
+            {"snapshot": "freshness-image", "steps": []},
+            {"cache-mode": "write", "steps": []},
         )
         for job in jobs:
             with self.subTest(unconditional_job=job):
@@ -9614,10 +9622,19 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                         candidate, contract_text
                     )
                 )
-        for field in ("if", "continue-on-error"):
+        for step_field, step_value in (
+            ("if", "false"),
+            ("continue-on-error", "true"),
+            ("background", "true"),
+            ("parallel", []),
+            ("wait", "audit"),
+            ("wait-all", "true"),
+            ("cancel", "audit"),
+            ("timeout-minutes", "1"),
+        ):
             candidate = validate_repository.load_yaml_text(contract_text)
-            candidate["jobs"]["audit"]["steps"][0][field] = "false"
-            with self.subTest(unconditional_step_field=field):
+            candidate["jobs"]["audit"]["steps"][0][step_field] = step_value
+            with self.subTest(unconditional_step_field=step_field):
                 self.assertFalse(
                     validate_repository.has_freshness_job_reconciliation(
                         candidate, contract_text

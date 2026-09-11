@@ -1148,6 +1148,21 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "with unbound dynamic title": valid.replace(
                 "--title reminder", '--title "$UNTRUSTED_TITLE"', 1
             ),
+            "with asynchronous audit step": valid.replace(
+                "      - id: audit\n",
+                "      - id: audit\n        background: true\n",
+                1,
+            ),
+            "with snapshot job": valid.replace(
+                "    timeout-minutes: 15\n",
+                "    timeout-minutes: 15\n    snapshot: freshness-image\n",
+                1,
+            ),
+            "with cache-mode job": valid.replace(
+                "    timeout-minutes: 15\n",
+                "    timeout-minutes: 15\n    cache-mode: write\n",
+                1,
+            ),
             "job needs skipped dependency": valid.replace(
                 "  audit:\n",
                 "  audit:\n    needs: gate\n",
@@ -1707,6 +1722,14 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             {"steps": [None]},
             {"steps": [{"if": "false"}]},
             {"steps": [{"continue-on-error": "true"}]},
+            {"steps": [{"background": "true"}]},
+            {"steps": [{"parallel": []}]},
+            {"steps": [{"wait": "audit"}]},
+            {"steps": [{"wait-all": "true"}]},
+            {"steps": [{"cancel": "audit"}]},
+            {"steps": [{"timeout-minutes": "1"}]},
+            {"snapshot": "freshness-image", "steps": []},
+            {"cache-mode": "write", "steps": []},
         )
         for job in jobs:
             with self.subTest(unconditional_job=job):
