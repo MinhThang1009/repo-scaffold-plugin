@@ -566,6 +566,61 @@ class ActionReferenceValidationTests(unittest.TestCase):
                 ],
             )
 
+    def test_mutable_job_and_service_container_images_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            (workflow_root / "containers.yml").write_text(
+                "permissions: {}\n"
+                "jobs:\n"
+                "  build:\n"
+                "    container: alpine:latest\n"
+                "    services:\n"
+                "      database:\n"
+                "        image: postgres:latest\n"
+                "    steps: []\n",
+                encoding="utf-8",
+            )
+            (workflow_root / "pinned.yml").write_text(
+                "permissions: {}\n"
+                "jobs:\n"
+                "  build:\n"
+                "    container: alpine@sha256:" + "a" * 64 + "\n"
+                "    services:\n"
+                "      database:\n"
+                "        image: postgres@sha256:" + "b" * 64 + "\n"
+                "    steps: []\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_action_references(root)
+
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any("job 'build' container image" in item for item in problems))
+        self.assertTrue(any("service 'database' image" in item for item in problems))
+
+    def test_invalid_job_container_shapes_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            (workflow_root / "invalid-containers.yml").write_text(
+                "permissions: {}\n"
+                "jobs:\n"
+                "  missing-image:\n"
+                "    container: {options: --init}\n"
+                "  invalid-services:\n"
+                "    services: []\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_action_references(root)
+
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any("missing-image" in item for item in problems))
+        self.assertTrue(any("services must be a mapping" in item for item in problems))
+
     def test_missing_and_broad_workflow_permissions_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -8788,10 +8843,10 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 False,
             ),
             (
-                "plain variable suffix is tracked",
+                "plain variable suffix is not an Issue argument",
                 'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
                 'gh issue edit "$ids-suffix" --repo r --body-file report.md',
-                True,
+                False,
             ),
             (
                 "malformed later shell line",
@@ -9642,6 +9697,503 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 workflow_permissions, {"permissions": {"issues": "write"}}
             )
         )
+
+    def test_freshness_contract_rejects_runtime_and_shell_bypasses(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        contract_text = workflow_path.read_text(encoding="utf-8")
+        contract_workflow = validate_repository.load_yaml_text(contract_text)
+        contract_job = contract_workflow["jobs"]["audit"]
+
+        for name, mutate in (
+            (
+                "workflow container",
+                lambda candidate: candidate.update({"container": "evil:latest"}),
+            ),
+            (
+                "job container",
+                lambda candidate: candidate["jobs"]["audit"].update(
+                    {"container": "evil:latest"}
+                ),
+            ),
+            (
+                "job service",
+                lambda candidate: candidate["jobs"]["audit"].update(
+                    {"services": {"evil": {"image": "evil:latest"}}}
+                ),
+            ),
+            (
+                "unreviewed action",
+                lambda candidate: candidate["jobs"]["audit"]["steps"].append(
+                    {"uses": "evil/action@" + "a" * 40}
+                ),
+            ),
+        ):
+            candidate = validate_repository.load_yaml_text(contract_text)
+            mutate(candidate)
+            with self.subTest(runtime_context=name):
+                self.assertFalse(
+                    validate_repository.freshness_execution_context_is_bash(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+
+        for variable in (
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONSTARTUP",
+            "GITHUB_STEP_SUMMARY",
+            "GITHUB_STATE",
+        ):
+            candidate = validate_repository.load_yaml_text(contract_text)
+            candidate["jobs"]["audit"]["steps"][0]["env"] = {variable: "attacker"}
+            with self.subTest(protected_environment=variable):
+                if variable in {"GITHUB_TOKEN", "GH_TOKEN"}:
+                    self.assertFalse(
+                        validate_repository.freshness_authentication_bindings_are_safe(
+                            candidate, candidate["jobs"]["audit"]
+                        )
+                    )
+                else:
+                    self.assertFalse(
+                        validate_repository.freshness_checker_result_binding_is_safe(
+                            candidate, candidate["jobs"]["audit"]
+                        )
+                    )
+
+        audit_step = next(
+            step for step in contract_job["steps"] if step.get("id") == "audit"
+        )
+        audit_run = audit_step["run"]
+        for name, replacement in (
+            (
+                "JSON output outside runner temp",
+                ("$RUNNER_TEMP/freshness.json", "report.json"),
+            ),
+            (
+                "Markdown output outside runner temp",
+                ("$RUNNER_TEMP/freshness.md", "report.md"),
+            ),
+        ):
+            with self.subTest(report_path=name):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_output_is_safe(
+                        audit_run.replace(*replacement, 1)
+                    )
+                )
+
+        for definition in (
+            "GH_TOKEN=attacker",
+            "GITHUB_TOKEN=attacker",
+            "export GH_TOKEN=attacker",
+            "PYTHONPATH=/tmp/evil",
+            "python -c \"import subprocess; subprocess.run(['gh','issue','close','999'])\"",
+            "node -e \"require('child_process').execFileSync('gh',['issue','close','999'])\"",
+            "awk 'BEGIN { system(\"gh issue close 999\") }'",
+            "./mutate_issue",
+        ):
+            with self.subTest(shell_definition=definition):
+                self.assertFalse(
+                    validate_repository.freshness_shell_definitions_are_safe(definition)
+                )
+
+        contract_job_text = "\n".join(
+            step["run"]
+            for step in contract_job["steps"]
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        )
+        binding_step = next(
+            step
+            for step in contract_job["steps"]
+            if isinstance(step.get("env"), dict) and "CHECKER_EXIT" in step["env"]
+        )
+        binding_run = binding_step["run"]
+        self.assertTrue(
+            validate_repository.freshness_reconciliation_shell_options_are_safe(
+                binding_run
+            )
+        )
+        for command in (
+            binding_run.replace("set -euo pipefail\n", "", 1),
+            binding_run.replace(
+                "set -euo pipefail\n", "set +e\nset -euo pipefail\n", 1
+            ),
+            binding_run.replace("set -euo pipefail", "set -e", 1),
+            binding_run.replace(
+                "marker='<!-- repo-scaffold-freshness-audit -->'",
+                'printf "fake" > "$RUNNER_TEMP/freshness.md"\n'
+                "marker='<!-- repo-scaffold-freshness-audit -->'",
+                1,
+            ),
+            "",
+            "echo 'unterminated",
+        ):
+            with self.subTest(reconciliation_options=command):
+                self.assertFalse(
+                    validate_repository.freshness_reconciliation_shell_options_are_safe(
+                        command
+                    )
+                )
+        self.assertTrue(
+            validate_repository.freshness_shell_control_flow_is_safe(contract_job_text)
+        )
+        hidden_job_workflow = validate_repository.load_yaml_text(contract_text)
+        hidden_job_workflow["jobs"]["hidden"] = {
+            "steps": [
+                {
+                    "run": "python -c \"import subprocess; subprocess.run(['gh','issue','close','999'])\""
+                }
+            ]
+        }
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                hidden_job_workflow, contract_text
+            )
+        )
+        duplicate_guard = (
+            "          if (( ${#issue_numbers[@]} > 1 )); then\n"
+            "            printf 'Found multiple open freshness reminder issues.\\n' >&2\n"
+            "            exit 1\n"
+            "          fi\n"
+        )
+        flow_bypasses = (
+            (
+                "clean nested condition",
+                contract_text.replace(
+                    "if (( ${#issue_numbers[@]} == 1 )); then",
+                    "if false; then",
+                    1,
+                ),
+            ),
+            (
+                "stale nested condition",
+                contract_text.replace(
+                    "if (( ${#issue_numbers[@]} == 1 )); then",
+                    "if false; then",
+                    2,
+                ),
+            ),
+            (
+                "duplicate issue guard missing",
+                contract_text.replace(duplicate_guard, "", 1),
+            ),
+            (
+                "duplicate issue guard does not exit",
+                contract_text.replace(
+                    "            exit 1\n          fi\n",
+                    "            :\n          fi\n",
+                    1,
+                ),
+            ),
+            (
+                "clean cardinality guard missing",
+                contract_text.replace(
+                    "            if (( ${#issue_numbers[@]} == 1 )); then\n",
+                    "",
+                    1,
+                ),
+            ),
+            (
+                "stale cardinality guard missing",
+                contract_text.replace(
+                    "          if (( ${#issue_numbers[@]} == 1 )); then\n",
+                    "",
+                    1,
+                ),
+            ),
+            (
+                "marker check uses another variable",
+                contract_text.replace(
+                    'grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"',
+                    'grep -Fq "$title" "$RUNNER_TEMP/freshness.md"',
+                    1,
+                ),
+            ),
+            (
+                "marker is reassigned",
+                contract_text.replace(
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
+                    "          marker=attacker\n",
+                    1,
+                ),
+            ),
+            (
+                "unreviewed command substitution",
+                contract_text.replace(
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                    '          printf "%s" "$(./mutate_issue)"\n'
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                    1,
+                ),
+            ),
+            (
+                "loop around mutation",
+                contract_text.replace(
+                    "            gh issue close",
+                    "            for item in; do\n            gh issue close",
+                    1,
+                ).replace(
+                    "            --comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+                    "            --comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'\n            done",
+                    1,
+                ),
+            ),
+            (
+                "unmatched closing shell block",
+                contract_job_text + "\nfi",
+            ),
+            (
+                "unmatched opening shell block",
+                contract_job_text.replace("fi\n", "", 1),
+            ),
+        )
+        for name, candidate_text in flow_bypasses:
+            if candidate_text.startswith("set "):
+                job_text = candidate_text
+            else:
+                candidate = validate_repository.load_yaml_text(candidate_text)
+                job_text = "\n".join(
+                    step["run"]
+                    for step in candidate["jobs"]["audit"]["steps"]
+                    if isinstance(step, dict) and isinstance(step.get("run"), str)
+                )
+            with self.subTest(flow_bypass=name):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_controls_reconciliation(
+                        job_text
+                    )
+                )
+
+        lookup = (
+            'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+            'gh issue edit "${ids[0]:-999}" --repo r --body-file report.md'
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(lookup)
+        )
+        transformed_lookup = lookup.replace(":-999", "//1/999")
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                transformed_lookup
+            )
+        )
+
+    def test_freshness_defensive_helpers_and_workflow_shapes_fail_closed(self) -> None:
+        action_step_cases: tuple[object, ...] = (
+            None,
+            {},
+            [None],
+            [{"uses": 1}],
+            [{"uses": "one@two@three"}],
+        )
+        for steps in action_step_cases:
+            with self.subTest(action_steps=steps):
+                self.assertFalse(
+                    validate_repository.freshness_action_steps_are_safe(steps)
+                )
+        self.assertTrue(
+            validate_repository.freshness_action_steps_are_safe([{"run": "echo"}])
+        )
+
+        for definition in (
+            "alias gh='echo shadowed'",
+            "declare -fx gh",
+            "function gh { return 1; }",
+            "gh ( ) { return 1; }",
+        ):
+            with self.subTest(shell_definition=definition):
+                self.assertFalse(
+                    validate_repository.freshness_shell_definitions_are_safe(definition)
+                )
+        with (
+            mock.patch.object(
+                validate_repository,
+                "shell_command_segments",
+                return_value=[["echo", "ready"]],
+            ),
+            mock.patch.object(
+                validate_repository.shlex,
+                "shlex",
+                side_effect=ValueError("malformed"),
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.freshness_shell_definitions_are_safe("ignored")
+            )
+
+        variable_reference_cases = (
+            ("$NAME", True),
+            ("${NAME}", True),
+            ("${NAMEevil}", False),
+            ("$NAME-suffix", True),
+            ("$NAMEevil", False),
+        )
+        for token, expected in variable_reference_cases:
+            with self.subTest(variable_reference=token):
+                self.assertEqual(
+                    validate_repository.freshness_variable_reference(token, "NAME"),
+                    expected,
+                )
+
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow = validate_repository.load_yaml_text(workflow_text)
+        contract_job_text = "\n".join(
+            step["run"]
+            for step in workflow["jobs"]["audit"]["steps"]
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        )
+        duplicate_guard = (
+            "\n".join(
+                (
+                    "if (( ${#issue_numbers[@]} > 1 )); then",
+                    "  printf 'Found multiple open freshness reminder issues.\\n' >&2",
+                    "  exit 1",
+                    "fi",
+                )
+            )
+            + "\n"
+        )
+        clean_condition = "if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
+        out_of_order = contract_job_text.replace(duplicate_guard, "", 1).replace(
+            clean_condition, clean_condition + duplicate_guard, 1
+        )
+        self.assertFalse(
+            validate_repository.freshness_shell_control_flow_is_safe(out_of_order)
+        )
+        nonempty_guard = (
+            "\n".join(
+                (
+                    'if [[ -n "$issue_numbers_output" ]]; then',
+                    '  mapfile -t issue_numbers <<< "$issue_numbers_output"',
+                    "fi",
+                )
+            )
+            + "\n"
+        )
+        nonempty_after_clean = contract_job_text.replace(nonempty_guard, "", 1).replace(
+            clean_condition, clean_condition + nonempty_guard, 1
+        )
+        self.assertFalse(
+            validate_repository.freshness_shell_control_flow_is_safe(
+                nonempty_after_clean
+            )
+        )
+
+        with (
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_control_flow_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                validate_repository, "freshness_marker_check_is_safe", return_value=True
+            ),
+            mock.patch.object(
+                validate_repository, "shell_command_segments", return_value=None
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.freshness_checker_result_controls_reconciliation(
+                    "ignored"
+                )
+            )
+        with (
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_control_flow_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                validate_repository, "freshness_marker_check_is_safe", return_value=True
+            ),
+            mock.patch.object(
+                validate_repository,
+                "shell_command_segments",
+                return_value=[["echo", "ready"]],
+            ),
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_if_block_ranges",
+                return_value=None,
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.freshness_checker_result_controls_reconciliation(
+                    "ignored"
+                )
+            )
+        with (
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_control_flow_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                validate_repository, "freshness_marker_check_is_safe", return_value=True
+            ),
+            mock.patch.object(
+                validate_repository,
+                "shell_command_segments",
+                return_value=[["gh", "issue", "create", "gh", "issue", "close"]],
+            ),
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_if_block_ranges",
+                return_value={},
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.freshness_checker_result_controls_reconciliation(
+                    "ignored"
+                )
+            )
+
+        preconditions = {
+            name: mock.Mock(return_value=True)
+            for name in (
+                "has_least_privileged_freshness_permissions",
+                "has_repository_root_working_directory",
+                "has_direct_freshness_jobs",
+                "has_freshness_repository_context",
+                "has_repo_bound_issue_reconciliation",
+                "has_freshness_repository_api_reads",
+            )
+        }
+        with mock.patch.multiple(validate_repository, **preconditions):
+            self.assertFalse(
+                validate_repository.has_freshness_job_reconciliation(
+                    {"jobs": {"audit": {"steps": {}}}}, ""
+                )
+            )
+        with (
+            mock.patch.multiple(validate_repository, **preconditions),
+            mock.patch.object(
+                validate_repository, "reminder_issue_mutation_blocks", return_value=None
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.has_freshness_job_reconciliation(
+                    {"jobs": {"audit": {"steps": []}}}, ""
+                )
+            )
+
+        container_document_cases: tuple[object, ...] = (
+            None,
+            [],
+            {"jobs": []},
+            {"jobs": {"invalid": None}},
+        )
+        for document in container_document_cases:
+            with self.subTest(container_document=document):
+                self.assertEqual(
+                    validate_repository.validate_job_container_images(
+                        document, Path("workflow.yml")
+                    ),
+                    [],
+                )
 
     def test_freshness_reconciliation_requires_effective_permission_and_repo_binding(
         self,

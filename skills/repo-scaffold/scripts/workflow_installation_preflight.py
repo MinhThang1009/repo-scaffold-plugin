@@ -136,11 +136,43 @@ FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
     "--markdown-output",
 )
 FRESHNESS_AUDIT_REPOSITORY_ROOT = "."
+FRESHNESS_AUDIT_JSON_OUTPUT = "$RUNNER_TEMP/freshness.json"
+FRESHNESS_AUDIT_MARKDOWN_OUTPUT = "$RUNNER_TEMP/freshness.md"
 FRESHNESS_AUDIT_TRACKER_REGISTRY = ".github/freshness-trackers.json"
+FRESHNESS_ALLOWED_ACTION_REPOSITORIES = frozenset(
+    {"actions/checkout", "actions/setup-python"}
+)
+FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
+    {
+        f"marker={FRESHNESS_REMINDER_MARKER}",
+        f"marker=<!-- {FRESHNESS_REMINDER_MARKER} -->",
+    }
+)
+FRESHNESS_DUPLICATE_ISSUE_GUARD = (
+    "if (( ${#issue_numbers[@]} > 1 )); then",
+    "printf 'Found multiple open freshness reminder issues.\\n' >&2",
+    "exit 1",
+    "fi",
+)
+FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
+    {
+        f'if [[ ! -f "{FRESHNESS_AUDIT_MARKDOWN_OUTPUT}" ]]; then',
+        'if [[ -n "$issue_numbers_output" ]]; then',
+        FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
+        "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
+        "if (( ${#issue_numbers[@]} == 1 )); then",
+        "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
+    }
+)
+FRESHNESS_ALLOWED_SHELL_COMMANDS = frozenset(
+    {"${", "cat", "exit", "fi", "gh", "grep", "if", "mapfile", "printf", "set"}
+)
 SHELL_DIRECTORY_CHANGE_COMMANDS = frozenset(
     {"cd", "chdir", "popd", "pushd", "set-location", "sl", "sls"}
 )
-CONTAINER_REFERENCE_PATTERN = re.compile(r"docker://[^\s@]+@sha256:[0-9a-f]{64}\Z")
+CONTAINER_REFERENCE_PATTERN = re.compile(
+    r"(?:docker://)?[^\s@]+@sha256:[0-9a-f]{64}\Z", re.IGNORECASE
+)
 
 
 class DuplicateJsonMember(ValueError):
@@ -247,14 +279,22 @@ SHELL_COMMAND_PREFIXES = frozenset({"!", "then", "do", "else"})
 FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES = frozenset(
     {
         "CHECKER_EXIT",
+        "GITHUB_STEP_SUMMARY",
+        "GITHUB_STATE",
         "PATH",
         "BASH_ENV",
         "ENV",
         "GITHUB_ENV",
         "GITHUB_PATH",
         "GITHUB_OUTPUT",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
         "RUNNER_TEMP",
     }
+)
+FRESHNESS_SHELL_PROTECTED_ENVIRONMENT_VARIABLES = (
+    FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES | {"GITHUB_TOKEN", "GH_TOKEN"}
 )
 FRESHNESS_TOKEN_EXPRESSION = "${{ github.token }}"
 SHELL_TEST_OPERATORS = frozenset(
@@ -505,6 +545,17 @@ def shell_command_prefix(segment: list[str]) -> list[str]:
     return normalized
 
 
+def shell_command_executable_index(tokens: list[str]) -> int | None:
+    """Return the executable position after valid shell assignments."""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if "=" not in token or not token.partition("=")[0].isidentifier():
+            break
+        index += 1
+    return index if index < len(tokens) else None
+
+
 def has_directory_change_command(tokens: list[str]) -> bool:
     """Reject commands that can move the checker away from the repository root."""
     return any(
@@ -567,6 +618,8 @@ def freshness_execution_context_is_bash(workflow: object, job: object) -> bool:
     if job.get("runs-on") != "ubuntu-latest":
         return False
     for scope in (workflow, job):
+        if "container" in scope or "services" in scope:
+            return False
         defaults = scope.get("defaults")
         if defaults is None:
             continue
@@ -580,9 +633,32 @@ def freshness_execution_context_is_bash(workflow: object, job: object) -> bool:
         if run_defaults.get("shell") not in (None, "bash"):
             return False
     steps = job.get("steps")
-    return isinstance(steps, list) and all(
-        isinstance(step, dict) and step.get("shell") in (None, "bash") for step in steps
+    return (
+        isinstance(steps, list)
+        and freshness_action_steps_are_safe(steps)
+        and all(
+            isinstance(step, dict) and step.get("shell") in (None, "bash")
+            for step in steps
+        )
     )
+
+
+def freshness_action_steps_are_safe(steps: object) -> bool:
+    """Allow only the reviewed first-party actions in the reminder job."""
+    if not isinstance(steps, list):
+        return False
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        uses = step.get("uses")
+        if uses is None:
+            continue
+        if not isinstance(uses, str) or uses.count("@") != 1:
+            return False
+        repository = uses.partition("@")[0].casefold()
+        if repository not in FRESHNESS_ALLOWED_ACTION_REPOSITORIES:
+            return False
+    return True
 
 
 def freshness_authentication_bindings_are_safe(workflow: object, job: object) -> bool:
@@ -708,6 +784,7 @@ def freshness_checker_result_binding_is_safe(workflow: object, job: object) -> b
         isinstance(audit_run, str)
         and freshness_checker_result_output_is_safe(audit_run)
         and isinstance(binding_run, str)
+        and freshness_reconciliation_shell_options_are_safe(binding_run)
         and freshness_checker_result_controls_reconciliation(binding_run)
         and freshness_api_result_controls_issue_selection(binding_run)
     )
@@ -724,6 +801,8 @@ def freshness_checker_result_output_is_safe(command: str) -> bool:
     markdown_outputs = freshness_audit_markdown_outputs(command)
     if markdown_outputs is None or len(markdown_outputs) != 1:
         return False
+    if markdown_outputs != {FRESHNESS_AUDIT_MARKDOWN_OUTPUT}:
+        return False
     markdown_output = next(iter(markdown_outputs))
     audit_indices: list[int] = []
     disable_errexit_indices: list[int] = []
@@ -738,6 +817,10 @@ def freshness_checker_result_output_is_safe(command: str) -> bool:
         command_tokens = shell_command_prefix(segment)
         if segment[:2] == ["python", "scripts/audit_freshness.py"]:
             audit_indices.append(index)
+            if option_values(segment, "--json-output") != (
+                FRESHNESS_AUDIT_JSON_OUTPUT,
+            ):
+                return False
         if command_tokens == ["set", "+e"]:
             disable_errexit_indices.append(index)
         elif command_tokens == ["checker_exit=$?"]:
@@ -831,7 +914,7 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
     if any(
         freshness_variable_is_reassigned(segment, variable)
         for segment in segments
-        for variable in FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES
+        for variable in FRESHNESS_SHELL_PROTECTED_ENVIRONMENT_VARIABLES
     ):
         return False
     for segment in segments:
@@ -881,11 +964,199 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
             )
         ):
             return False
+    for segment in segments:
+        command_tokens = shell_command_prefix(segment)
+        if not command_tokens:
+            continue
+        executable_index = shell_command_executable_index(command_tokens)
+        if executable_index is not None:
+            executable_token = command_tokens[executable_index]
+            executable = executable_basename(executable_token)
+            if (
+                "/" in executable_token
+                or "\\" in executable_token
+                or executable not in FRESHNESS_ALLOWED_SHELL_COMMANDS
+            ) and not (
+                executable == "python"
+                and command_tokens[executable_index : executable_index + 2]
+                == FRESHNESS_AUDIT_COMMAND.split()
+            ):
+                return False
     return True
+
+
+def freshness_shell_control_flow_is_safe(command: str) -> bool:
+    """Require the canonical guards around freshness mutations."""
+    lines = [
+        line.strip()
+        for line in command.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if (
+        command.count("$(") != 1
+        or "`" in command
+        or command.count("issue_numbers_output=$(") != 1
+    ):
+        return False
+    if any(
+        re.match(r"^(?:for|while|until|case|select|coproc|trap|function)\b", line)
+        or line in {"do", "done", "esac"}
+        or (re.search(r"(?:^|;)\s*[{}()]", line) and line != ")")
+        or re.search(r";\s*then\s*[{}()]", line)
+        or re.search(r";\s*(?:then\s+)?if\b", line)
+        or re.search(r";\s*(?:then\s+)?(?:fi|else)\b", line)
+        or re.search(r"[<>]\s*\(", line)
+        for line in lines
+    ):
+        return False
+    if_lines = [line for line in lines if line.startswith("if ")]
+    if any(line not in FRESHNESS_ALLOWED_SHELL_IF_LINES for line in if_lines):
+        return False
+    required_if_lines = (
+        FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
+        "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
+        "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
+    )
+    if any(if_lines.count(line) != 1 for line in required_if_lines):
+        return False
+    duplicate_guard_count = sum(
+        tuple(lines[index : index + len(FRESHNESS_DUPLICATE_ISSUE_GUARD)])
+        == FRESHNESS_DUPLICATE_ISSUE_GUARD
+        for index in range(len(lines) - len(FRESHNESS_DUPLICATE_ISSUE_GUARD) + 1)
+    )
+    if duplicate_guard_count != 1:
+        return False
+    clean_index = if_lines.index("if [[ \"$CHECKER_EXIT\" == '0' ]]; then")
+    stale_index = if_lines.index("if [[ \"$CHECKER_EXIT\" != '0' ]]; then")
+    duplicate_index = if_lines.index(FRESHNESS_DUPLICATE_ISSUE_GUARD[0])
+    if not duplicate_index < clean_index < stale_index:
+        return False
+    nonempty_indices = [
+        index
+        for index, line in enumerate(if_lines)
+        if line == 'if [[ -n "$issue_numbers_output" ]]; then'
+    ]
+    if len(nonempty_indices) > 1 or any(
+        index >= clean_index for index in nonempty_indices
+    ):
+        return False
+    array_guard_positions = [
+        index
+        for index, line in enumerate(if_lines)
+        if line == "if (( ${#issue_numbers[@]} == 1 )); then"
+    ]
+    if len(array_guard_positions) != 2:
+        return False
+    line_ranges: dict[int, int] = {}
+    stack: list[int] = []
+    for index, line in enumerate(lines):
+        if line.startswith("if "):
+            stack.append(index)
+        elif line == "fi":
+            if not stack:
+                return False
+            line_ranges[stack.pop()] = index
+    if stack:
+        return False
+    array_line_positions = [
+        index
+        for index, line in enumerate(lines)
+        if line == "if (( ${#issue_numbers[@]} == 1 )); then"
+    ]
+    close_line_positions = [
+        index for index, line in enumerate(lines) if line.startswith("gh issue close ")
+    ]
+    edit_line_positions = [
+        index for index, line in enumerate(lines) if line.startswith("gh issue edit ")
+    ]
+    create_line_positions = [
+        index for index, line in enumerate(lines) if line.startswith("gh issue create ")
+    ]
+    else_line_positions = [index for index, line in enumerate(lines) if line == "else"]
+    if not (
+        len(array_line_positions) == 2
+        and len(close_line_positions) == 1
+        and len(edit_line_positions) == 1
+        and len(create_line_positions) == 1
+        and len(else_line_positions) == 1
+    ):
+        return False
+    first_array_end = line_ranges[array_line_positions[0]]
+    second_array_end = line_ranges[array_line_positions[1]]
+    close_line = close_line_positions[0]
+    edit_line = edit_line_positions[0]
+    create_line = create_line_positions[0]
+    else_line = else_line_positions[0]
+    return (
+        array_line_positions[0] < close_line < first_array_end
+        and array_line_positions[1]
+        < edit_line
+        < else_line
+        < create_line
+        < second_array_end
+    )
+
+
+def freshness_marker_check_is_safe(command: str) -> bool:
+    """Require the report marker to be validated before Issue reconciliation."""
+    segments: list[list[str]] = []
+    for logical_line in shell_logical_lines(command):
+        line_segments = shell_command_segments(logical_line)
+        if line_segments is None:
+            return False
+        segments.extend(line_segments)
+    marker_assignment_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if freshness_variable_is_reassigned(segment, "marker")
+    ]
+    marker_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if len(segment) == 1 and segment[0] in FRESHNESS_MARKER_ASSIGNMENTS
+    ]
+    grep_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if segment == ["grep", "-Fq", "$marker", FRESHNESS_AUDIT_MARKDOWN_OUTPUT]
+    ]
+    return (
+        len(marker_assignment_indices) == 1
+        and len(marker_indices) == 1
+        and len(grep_indices) == 1
+        and marker_indices[0] < grep_indices[0]
+    )
+
+
+def freshness_reconciliation_shell_options_are_safe(command: str) -> bool:
+    """Require reconciliation to keep errexit, nounset, and pipefail enabled."""
+    segments: list[list[str]] = []
+    for logical_line in shell_logical_lines(command):
+        line_segments = shell_command_segments(logical_line)
+        if line_segments is None:
+            return False
+        segments.extend(line_segments)
+    if any(
+        token in {">", ">>", ">|", "&>", "&>>"}
+        for segment in segments
+        for token in segment
+    ):
+        return False
+    commands = [shell_command_prefix(segment) for segment in segments]
+    set_commands = [command for command in commands if command and command[0] == "set"]
+    return (
+        bool(commands)
+        and commands[0] == ["set", "-euo", "pipefail"]
+        and set_commands == [["set", "-euo", "pipefail"]]
+    )
 
 
 def freshness_checker_result_controls_reconciliation(command: str) -> bool:
     """Require checker status to select clean versus stale Issue mutations."""
+    if not freshness_shell_control_flow_is_safe(command):
+        return False
+    if not freshness_marker_check_is_safe(command):
+        return False
     segments: list[list[str]] = []
     for logical_line in shell_logical_lines(command):
         line_segments = shell_command_segments(logical_line)
@@ -1313,6 +1584,15 @@ def freshness_variable_reference(token: str, variable: str) -> bool:
     return False
 
 
+def freshness_issue_argument_reference(token: str, variable: str) -> bool:
+    """Allow only an unmodified lookup result as an Issue argument."""
+    return token in {
+        f"${variable}",
+        f"${{{variable}}}",
+        f"${{{variable}[0]}}",
+    }
+
+
 def freshness_variable_is_reassigned(tokens: list[str], variable: str) -> bool:
     """Return whether shell tokens overwrite or unset the named variable."""
     assignment_prefixes = (f"{variable}=", f"{variable}+=", f"{variable}[")
@@ -1434,7 +1714,7 @@ def freshness_api_result_controls_issue_selection(command: str) -> bool:
             for collection_index, variable in collections:
                 if (
                     collection_index >= mutation_index
-                    or not freshness_variable_reference(issue_argument, variable)
+                    or not freshness_issue_argument_reference(issue_argument, variable)
                 ):
                     continue
                 if any(
@@ -1582,7 +1862,7 @@ def workflow_uses_values(value: Any) -> Iterator[Any]:
 
 
 def validate_container_references(document: dict[str, Any], source: Path) -> None:
-    """Reject external container tags before workflow assets are installed."""
+    """Reject mutable action, job-container, and service-container images."""
     for reference in workflow_uses_values(document):
         if not isinstance(reference, str) or not reference.startswith("docker://"):
             continue
@@ -1591,6 +1871,35 @@ def validate_container_references(document: dict[str, Any], source: Path) -> Non
                 f"Workflow {source} external container reference must use a full "
                 f"sha256 digest: {reference}"
             )
+    jobs = document.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        containers: list[tuple[str, object]] = []
+        if "container" in job:
+            containers.append((f"job {job_name!r} container", job["container"]))
+        services = job.get("services")
+        if services is not None:
+            if not isinstance(services, dict):
+                raise InspectionError(
+                    f"Workflow {source} job {job_name!r} services must be a mapping."
+                )
+            containers.extend(
+                (f"job {job_name!r} service {service_name!r}", service)
+                for service_name, service in services.items()
+            )
+        for location, container in containers:
+            image = container.get("image") if isinstance(container, dict) else container
+            if (
+                not isinstance(image, str)
+                or CONTAINER_REFERENCE_PATTERN.fullmatch(image) is None
+            ):
+                raise InspectionError(
+                    f"Workflow {source} {location} image must use a full "
+                    f"sha256 digest: {image!r}"
+                )
 
 
 def local_reusable_workflow_names(document: dict[str, Any], source: Path) -> list[str]:
@@ -1719,17 +2028,17 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
     for job in jobs.values():
         assert isinstance(job, dict)
         steps = job.get("steps", [])
-        job_commands = (
-            [
-                step["run"]
-                for step in steps
-                if isinstance(step, dict) and isinstance(step.get("run"), str)
-            ]
-            if isinstance(steps, list)
-            else []
-        )
+        if not isinstance(steps, list):
+            return False
+        job_commands = [
+            step["run"]
+            for step in steps
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        ]
         job_text = "\n".join(job_commands)
         blocks = issue_mutation_command_blocks(job_text)
+        if not blocks and steps:
+            return False
         if not has_freshness_repository_api_reads(
             job_text, require_lookup=bool(blocks)
         ):

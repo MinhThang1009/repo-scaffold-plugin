@@ -557,12 +557,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          set +e\n"
                 "          python scripts/audit_freshness.py \\\n"
                 "            --repository-root . \\\n"
-                "            --json-output report.json \\\n"
-                "            --markdown-output report.md\n"
+                "            --json-output $RUNNER_TEMP/freshness.json \\\n"
+                "            --markdown-output $RUNNER_TEMP/freshness.md\n"
                 "          checker_exit=$?\n"
                 "          set -e\n"
-                "          if [[ ! -f report.md ]]; then\n"
-                "            printf '%s\\n' '<!-- repo-scaffold-freshness-audit -->' > report.md\n"
+                '          if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then\n'
+                "            printf '%s\\n' '<!-- repo-scaffold-freshness-audit -->' > \"$RUNNER_TEMP/freshness.md\"\n"
                 "            checker_exit=2\n"
                 "          fi\n"
                 '          printf \'checker_exit=%s\\n\' "$checker_exit" >> "$GITHUB_OUTPUT"\n'
@@ -571,6 +571,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          GH_TOKEN: ${{ github.token }}\n"
                 "          CHECKER_EXIT: ${{ steps.audit.outputs.checker_exit }}\n"
                 "        run: |\n"
+                "          set -euo pipefail\n"
                 "          issue_numbers_output=$(\n"
                 "            gh api --hostname github.com --paginate \\\n"
                 '              "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \\\n'
@@ -580,13 +581,23 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 '          if [[ -n "$issue_numbers_output" ]]; then\n'
                 '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
                 "          fi\n"
-                "          marker='repo-scaffold-freshness-audit'\n"
+                "          if (( ${#issue_numbers[@]} > 1 )); then\n"
+                "            printf 'Found multiple open freshness reminder issues.\\n' >&2\n"
+                "            exit 1\n"
+                "          fi\n"
+                "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
+                '          grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n'
                 "          if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
-                '            gh issue close "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --comment clean\n'
+                "            if (( ${#issue_numbers[@]} == 1 )); then\n"
+                '              gh issue close "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --comment clean\n'
+                "            fi\n"
                 "            exit 0\n"
                 "          fi\n"
-                '          gh issue edit "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --body-file report.md\n'
-                '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n'
+                "          if (( ${#issue_numbers[@]} == 1 )); then\n"
+                '            gh issue edit "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/freshness.md"\n'
+                "          else\n"
+                '            gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file "$RUNNER_TEMP/freshness.md"\n'
+                "          fi\n"
                 "          if [[ \"$CHECKER_EXIT\" != '0' ]]; then\n"
                 "            exit 1\n"
                 "          fi\n",
@@ -661,20 +672,21 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          set +e\n"
                 "          python scripts/audit_freshness.py \\\n"
                 "            --repository-root . \\\n"
-                "            --json-output report.json \\\n"
-                "            --markdown-output report.md\n"
+                "            --json-output $RUNNER_TEMP/freshness.json \\\n"
+                "            --markdown-output $RUNNER_TEMP/freshness.md\n"
                 "          checker_exit=$?\n"
                 "          set -e\n"
-                "          if [[ ! -f report.md ]]; then\n"
-                "            printf '%s\\n' '<!-- repo-scaffold-freshness-audit -->' > report.md\n"
+                '          if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then\n'
+                "            printf '%s\\n' '<!-- repo-scaffold-freshness-audit -->' > \"$RUNNER_TEMP/freshness.md\"\n"
                 "            checker_exit=2\n"
                 "          fi\n"
                 "          gh api --hostname github.com --paginate "
                 '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
                 "--jq '.[] | select(.pull_request == null) | "
                 'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
-                "          marker='repo-scaffold-freshness-audit'\n"
-                '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n',
+                "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
+                '          grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n'
+                '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file "$RUNNER_TEMP/freshness.md"\n',
                 encoding="utf-8",
             )
             invalid_allowlist = root / "code-scanning-allowlist.json"
@@ -698,14 +710,14 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "          set +e\n"
             "          python scripts/audit_freshness.py \\\n"
             "            --repository-root . \\\n"
-            "            --json-output report.json \\\n"
-            "            --markdown-output report.md\n"
+            "            --json-output $RUNNER_TEMP/freshness.json \\\n"
+            "            --markdown-output $RUNNER_TEMP/freshness.md\n"
             "          checker_exit=$?\n"
             "          set -e\n"
         )
         fallback_command = (
-            "          if [[ ! -f report.md ]]; then\n"
-            "            printf '%s\\n' '<!-- repo-scaffold-freshness-audit -->' > report.md\n"
+            '          if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then\n'
+            "            printf '%s\\n' '<!-- repo-scaffold-freshness-audit -->' > \"$RUNNER_TEMP/freshness.md\"\n"
             "            checker_exit=2\n"
             "          fi\n"
         )
@@ -738,7 +750,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             + "          GH_TOKEN: ${{ github.token }}\n"
             + "          CHECKER_EXIT: ${{ steps.audit.outputs.checker_exit }}\n"
             + "        run: |\n"
+            + "          set -euo pipefail\n"
             + "          marker='repo-scaffold-freshness-audit'\n"
+            + '          grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n'
         )
         repository_lookup_command = (
             "          issue_numbers_output=$(\n"
@@ -750,14 +764,23 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             '          if [[ -n "$issue_numbers_output" ]]; then\n'
             '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
             "          fi\n"
+            "          if (( ${#issue_numbers[@]} > 1 )); then\n"
+            "            printf 'Found multiple open freshness reminder issues.\\n' >&2\n"
+            "            exit 1\n"
+            "          fi\n"
         )
         body_command = (
             "          if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
-            '            gh issue close "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --comment clean\n'
+            "            if (( ${#issue_numbers[@]} == 1 )); then\n"
+            '              gh issue close "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --comment clean\n'
+            "            fi\n"
             "            exit 0\n"
             "          fi\n"
-            '          gh issue edit "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --body-file report.md\n'
-            '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file report.md\n'
+            "          if (( ${#issue_numbers[@]} == 1 )); then\n"
+            '            gh issue edit "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/freshness.md"\n'
+            "          else\n"
+            '            gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file "$RUNNER_TEMP/freshness.md"\n'
+            "          fi\n"
             "          if [[ \"$CHECKER_EXIT\" != '0' ]]; then\n"
             "            exit 1\n"
             "          fi\n"
@@ -1135,7 +1158,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          echo --json-output report.json --markdown-output report.md\n",
             ),
             "without audit output": valid.replace(
-                "            --markdown-output report.md\n", ""
+                "            --markdown-output $RUNNER_TEMP/freshness.md\n", ""
             ),
             "audit uses another repository root": valid.replace(
                 "            --repository-root . \\\n",
@@ -1176,8 +1199,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             + "      - run: gh --hostname github.com api "
             + "\"repos/attacker/repository/issues\" --jq '.number'\n",
             "JSON and Markdown outputs collide": valid.replace(
-                "            --json-output report.json \\\n",
-                "            --json-output report.md \\\n",
+                "            --json-output $RUNNER_TEMP/freshness.json \\\n",
+                "            --json-output $RUNNER_TEMP/freshness.md \\\n",
             ),
             "REST issue mutation": valid.replace(
                 "          marker='repo-scaffold-freshness-audit'\n",
@@ -1300,6 +1323,54 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 workflow_installation_preflight.workflow_capabilities([workflow]),
                 ([], [], [], [], False),
             )
+
+            for content in (
+                "jobs:\n  build:\n    container: alpine:latest\n",
+                "jobs:\n"
+                "  build:\n"
+                "    services:\n"
+                "      database:\n"
+                "        image: postgres:latest\n",
+            ):
+                workflow.write_text(content, encoding="utf-8")
+                with self.subTest(container_content=content):
+                    with self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError,
+                        "full sha256 digest",
+                    ):
+                        workflow_installation_preflight.workflow_capabilities(
+                            [workflow]
+                        )
+
+            workflow.write_text(
+                "jobs:\n"
+                "  build:\n"
+                "    container: alpine@sha256:" + "a" * 64 + "\n"
+                "    services:\n"
+                "      database:\n"
+                "        image: postgres@sha256:" + "b" * 64 + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                workflow_installation_preflight.workflow_capabilities([workflow]),
+                ([], [], [], [], False),
+            )
+
+            for content, message in (
+                (
+                    "jobs:\n  build:\n    container: {options: --init}\n",
+                    "full sha256 digest",
+                ),
+                ("jobs:\n  build:\n    services: []\n", "services must be a mapping"),
+            ):
+                workflow.write_text(content, encoding="utf-8")
+                with self.subTest(container_content=content):
+                    with self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError, message
+                    ):
+                        workflow_installation_preflight.workflow_capabilities(
+                            [workflow]
+                        )
 
     def test_code_scanning_allowlist_validation_rejects_unsafe_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2151,10 +2222,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 False,
             ),
             (
-                "plain variable suffix is tracked",
+                "plain variable suffix is not an Issue argument",
                 'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
                 'gh issue edit "$ids-suffix" --repo r --body-file report.md',
-                True,
+                False,
             ),
             (
                 "malformed later shell line",
@@ -3013,6 +3084,612 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 candidate, candidate["jobs"]["audit"]
             )
         )
+
+    def test_freshness_contract_rejects_runtime_and_shell_bypasses(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        contract_text = workflow_path.read_text(encoding="utf-8")
+        contract_workflow = workflow_installation_preflight.workflow_document(
+            contract_text, workflow_path
+        )
+        contract_job = contract_workflow["jobs"]["audit"]
+
+        for name, mutate in (
+            (
+                "workflow container",
+                lambda candidate: candidate.update({"container": "evil:latest"}),
+            ),
+            (
+                "job container",
+                lambda candidate: candidate["jobs"]["audit"].update(
+                    {"container": "evil:latest"}
+                ),
+            ),
+            (
+                "job service",
+                lambda candidate: candidate["jobs"]["audit"].update(
+                    {"services": {"evil": {"image": "evil:latest"}}}
+                ),
+            ),
+            (
+                "unreviewed action",
+                lambda candidate: candidate["jobs"]["audit"]["steps"].append(
+                    {"uses": "evil/action@" + "a" * 40}
+                ),
+            ),
+        ):
+            candidate = workflow_installation_preflight.workflow_document(
+                contract_text, workflow_path
+            )
+            mutate(candidate)
+            with self.subTest(runtime_context=name):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_execution_context_is_bash(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+
+        for variable in (
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONSTARTUP",
+            "GITHUB_STEP_SUMMARY",
+            "GITHUB_STATE",
+        ):
+            candidate = workflow_installation_preflight.workflow_document(
+                contract_text, workflow_path
+            )
+            candidate["jobs"]["audit"]["steps"][0]["env"] = {variable: "attacker"}
+            with self.subTest(protected_environment=variable):
+                if variable in {"GITHUB_TOKEN", "GH_TOKEN"}:
+                    self.assertFalse(
+                        workflow_installation_preflight.freshness_authentication_bindings_are_safe(
+                            candidate, candidate["jobs"]["audit"]
+                        )
+                    )
+                else:
+                    self.assertFalse(
+                        workflow_installation_preflight.freshness_checker_result_binding_is_safe(
+                            candidate, candidate["jobs"]["audit"]
+                        )
+                    )
+
+        audit_step = next(
+            step for step in contract_job["steps"] if step.get("id") == "audit"
+        )
+        audit_run = audit_step["run"]
+        for name, replacement in (
+            (
+                "JSON output outside runner temp",
+                ("$RUNNER_TEMP/freshness.json", "report.json"),
+            ),
+            (
+                "Markdown output outside runner temp",
+                ("$RUNNER_TEMP/freshness.md", "report.md"),
+            ),
+        ):
+            with self.subTest(report_path=name):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_checker_result_output_is_safe(
+                        audit_run.replace(*replacement, 1)
+                    )
+                )
+
+        for definition in (
+            "GH_TOKEN=attacker",
+            "GITHUB_TOKEN=attacker",
+            "export GH_TOKEN=attacker",
+            "PYTHONPATH=/tmp/evil",
+            "python -c \"import subprocess; subprocess.run(['gh','issue','close','999'])\"",
+            "node -e \"require('child_process').execFileSync('gh',['issue','close','999'])\"",
+            "awk 'BEGIN { system(\"gh issue close 999\") }'",
+            "./mutate_issue",
+        ):
+            with self.subTest(shell_definition=definition):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_shell_definitions_are_safe(
+                        definition
+                    )
+                )
+
+        contract_job_text = "\n".join(
+            step["run"]
+            for step in contract_job["steps"]
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        )
+        binding_step = next(
+            step
+            for step in contract_job["steps"]
+            if isinstance(step.get("env"), dict) and "CHECKER_EXIT" in step["env"]
+        )
+        binding_run = binding_step["run"]
+        self.assertTrue(
+            workflow_installation_preflight.freshness_reconciliation_shell_options_are_safe(
+                binding_run
+            )
+        )
+        for command in (
+            binding_run.replace("set -euo pipefail\n", "", 1),
+            binding_run.replace(
+                "set -euo pipefail\n", "set +e\nset -euo pipefail\n", 1
+            ),
+            binding_run.replace("set -euo pipefail", "set -e", 1),
+            binding_run.replace(
+                "marker='<!-- repo-scaffold-freshness-audit -->'",
+                'printf "fake" > "$RUNNER_TEMP/freshness.md"\n'
+                "marker='<!-- repo-scaffold-freshness-audit -->'",
+                1,
+            ),
+            "",
+            "echo 'unterminated",
+        ):
+            with self.subTest(reconciliation_options=command):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_reconciliation_shell_options_are_safe(
+                        command
+                    )
+                )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_shell_control_flow_is_safe(
+                contract_job_text
+            )
+        )
+        hidden_job_text = (
+            contract_text
+            + "\n  hidden:\n"
+            + "    steps:\n"
+            + "      - run: python -c \"import subprocess; subprocess.run(['gh','issue','close','999'])\"\n"
+        )
+        self.assertFalse(
+            workflow_installation_preflight.is_freshness_reminder_workflow(
+                hidden_job_text, workflow_path
+            )
+        )
+        duplicate_guard = (
+            "          if (( ${#issue_numbers[@]} > 1 )); then\n"
+            "            printf 'Found multiple open freshness reminder issues.\\n' >&2\n"
+            "            exit 1\n"
+            "          fi\n"
+        )
+        flow_bypasses = (
+            (
+                "clean nested condition",
+                contract_text.replace(
+                    "if (( ${#issue_numbers[@]} == 1 )); then",
+                    "if false; then",
+                    1,
+                ),
+            ),
+            (
+                "stale nested condition",
+                contract_text.replace(
+                    "if (( ${#issue_numbers[@]} == 1 )); then",
+                    "if false; then",
+                    2,
+                ),
+            ),
+            (
+                "duplicate issue guard missing",
+                contract_text.replace(duplicate_guard, "", 1),
+            ),
+            (
+                "duplicate issue guard does not exit",
+                contract_text.replace(
+                    "            exit 1\n          fi\n",
+                    "            :\n          fi\n",
+                    1,
+                ),
+            ),
+            (
+                "clean cardinality guard missing",
+                contract_text.replace(
+                    "            if (( ${#issue_numbers[@]} == 1 )); then\n",
+                    "",
+                    1,
+                ),
+            ),
+            (
+                "stale cardinality guard missing",
+                contract_text.replace(
+                    "          if (( ${#issue_numbers[@]} == 1 )); then\n",
+                    "",
+                    1,
+                ),
+            ),
+            (
+                "marker check uses another variable",
+                contract_text.replace(
+                    'grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"',
+                    'grep -Fq "$title" "$RUNNER_TEMP/freshness.md"',
+                    1,
+                ),
+            ),
+            (
+                "marker is reassigned",
+                contract_text.replace(
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
+                    "          marker=attacker\n",
+                    1,
+                ),
+            ),
+            (
+                "unreviewed command substitution",
+                contract_text.replace(
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                    '          printf "%s" "$(./mutate_issue)"\n'
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                    1,
+                ),
+            ),
+            (
+                "loop around mutation",
+                contract_text.replace(
+                    "            gh issue close",
+                    "            for item in; do\n            gh issue close",
+                    1,
+                ).replace(
+                    "            --comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+                    "            --comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'\n            done",
+                    1,
+                ),
+            ),
+            (
+                "unmatched closing shell block",
+                contract_job_text + "\nfi",
+            ),
+            (
+                "unmatched opening shell block",
+                contract_job_text.replace("fi\n", "", 1),
+            ),
+        )
+        for name, candidate_text in flow_bypasses:
+            if candidate_text.startswith("set "):
+                job_text = candidate_text
+            else:
+                candidate = workflow_installation_preflight.workflow_document(
+                    candidate_text, workflow_path
+                )
+                job_text = "\n".join(
+                    step["run"]
+                    for step in candidate["jobs"]["audit"]["steps"]
+                    if isinstance(step, dict) and isinstance(step.get("run"), str)
+                )
+            with self.subTest(flow_bypass=name):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_checker_result_controls_reconciliation(
+                        job_text
+                    )
+                )
+
+        lookup = (
+            'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+            'gh issue edit "${ids[0]:-999}" --repo r --body-file report.md'
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                lookup
+            )
+        )
+        transformed_lookup = lookup.replace(":-999", "//1/999")
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                transformed_lookup
+            )
+        )
+
+    def test_freshness_defensive_helpers_and_workflow_shapes_fail_closed(self) -> None:
+        action_step_cases: tuple[object, ...] = (
+            None,
+            {},
+            [None],
+            [{"uses": 1}],
+            [{"uses": "one@two@three"}],
+        )
+        for steps in action_step_cases:
+            with self.subTest(action_steps=steps):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_action_steps_are_safe(
+                        steps
+                    )
+                )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_action_steps_are_safe(
+                [{"run": "echo"}]
+            )
+        )
+
+        for definition in (
+            "alias gh='echo shadowed'",
+            "declare -fx gh",
+            "function gh { return 1; }",
+            "gh ( ) { return 1; }",
+        ):
+            with self.subTest(shell_definition=definition):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_shell_definitions_are_safe(
+                        definition
+                    )
+                )
+        with (
+            mock.patch.object(
+                workflow_installation_preflight,
+                "shell_command_segments",
+                return_value=[["echo", "ready"]],
+            ),
+            mock.patch.object(
+                workflow_installation_preflight.shlex,
+                "shlex",
+                side_effect=ValueError("malformed"),
+            ),
+        ):
+            self.assertFalse(
+                workflow_installation_preflight.freshness_shell_definitions_are_safe(
+                    "ignored"
+                )
+            )
+
+        variable_reference_cases = (
+            ("$NAME", True),
+            ("${NAME}", True),
+            ("${NAMEevil}", False),
+            ("$NAME-suffix", True),
+            ("$NAMEevil", False),
+        )
+        for token, expected in variable_reference_cases:
+            with self.subTest(variable_reference=token):
+                self.assertEqual(
+                    workflow_installation_preflight.freshness_variable_reference(
+                        token, "NAME"
+                    ),
+                    expected,
+                )
+
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow = workflow_installation_preflight.workflow_document(
+            workflow_text, workflow_path
+        )
+        contract_job_text = "\n".join(
+            step["run"]
+            for step in workflow["jobs"]["audit"]["steps"]
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        )
+        duplicate_guard = (
+            "\n".join(
+                (
+                    "if (( ${#issue_numbers[@]} > 1 )); then",
+                    "  printf 'Found multiple open freshness reminder issues.\\n' >&2",
+                    "  exit 1",
+                    "fi",
+                )
+            )
+            + "\n"
+        )
+        clean_condition = "if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
+        out_of_order = contract_job_text.replace(duplicate_guard, "", 1).replace(
+            clean_condition, clean_condition + duplicate_guard, 1
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_shell_control_flow_is_safe(
+                out_of_order
+            )
+        )
+        nonempty_guard = (
+            "\n".join(
+                (
+                    'if [[ -n "$issue_numbers_output" ]]; then',
+                    '  mapfile -t issue_numbers <<< "$issue_numbers_output"',
+                    "fi",
+                )
+            )
+            + "\n"
+        )
+        nonempty_after_clean = contract_job_text.replace(nonempty_guard, "", 1).replace(
+            clean_condition, clean_condition + nonempty_guard, 1
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_shell_control_flow_is_safe(
+                nonempty_after_clean
+            )
+        )
+
+        with (
+            mock.patch.object(
+                workflow_installation_preflight,
+                "freshness_shell_control_flow_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "freshness_marker_check_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "shell_command_segments",
+                return_value=None,
+            ),
+        ):
+            self.assertFalse(
+                workflow_installation_preflight.freshness_checker_result_controls_reconciliation(
+                    "ignored"
+                )
+            )
+        with (
+            mock.patch.object(
+                workflow_installation_preflight,
+                "freshness_shell_control_flow_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "freshness_marker_check_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "shell_command_segments",
+                return_value=[["echo", "ready"]],
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "freshness_shell_if_block_ranges",
+                return_value=None,
+            ),
+        ):
+            self.assertFalse(
+                workflow_installation_preflight.freshness_checker_result_controls_reconciliation(
+                    "ignored"
+                )
+            )
+        with (
+            mock.patch.object(
+                workflow_installation_preflight,
+                "freshness_shell_control_flow_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "freshness_marker_check_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "shell_command_segments",
+                return_value=[["gh", "issue", "create", "gh", "issue", "close"]],
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "freshness_shell_if_block_ranges",
+                return_value={},
+            ),
+        ):
+            self.assertFalse(
+                workflow_installation_preflight.freshness_checker_result_controls_reconciliation(
+                    "ignored"
+                )
+            )
+
+        workflow_preconditions = {
+            name: mock.Mock(return_value=True)
+            for name in (
+                "has_repository_scoped_concurrency",
+                "has_least_privileged_freshness_permissions",
+                "has_repository_root_working_directory",
+                "has_direct_freshness_jobs",
+                "has_freshness_repository_context",
+                "requires_issue_write",
+            )
+        }
+        source = Path("freshness.yml")
+        with (
+            mock.patch.object(
+                workflow_installation_preflight,
+                "workflow_document",
+                return_value={
+                    "on": {"schedule": [{"cron": "weekly"}], "workflow_dispatch": None},
+                    "jobs": {"audit": {"steps": {}}},
+                },
+            ),
+            mock.patch.multiple(
+                workflow_installation_preflight, **workflow_preconditions
+            ),
+        ):
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    "", source
+                )
+            )
+
+        empty_job_document = {
+            "on": {"schedule": [{"cron": "weekly"}], "workflow_dispatch": None},
+            "jobs": {"audit": {"steps": []}},
+        }
+        with (
+            mock.patch.object(
+                workflow_installation_preflight,
+                "workflow_document",
+                return_value=empty_job_document,
+            ),
+            mock.patch.multiple(
+                workflow_installation_preflight, **workflow_preconditions
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "issue_mutation_command_blocks",
+                return_value=[],
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "has_freshness_repository_api_reads",
+                return_value=True,
+            ),
+        ):
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    "", source
+                )
+            )
+
+        mutation_document = {
+            "on": {"schedule": [{"cron": "weekly"}], "workflow_dispatch": None},
+            "jobs": {"audit": {"steps": [{"run": "echo"}]}},
+        }
+        mutation_helpers = {
+            name: mock.Mock(return_value=True)
+            for name in (
+                "freshness_job_execution_is_unconditional",
+                "freshness_execution_context_is_bash",
+                "freshness_authentication_bindings_are_safe",
+                "freshness_checker_result_binding_is_safe",
+                "freshness_shell_definitions_are_safe",
+                "freshness_checker_result_controls_reconciliation",
+                "freshness_api_result_controls_issue_selection",
+            )
+        }
+        with (
+            mock.patch.object(
+                workflow_installation_preflight,
+                "workflow_document",
+                return_value=mutation_document,
+            ),
+            mock.patch.multiple(
+                workflow_installation_preflight, **workflow_preconditions
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "issue_mutation_command_blocks",
+                return_value=[("create", ["gh", "issue", "create"])],
+            ),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "has_freshness_repository_api_reads",
+                return_value=True,
+            ),
+            mock.patch.multiple(workflow_installation_preflight, **mutation_helpers),
+            mock.patch.object(
+                workflow_installation_preflight,
+                "freshness_command_order_is_valid",
+                return_value=False,
+            ),
+        ):
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    "", source
+                )
+            )
+
+        container_document_cases: tuple[dict[str, Any], ...] = (
+            {"jobs": []},
+            {"jobs": {"invalid": None}},
+        )
+        for document in container_document_cases:
+            with self.subTest(container_document=document):
+                workflow_installation_preflight.validate_container_references(
+                    document, Path("workflow.yml")
+                )
 
     def test_local_reusable_workflows_are_required_as_preflight_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

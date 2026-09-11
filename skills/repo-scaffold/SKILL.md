@@ -77,7 +77,8 @@ required verified capability exists.
 Only for a verified GitHub.com repository, read
 `references/workflow-contracts.md` before installing or changing a workflow.
 Use only workflows applicable to the detected stack and user-approved features.
-Pin external actions to verified full SHAs, give permissions explicitly, and
+Pin external actions to verified full SHAs and job/service container images to
+verified full SHA-256 digests, give permissions explicitly, and
 verify a real event-compatible producer before making a check required. Keep
 external-network checks advisory.
 
@@ -202,6 +203,8 @@ the canonical marker-filtering JQ expression and no extra `gh api` arguments.
 The lookup result must be captured and flow into the Issue number passed to a
 `close` or `edit` mutation, directly or through an issue-number array; logging
 or testing the result alone is insufficient.
+The reconciliation shell must start with `set -euo pipefail` and may not later
+disable any of those options.
 The reconciliation job and its steps may not use `if` or
 `continue-on-error`, which could silently skip or mask the reminder.
 The checker exit status must drive the clean/stale split: close the existing
@@ -210,11 +213,20 @@ issue when clean, and edit or create the report when stale before failing.
 audit output must derive from the checker's exit status.
 The audit must disable `errexit` while running the checker, capture its status,
 and restore `errexit` before publishing that output.
+The JSON and Markdown checker outputs must be exactly
+`$RUNNER_TEMP/freshness.json` and `$RUNNER_TEMP/freshness.md`; the reconciliation
+must validate the same marker with `grep` and fail closed when more than one
+open marker issue exists.
+The `close` and `edit` issue argument must be the unmodified lookup result or
+its first array element; shell defaults and parameter transformations are not
+accepted.
 The audit step's `GITHUB_TOKEN` and reconciliation step's `GH_TOKEN` must both
 bind to `${{ github.token }}`; runner output and temporary-report paths may not
-be overridden.
+be overridden, including through shell assignments. `PYTHONPATH`, `PYTHONHOME`,
+and `PYTHONSTARTUP` may not be supplied to the checker.
 The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
-non-Bash runner or shell overrides are rejected.
+non-Bash runner or shell overrides, workflow/job containers, and services are
+rejected.
 Within the reconciliation job, the audit must complete before the lookup, and
 the lookup must complete before any Issue mutation. Pipeline, background, and
 short-circuit operators (`|`, `&`, `|&`, `&&`, and `||`) are rejected around
@@ -241,6 +253,9 @@ and PowerShell REST cmdlets),
 path-qualified `gh` executables, and shell wrappers or dynamic executors that
 hide GitHub commands are rejected as ambiguous. Shell aliases and function
 definitions that can shadow these executables are also rejected.
+Only the canonical freshness command set is permitted in the reconciliation
+job; unreviewed executables, script interpreters, command substitutions, and
+path-qualified programs are rejected.
 Changes to command lookup through `PATH`, `BASH_ENV`, `ENV`, or the shell's
 command hash are also rejected.
 

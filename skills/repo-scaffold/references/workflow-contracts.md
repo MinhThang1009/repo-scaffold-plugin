@@ -4,7 +4,8 @@ Read this reference before installing or modifying GitHub Actions workflows.
 
 Install workflows only for a verified GitHub.com repository. Give every job the
 least privilege, set `persist-credentials: false` for checkout unless needed,
-pin every external action to a verified full SHA, and keep generated workflows
+pin every external action to a verified full SHA and job/service container images
+to a verified full SHA-256 digest, and keep generated workflows
 valid for `pull_request` and `merge_group` whenever their check can be required.
 Use `cancel-in-progress: false` for required-check concurrency.
 External `docker://` workflow references must use a full SHA-256 digest; the
@@ -43,19 +44,28 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   marker-filtering JQ expression and no extra `gh api` arguments. The lookup
   result must be captured and flow into the Issue number passed to a `close` or
   `edit` mutation, directly or through an issue-number array; logging or testing
-  the result alone is insufficient. The reconciliation job and its steps may
-  not use `if` or `continue-on-error`, which could silently skip or mask the
+  the result alone is insufficient. The reconciliation shell must start with
+  `set -euo pipefail` and may not later disable any of those options. The
+  reconciliation job and its steps may not use `if` or `continue-on-error`,
+  which could silently skip or mask the
   reminder. The checker exit status must drive the clean/stale split: close the
   existing issue when clean, and edit or create the report when stale before
   failing. `CHECKER_EXIT` must be bound to the audit step's `checker_exit`
   output, and the audit output must derive from the checker's exit status.
   The audit must disable `errexit` while running the checker, capture its
   status, and restore `errexit` before publishing that output.
+  The JSON and Markdown checker outputs must be exactly
+  `$RUNNER_TEMP/freshness.json` and `$RUNNER_TEMP/freshness.md`; the reconciliation
+  must validate the same marker with `grep` and reject multiple open marker issues.
+  A `close` or `edit` Issue argument must be the unmodified lookup result or its
+  first array element; shell defaults and parameter transformations must fail closed.
   The audit step's `GITHUB_TOKEN` and reconciliation step's `GH_TOKEN` must both
   bind to `${{ github.token }}`; runner output and temporary-report paths may
-  not be overridden.
+  not be overridden, including through shell assignments. `PYTHONPATH`,
+  `PYTHONHOME`, and `PYTHONSTARTUP` may not be supplied to the checker.
   The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
-  non-Bash runner or shell overrides must fail closed.
+  non-Bash runner or shell overrides, workflow/job containers, and services must
+  fail closed.
   Within the
   reconciliation job, the audit must complete before the lookup, and the lookup
   must complete before any Issue mutation. Pipeline, background, and
@@ -74,6 +84,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   commands and workflow, job, or step `working-directory` overrides must fail
   closed. Job-level reusable-workflow calls must also fail closed so all
   freshness commands and Issue mutations remain directly inspectable. Freshness
+  permits only the canonical freshness command set in the reconciliation job;
+  unreviewed executables, script interpreters, command substitutions, and
+  path-qualified programs must fail closed. Freshness
   must retain the Release Please schema tracker and CI-toolchain policy tracker
   shipped with the scaffold so installed inputs receive the same reminder
   coverage as action pins.
