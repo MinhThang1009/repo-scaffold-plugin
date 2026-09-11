@@ -161,6 +161,13 @@ CRON_HOUR_VALUE = r"(?:[0-9]|1[0-9]|2[0-3])"
 CRON_DAY_VALUE = r"(?:[1-9]|[12][0-9]|3[01])"
 CRON_MONTH_VALUE = r"(?:[1-9]|1[0-2]|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
 CRON_WEEKDAY_VALUE = r"(?:[0-6]|SUN|MON|TUE|WED|THU|FRI|SAT)"
+FRESHNESS_WORKFLOW_DISPATCH_INPUT_KEYS = frozenset(
+    {"default", "description", "options", "required", "type"}
+)
+FRESHNESS_WORKFLOW_DISPATCH_INPUT_TYPES = frozenset(
+    {"boolean", "choice", "environment", "number", "string"}
+)
+FRESHNESS_WORKFLOW_DISPATCH_MAX_INPUTS = 25
 
 
 def cron_field_pattern(value_pattern: str) -> str:
@@ -183,6 +190,8 @@ FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
         f"marker=<!-- {FRESHNESS_REMINDER_MARKER} -->",
     }
 )
+FRESHNESS_TITLE_ASSIGNMENT = "title=Repository freshness update required"
+FRESHNESS_ISSUE_NUMBERS_INITIALIZATION = "issue_numbers="
 FRESHNESS_DUPLICATE_ISSUE_GUARD = (
     "if (( ${#issue_numbers[@]} > 1 )); then",
     "printf 'Found multiple open freshness reminder issues.\\n' >&2",
@@ -201,6 +210,14 @@ FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
 )
 FRESHNESS_ALLOWED_SHELL_COMMANDS = frozenset(
     {"${", "cat", "exit", "fi", "gh", "grep", "if", "mapfile", "printf", "set"}
+)
+FRESHNESS_ALLOWED_ISSUE_OPTIONS: dict[str, frozenset[str]] = {
+    "close": frozenset({"--comment", "--repo"}),
+    "edit": frozenset({"--body-file", "--repo", "--title"}),
+    "create": frozenset({"--body-file", "--repo", "--title"}),
+}
+FRESHNESS_ALLOWED_SHELL_ASSIGNMENT_NAMES = frozenset(
+    {"checker_exit", "issue_numbers", "issue_numbers_output", "marker", "title"}
 )
 SHELL_DIRECTORY_CHANGE_COMMANDS = frozenset(
     {"cd", "chdir", "popd", "pushd", "set-location", "sl", "sls"}
@@ -551,6 +568,46 @@ def issue_subcommand_positions(tokens: list[str]) -> tuple[int, ...] | None:
     return ()
 
 
+def freshness_issue_options_are_safe(
+    tokens: list[str], issue_position: int, subcommand: str
+) -> bool:
+    """Reject unreviewed options on freshness Issue mutations."""
+    allowed_options = FRESHNESS_ALLOWED_ISSUE_OPTIONS.get(subcommand)
+    if allowed_options is None:
+        return False
+    arguments = tokens[issue_position + 2 :]
+    if subcommand in {"close", "edit"}:
+        if not arguments:
+            return False
+        arguments = arguments[1:]
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        option, separator, value = token.partition("=")
+        if not token.startswith("-") or option not in allowed_options:
+            return False
+        if separator:
+            if not value.strip():
+                return False
+            index += 1
+            continue
+        if index + 1 >= len(arguments) or arguments[index + 1].startswith("-"):
+            return False
+        index += 2
+    title_values = option_values(tokens, "--title")
+    if title_values is None or subcommand == "create" and len(title_values) != 1:
+        return False
+    if subcommand == "edit" and len(title_values) > 1:
+        return False
+    if any(
+        value not in {"$title", "${title}"}
+        and any(character in value for character in "$`")
+        for value in title_values
+    ):
+        return False
+    return True
+
+
 def shell_logical_lines(command: str) -> Iterator[str]:
     """Join shell continuation lines without merging separate commands."""
     lines = executable_shell_lines(command)
@@ -668,6 +725,54 @@ def freshness_cron_syntax_is_valid(value: object) -> bool:
     return isinstance(value, str) and bool(
         FRESHNESS_CRON_PATTERN.fullmatch(value.strip())
     )
+
+
+def freshness_workflow_dispatch_is_valid(value: object) -> bool:
+    """Require an empty or schema-valid manual trigger configuration."""
+    if value in ("", None, "null"):
+        return True
+    if not isinstance(value, dict) or set(value) - {"inputs"}:
+        return False
+    inputs = value.get("inputs", {})
+    if (
+        not isinstance(inputs, dict)
+        or len(inputs) > FRESHNESS_WORKFLOW_DISPATCH_MAX_INPUTS
+    ):
+        return False
+    for name, definition in inputs.items():
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or any(character in name for character in "\r\n\x00")
+            or not isinstance(definition, dict)
+            or any(
+                key not in FRESHNESS_WORKFLOW_DISPATCH_INPUT_KEYS for key in definition
+            )
+        ):
+            return False
+        required = definition.get("required", "false")
+        if required not in {"true", "false"}:
+            return False
+        input_type = definition.get("type", "string")
+        if input_type not in FRESHNESS_WORKFLOW_DISPATCH_INPUT_TYPES:
+            return False
+        for key in ("description", "default"):
+            if key in definition and not isinstance(definition[key], str):
+                return False
+        options = definition.get("options")
+        if input_type == "choice":
+            if (
+                not isinstance(options, list)
+                or not options
+                or any(
+                    not isinstance(option, str) or not option.strip()
+                    for option in options
+                )
+            ):
+                return False
+        elif options is not None:
+            return False
+    return True
 
 
 def freshness_execution_context_is_bash(workflow: object, job: object) -> bool:
@@ -1049,7 +1154,17 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
         if not command_tokens:
             continue
         executable_index = shell_command_executable_index(command_tokens)
-        if executable_index is not None:
+        assignment_end = (
+            executable_index if executable_index is not None else len(command_tokens)
+        )
+        if any(
+            token.partition("=")[0] not in FRESHNESS_ALLOWED_SHELL_ASSIGNMENT_NAMES
+            for token in command_tokens[:assignment_end]
+        ):
+            return False
+        if executable_index is None:
+            continue
+        else:
             executable_token = command_tokens[executable_index]
             executable = executable_basename(executable_token)
             if (
@@ -1071,6 +1186,10 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
                     or command_body[2] not in {"close", "edit", "create"}
                 ):
                     return False
+                if command_body[1] == "issue" and not freshness_issue_options_are_safe(
+                    command_body, 1, command_body[2]
+                ):
+                    return False
             elif executable == "grep" and command_body != [
                 "grep",
                 "-Fq",
@@ -1086,6 +1205,26 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
                 "$issue_numbers_output",
             ]:
                 return False
+            elif executable == "exit" and command_body not in (
+                ["exit", "0"],
+                ["exit", "1"],
+            ):
+                return False
+            elif executable == "printf":
+                format_index = (
+                    2 if len(command_body) > 1 and command_body[1] == "--" else 1
+                )
+                if (
+                    len(command_body) <= format_index
+                    or "$" in command_body[format_index]
+                    or "`" in command_body[format_index]
+                    or "%n" in command_body[format_index]
+                    or any(
+                        token == "-v" or token.startswith("-v")
+                        for token in command_body[1:]
+                    )
+                ):
+                    return False
     return True
 
 
@@ -1294,6 +1433,44 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
     if_ranges = freshness_shell_if_block_ranges(segments)
     if if_ranges is None:
         return False
+    title_assignments = [
+        shell_command_prefix(segment)
+        for segment in segments
+        if freshness_variable_is_reassigned(shell_command_prefix(segment), "title")
+    ]
+    title_assignment_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if freshness_variable_is_reassigned(shell_command_prefix(segment), "title")
+    ]
+    title_references = [
+        token
+        for segment in segments
+        for token in shell_command_prefix(segment)
+        if freshness_variable_reference(token, "title")
+    ]
+    if title_assignments and title_assignments != [[FRESHNESS_TITLE_ASSIGNMENT]]:
+        return False
+    if title_references and not title_assignments:
+        return False
+    issue_numbers_initializations = [
+        shell_command_prefix(segment)
+        for segment in segments
+        if shell_command_prefix(segment) == [FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]
+    ]
+    if issue_numbers_initializations != [[FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]]:
+        return False
+    issue_numbers_reassignments = [
+        shell_command_prefix(segment)
+        for segment in segments
+        if freshness_variable_is_reassigned(
+            shell_command_prefix(segment), "issue_numbers"
+        )
+        and shell_command_prefix(segment)
+        != ["mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"]
+    ]
+    if issue_numbers_reassignments != [[FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]]:
+        return False
     clean_tests: list[int] = []
     failure_tests: list[int] = []
     clean_exits: list[int] = []
@@ -1338,12 +1515,33 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         and failure_exits
     ):
         return False
+    issue_numbers_initialization_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if shell_command_prefix(segment) == [FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]
+    ]
+    mapfile_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if shell_command_prefix(segment)
+        == ["mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"]
+    ]
+    if (
+        len(issue_numbers_initialization_indices) != 1
+        or len(mapfile_indices) != 1
+        or issue_numbers_initialization_indices[0] >= mapfile_indices[0]
+    ):
+        return False
     clean_test = clean_tests[0]
     clean_exit = clean_exits[0]
     failure_test = failure_tests[0]
     clean_block_end = if_ranges[clean_test]
     failure_block_end = if_ranges[failure_test]
     stale_mutations = [*edit_mutations, *create_mutations]
+    if title_assignments and title_assignment_indices[0] >= min(
+        [*close_mutations, *edit_mutations, *create_mutations]
+    ):
+        return False
     failure_exit_after = [
         exit_index for exit_index in failure_exits if exit_index > failure_test
     ]
@@ -1433,6 +1631,8 @@ def issue_mutation_command_blocks(command: str) -> list[tuple[str, list[str]]]:
             if subcommand in FRESHNESS_REMINDER_READ_ONLY_SUBCOMMANDS:
                 continue
             if subcommand not in FRESHNESS_REMINDER_MUTATION_SUBCOMMANDS:
+                return [(INVALID_ISSUE_MUTATION, [])]
+            if not freshness_issue_options_are_safe(tokens, issue_position, subcommand):
                 return [(INVALID_ISSUE_MUTATION, [])]
             blocks.append((subcommand, tokens))
     return blocks
@@ -2148,10 +2348,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
             or not freshness_cron_syntax_is_valid(entry["cron"])
             for entry in triggers["schedule"]
         )
-        or not (
-            triggers.get("workflow_dispatch") in ("", None, "null")
-            or isinstance(triggers.get("workflow_dispatch"), dict)
-        )
+        or not freshness_workflow_dispatch_is_valid(triggers.get("workflow_dispatch"))
         or not has_repository_scoped_concurrency(document)
         or not has_least_privileged_freshness_permissions(document)
         or not has_repository_root_working_directory(document)

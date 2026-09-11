@@ -27,8 +27,10 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   PR head code, and require one trusted marker plus all required headings/items.
 - Links, community-health, and freshness: keep network/upstream checks advisory;
   reminder workflows run only on trusted scheduled/manual events with a
-  five-field POSIX cron schedule and a valid manual trigger shape, and maintain
-  one idempotent issue when Issues are enabled. Serialize each reminder's shared
+  five-field POSIX cron schedule and a valid manual trigger shape. An empty
+  `workflow_dispatch` is allowed; when inputs are declared, it must contain at
+  most 25 named input mappings using only supported fields and input types.
+  Maintain one idempotent issue when Issues are enabled. Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
   Every reminder mutation must use an explicit repository binding, and every
   freshness `create` or `edit` mutation must use a durable `--body-file` (with a
@@ -102,7 +104,12 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   freshness commands and Issue mutations remain directly inspectable. Freshness
   permits only the canonical freshness command set in the reconciliation job;
   unreviewed executables, script interpreters, command substitutions, and
-  path-qualified programs must fail closed. Freshness
+  path-qualified programs must fail closed. Issue mutations may use only their
+  reviewed `--repo`, `--comment`, `--title`, and `--body-file` options; extra
+  mutation flags and unreviewed exit statuses must fail closed. `printf` formats
+  must be literal and may not use shell expansion, `%n`, or `-v`. Local title
+  and issue number state must use the canonical initialization and cannot be
+  reseeded or reordered. Freshness
   must retain the Release Please schema tracker and CI-toolchain policy tracker
   shipped with the scaffold so installed inputs receive the same reminder
   coverage as action pins.

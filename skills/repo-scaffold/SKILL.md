@@ -181,9 +181,11 @@ that called workflow in the same invocation as well; the preflight fails closed
 when the local call cannot be resolved to one supplied input.
 
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
-only scheduled and manual triggers. Each schedule entry must use a five-field
-POSIX cron expression, and `workflow_dispatch` must be empty or a valid input
-mapping. It must request only `contents: read` and
+  only scheduled and manual triggers. Each schedule entry must use a five-field
+  POSIX cron expression, and `workflow_dispatch` must be empty or a valid input
+  mapping. A configured manual trigger may contain at most 25 named input
+  mappings, using only supported fields and input types. It must request only
+  `contents: read` and
 `issues: write` permissions, execute the freshness audit, and reconcile marker
 issues through real `gh issue create` or `gh issue edit --repo ... --body-file`
 commands. Every
@@ -270,7 +272,12 @@ hide GitHub commands are rejected as ambiguous. Shell aliases and function
 definitions that can shadow these executables are also rejected.
 Only the canonical freshness command set is permitted in the reconciliation
 job; unreviewed executables, script interpreters, command substitutions, and
-path-qualified programs are rejected.
+path-qualified programs are rejected. Issue mutations may use only their
+reviewed `--repo`, `--comment`, `--title`, and `--body-file` options; extra
+mutation flags and unreviewed exit statuses are rejected. `printf` formats must
+be literal and may not use shell expansion, `%n`, or `-v`. Local title and issue
+number state must use the canonical initialization and cannot be reseeded or
+reordered.
 Changes to command lookup through `PATH`, `BASH_ENV`, `ENV`, or the shell's
 command hash are also rejected.
 

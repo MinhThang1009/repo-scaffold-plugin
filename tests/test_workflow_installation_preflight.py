@@ -581,6 +581,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "              --jq '.[] | select(.pull_request == null) | "
                 'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
                 "          )\n"
+                "          issue_numbers=()\n"
                 '          if [[ -n "$issue_numbers_output" ]]; then\n'
                 '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
                 "          fi\n"
@@ -767,6 +768,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "              --jq '.[] | select(.pull_request == null) | "
             'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
             "          )\n"
+            "          issue_numbers=()\n"
             '          if [[ -n "$issue_numbers_output" ]]; then\n'
             '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
             "          fi\n"
@@ -1098,6 +1100,54 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "with invalid workflow dispatch": valid.replace(
                 "  workflow_dispatch:\n", "  workflow_dispatch: false\n"
             ),
+            "with unknown workflow dispatch configuration": valid.replace(
+                "  workflow_dispatch:\n",
+                "  workflow_dispatch:\n    unexpected: value\n",
+            ),
+            "with invalid workflow dispatch inputs": valid.replace(
+                "  workflow_dispatch:\n",
+                "  workflow_dispatch:\n    inputs: []\n",
+            ),
+            "with dynamic printf format": valid.replace(
+                "          set -euo pipefail\n",
+                "          set -euo pipefail\n"
+                "          fmt='%n'\n"
+                '          printf "$fmt" CHECKER_EXIT\n',
+                1,
+            ),
+            "with unknown exit status": valid.replace(
+                '          grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n',
+                '          grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n'
+                "          exit 2\n",
+                1,
+            ),
+            "with seeded issue number": valid.replace(
+                "          issue_numbers=()\n", "          issue_numbers=99\n", 1
+            ),
+            "with issue number reseeded": valid.replace(
+                "          issue_numbers=()\n",
+                "          issue_numbers=()\n          issue_numbers=99\n",
+                1,
+            ),
+            "with late issue number initialization": valid.replace(
+                "          issue_numbers=()\n", "", 1
+            ).replace(
+                '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n',
+                '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
+                "          issue_numbers=()\n",
+                1,
+            ),
+            "with branch-deleting close option": valid.replace(
+                "--comment clean\n", "--comment clean --delete-branch\n", 1
+            ),
+            "with extra issue option": valid.replace(
+                '--body-file "$RUNNER_TEMP/freshness.md"\n',
+                '--body-file "$RUNNER_TEMP/freshness.md" --project 1\n',
+                1,
+            ),
+            "with unbound dynamic title": valid.replace(
+                "--title reminder", '--title "$UNTRUSTED_TITLE"', 1
+            ),
             "job needs skipped dependency": valid.replace(
                 "  audit:\n",
                 "  audit:\n    needs: gate\n",
@@ -1332,6 +1382,58 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 self.assertEqual(
                     workflow_installation_preflight.freshness_cron_syntax_is_valid(
                         value
+                    ),
+                    expected,
+                )
+
+        for dispatch_value, expected in (
+            ("", True),
+            (None, True),
+            ("null", True),
+            ({}, True),
+            ({"inputs": {}}, True),
+            ({"inputs": {"mode": {}}}, True),
+            (
+                {
+                    "inputs": {
+                        "mode": {
+                            "description": "Mode",
+                            "required": "true",
+                            "default": "safe",
+                            "type": "choice",
+                            "options": ["safe", "full"],
+                        }
+                    }
+                },
+                True,
+            ),
+            (False, False),
+            ([], False),
+            ({"unexpected": {}}, False),
+            ({"inputs": []}, False),
+            ({"inputs": {"": {}}}, False),
+            ({"inputs": {1: {}}}, False),
+            ({"inputs": {"bad\nname": {}}}, False),
+            ({"inputs": {"mode": []}}, False),
+            ({"inputs": {"mode": {"unknown": "value"}}}, False),
+            ({"inputs": {"mode": {"description": []}}}, False),
+            ({"inputs": {"mode": {"required": True}}}, False),
+            ({"inputs": {"mode": {"required": "maybe"}}}, False),
+            ({"inputs": {"mode": {"type": "invalid"}}}, False),
+            ({"inputs": {"mode": {"default": []}}}, False),
+            ({"inputs": {"mode": {"type": "choice"}}}, False),
+            ({"inputs": {"mode": {"type": "choice", "options": []}}}, False),
+            (
+                {"inputs": {"mode": {"type": "choice", "options": [1]}}},
+                False,
+            ),
+            ({"inputs": {"mode": {"type": "string", "options": ["x"]}}}, False),
+            ({"inputs": {f"input-{index}": {} for index in range(26)}}, False),
+        ):
+            with self.subTest(workflow_dispatch=dispatch_value):
+                self.assertEqual(
+                    workflow_installation_preflight.freshness_workflow_dispatch_is_valid(
+                        dispatch_value
                     ),
                     expected,
                 )
@@ -1751,6 +1853,64 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(
             workflow_installation_preflight.freshness_shell_definitions_are_safe("")
         )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_issue_options_are_safe(
+                ["gh", "issue", "reopen", "1"], 1, "reopen"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_issue_options_are_safe(
+                ["gh", "issue", "close"], 1, "close"
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo=repo",
+                    "--title=title",
+                    "--body-file=report.md",
+                ],
+                1,
+                "create",
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    "1",
+                    "--repo",
+                    "repo",
+                    "--title",
+                    "one",
+                    "--title",
+                    "two",
+                ],
+                1,
+                "edit",
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo",
+                    "repo",
+                    "--title=",
+                    "--body-file",
+                    "report.md",
+                ],
+                1,
+                "create",
+            )
+        )
         for definition in (
             "gh() { return 1; }",
             "gh ( ) { return 1; }",
@@ -1779,6 +1939,15 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "printf '%s' \"${!secret_name}\"",
             "printf '%n' CHECKER_EXIT",
             "printf '%s' \"${CHECKER_EXIT:=0}\"",
+            "fmt='%n'\nprintf \"$fmt\" CHECKER_EXIT",
+            "printf %$fmt CHECKER_EXIT",
+            'printf -v "$target" 0',
+            "printf --",
+            "printf `format` value",
+            "exit 2",
+            'gh issue close "${issue_numbers[0]}" --repo repo --comment clean --delete-branch',
+            "gh issue create --repo repo --title title --body-file report.md --project 1",
+            'gh issue create --repo repo --title "$UNTRUSTED_TITLE" --body-file report.md',
         ):
             with self.subTest(shell_definition=definition):
                 self.assertFalse(
@@ -1808,6 +1977,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertFalse(
             workflow_installation_preflight.freshness_checker_result_controls_reconciliation(
                 duplicate_create
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_checker_result_controls_reconciliation(
+                contract_job_text + "\ngh --hostname github.com issue close 1"
             )
         )
         checker_flow_cases = (
@@ -1881,6 +2055,27 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ("unmatched shell block", contract_job_text + "\nif true"),
             ("unsupported issue mutation", contract_job_text + "\ngh issue reopen 1"),
             ("missing issue argument", contract_job_text + "\ngh issue close"),
+            (
+                "late title assignment",
+                contract_job_text.replace(
+                    "title='Repository freshness update required'\n", "", 1
+                )
+                + "\ntitle='Repository freshness update required'\n",
+            ),
+            (
+                "title overwritten",
+                contract_job_text.replace(
+                    "title='Repository freshness update required'\n",
+                    "title='Repository freshness update required'\ntitle=attacker\n",
+                    1,
+                ),
+            ),
+            (
+                "title assignment missing",
+                contract_job_text.replace(
+                    "title='Repository freshness update required'\n", "", 1
+                ),
+            ),
         )
         for name, command in checker_flow_cases:
             with self.subTest(checker_flow=name):

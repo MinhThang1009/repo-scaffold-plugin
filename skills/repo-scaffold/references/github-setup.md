@@ -339,8 +339,10 @@ positive alert numbers, canonical POSIX paths, non-future ISO review dates, and
 review periods from 1 to 366 days; malformed entries fail before approval. The
 freshness workflow must use only scheduled and manual triggers. Each schedule
 entry must use a five-field POSIX cron expression, and `workflow_dispatch` must
-be empty or a valid input mapping. It must request only
-`contents: read` and `issues: write` permissions, execute the freshness checker,
+be empty or a valid input mapping. A configured manual trigger may contain at
+most 25 named input mappings, using only supported fields and input types. It
+must request only `contents: read` and `issues: write` permissions, execute the
+freshness checker,
 and reconcile a marker issue
 through a real repo-bound `gh issue create` or `gh issue edit --repo ...
 --body-file` command. Every `create` or `edit` mutation must use
@@ -416,9 +418,14 @@ The audit must run from the checkout root with `--repository-root .`; if a
 job, or step `working-directory` overrides are rejected.
 Job-level reusable-workflow calls are also rejected so every freshness command
 and Issue mutation remains directly inspectable in the supplied workflow.
-Only the canonical freshness command set is permitted in the reconciliation
-job; unreviewed executables, script interpreters, command substitutions, and
-path-qualified programs are rejected.
+  Only the canonical freshness command set is permitted in the reconciliation
+  job; unreviewed executables, script interpreters, command substitutions, and
+  path-qualified programs are rejected. Issue mutations may use only their
+  reviewed `--repo`, `--comment`, `--title`, and `--body-file` options; extra
+  mutation flags and unreviewed exit statuses are rejected. `printf` formats
+  must be literal and may not use shell expansion, `%n`, or `-v`. Local title
+  and issue number state must use the canonical initialization and cannot be
+  reseeded or reordered.
 The checked-in tracker registry must retain every shipped workflow, release,
 allowlist, and requirement input; do not empty a category to suppress a check.
 The reconciliation job itself

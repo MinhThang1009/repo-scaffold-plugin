@@ -9316,6 +9316,80 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             validate_repository.freshness_shell_definitions_are_safe(contract_job_text)
         )
         self.assertTrue(validate_repository.freshness_shell_definitions_are_safe(""))
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                ["gh", "issue", "reopen", "1"], 1, "reopen"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                ["gh", "issue", "close"], 1, "close"
+            )
+        )
+        self.assertTrue(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo=repo",
+                    "--title=title",
+                    "--body-file=report.md",
+                ],
+                1,
+                "create",
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    "1",
+                    "--repo",
+                    "repo",
+                    "--title",
+                    "one",
+                    "--title",
+                    "two",
+                ],
+                1,
+                "edit",
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo",
+                    "repo",
+                    "--title=",
+                    "--body-file",
+                    "report.md",
+                ],
+                1,
+                "create",
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo",
+                    "--title",
+                    "title",
+                    "--body-file",
+                    "report.md",
+                ],
+                1,
+                "create",
+            )
+        )
         for definition in (
             "gh() { return 1; }",
             "gh ( ) { return 1; }",
@@ -9344,6 +9418,15 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             "printf '%s' \"${!secret_name}\"",
             "printf '%n' CHECKER_EXIT",
             "printf '%s' \"${CHECKER_EXIT:=0}\"",
+            "fmt='%n'\nprintf \"$fmt\" CHECKER_EXIT",
+            "printf %$fmt CHECKER_EXIT",
+            'printf -v "$target" 0',
+            "printf --",
+            "printf `format` value",
+            "exit 2",
+            'gh issue close "${issue_numbers[0]}" --repo repo --comment clean --delete-branch',
+            "gh issue create --repo repo --title title --body-file report.md --project 1",
+            'gh issue create --repo repo --title "$UNTRUSTED_TITLE" --body-file report.md',
         ):
             with self.subTest(shell_definition=definition):
                 self.assertFalse(
@@ -9371,6 +9454,11 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertFalse(
             validate_repository.freshness_checker_result_controls_reconciliation(
                 duplicate_create
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_checker_result_controls_reconciliation(
+                contract_job_text + "\ngh --hostname github.com issue close 1"
             )
         )
         checker_flow_cases = (
@@ -9444,6 +9532,46 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             ("unmatched shell block", contract_job_text + "\nif true"),
             ("unsupported issue mutation", contract_job_text + "\ngh issue reopen 1"),
             ("missing issue argument", contract_job_text + "\ngh issue close"),
+            (
+                "title overwritten",
+                contract_job_text.replace(
+                    "title='Repository freshness update required'\n",
+                    "title='Repository freshness update required'\ntitle=attacker\n",
+                    1,
+                ),
+            ),
+            (
+                "title assignment missing",
+                contract_job_text.replace(
+                    "title='Repository freshness update required'\n", "", 1
+                ),
+            ),
+            (
+                "issue number seeded",
+                contract_job_text.replace(
+                    "issue_numbers=()\n", "issue_numbers=99\n", 1
+                ),
+            ),
+            (
+                "issue number reseeded",
+                contract_job_text.replace(
+                    "issue_numbers=()\n",
+                    "issue_numbers=()\nissue_numbers=99\n",
+                    1,
+                ),
+            ),
+            (
+                "late issue number initialization",
+                contract_job_text.replace("issue_numbers=()\n", "", 1)
+                + "\nissue_numbers=()\n",
+            ),
+            (
+                "late title assignment",
+                contract_job_text.replace(
+                    "title='Repository freshness update required'\n", "", 1
+                )
+                + "\ntitle='Repository freshness update required'\n",
+            ),
         )
         for name, command in checker_flow_cases:
             with self.subTest(checker_flow=name):
