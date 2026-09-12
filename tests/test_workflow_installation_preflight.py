@@ -2229,6 +2229,14 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 ),
             ),
             (
+                "unreviewed failure exit",
+                contract_job_text.replace(
+                    "set -euo pipefail\n",
+                    "set -euo pipefail\nexit 1\n",
+                    1,
+                ),
+            ),
+            (
                 "ambiguous issue command",
                 contract_job_text.replace(
                     f'gh issue close "{issue_id}"',
@@ -4017,6 +4025,36 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         [step]
                     )
                 )
+        preparation_with_run = [
+            {
+                "uses": workflow_installation_preflight.FRESHNESS_REVIEWED_ACTION_REFERENCES[
+                    "actions/checkout"
+                ],
+                "with": workflow_installation_preflight.FRESHNESS_ALLOWED_ACTION_INPUTS[
+                    "actions/checkout"
+                ],
+                "run": "printf x",
+            },
+            {
+                "uses": workflow_installation_preflight.FRESHNESS_REVIEWED_ACTION_REFERENCES[
+                    "actions/setup-python"
+                ],
+                "with": workflow_installation_preflight.FRESHNESS_ALLOWED_ACTION_INPUTS[
+                    "actions/setup-python"
+                ],
+            },
+            {"run": "printf y"},
+        ]
+        self.assertFalse(
+            workflow_installation_preflight.freshness_action_steps_are_safe(
+                preparation_with_run
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_action_steps_are_safe(
+                [{"uses": None, "run": "printf x"}]
+            )
+        )
 
         for definition in (
             "alias gh='echo shadowed'",

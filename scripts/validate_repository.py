@@ -842,9 +842,11 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
             return False
         uses = step.get("uses")
         if uses is None:
-            if prepared != FRESHNESS_ALLOWED_ACTION_REPOSITORIES:
+            if "uses" in step or prepared != FRESHNESS_ALLOWED_ACTION_REPOSITORIES:
                 return False
             continue
+        if "run" in step:
+            return False
         if not isinstance(uses, str) or uses.count("@") != 1:
             return False
         repository = uses.partition("@")[0].casefold()
@@ -1558,7 +1560,8 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         and len(close_mutations) == 1
         and len(edit_mutations) == 1
         and len(create_mutations) == 1
-        and failure_exits
+        # One failure exit guards duplicate issues; one propagates stale status.
+        and len(failure_exits) == 2
     ):
         return False
     issue_numbers_initialization_indices = [

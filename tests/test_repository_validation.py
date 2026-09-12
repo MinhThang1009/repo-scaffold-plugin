@@ -9638,6 +9638,14 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 ),
             ),
             (
+                "unreviewed failure exit",
+                contract_job_text.replace(
+                    "set -euo pipefail\n",
+                    "set -euo pipefail\nexit 1\n",
+                    1,
+                ),
+            ),
+            (
                 "ambiguous issue command",
                 contract_job_text.replace(
                     f'gh issue close "{issue_id}"',
@@ -10450,6 +10458,34 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 self.assertFalse(
                     validate_repository.freshness_action_steps_are_safe([step])
                 )
+        preparation_with_run = [
+            {
+                "uses": validate_repository.FRESHNESS_REVIEWED_ACTION_REFERENCES[
+                    "actions/checkout"
+                ],
+                "with": validate_repository.FRESHNESS_ALLOWED_ACTION_INPUTS[
+                    "actions/checkout"
+                ],
+                "run": "printf x",
+            },
+            {
+                "uses": validate_repository.FRESHNESS_REVIEWED_ACTION_REFERENCES[
+                    "actions/setup-python"
+                ],
+                "with": validate_repository.FRESHNESS_ALLOWED_ACTION_INPUTS[
+                    "actions/setup-python"
+                ],
+            },
+            {"run": "printf y"},
+        ]
+        self.assertFalse(
+            validate_repository.freshness_action_steps_are_safe(preparation_with_run)
+        )
+        self.assertFalse(
+            validate_repository.freshness_action_steps_are_safe(
+                [{"uses": None, "run": "printf x"}]
+            )
+        )
 
         for definition in (
             "alias gh='echo shadowed'",
