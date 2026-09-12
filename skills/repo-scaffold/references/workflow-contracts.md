@@ -117,7 +117,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   freshness commands and Issue mutations remain directly inspectable. Freshness
   permits only the canonical freshness command set in the reconciliation job;
   unreviewed executables, script interpreters, command substitutions, and
-  path-qualified programs must fail closed. Issue mutations may use only their
+  path-qualified programs must fail closed. Shell parameter expansions may use only
+  the canonical report, repository, status, and issue-number references. Issue
+  mutations may use only their
   reviewed `--repo`, `--comment`, `--title`, and `--body-file` options; extra
   mutation flags and unreviewed exit statuses must fail closed. `printf` formats
   must be literal and may not use shell expansion, `%n`, or `-v`. Local title

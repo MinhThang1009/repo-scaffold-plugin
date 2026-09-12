@@ -289,7 +289,9 @@ hide GitHub commands are rejected as ambiguous. Shell aliases and function
 definitions that can shadow these executables are also rejected.
 Only the canonical freshness command set is permitted in the reconciliation
 job; unreviewed executables, script interpreters, command substitutions, and
-path-qualified programs are rejected. Issue mutations may use only their
+path-qualified programs are rejected. Shell parameter expansions may use only
+the canonical report, repository, status, and issue-number references. Issue
+mutations may use only their
 reviewed `--repo`, `--comment`, `--title`, and `--body-file` options; extra
 mutation flags and unreviewed exit statuses are rejected. `printf` formats must
 be literal and may not use shell expansion, `%n`, or `-v`. Local title and issue

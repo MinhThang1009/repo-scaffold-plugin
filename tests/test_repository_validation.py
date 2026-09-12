@@ -698,6 +698,21 @@ class ActionReferenceValidationTests(unittest.TestCase):
             )
             self.assertFalse(any("invalid.yml" in item for item in problems))
 
+    def test_workflow_aliases_are_walked_once(self) -> None:
+        digest = "a" * 64
+        shared = {"uses": f"docker://example/image@sha256:{digest}"}
+        value: dict[str, Any] = {"base": shared}
+        for index in range(20):
+            value = {
+                "left": value,
+                "right": value,
+            }
+
+        self.assertEqual(
+            list(validate_repository.iter_uses_values(value)),
+            [f"docker://example/image@sha256:{digest}"],
+        )
+
     def test_linked_workflow_boundaries_are_reported_without_dereferencing(
         self,
     ) -> None:
@@ -9343,6 +9358,29 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             validate_repository.freshness_shell_definitions_are_safe(contract_job_text)
         )
         self.assertTrue(validate_repository.freshness_shell_definitions_are_safe(""))
+        self.assertTrue(
+            validate_repository.freshness_shell_expansions_are_safe(contract_job_text)
+        )
+        for expansion in (
+            "echo $(true)",
+            "issue_numbers_output=$(gh api)\nissue_numbers_output=$(gh api)",
+            "echo ${IFS}",
+            "echo $UNTRUSTED",
+        ):
+            with self.subTest(shell_expansion=expansion):
+                self.assertFalse(
+                    validate_repository.freshness_shell_expansions_are_safe(expansion)
+                )
+        self.assertTrue(
+            validate_repository.freshness_variable_is_reassigned(
+                ["printf", "%n", "target"], "target"
+            )
+        )
+        self.assertTrue(
+            validate_repository.freshness_variable_is_reassigned(
+                ["${target:=0}"], "target"
+            )
+        )
         self.assertFalse(
             validate_repository.freshness_issue_options_are_safe(
                 ["gh", "issue", "reopen", "1"], 1, "reopen"
@@ -9394,6 +9432,23 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                     "--repo",
                     "repo",
                     "--title=",
+                    "--body-file",
+                    "report.md",
+                ],
+                1,
+                "create",
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo",
+                    "repo",
+                    "--title",
+                    "$UNTRUSTED_TITLE",
                     "--body-file",
                     "report.md",
                 ],
@@ -10057,6 +10112,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             "GH_TOKEN=attacker",
             "GITHUB_TOKEN=attacker",
             "export GH_TOKEN=attacker",
+            "OTHER=value echo",
             "PYTHONPATH=/tmp/evil",
             "python -c \"import subprocess; subprocess.run(['gh','issue','close','999'])\"",
             "node -e \"require('child_process').execFileSync('gh',['issue','close','999'])\"",
@@ -10079,6 +10135,25 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             if isinstance(step.get("env"), dict) and "CHECKER_EXIT" in step["env"]
         )
         binding_run = binding_step["run"]
+        parameter_expansion_bypass = binding_run.replace(
+            "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+            "--comment \\\n# hidden continuation\n"
+            "curl${IFS}touch${IFS}/tmp/freshness-preflight-bypass",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.freshness_shell_definitions_are_safe(
+                parameter_expansion_bypass
+            )
+        )
+        _bypass_workflow = validate_repository.load_yaml_text(
+            contract_text.replace(
+                "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+                "--comment \\\n                # hidden continuation\n"
+                "                curl${IFS}touch${IFS}/tmp/freshness-preflight-bypass",
+                1,
+            )
+        )
         self.assertTrue(
             validate_repository.freshness_reconciliation_shell_options_are_safe(
                 binding_run

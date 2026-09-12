@@ -1559,6 +1559,21 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                             [workflow]
                         )
 
+    def test_workflow_aliases_are_walked_once(self) -> None:
+        digest = "a" * 64
+        shared = {"uses": f"docker://example/image@sha256:{digest}"}
+        value: dict[str, Any] = {"base": shared}
+        for index in range(20):
+            value = {
+                "left": value,
+                "right": value,
+            }
+
+        self.assertEqual(
+            list(workflow_installation_preflight.workflow_uses_values(value)),
+            [f"docker://example/image@sha256:{digest}"],
+        )
+
     def test_code_scanning_allowlist_validation_rejects_unsafe_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1926,6 +1941,33 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(
             workflow_installation_preflight.freshness_shell_definitions_are_safe("")
         )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_shell_expansions_are_safe(
+                contract_job_text
+            )
+        )
+        for expansion in (
+            "echo $(true)",
+            "issue_numbers_output=$(gh api)\nissue_numbers_output=$(gh api)",
+            "echo ${IFS}",
+            "echo $UNTRUSTED",
+        ):
+            with self.subTest(shell_expansion=expansion):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_shell_expansions_are_safe(
+                        expansion
+                    )
+                )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_variable_is_reassigned(
+                ["printf", "%n", "target"], "target"
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.freshness_variable_is_reassigned(
+                ["${target:=0}"], "target"
+            )
+        )
         self.assertFalse(
             workflow_installation_preflight.freshness_issue_options_are_safe(
                 ["gh", "issue", "reopen", "1"], 1, "reopen"
@@ -1984,6 +2026,23 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "create",
             )
         )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo",
+                    "repo",
+                    "--title",
+                    "$UNTRUSTED_TITLE",
+                    "--body-file",
+                    "report.md",
+                ],
+                1,
+                "create",
+            )
+        )
         for definition in (
             "gh() { return 1; }",
             "gh ( ) { return 1; }",
@@ -1993,6 +2052,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "declare -fx gh",
             "PATH=/tmp/fake:$PATH",
             "export PATH",
+            "OTHER=value echo",
             "BASH_ENV=/tmp/fake.sh",
             "ENV=/tmp/fake.sh",
             "hash -p /tmp/fake/gh gh",
@@ -3615,6 +3675,26 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             if isinstance(step.get("env"), dict) and "CHECKER_EXIT" in step["env"]
         )
         binding_run = binding_step["run"]
+        parameter_expansion_bypass = binding_run.replace(
+            "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+            "--comment \\\n# hidden continuation\n"
+            "curl${IFS}touch${IFS}/tmp/freshness-preflight-bypass",
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_shell_definitions_are_safe(
+                parameter_expansion_bypass
+            )
+        )
+        _bypass_workflow = workflow_installation_preflight.workflow_document(
+            contract_text.replace(
+                "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+                "--comment \\\n                # hidden continuation\n"
+                "                curl${IFS}touch${IFS}/tmp/freshness-preflight-bypass",
+                1,
+            ),
+            workflow_path,
+        )
         self.assertTrue(
             workflow_installation_preflight.freshness_reconciliation_shell_options_are_safe(
                 binding_run

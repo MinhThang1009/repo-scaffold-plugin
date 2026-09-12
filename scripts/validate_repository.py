@@ -264,6 +264,21 @@ FRESHNESS_SECRET_REFERENCE_PATTERN = re.compile(
     r"(?:GITHUB_TOKEN|GH_TOKEN)(?![A-Za-z0-9_]))"
 )
 FRESHNESS_INDIRECT_PARAMETER_PATTERN = re.compile(r"\$\{!")
+FRESHNESS_ALLOWED_SHELL_EXPANSIONS = (
+    "$RUNNER_TEMP",
+    "$?",
+    "$checker_exit",
+    "$GITHUB_OUTPUT",
+    "$GITHUB_STEP_SUMMARY",
+    "$GITHUB_REPOSITORY",
+    "$issue_numbers_output",
+    "${#issue_numbers[@]}",
+    "$CHECKER_EXIT",
+    "${issue_numbers[0]}",
+    "$marker",
+    "$title",
+    "${title}",
+)
 FRESHNESS_JOB_EXECUTION_CONTROLS = frozenset(
     {
         "cache-mode",
@@ -1114,12 +1129,27 @@ def freshness_checker_result_output_is_safe(text: str) -> bool:
     )
 
 
+def freshness_shell_expansions_are_safe(text: str) -> bool:
+    """Allow only the reviewed shell expansions used by the reminder contract."""
+    command_substitution = "issue_numbers_output=$("
+    if (
+        text.count("$(") != text.count(command_substitution)
+        or text.count(command_substitution) > 1
+    ):
+        return False
+    remaining = text.replace(command_substitution, "")
+    for expansion in FRESHNESS_ALLOWED_SHELL_EXPANSIONS:
+        remaining = remaining.replace(expansion, "")
+    return "$" not in remaining
+
+
 def freshness_shell_definitions_are_safe(text: str) -> bool:
     """Reject shell definitions that can shadow the checked executables."""
     if (
         "${{" in text
         or FRESHNESS_SECRET_REFERENCE_PATTERN.search(text)
         or FRESHNESS_INDIRECT_PARAMETER_PATTERN.search(text)
+        or not freshness_shell_expansions_are_safe(text)
     ):
         return False
     segments = shell_command_segments(text)
@@ -1135,12 +1165,6 @@ def freshness_shell_definitions_are_safe(text: str) -> bool:
         command = shell_command_prefix(segment)
         if not command:
             continue
-        if any(
-            freshness_variable_reference(token, variable)
-            for token in command
-            for variable in ("GITHUB_ENV", "GITHUB_PATH")
-        ):
-            return False
         executable = executable_basename(command[0])
         if executable in {
             "alias",
@@ -2954,16 +2978,22 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
     return problems
 
 
-def iter_uses_values(value: Any) -> Iterable[Any]:
-    """Yield every workflow ``uses`` value from a decoded YAML tree."""
+def iter_uses_values(value: Any, _seen: set[int] | None = None) -> Iterable[Any]:
+    """Yield each workflow ``uses`` value once from a decoded YAML tree."""
+    seen = _seen if _seen is not None else set()
+    if isinstance(value, (dict, list)):
+        identity = id(value)
+        if identity in seen:
+            return
+        seen.add(identity)
     if isinstance(value, dict):
         for key, child in value.items():
             if key == "uses":
                 yield child
-            yield from iter_uses_values(child)
+            yield from iter_uses_values(child, seen)
     elif isinstance(value, list):
         for child in value:
-            yield from iter_uses_values(child)
+            yield from iter_uses_values(child, seen)
 
 
 def validate_job_container_images(document: object, source: Path) -> list[str]:
