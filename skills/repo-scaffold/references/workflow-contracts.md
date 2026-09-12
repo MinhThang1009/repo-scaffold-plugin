@@ -25,6 +25,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   `validate_scaffold.py`; obtain its runtime from `ci-toolchain.json`.
 - PR template: trust only the base SHA on `pull_request_target`; never execute
   PR head code, and require one trusted marker plus all required headings/items.
+- Branch protection: required-check producers must be unique, executable, and
+  event-compatible; job or step `if` and `continue-on-error` controls that can
+  skip or mask the gate must fail closed.
 - Links, community-health, and freshness: keep network/upstream checks advisory;
   reminder workflows run only on trusted scheduled/manual events with a
   five-field POSIX cron schedule with an optional valid IANA timezone, and a

@@ -786,6 +786,30 @@ jobs:
             ):
                 branch_protection_preflight.run(preflight_args("ci-success"))
 
+        for workflow in (
+            self.WORKFLOW.replace(
+                "      - run: echo checked",
+                "      - if: false\n        run: echo checked",
+            ),
+            self.WORKFLOW.replace(
+                "    runs-on: ubuntu-latest",
+                "    runs-on: ubuntu-latest\n    continue-on-error: true",
+            ),
+            self.WORKFLOW.replace(
+                "      - run: echo checked",
+                "      - continue-on-error: true\n        run: echo checked",
+            ),
+        ):
+            self.configure(workflow)
+            with mock.patch.object(
+                branch_protection_preflight, "GitHubClient", FakeClient
+            ):
+                with self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "unconditional executable",
+                ):
+                    branch_protection_preflight.run(preflight_args("ci-success"))
+
         self.configure()
         FakeClient.responses[
             f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_SHA}/check-runs?per_page=100"

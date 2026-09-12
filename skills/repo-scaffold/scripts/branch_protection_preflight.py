@@ -125,15 +125,21 @@ def workflow_producers(
             if not isinstance(context, str) or not context or "${{" in context:
                 continue
             steps = job.get("steps")
+            executable_steps = steps if isinstance(steps, list) else []
+            step_controls_are_safe = isinstance(steps, list) and all(
+                isinstance(step, dict)
+                and not {"if", "continue-on-error"}.intersection(step)
+                for step in executable_steps
+            )
             executable = (
                 "uses" not in job
                 and isinstance(job.get("runs-on"), str)
-                and isinstance(steps, list)
+                and step_controls_are_safe
                 and any(
                     isinstance(step, dict)
                     and isinstance(step.get("uses") or step.get("run"), str)
                     and bool(step.get("uses") or step.get("run"))
-                    for step in steps
+                    for step in executable_steps
                 )
             )
             producers.append(
@@ -144,7 +150,7 @@ def workflow_producers(
                     merge_group_coverage=merge_group_coverage,
                     unconditional=job.get("if")
                     in {None, "${{ always() }}", "always()"},
-                    executable=executable,
+                    executable=executable and "continue-on-error" not in job,
                 )
             )
     return producers
