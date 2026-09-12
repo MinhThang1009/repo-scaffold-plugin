@@ -75,6 +75,26 @@ def arguments(**overrides: object) -> argparse.Namespace:
 
 
 class WorkflowInstallationPreflightTests(unittest.TestCase):
+    def test_freshness_expansions_require_complete_variable_names(self) -> None:
+        path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        original = path.read_text(encoding="utf-8")
+        comment = "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'"
+        for reference in ("$title_UNSET", "$marker2", "$RUNNER_TEMPORARY"):
+            with self.subTest(reference=reference):
+                candidate = original.replace(comment, f'--comment "{reference}"', 1)
+                self.assertFalse(
+                    workflow_installation_preflight.is_freshness_reminder_workflow(
+                        candidate, path
+                    )
+                )
+        for reference in ("$title", "${title}suffix", "$RUNNER_TEMP/report.md", "$?"):
+            with self.subTest(valid_reference=reference):
+                self.assertTrue(
+                    workflow_installation_preflight.freshness_shell_expansions_are_safe(
+                        reference
+                    )
+                )
+
     def configure(
         self,
         *,

@@ -536,6 +536,24 @@ class PythonSupportContractValidationTests(unittest.TestCase):
 
 
 class ActionReferenceValidationTests(unittest.TestCase):
+    def test_freshness_expansions_require_complete_variable_names(self) -> None:
+        path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        original = path.read_text(encoding="utf-8")
+        comment = "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'"
+        for reference in ("$title_UNSET", "$marker2", "$RUNNER_TEMPORARY"):
+            with self.subTest(reference=reference):
+                candidate = original.replace(comment, f'--comment "{reference}"', 1)
+                self.assertFalse(
+                    validate_repository.has_freshness_job_reconciliation(
+                        validate_repository.load_yaml_text(candidate), candidate
+                    )
+                )
+        for reference in ("$title", "${title}suffix", "$RUNNER_TEMP/report.md", "$?"):
+            with self.subTest(valid_reference=reference):
+                self.assertTrue(
+                    validate_repository.freshness_shell_expansions_are_safe(reference)
+                )
+
     def test_repository_action_references_are_immutable(self) -> None:
         self.assertEqual(
             validate_repository.validate_action_references(PLUGIN_ROOT),

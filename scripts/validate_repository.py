@@ -1139,7 +1139,8 @@ def freshness_shell_expansions_are_safe(text: str) -> bool:
         return False
     remaining = text.replace(command_substitution, "")
     for expansion in FRESHNESS_ALLOWED_SHELL_EXPANSIONS:
-        remaining = remaining.replace(expansion, "")
+        boundary = "" if expansion.endswith(("}", "?")) else r"(?![A-Za-z0-9_])"
+        remaining = re.sub(re.escape(expansion) + boundary, "", remaining)
     return "$" not in remaining
 
 
