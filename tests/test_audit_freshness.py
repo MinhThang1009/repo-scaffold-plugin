@@ -1142,6 +1142,18 @@ class FreshnessTests(unittest.TestCase):
                         "requirement-sources": [
                             {
                                 "path": "requirements.in",
+                                "locks": ["requirements.in"],
+                            }
+                        ],
+                    },
+                    "must not reference requirement source paths",
+                ),
+                (
+                    {
+                        **valid,
+                        "requirement-sources": [
+                            {
+                                "path": "requirements.in",
                                 "locks": ["requirements.txt", "requirements.txt"],
                             }
                         ],

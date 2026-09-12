@@ -7944,6 +7944,10 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 audit_run.replace("set +e\n", "set -e\n", 1),
             ),
             (
+                "errexit disabled through long option",
+                audit_run.replace("set -e\n", "set -e\nset +o errexit\n", 1),
+            ),
+            (
                 "non-adjacent audit result",
                 audit_run.replace(
                     "checker_exit=$?\n", "echo captured\nchecker_exit=$?\n", 1
@@ -10116,6 +10120,16 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertFalse(
             validate_repository.has_freshness_job_reconciliation(
                 validate_repository.load_yaml_text(token_text), token_text
+            )
+        )
+        negated_api_text = contract_text.replace(
+            "gh api --hostname github.com",
+            "! gh api --hostname github.com",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(negated_api_text), negated_api_text
             )
         )
         hidden_job_workflow = validate_repository.load_yaml_text(contract_text)

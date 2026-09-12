@@ -3121,6 +3121,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 audit_run.replace("set +e\n", "set -e\n", 1),
             ),
             (
+                "errexit disabled through long option",
+                audit_run.replace("set -e\n", "set -e\nset +o errexit\n", 1),
+            ),
+            (
                 "non-adjacent audit result",
                 audit_run.replace(
                     "checker_exit=$?\n", "echo captured\nchecker_exit=$?\n", 1
@@ -3648,6 +3652,16 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertFalse(
             workflow_installation_preflight.is_freshness_reminder_workflow(
                 token_text, workflow_path
+            )
+        )
+        negated_api_text = contract_text.replace(
+            "gh api --hostname github.com",
+            "! gh api --hostname github.com",
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.is_freshness_reminder_workflow(
+                negated_api_text, workflow_path
             )
         )
         hidden_job_text = (

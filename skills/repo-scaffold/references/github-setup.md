@@ -416,6 +416,7 @@ Within the reconciliation job, the audit must complete before the lookup, and
 the lookup must complete before any Issue mutation. Pipeline, background, and
 short-circuit operators (`|`, `&`, `|&`, `&&`, and `||`) are rejected around
 these phases.
+Shell negation (`!`) is also rejected in freshness commands.
 The audit must run from the checkout root with `--repository-root .`; if a
 `--tracker-registry` override is present, it must name
 `.github/freshness-trackers.json`. Directory-changing commands and workflow,
@@ -433,7 +434,8 @@ and Issue mutation remains directly inspectable in the supplied workflow.
 The checked-in tracker registry must retain every shipped workflow, release,
 allowlist, and requirement input; do not empty a category to suppress a check.
 Its version-1 schema supports only known top-level fields and known
-requirement-source fields, so new inputs cannot be silently ignored.
+requirement-source fields; lock paths cannot reference requirement sources, so
+new inputs cannot be silently ignored.
 The reconciliation job itself
 must inherit or declare
 `issues: write`, be named `freshness-audit`, and use `timeout-minutes: 15`; a

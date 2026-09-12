@@ -34,8 +34,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   Issues are enabled. Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
   The version-1 freshness tracker registry supports only known top-level fields
-  and exact `path`/`locks` requirement-source fields; unknown fields must fail
-  closed instead of being ignored.
+  and exact `path`/`locks` requirement-source fields; lock paths cannot
+  reference requirement sources, and unknown fields must fail closed instead of
+  being ignored.
   Every reminder mutation must use an explicit repository binding, and every
   freshness `create` or `edit` mutation must use a durable `--body-file` (with a
   non-empty `--title` for `create`). The reconciliation job must have effective
@@ -95,7 +96,7 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   reconciliation job, the audit must complete before the lookup, and the lookup
   must complete before any Issue mutation. Pipeline, background, and
   short-circuit operators (`|`, `&`, `|&`, `&&`, and `||`) are rejected around
-  these phases.
+  these phases. Shell negation (`!`) is also rejected in freshness commands.
   Freshness must retain the optional audit Markdown output as the body file in
   the same job; direct REST issue
   mutations through `gh api`, state-changing calls through known direct HTTP

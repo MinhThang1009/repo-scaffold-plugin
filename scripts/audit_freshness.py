@@ -244,6 +244,17 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
             )
         seen_sources.add(source)
         requirement_sources.append(RequirementSource(source, parsed_locks))
+    source_paths = {
+        requirement_source.path for requirement_source in requirement_sources
+    }
+    if any(
+        lock in source_paths
+        for requirement_source in requirement_sources
+        for lock in requirement_source.locks
+    ):
+        raise AuditError(
+            "freshness tracker registry requirement lock paths must not reference requirement source paths"
+        )
     return FreshnessTrackers(
         workflow_directories=paths("workflow-directories", allow_empty=False),
         release_please_configs=paths("release-please-configs", allow_empty=True),

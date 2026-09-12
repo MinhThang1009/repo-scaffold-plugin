@@ -379,7 +379,7 @@ def option_values(tokens: list[str], option: str) -> tuple[str, ...] | None:
 
 SHELL_CONTROL_CHARACTERS = frozenset(";()|&")
 SHELL_UNSAFE_PHASE_OPERATORS = frozenset({"&", "|", "|&", "&&", "||"})
-SHELL_COMMAND_PREFIXES = frozenset({"!", "then", "do", "else"})
+SHELL_COMMAND_PREFIXES = frozenset({"then", "do", "else"})
 FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES = frozenset(
     {
         "CHECKER_EXIT",
@@ -1112,6 +1112,8 @@ def freshness_checker_result_output_is_safe(command: str) -> bool:
         ):
             return False
         elif freshness_variable_is_reassigned(command_tokens, "checker_exit"):
+            return False
+        elif command_tokens and command_tokens[0] == "set":
             return False
         if (
             len(command_tokens) == 6
