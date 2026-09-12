@@ -3153,6 +3153,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 audit_run.replace('"$checker_exit" >>', '"0" >>', 1),
             ),
             (
+                "additional audit printf",
+                audit_run.replace(
+                    "set -e\n", "set -e\nprintf 'side effect' > /tmp/ignored\n", 1
+                ),
+            ),
+            (
                 "negated audit result",
                 audit_run.replace(
                     "python scripts/audit_freshness.py",

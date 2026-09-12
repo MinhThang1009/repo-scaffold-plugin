@@ -229,6 +229,8 @@ issue when clean, and edit or create the report when stale before failing.
 audit output must derive from the checker's exit status.
 The audit must disable `errexit` while running the checker, capture its status,
 and restore `errexit` before publishing that output.
+The audit step may use only the canonical fallback-report and checker-status
+`printf` commands; arbitrary output or file redirection is rejected.
 The JSON and Markdown checker outputs must be exactly
 `$RUNNER_TEMP/freshness.json` and `$RUNNER_TEMP/freshness.md`; the reconciliation
 must validate the same marker with `grep` before branching on checker status or

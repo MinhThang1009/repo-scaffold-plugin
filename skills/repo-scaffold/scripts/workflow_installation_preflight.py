@@ -1075,6 +1075,13 @@ def freshness_checker_result_output_is_safe(command: str) -> bool:
     if markdown_outputs != {FRESHNESS_AUDIT_MARKDOWN_OUTPUT}:
         return False
     markdown_output = next(iter(markdown_outputs))
+    checker_output_command = (
+        "printf",
+        "checker_exit=%s\\n",
+        "$checker_exit",
+        ">>",
+        "$GITHUB_OUTPUT",
+    )
     audit_indices: list[int] = []
     disable_errexit_indices: list[int] = []
     capture_indices: list[int] = []
@@ -1086,6 +1093,22 @@ def freshness_checker_result_output_is_safe(command: str) -> bool:
     fallback_write_indices: list[int] = []
     for index, segment in enumerate(segments):
         command_tokens = shell_command_prefix(segment)
+        if command_tokens and command_tokens[0] == "printf":
+            is_fallback = (
+                len(command_tokens) >= 5
+                and command_tokens[:2] == ["printf", "%s\\n"]
+                and command_tokens.count(">") == 1
+                and command_tokens[-2:] == [">", markdown_output]
+                and any(
+                    FRESHNESS_REMINDER_MARKER in token for token in command_tokens[2:-2]
+                )
+                and all(
+                    "$" not in token and "`" not in token and "%n" not in token
+                    for token in command_tokens[2:-2]
+                )
+            )
+            if tuple(command_tokens) != checker_output_command and not is_fallback:
+                return False
         if segment[:2] == ["python", "scripts/audit_freshness.py"]:
             audit_indices.append(index)
             if option_values(segment, "--json-output") != (
