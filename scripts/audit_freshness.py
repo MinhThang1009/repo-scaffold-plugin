@@ -37,6 +37,19 @@ RELEASE_PLEASE_SCHEMA = re.compile(
     r"(?P<version>v\d+\.\d+\.\d+)/schemas/config\.json\Z"
 )
 DEFAULT_TRACKER_REGISTRY = Path(".github/freshness-trackers.json")
+FRESHNESS_TRACKER_REGISTRY_KEYS = frozenset(
+    {
+        "schema-version",
+        "workflow-directories",
+        "release-please-configs",
+        "optional-release-please-configs",
+        "ci-toolchain-policies",
+        "code-scanning-allowlists",
+        "optional-code-scanning-allowlists",
+        "requirement-sources",
+    }
+)
+FRESHNESS_REQUIREMENT_SOURCE_KEYS = frozenset({"path", "locks"})
 
 
 class AuditError(RuntimeError):
@@ -168,6 +181,10 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         ) from error
     if not isinstance(document, dict) or document.get("schema-version") != 1:
         raise AuditError("freshness tracker registry must use schema-version 1")
+    if not set(document).issubset(FRESHNESS_TRACKER_REGISTRY_KEYS):
+        raise AuditError(
+            "freshness tracker registry contains unsupported schema fields"
+        )
 
     def paths(
         key: str, *, allow_empty: bool, default_empty: bool = False
@@ -202,6 +219,10 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         if not isinstance(entry, dict):
             raise AuditError(
                 "freshness tracker registry requirement source must be an object"
+            )
+        if set(entry) != FRESHNESS_REQUIREMENT_SOURCE_KEYS:
+            raise AuditError(
+                "freshness tracker registry requirement source must use path and locks fields"
             )
         source = safe_relative_path(
             entry.get("path"), field="freshness tracker registry requirement path"

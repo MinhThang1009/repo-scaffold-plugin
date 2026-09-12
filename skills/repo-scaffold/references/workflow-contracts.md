@@ -33,6 +33,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   only supported fields and input types. Maintain one idempotent issue when
   Issues are enabled. Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
+  The version-1 freshness tracker registry supports only known top-level fields
+  and exact `path`/`locks` requirement-source fields; unknown fields must fail
+  closed instead of being ignored.
   Every reminder mutation must use an explicit repository binding, and every
   freshness `create` or `edit` mutation must use a durable `--body-file` (with a
   non-empty `--title` for `create`). The reconciliation job must have effective

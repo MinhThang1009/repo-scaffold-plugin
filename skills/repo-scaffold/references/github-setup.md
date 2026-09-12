@@ -432,6 +432,8 @@ and Issue mutation remains directly inspectable in the supplied workflow.
   reseeded or reordered.
 The checked-in tracker registry must retain every shipped workflow, release,
 allowlist, and requirement input; do not empty a category to suppress a check.
+Its version-1 schema supports only known top-level fields and known
+requirement-source fields, so new inputs cannot be silently ignored.
 The reconciliation job itself
 must inherit or declare
 `issues: write`, be named `freshness-audit`, and use `timeout-minutes: 15`; a

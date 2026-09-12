@@ -1063,23 +1063,21 @@ class FreshnessTests(unittest.TestCase):
                 freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
             for document, message in (
                 ({"schema-version": 2}, "schema-version"),
+                ({**valid, "unreviewed-inputs": []}, "unsupported schema fields"),
                 (
                     {
-                        "schema-version": 1,
+                        **valid,
                         "workflow-directories": ["../outside"],
-                        "release-please-configs": [],
-                        "requirement-sources": [],
                     },
                     "safe relative",
                 ),
                 (
                     {
-                        "schema-version": 1,
+                        **valid,
                         "workflow-directories": [".github/workflows"],
-                        "release-please-configs": [],
                         "requirement-sources": [{"path": "requirements.in"}],
                     },
-                    "locks",
+                    "path and locks fields",
                 ),
                 (
                     {
@@ -1124,6 +1122,19 @@ class FreshnessTests(unittest.TestCase):
                         ],
                     },
                     "locks",
+                ),
+                (
+                    {
+                        **valid,
+                        "requirement-sources": [
+                            {
+                                "path": "requirements.in",
+                                "locks": [],
+                                "unreviewed-inputs": ["important.in"],
+                            }
+                        ],
+                    },
+                    "path and locks fields",
                 ),
                 (
                     {

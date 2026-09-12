@@ -335,8 +335,9 @@ when attention is required, and closes it only after a clean scheduled/manual
 result. The
 scaffold ships the same registry-driven checker and workflow to generated
 repositories when Issues are available. Track only sources with an
-authoritative owner and deterministic version resolver; community-health policy
-tracking remains in its separate registry.
+authoritative owner and deterministic version resolver. Its version-1 registry
+rejects unknown fields so newly declared inputs cannot be silently ignored;
+community-health policy tracking remains in its separate registry.
 The non-required weekly [official-documentation workflow](.github/workflows/official-docs.yml)
 uses [its explicit tracker registry](.github/official-docs-trackers.json) to
 revalidate the authoritative source URLs and stable claim markers, then requires
