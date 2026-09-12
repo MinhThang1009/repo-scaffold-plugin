@@ -10,6 +10,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -23,6 +24,7 @@ DEFAULT_ALLOWLIST = Path(".github/code-scanning-allowlist.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ALLOWLIST_BYTES = 1 * 1024 * 1024
 MAX_ALLOWLIST_ENTRIES = 256
+MAX_ALLOWLIST_REVIEW_DAYS = 366
 MAX_PAGES = 20
 MAX_ANALYSIS_PAGES = 20
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -135,8 +137,9 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
         raise GateError(
             f"could not read code-scanning allowlist {path}: {error}"
         ) from error
-    if not isinstance(document, dict) or document.get("schema-version") != 2:
-        raise GateError("code-scanning allowlist must use schema-version 2")
+    if not isinstance(document, dict) or document.get("schema-version") not in {2, 3}:
+        raise GateError("code-scanning allowlist must use schema-version 2 or 3")
+    schema_version = document["schema-version"]
     entries = document.get("allowlist")
     if not isinstance(entries, list):
         raise GateError("code-scanning allowlist allowlist must be a list")
@@ -147,16 +150,40 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
     selectors: list[AlertSelector] = []
     seen: set[int] = set()
     for entry in entries:
-        if not isinstance(entry, dict) or set(entry) != {
+        required_fields = {
             "number",
             "tool",
             "rule",
             "path",
             "reason",
-        }:
+        }
+        if schema_version == 3:
+            required_fields |= {"reviewed-on", "review-period-days"}
+        if not isinstance(entry, dict) or set(entry) != required_fields:
             raise GateError(
-                "each code-scanning allowlist entry must have number, tool, rule, path, and reason"
+                "each code-scanning allowlist entry must have the required selector fields"
             )
+        if schema_version == 3:
+            reviewed_on = entry["reviewed-on"]
+            review_period_days = entry["review-period-days"]
+            if (
+                not isinstance(reviewed_on, str)
+                or not reviewed_on.strip()
+                or not isinstance(review_period_days, int)
+                or isinstance(review_period_days, bool)
+                or not 1 <= review_period_days <= MAX_ALLOWLIST_REVIEW_DAYS
+            ):
+                raise GateError("code-scanning allowlist review period is invalid")
+            try:
+                reviewed_date = date.fromisoformat(reviewed_on)
+            except ValueError as error:
+                raise GateError(
+                    "code-scanning allowlist reviewed-on must use ISO date format"
+                ) from error
+            if reviewed_date > datetime.now(timezone.utc).date():
+                raise GateError(
+                    "code-scanning allowlist reviewed-on cannot be in the future"
+                )
         number = entry["number"]
         if type(number) is not int or number < 1:
             raise GateError("code-scanning allowlist number must be a positive integer")

@@ -279,6 +279,83 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 "https://docs.example.test/guide", ("docs.example.test",)
             )
 
+    def test_github_rest_fetch_preserves_html_only_contract_markers(self) -> None:
+        url = "https://docs.github.com/en/rest/git/refs"
+        payload = b"<p>&quot;Contents&quot; permissions; tags/&lt;tag name&gt;</p>"
+        for source, accept, content in (
+            (url, "text/html", '<p>"Contents" permissions; tags/<tag name></p>'),
+            (
+                "https://docs.example.test/en/rest/refs",
+                "text/markdown,text/html;q=0.9",
+                payload.decode(),
+            ),
+            (
+                "https://docs.github.com/en/actions/guide",
+                "text/markdown,text/html;q=0.9",
+                payload.decode(),
+            ),
+        ):
+            opener = FakeOpener(FakeResponse(payload, source))
+            with (
+                self.subTest(source=source),
+                mock.patch.object(official_docs, "build_opener", return_value=opener),
+            ):
+                self.assertEqual(
+                    official_docs.read_document(source, ("docs.github.com",)),
+                    (source, content),
+                )
+                assert isinstance(opener.request, official_docs.Request)
+                self.assertEqual(opener.request.get_header("Accept"), accept)
+
+    def test_rest_registry_markers_match_reviewed_endpoint_excerpts(self) -> None:
+        # Minimal excerpts from the official pages retrieved on 2026-09-08.
+        excerpts = {
+            "github-repository-contents-api": (
+                'Get repository content\n"Contents" repository permissions (read)\nref'
+            ),
+            "github-repository-license-api": (
+                "Get the license for a repository\n"
+                "GET /repos/{owner}/{repo}/license\nspdx_id"
+            ),
+            "github-users-api": "Get a user\nGET /users/{username}\ntype",
+        }
+        claims = {
+            claim.identifier: claim
+            for claim in official_docs.load_trackers(PLUGIN_ROOT)
+        }
+        for identifier, content in excerpts.items():
+            claim = claims[identifier]
+            with (
+                self.subTest(identifier=identifier),
+                mock.patch.object(
+                    official_docs, "read_document", return_value=(claim.url, content)
+                ),
+            ):
+                self.assertEqual(
+                    official_docs.claim_findings(PLUGIN_ROOT, claim, date(2026, 9, 8)),
+                    [],
+                )
+
+    def test_workflow_permission_claim_tracks_pull_request_write_token_setting(
+        self,
+    ) -> None:
+        claim = next(
+            candidate
+            for candidate in official_docs.load_trackers(PLUGIN_ROOT)
+            if candidate.identifier == "github-actions-workflow-permissions-syntax"
+        )
+        marker = "Send write tokens to workflows from pull requests"
+        self.assertIn(marker, claim.markers)
+        content = "\n".join(value for value in claim.markers if value != marker)
+        with mock.patch.object(
+            official_docs, "read_document", return_value=(claim.url, content)
+        ):
+            findings = official_docs.claim_findings(
+                PLUGIN_ROOT, claim, date(2026, 9, 8)
+            )
+        self.assertEqual(findings[0]["kind"], "official-docs-marker")
+        self.assertIn(marker, findings[0]["details"])
+
     def test_redirect_handler_rejects_unapproved_destination_before_fetching(
         self,
     ) -> None:
@@ -372,6 +449,18 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
             ):
                 official_docs.claim_findings(root, claim, date(2026, 8, 27))
 
+    def test_current_report_confirms_review_period_only_without_errors(self) -> None:
+        report = {
+            "checked-at": "2026-09-08T00:00:00+00:00",
+            "status": "current",
+            "findings": [],
+            "errors": [],
+        }
+        self.assertIn(
+            "All official-documentation claims are within their review period.",
+            official_docs.markdown_report(report),
+        )
+
     def test_audit_report_and_main_preserve_indeterminate_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -407,6 +496,10 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 report = official_docs.audit(root, today=date(2026, 8, 25))
             self.assertEqual(report["status"], "indeterminate")
             self.assertIn("Indeterminate", official_docs.markdown_report(report))
+            self.assertNotIn(
+                "All official-documentation claims are within their review period.",
+                official_docs.markdown_report(report),
+            )
 
             output_json = root / "report.json"
             output_markdown = root / "report.md"

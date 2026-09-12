@@ -9,6 +9,7 @@ import importlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -16,7 +17,8 @@ import sys
 import tempfile
 import zipfile
 from collections.abc import Iterable
-from pathlib import Path, PurePosixPath
+from datetime import date, datetime, timezone
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -42,6 +44,292 @@ CACHE_DIRECTORIES = {
     ".venv",
 }
 COVERAGE_FAIL_UNDER = 100
+MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
+MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
+CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
+CONTAINER_IMAGE_REFERENCE_PATTERN = re.compile(
+    r"(?:docker://)?[^\s@]+@sha256:[0-9a-f]{64}\Z", re.IGNORECASE
+)
+REMINDER_ISSUE_MUTATION_SUBCOMMANDS = frozenset(
+    {
+        "close",
+        "comment",
+        "create",
+        "delete",
+        "develop",
+        "edit",
+        "lock",
+        "new",
+        "pin",
+        "reopen",
+        "transfer",
+        "unlock",
+        "unpin",
+    }
+)
+REMINDER_ISSUE_ALLOWED_MUTATIONS = frozenset({"create", "edit", "close"})
+REMINDER_ISSUE_BODY_MUTATIONS = frozenset({"create", "edit"})
+REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "view"})
+FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
+REMINDER_WORKFLOW_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.repository }}"
+FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
+FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
+FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
+FRESHNESS_REMINDER_API_ENDPOINT = (
+    "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"
+)
+FRESHNESS_REMINDER_API_JQ = (
+    ".[] | select(.pull_request == null) | "
+    f'select((.body // "") | contains("<!-- {FRESHNESS_REMINDER_MARKER} -->")) | .number'
+)
+FRESHNESS_REMINDER_API_ALLOWED_ARGUMENTS = frozenset(
+    {
+        "--hostname",
+        "github.com",
+        "--hostname=github.com",
+        "--paginate",
+        FRESHNESS_REMINDER_API_ENDPOINT,
+        "--jq",
+        FRESHNESS_REMINDER_API_JQ,
+        f"--jq={FRESHNESS_REMINDER_API_JQ}",
+        "--method",
+        "--method=GET",
+        "-X",
+        "-XGET",
+        "-X=GET",
+        "GET",
+    }
+)
+POLICY_REMINDER_CONCURRENCY_GROUP = (
+    "${{ github.workflow }}-policy-drift-${{ github.repository }}"
+)
+FRESHNESS_AUDIT_COMMAND = ("python", "scripts/audit_freshness.py")
+FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
+    "--repository-root",
+    "--json-output",
+    "--markdown-output",
+)
+FRESHNESS_AUDIT_REPOSITORY_ROOT = "."
+FRESHNESS_AUDIT_JSON_OUTPUT = "$RUNNER_TEMP/freshness.json"
+FRESHNESS_AUDIT_MARKDOWN_OUTPUT = "$RUNNER_TEMP/freshness.md"
+FRESHNESS_SUMMARY_COMMAND = (
+    "cat",
+    FRESHNESS_AUDIT_MARKDOWN_OUTPUT,
+    ">>",
+    "$GITHUB_STEP_SUMMARY",
+)
+FRESHNESS_AUDIT_TRACKER_REGISTRY = ".github/freshness-trackers.json"
+FRESHNESS_ALLOWED_ACTION_REPOSITORIES = frozenset(
+    {"actions/checkout", "actions/setup-python"}
+)
+FRESHNESS_ACTION_REFERENCE_PATTERN = re.compile(
+    r"(?:actions/checkout|actions/setup-python)@[0-9a-f]{40}\Z", re.IGNORECASE
+)
+FRESHNESS_REVIEWED_ACTION_REFERENCES = {
+    "actions/checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-python": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+}
+FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
+    "actions/checkout": {"persist-credentials": "false"},
+    "actions/setup-python": {"python-version": "3.x"},
+}
+FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
+    {
+        f"marker={FRESHNESS_REMINDER_MARKER}",
+        f"marker=<!-- {FRESHNESS_REMINDER_MARKER} -->",
+    }
+)
+FRESHNESS_TITLE_ASSIGNMENT = "title=Repository freshness update required"
+FRESHNESS_ISSUE_NUMBERS_INITIALIZATION = "issue_numbers="
+FRESHNESS_DUPLICATE_ISSUE_GUARD = (
+    "if (( ${#issue_numbers[@]} > 1 )); then",
+    "printf 'Found multiple open freshness reminder issues.\\n' >&2",
+    "exit 1",
+    "fi",
+)
+FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
+    {
+        f'if [[ ! -f "{FRESHNESS_AUDIT_MARKDOWN_OUTPUT}" ]]; then',
+        'if [[ -n "$issue_numbers_output" ]]; then',
+        FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
+        "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
+        "if (( ${#issue_numbers[@]} == 1 )); then",
+        "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
+    }
+)
+FRESHNESS_ALLOWED_SHELL_COMMANDS = frozenset(
+    {"${", "cat", "exit", "fi", "gh", "grep", "if", "mapfile", "printf", "set"}
+)
+FRESHNESS_ALLOWED_ISSUE_OPTIONS: dict[str, frozenset[str]] = {
+    "close": frozenset({"--comment", "--repo"}),
+    "edit": frozenset({"--body-file", "--repo", "--title"}),
+    "create": frozenset({"--body-file", "--repo", "--title"}),
+}
+FRESHNESS_ALLOWED_SHELL_ASSIGNMENT_NAMES = frozenset(
+    {"checker_exit", "issue_numbers", "issue_numbers_output", "marker", "title"}
+)
+SHELL_DIRECTORY_CHANGE_COMMANDS = frozenset(
+    {"cd", "chdir", "popd", "pushd", "set-location", "sl", "sls"}
+)
+GITHUB_API_READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
+GITHUB_API_BODY_OPTIONS = frozenset({"--field", "--input", "--raw-field", "-F", "-f"})
+GITHUB_API_METHOD_OPTIONS = frozenset({"--method", "-X"})
+GITHUB_CLI_EXECUTABLE_NAMES = frozenset({"gh", "gh.exe"})
+EMBEDDED_GITHUB_COMMAND_PATTERN = re.compile(
+    r"(?i)(?:^|[\s`$(&|;/\\])(?:[^`$(&|;]*[/\\])?gh(?:\.exe)?\s+(?:api|issue)(?:\s|$)"
+)
+EMBEDDED_FRESHNESS_AUDIT_PATTERN = re.compile(
+    r"(?<!\S)python\s+scripts/audit_freshness\.py(?:\s|$)"
+)
+DYNAMIC_SHELL_EXECUTORS = frozenset(
+    {
+        "bash",
+        "cmd",
+        "dash",
+        "eval",
+        "fish",
+        "powershell",
+        "pwsh",
+        "source",
+        "sh",
+        ".",
+        "xargs",
+        "zsh",
+    }
+)
+SHELL_COMMAND_WRAPPERS = frozenset({"command", "env", "nice", "nohup", "sudo", "time"})
+UNSAFE_NETWORK_EXECUTORS = frozenset(
+    {
+        "curl",
+        "curl.exe",
+        "irm",
+        "invoke-restmethod",
+        "invoke-webrequest",
+        "iwr",
+        "wget",
+        "wget.exe",
+    }
+)
+NETWORK_METHOD_OPTIONS = frozenset({"--method", "--request", "-method", "-request"})
+NETWORK_BODY_OPTIONS = frozenset(
+    {
+        "--body",
+        "--data",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--form",
+        "--form-string",
+        "--json",
+        "--post-data",
+        "--post-file",
+        "--upload-file",
+        "-body",
+        "-d",
+        "-form",
+        "-infile",
+        "-post-data",
+        "-post-file",
+    }
+)
+SHELL_CONTROL_CHARACTERS = frozenset(";()|&")
+SHELL_UNSAFE_PHASE_OPERATORS = frozenset({"&", "|", "|&", "&&", "||"})
+SHELL_COMMAND_PREFIXES = frozenset({"then", "do", "else"})
+FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES = frozenset(
+    {
+        "CHECKER_EXIT",
+        "GITHUB_STEP_SUMMARY",
+        "GITHUB_STATE",
+        "PATH",
+        "BASH_ENV",
+        "ENV",
+        "GITHUB_ENV",
+        "GITHUB_PATH",
+        "GITHUB_OUTPUT",
+        "GIT_SSH_COMMAND",
+        "GH_CONFIG_DIR",
+        "HOME",
+        "LD_PRELOAD",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "RUNNER_TEMP",
+    }
+)
+FRESHNESS_SHELL_PROTECTED_ENVIRONMENT_VARIABLES = (
+    FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES | {"GITHUB_TOKEN", "GH_TOKEN"}
+)
+FRESHNESS_SECRET_REFERENCE_PATTERN = re.compile(
+    r"\$(?:\{(?:GITHUB_TOKEN|GH_TOKEN)(?:[^A-Za-z0-9_}]|})|"
+    r"(?:GITHUB_TOKEN|GH_TOKEN)(?![A-Za-z0-9_]))"
+)
+FRESHNESS_INDIRECT_PARAMETER_PATTERN = re.compile(r"\$\{!")
+FRESHNESS_ALLOWED_SHELL_EXPANSIONS = (
+    "$RUNNER_TEMP",
+    "$?",
+    "$checker_exit",
+    "$GITHUB_OUTPUT",
+    "$GITHUB_STEP_SUMMARY",
+    "$GITHUB_REPOSITORY",
+    "$issue_numbers_output",
+    "${#issue_numbers[@]}",
+    "$CHECKER_EXIT",
+    "${issue_numbers[0]}",
+    "$marker",
+    "$title",
+    "${title}",
+)
+FRESHNESS_JOB_EXECUTION_CONTROLS = frozenset(
+    {
+        "cache-mode",
+        "concurrency",
+        "continue-on-error",
+        "environment",
+        "if",
+        "needs",
+        "snapshot",
+        "strategy",
+    }
+)
+FRESHNESS_STEP_EXECUTION_CONTROLS = frozenset(
+    {
+        "background",
+        "cancel",
+        "continue-on-error",
+        "if",
+        "parallel",
+        "timeout-minutes",
+        "wait",
+        "wait-all",
+    }
+)
+FRESHNESS_ALLOWED_ENVIRONMENT_VARIABLES = frozenset(
+    {"GITHUB_TOKEN", "GH_TOKEN", "CHECKER_EXIT"}
+)
+FRESHNESS_TOKEN_EXPRESSION = "${{ github.token }}"
+SHELL_TEST_OPERATORS = frozenset(
+    {
+        "=",
+        "==",
+        "!=",
+        "-d",
+        "-e",
+        "-eq",
+        "-f",
+        "-ge",
+        "-gt",
+        "-le",
+        "-lt",
+        "-n",
+        "-ne",
+        "-r",
+        "-s",
+        "-v",
+        "-w",
+        "-x",
+        "-z",
+    }
+)
 COMMONMARK = MarkdownIt("commonmark")
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -207,6 +495,13 @@ if find dist ! -type d ! -type f -print -quit | grep -q .; then
 fi
 """
 WORKFLOW_SCRIPT_COPY_CONTRACT = (
+    (
+        Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+        Path("skills/repo-scaffold/assets/code-scanning-allowlist.json"),
+        "assets/code-scanning-allowlist.json",
+        Path(".github/code-scanning-allowlist.json"),
+        False,
+    ),
     (
         Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
         Path("scripts/check_code_scanning_alerts.py"),
@@ -434,6 +729,1891 @@ def load_yaml_text(text: str) -> Any:
 def load_yaml(path: Path) -> Any:
     """Load a YAML document without YAML 1.1 scalar coercion."""
     return load_yaml_text(path.read_text(encoding="utf-8"))
+
+
+def permissions_grant_issue_write(scope: object) -> bool:
+    """Return whether one workflow or job permission scope grants Issues write."""
+    if not isinstance(scope, dict):
+        return False
+    permissions = scope.get("permissions", {})
+    return permissions == "write-all" or (
+        isinstance(permissions, dict) and permissions.get("issues") == "write"
+    )
+
+
+def job_effective_issue_write(workflow: object, job: object) -> bool:
+    """Resolve the Issues permission inherited by one reminder job."""
+    if not isinstance(workflow, dict) or not isinstance(job, dict):
+        return False
+    return permissions_grant_issue_write(job if "permissions" in job else workflow)
+
+
+def job_effective_contents_read(workflow: object, job: object) -> bool:
+    """Resolve whether one reminder job can read the repository contents."""
+    if not isinstance(workflow, dict) or not isinstance(job, dict):
+        return False
+    scope = job if "permissions" in job else workflow
+    permissions = scope.get("permissions")
+    return isinstance(permissions, dict) and permissions.get("contents") == "read"
+
+
+def has_least_privileged_freshness_permissions(workflow: object) -> bool:
+    """Allow only read-only contents and Issue-write permissions for reminders."""
+    if not isinstance(workflow, dict) or workflow.get("permissions") != {
+        "contents": "read",
+        "issues": "write",
+    }:
+        return False
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return False
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            return False
+        if "permissions" not in job:
+            continue
+        permissions = job["permissions"]
+        if not isinstance(permissions, dict):
+            return False
+        if any(
+            scope not in {"contents", "issues"}
+            or value not in {"none", "read", "write"}
+            or value == "write"
+            and scope != "issues"
+            for scope, value in permissions.items()
+        ):
+            return False
+    return True
+
+
+def freshness_job_execution_is_unconditional(job: object) -> bool:
+    """Reject job or step controls that can silently skip reconciliation."""
+    if not isinstance(job, dict) or any(
+        control in job for control in FRESHNESS_JOB_EXECUTION_CONTROLS
+    ):
+        return False
+    steps = job.get("steps")
+    return isinstance(steps, list) and all(
+        isinstance(step, dict)
+        and not FRESHNESS_STEP_EXECUTION_CONTROLS.intersection(step)
+        for step in steps
+    )
+
+
+def freshness_execution_context_is_bash(workflow: object, job: object) -> bool:
+    """Require the inspected freshness commands to execute as Bash on Ubuntu."""
+    if not isinstance(workflow, dict) or not isinstance(job, dict):
+        return False
+    if job.get("runs-on") != "ubuntu-latest":
+        return False
+    for scope in (workflow, job):
+        if "container" in scope or "services" in scope:
+            return False
+        defaults = scope.get("defaults")
+        if defaults is None:
+            continue
+        if not isinstance(defaults, dict):
+            return False
+        run_defaults = defaults.get("run")
+        if run_defaults is None:
+            continue
+        if not isinstance(run_defaults, dict):
+            return False
+        if run_defaults.get("shell") not in (None, "bash"):
+            return False
+    steps = job.get("steps")
+    return (
+        isinstance(steps, list)
+        and freshness_action_steps_are_safe(steps)
+        and all(
+            isinstance(step, dict) and step.get("shell") in (None, "bash")
+            for step in steps
+        )
+    )
+
+
+def freshness_action_steps_are_safe(steps: object) -> bool:
+    """Require each reviewed preparation action once before any run step."""
+    if not isinstance(steps, list):
+        return False
+    prepared: set[str] = set()
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        uses = step.get("uses")
+        if uses is None:
+            if "uses" in step or prepared != FRESHNESS_ALLOWED_ACTION_REPOSITORIES:
+                return False
+            continue
+        if "run" in step:
+            return False
+        if not isinstance(uses, str) or uses.count("@") != 1:
+            return False
+        repository = uses.partition("@")[0].casefold()
+        if (
+            repository not in FRESHNESS_ALLOWED_ACTION_REPOSITORIES
+            or repository in prepared
+            or FRESHNESS_ACTION_REFERENCE_PATTERN.fullmatch(uses) is None
+            or uses.casefold()
+            != FRESHNESS_REVIEWED_ACTION_REFERENCES[repository].casefold()
+        ):
+            return False
+        if step.get("with") != FRESHNESS_ALLOWED_ACTION_INPUTS[repository]:
+            return False
+        prepared.add(repository)
+    return prepared == FRESHNESS_ALLOWED_ACTION_REPOSITORIES
+
+
+def freshness_authentication_bindings_are_safe(workflow: object, job: object) -> bool:
+    """Require GitHub CLI authentication to use the workflow token in place."""
+    if not isinstance(workflow, dict) or not isinstance(job, dict):
+        return False
+    for scope in (workflow, job):
+        environment = scope.get("env")
+        if environment is not None and (
+            not isinstance(environment, dict)
+            or any(
+                variable not in FRESHNESS_ALLOWED_ENVIRONMENT_VARIABLES
+                for variable in environment
+            )
+            or any(variable in environment for variable in ("GITHUB_TOKEN", "GH_TOKEN"))
+        ):
+            return False
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return False
+    audit_steps = [
+        step for step in steps if isinstance(step, dict) and step.get("id") == "audit"
+    ]
+    binding_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("env"), dict)
+        and step["env"].get("CHECKER_EXIT") == "${{ steps.audit.outputs.checker_exit }}"
+    ]
+    if (
+        len(audit_steps) != 1
+        or len(binding_steps) != 1
+        or binding_steps[0] is audit_steps[0]
+    ):
+        return False
+    token_steps: dict[str, list[dict[str, Any]]] = {
+        "GITHUB_TOKEN": [],
+        "GH_TOKEN": [],
+    }
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        environment = step.get("env")
+        if environment is not None and (
+            not isinstance(environment, dict)
+            or any(
+                variable not in FRESHNESS_ALLOWED_ENVIRONMENT_VARIABLES
+                for variable in environment
+            )
+        ):
+            return False
+        if not isinstance(environment, dict):
+            continue
+        for variable in token_steps:
+            if variable not in environment:
+                continue
+            if environment[variable] != FRESHNESS_TOKEN_EXPRESSION:
+                return False
+            token_steps[variable].append(step)
+    return (
+        token_steps["GITHUB_TOKEN"] == audit_steps
+        and token_steps["GH_TOKEN"] == binding_steps
+    )
+
+
+def freshness_shell_if_block_ranges(
+    segments: list[list[str]],
+) -> dict[int, int] | None:
+    """Return matching shell ``if``/``fi`` segment ranges."""
+    stack: list[int] = []
+    ranges: dict[int, int] = {}
+    for index, segment in enumerate(segments):
+        command = shell_command_prefix(segment)
+        if command and command[0] == "if":
+            stack.append(index)
+        elif command == ["fi"]:
+            if not stack:
+                return None
+            ranges[stack.pop()] = index
+    return None if stack else ranges
+
+
+def freshness_checker_result_binding_is_safe(workflow: object, job: object) -> bool:
+    """Require CHECKER_EXIT to come from the audit step output."""
+    if not isinstance(workflow, dict) or not isinstance(job, dict):
+        return False
+    for scope in (workflow, job):
+        environment = scope.get("env")
+        if environment is not None and (
+            not isinstance(environment, dict)
+            or any(
+                variable in environment
+                for variable in FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES
+            )
+        ):
+            return False
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return False
+    audit_steps: list[dict[str, Any]] = []
+    binding_steps: list[dict[str, Any]] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        if step.get("id") == "audit":
+            audit_steps.append(step)
+        environment = step.get("env")
+        if environment is not None and not isinstance(environment, dict):
+            return False
+        if isinstance(environment, dict):
+            protected_variables = {
+                variable
+                for variable in FRESHNESS_PROTECTED_ENVIRONMENT_VARIABLES
+                if variable in environment
+            }
+            if not protected_variables:
+                continue
+            if protected_variables != {"CHECKER_EXIT"}:
+                return False
+            if environment["CHECKER_EXIT"] != "${{ steps.audit.outputs.checker_exit }}":
+                return False
+            binding_steps.append(step)
+    if (
+        len(audit_steps) != 1
+        or len(binding_steps) != 1
+        or binding_steps[0] is audit_steps[0]
+    ):
+        return False
+    audit_run = audit_steps[0].get("run")
+    binding_run = binding_steps[0].get("run")
+    return (
+        isinstance(audit_run, str)
+        and freshness_checker_result_output_is_safe(audit_run)
+        and isinstance(binding_run, str)
+        and freshness_reconciliation_shell_options_are_safe(binding_run)
+        and freshness_checker_result_controls_reconciliation(binding_run)
+        and freshness_api_result_controls_issue_selection(binding_run)
+    )
+
+
+def freshness_checker_result_output_is_safe(text: str) -> bool:
+    """Require the audit status output to derive from the checker process."""
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    markdown_outputs = freshness_audit_markdown_outputs(text)
+    if markdown_outputs is None or len(markdown_outputs) != 1:
+        return False
+    if markdown_outputs != {FRESHNESS_AUDIT_MARKDOWN_OUTPUT}:
+        return False
+    markdown_output = next(iter(markdown_outputs))
+    checker_output_command = (
+        "printf",
+        "checker_exit=%s\\n",
+        "$checker_exit",
+        ">>",
+        "$GITHUB_OUTPUT",
+    )
+    audit_indices: list[int] = []
+    disable_errexit_indices: list[int] = []
+    capture_indices: list[int] = []
+    enable_errexit_indices: list[int] = []
+    fallback_indices: list[int] = []
+    output_indices: list[int] = []
+    missing_report_indices: list[int] = []
+    missing_report_paths: list[str] = []
+    fallback_write_indices: list[int] = []
+    for index, segment in enumerate(segments):
+        command = shell_command_prefix(segment)
+        if command and command[0] == "printf":
+            is_fallback = (
+                len(command) >= 5
+                and command[:2] == ["printf", "%s\\n"]
+                and command.count(">") == 1
+                and command[-2:] == [">", markdown_output]
+                and any(FRESHNESS_REMINDER_MARKER in token for token in command[2:-2])
+                and all(
+                    "$" not in token and "`" not in token and "%n" not in token
+                    for token in command[2:-2]
+                )
+            )
+            if tuple(command) != checker_output_command and not is_fallback:
+                return False
+        if segment[:2] == ["python", "scripts/audit_freshness.py"]:
+            audit_indices.append(index)
+            if option_values(segment, "--json-output") != (
+                FRESHNESS_AUDIT_JSON_OUTPUT,
+            ):
+                return False
+        if command == ["set", "+e"]:
+            disable_errexit_indices.append(index)
+        elif command == ["checker_exit=$?"]:
+            capture_indices.append(index)
+        elif command == ["set", "-e"]:
+            enable_errexit_indices.append(index)
+        elif command == ["checker_exit=2"]:
+            fallback_indices.append(index)
+        elif command == [
+            "printf",
+            "checker_exit=%s\\n",
+            "$checker_exit",
+            ">>",
+            "$GITHUB_OUTPUT",
+        ]:
+            output_indices.append(index)
+        elif "$GITHUB_OUTPUT" in command or any(
+            "checker_exit=" in token for token in command
+        ):
+            return False
+        elif freshness_variable_is_reassigned(command, "checker_exit"):
+            return False
+        elif command and command[0] == "set":
+            return False
+        if (
+            len(command) == 6
+            and command[:4] == ["if", "[[", "!", "-f"]
+            and command[-1] == "]]"
+        ):
+            missing_report_indices.append(index)
+            missing_report_paths.append(command[4])
+        redirect_indices = [
+            cursor for cursor, token in enumerate(command) if token == ">"
+        ]
+        if any(
+            cursor + 1 < len(command)
+            and command[cursor + 1] == markdown_output
+            and command[0] == "printf"
+            and any(FRESHNESS_REMINDER_MARKER in token for token in command)
+            for cursor in redirect_indices
+        ):
+            fallback_write_indices.append(index)
+    if (
+        len(audit_indices) != 1
+        or len(disable_errexit_indices) != 1
+        or len(capture_indices) != 1
+        or len(enable_errexit_indices) != 1
+        or len(fallback_indices) != 1
+        or len(output_indices) != 1
+    ):
+        return False
+    audit_index = audit_indices[0]
+    disable_errexit_index = disable_errexit_indices[0]
+    capture_index = capture_indices[0]
+    enable_errexit_index = enable_errexit_indices[0]
+    output_index = output_indices[0]
+    if (
+        disable_errexit_index >= audit_index
+        or capture_index != audit_index + 1
+        or enable_errexit_index != capture_index + 1
+        or capture_index >= output_index
+    ):
+        return False
+    if len(missing_report_indices) != 1:
+        return False
+    if missing_report_paths != [markdown_output] or len(fallback_write_indices) != 1:
+        return False
+    fallback_index = fallback_indices[0]
+    missing_report_index = missing_report_indices[0]
+    fallback_write_index = fallback_write_indices[0]
+    closing_indices = [
+        index
+        for index in range(missing_report_index + 1, len(segments))
+        if shell_command_prefix(segments[index]) == ["fi"]
+    ]
+    return (
+        missing_report_index < fallback_index < output_index
+        and capture_index < missing_report_index
+        and bool(closing_indices)
+        and missing_report_index < fallback_write_index < fallback_index
+        and fallback_index < closing_indices[0] < output_index
+    )
+
+
+def freshness_shell_expansions_are_safe(text: str) -> bool:
+    """Allow only the reviewed shell expansions used by the reminder contract."""
+    command_substitution = "issue_numbers_output=$("
+    if (
+        text.count("$(") != text.count(command_substitution)
+        or text.count(command_substitution) > 1
+    ):
+        return False
+    remaining = text.replace(command_substitution, "")
+    for expansion in FRESHNESS_ALLOWED_SHELL_EXPANSIONS:
+        boundary = "" if expansion.endswith(("}", "?")) else r"(?![A-Za-z0-9_])"
+        remaining = re.sub(re.escape(expansion) + boundary, "", remaining)
+    return "$" not in remaining
+
+
+def freshness_shell_definitions_are_safe(text: str) -> bool:
+    """Reject shell definitions that can shadow the checked executables."""
+    if (
+        "${{" in text
+        or FRESHNESS_SECRET_REFERENCE_PATTERN.search(text)
+        or FRESHNESS_INDIRECT_PARAMETER_PATTERN.search(text)
+        or not freshness_shell_expansions_are_safe(text)
+    ):
+        return False
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    if any(
+        freshness_variable_is_reassigned(segment, variable)
+        for segment in segments
+        for variable in FRESHNESS_SHELL_PROTECTED_ENVIRONMENT_VARIABLES
+    ):
+        return False
+    for segment in segments:
+        command = shell_command_prefix(segment)
+        if not command:
+            continue
+        executable = executable_basename(command[0])
+        if executable in {
+            "alias",
+            "doskey",
+            "new-alias",
+            "set-alias",
+            "unalias",
+            "hash",
+        }:
+            return False
+        if executable in {"declare", "export", "typeset"} and any(
+            token == "-f" or token.startswith("-f") for token in command[1:]
+        ):
+            return False
+    try:
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    for index, token in enumerate(tokens):
+        if token.casefold() == "function":
+            return False
+        if token.isidentifier() and (
+            (
+                index + 2 < len(tokens)
+                and tokens[index + 1] == "()"
+                and tokens[index + 2] == "{"
+            )
+            or (
+                index + 3 < len(tokens)
+                and tokens[index + 1 : index + 3] == ["(", ")"]
+                and tokens[index + 3] == "{"
+            )
+        ):
+            return False
+    for segment in segments:
+        command = shell_command_prefix(segment)
+        if not command:
+            continue
+        executable_index = shell_command_executable_index(command)
+        assignment_end = (
+            executable_index if executable_index is not None else len(command)
+        )
+        if any(
+            token.partition("=")[0] not in FRESHNESS_ALLOWED_SHELL_ASSIGNMENT_NAMES
+            for token in command[:assignment_end]
+        ):
+            return False
+        if executable_index is None:
+            continue
+        else:
+            executable_token = command[executable_index]
+            executable = executable_basename(executable_token)
+            if (
+                "/" in executable_token
+                or "\\" in executable_token
+                or executable not in FRESHNESS_ALLOWED_SHELL_COMMANDS
+            ) and not (
+                executable == "python"
+                and command[executable_index : executable_index + 2]
+                == list(FRESHNESS_AUDIT_COMMAND)
+            ):
+                return False
+            command_body = command[executable_index:]
+            if executable == "gh":
+                if len(command_body) < 2 or command_body[1] not in {"api", "issue"}:
+                    return False
+                if command_body[1] == "issue" and (
+                    len(command_body) < 3
+                    or command_body[2] not in {"close", "edit", "create"}
+                ):
+                    return False
+                if command_body[1] == "issue" and not freshness_issue_options_are_safe(
+                    command_body, 1, command_body[2]
+                ):
+                    return False
+            elif executable == "grep" and command_body != [
+                "grep",
+                "-Fq",
+                "$marker",
+                FRESHNESS_AUDIT_MARKDOWN_OUTPUT,
+            ]:
+                return False
+            elif executable == "mapfile" and command_body != [
+                "mapfile",
+                "-t",
+                "issue_numbers",
+                "<<<",
+                "$issue_numbers_output",
+            ]:
+                return False
+            elif executable == "exit" and command_body not in (
+                ["exit", "0"],
+                ["exit", "1"],
+            ):
+                return False
+            elif executable == "printf":
+                format_index = (
+                    2 if len(command_body) > 1 and command_body[1] == "--" else 1
+                )
+                if (
+                    len(command_body) <= format_index
+                    or "$" in command_body[format_index]
+                    or "`" in command_body[format_index]
+                    or "%n" in command_body[format_index]
+                    or any(
+                        token == "-v" or token.startswith("-v")
+                        for token in command_body[1:]
+                    )
+                ):
+                    return False
+    return True
+
+
+def freshness_shell_control_flow_is_safe(text: str) -> bool:
+    """Require the canonical guards around freshness mutations."""
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if (
+        text.count("$(") != 1
+        or "`" in text
+        or text.count("issue_numbers_output=$(") != 1
+    ):
+        return False
+    if any(
+        re.match(r"^(?:for|while|until|case|select|coproc|trap|function)\b", line)
+        or line in {"do", "done", "esac"}
+        or (re.search(r"(?:^|;)\s*[{}()]", line) and line != ")")
+        or re.search(r";\s*then\s*[{}()]", line)
+        or re.search(r";\s*(?:then\s+)?if\b", line)
+        or re.search(r";\s*(?:then\s+)?(?:fi|else)\b", line)
+        or re.search(r"[<>]\s*\(", line)
+        for line in lines
+    ):
+        return False
+    if_lines = [line for line in lines if line.startswith("if ")]
+    if any(line not in FRESHNESS_ALLOWED_SHELL_IF_LINES for line in if_lines):
+        return False
+    required_if_lines = (
+        FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
+        "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
+        "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
+    )
+    if any(if_lines.count(line) != 1 for line in required_if_lines):
+        return False
+    duplicate_guard_count = sum(
+        tuple(lines[index : index + len(FRESHNESS_DUPLICATE_ISSUE_GUARD)])
+        == FRESHNESS_DUPLICATE_ISSUE_GUARD
+        for index in range(len(lines) - len(FRESHNESS_DUPLICATE_ISSUE_GUARD) + 1)
+    )
+    if duplicate_guard_count != 1:
+        return False
+    clean_index = if_lines.index("if [[ \"$CHECKER_EXIT\" == '0' ]]; then")
+    stale_index = if_lines.index("if [[ \"$CHECKER_EXIT\" != '0' ]]; then")
+    duplicate_index = if_lines.index(FRESHNESS_DUPLICATE_ISSUE_GUARD[0])
+    if not duplicate_index < clean_index < stale_index:
+        return False
+    nonempty_indices = [
+        index
+        for index, line in enumerate(if_lines)
+        if line == 'if [[ -n "$issue_numbers_output" ]]; then'
+    ]
+    if len(nonempty_indices) > 1 or any(
+        index >= clean_index for index in nonempty_indices
+    ):
+        return False
+    array_guard_positions = [
+        index
+        for index, line in enumerate(if_lines)
+        if line == "if (( ${#issue_numbers[@]} == 1 )); then"
+    ]
+    if len(array_guard_positions) != 2:
+        return False
+    line_ranges: dict[int, int] = {}
+    stack: list[int] = []
+    for index, line in enumerate(lines):
+        if line.startswith("if "):
+            stack.append(index)
+        elif line == "fi":
+            if not stack:
+                return False
+            line_ranges[stack.pop()] = index
+    if stack:
+        return False
+    array_line_positions = [
+        index
+        for index, line in enumerate(lines)
+        if line == "if (( ${#issue_numbers[@]} == 1 )); then"
+    ]
+    close_line_positions = [
+        index for index, line in enumerate(lines) if line.startswith("gh issue close ")
+    ]
+    edit_line_positions = [
+        index for index, line in enumerate(lines) if line.startswith("gh issue edit ")
+    ]
+    create_line_positions = [
+        index for index, line in enumerate(lines) if line.startswith("gh issue create ")
+    ]
+    else_line_positions = [index for index, line in enumerate(lines) if line == "else"]
+    if not (
+        len(array_line_positions) == 2
+        and len(close_line_positions) == 1
+        and len(edit_line_positions) == 1
+        and len(create_line_positions) == 1
+        and len(else_line_positions) == 1
+    ):
+        return False
+    first_array_end = line_ranges[array_line_positions[0]]
+    second_array_end = line_ranges[array_line_positions[1]]
+    close_line = close_line_positions[0]
+    edit_line = edit_line_positions[0]
+    create_line = create_line_positions[0]
+    else_line = else_line_positions[0]
+    return (
+        array_line_positions[0] < close_line < first_array_end
+        and array_line_positions[1]
+        < edit_line
+        < else_line
+        < create_line
+        < second_array_end
+    )
+
+
+def freshness_marker_check_is_safe(text: str) -> bool:
+    """Require the report marker before status branching and Issue mutations."""
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    marker_assignment_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if freshness_variable_is_reassigned(segment, "marker")
+    ]
+    marker_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if len(segment) == 1 and segment[0] in FRESHNESS_MARKER_ASSIGNMENTS
+    ]
+    grep_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if segment == ["grep", "-Fq", "$marker", FRESHNESS_AUDIT_MARKDOWN_OUTPUT]
+    ]
+    clean_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if shell_command_prefix(segment)
+        == ["if", "[[", "$CHECKER_EXIT", "==", "0", "]]"]
+    ]
+    return (
+        len(marker_assignment_indices) == 1
+        and len(marker_indices) == 1
+        and len(grep_indices) == 1
+        and len(clean_indices) == 1
+        and marker_indices[0] < grep_indices[0] < clean_indices[0]
+    )
+
+
+def freshness_reconciliation_shell_options_are_safe(text: str) -> bool:
+    """Require reconciliation to keep errexit, nounset, and pipefail enabled."""
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    if any(
+        token in {">", ">>", ">|", "&>", "&>>"}
+        for segment in segments
+        for token in segment
+    ):
+        return False
+    commands = [shell_command_prefix(segment) for segment in segments]
+    set_commands = [command for command in commands if command and command[0] == "set"]
+    return (
+        bool(commands)
+        and commands[0] == ["set", "-euo", "pipefail"]
+        and set_commands == [["set", "-euo", "pipefail"]]
+    )
+
+
+def freshness_summary_output_is_safe(text: str) -> bool:
+    """Require the job summary to publish only the checked Markdown report."""
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    cat_commands = [
+        command
+        for segment in segments
+        if (command := shell_command_prefix(segment)) and command[0] == "cat"
+    ]
+    return cat_commands == [list(FRESHNESS_SUMMARY_COMMAND)]
+
+
+def freshness_checker_result_controls_reconciliation(text: str) -> bool:
+    """Require checker status to select clean versus stale Issue mutations."""
+    if not freshness_shell_control_flow_is_safe(text):
+        return False
+    if not freshness_marker_check_is_safe(text):
+        return False
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    if_ranges = freshness_shell_if_block_ranges(segments)
+    if if_ranges is None:
+        return False
+    title_assignments = [
+        shell_command_prefix(segment)
+        for segment in segments
+        if freshness_variable_is_reassigned(shell_command_prefix(segment), "title")
+    ]
+    title_assignment_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if freshness_variable_is_reassigned(shell_command_prefix(segment), "title")
+    ]
+    title_references = [
+        token
+        for segment in segments
+        for token in shell_command_prefix(segment)
+        if freshness_variable_reference(token, "title")
+    ]
+    if title_assignments and title_assignments != [[FRESHNESS_TITLE_ASSIGNMENT]]:
+        return False
+    if title_references and not title_assignments:
+        return False
+    issue_numbers_initializations = [
+        shell_command_prefix(segment)
+        for segment in segments
+        if shell_command_prefix(segment) == [FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]
+    ]
+    if issue_numbers_initializations != [[FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]]:
+        return False
+    issue_numbers_reassignments = [
+        shell_command_prefix(segment)
+        for segment in segments
+        if freshness_variable_is_reassigned(
+            shell_command_prefix(segment), "issue_numbers"
+        )
+        and shell_command_prefix(segment)
+        != ["mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"]
+    ]
+    if issue_numbers_reassignments != [[FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]]:
+        return False
+    clean_tests: list[int] = []
+    failure_tests: list[int] = []
+    clean_exits: list[int] = []
+    failure_exits: list[int] = []
+    close_mutations: list[int] = []
+    edit_mutations: list[int] = []
+    create_mutations: list[int] = []
+    for index, segment in enumerate(segments):
+        command = shell_command_prefix(segment)
+        if command == ["if", "[[", "$CHECKER_EXIT", "==", "0", "]]"]:
+            clean_tests.append(index)
+        if command == ["if", "[[", "$CHECKER_EXIT", "!=", "0", "]]"]:
+            failure_tests.append(index)
+        if command == ["exit", "0"]:
+            clean_exits.append(index)
+        if command == ["exit", "1"]:
+            failure_exits.append(index)
+        issue_positions = issue_subcommand_positions(command)
+        if issue_positions is None:
+            return False
+        for position in issue_positions:
+            if position + 1 >= len(command):
+                return False
+            subcommand = command[position + 1]
+            if subcommand in {"close", "edit"} and position + 2 >= len(command):
+                return False
+            if subcommand == "close":
+                close_mutations.append(index)
+            elif subcommand == "edit":
+                edit_mutations.append(index)
+            elif subcommand == "create":
+                create_mutations.append(index)
+            else:
+                return False
+    if not (
+        len(clean_tests) == 1
+        and len(failure_tests) == 1
+        and len(clean_exits) == 1
+        and len(close_mutations) == 1
+        and len(edit_mutations) == 1
+        and len(create_mutations) == 1
+        # One failure exit guards duplicate issues; one propagates stale status.
+        and len(failure_exits) == 2
+    ):
+        return False
+    issue_numbers_initialization_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if shell_command_prefix(segment) == [FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]
+    ]
+    mapfile_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if shell_command_prefix(segment)
+        == ["mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"]
+    ]
+    if (
+        len(issue_numbers_initialization_indices) != 1
+        or len(mapfile_indices) != 1
+        or issue_numbers_initialization_indices[0] >= mapfile_indices[0]
+    ):
+        return False
+    clean_test = clean_tests[0]
+    clean_exit = clean_exits[0]
+    failure_test = failure_tests[0]
+    clean_block_end = if_ranges[clean_test]
+    failure_block_end = if_ranges[failure_test]
+    stale_mutations = [*edit_mutations, *create_mutations]
+    if title_assignments and title_assignment_indices[0] >= min(
+        [*close_mutations, *edit_mutations, *create_mutations]
+    ):
+        return False
+    failure_exit_after = [
+        exit_index for exit_index in failure_exits if exit_index > failure_test
+    ]
+    return (
+        clean_test
+        < close_mutations[0]
+        < clean_exit
+        < clean_block_end
+        < min(stale_mutations)
+        and max(stale_mutations) < failure_test
+        and bool(failure_exit_after)
+        and failure_test < min(failure_exit_after) < failure_block_end
+    )
+
+
+def has_value_bearing_option(text: str, option: str) -> bool:
+    """Return whether shell text contains a value-bearing CLI option token."""
+    try:
+        tokens = shlex.split(text, comments=True, posix=True)
+    except ValueError:
+        return False
+    values = option_values(tokens, option)
+    return values is not None and bool(values)
+
+
+def has_explicit_repository_binding(text: str) -> bool:
+    """Return whether shell text contains a value-bearing ``gh --repo`` option."""
+    return has_value_bearing_option(text, "--repo")
+
+
+def shell_command_segments(text: str) -> list[list[str]] | None:
+    """Tokenize shell lines and split them at control operators."""
+    normalized = re.sub(r"\\\r?\n", " ", text)
+    segments: list[list[str]] = []
+    for line in normalized.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            return None
+        current: list[str] = []
+        for token in [*tokens, ";"]:
+            if token and all(
+                character in SHELL_CONTROL_CHARACTERS for character in token
+            ):
+                if current:
+                    segments.append(current)
+                    current = []
+            else:
+                current.append(token)
+    return segments
+
+
+def executable_basename(token: str) -> str:
+    """Return a case-insensitive executable basename from either path style."""
+    return re.split(r"[/\\]", token)[-1].casefold()
+
+
+def is_github_cli_executable(token: str) -> bool:
+    """Return whether a token invokes gh, including path-qualified Windows forms."""
+    return executable_basename(token) in GITHUB_CLI_EXECUTABLE_NAMES
+
+
+def shell_command_prefix(segment: list[str]) -> list[str]:
+    """Remove shell grammar words that can precede a command body."""
+    normalized = list(segment)
+    while normalized and normalized[0] in SHELL_COMMAND_PREFIXES:
+        normalized.pop(0)
+    return normalized
+
+
+def shell_command_executable_index(tokens: list[str]) -> int | None:
+    """Return the executable position after valid shell assignments."""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if "=" not in token or not token.partition("=")[0].isidentifier():
+            break
+        index += 1
+    return index if index < len(tokens) else None
+
+
+def has_directory_change_command(tokens: list[str]) -> bool:
+    """Reject commands that can move the checker away from the repository root."""
+    return any(
+        executable_basename(token) in SHELL_DIRECTORY_CHANGE_COMMANDS
+        for token in tokens
+    )
+
+
+def has_repository_root_working_directory(document: dict[str, Any]) -> bool:
+    """Require every freshness run step to inherit the repository root directory."""
+    scopes: list[Any] = [document]
+    jobs = document.get("jobs", {})
+    if not isinstance(jobs, dict) or not jobs:
+        return False
+    scopes.extend(jobs.values())
+    for scope in scopes:
+        if not isinstance(scope, dict):
+            return False
+        defaults = scope.get("defaults")
+        if defaults is not None:
+            if not isinstance(defaults, dict):
+                return False
+            run_defaults = defaults.get("run")
+            if run_defaults is not None:
+                if not isinstance(run_defaults, dict):
+                    return False
+                if (
+                    "working-directory" in run_defaults
+                    and run_defaults["working-directory"] != "."
+                ):
+                    return False
+        steps = scope.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        if any(
+            isinstance(step, dict)
+            and "working-directory" in step
+            and step["working-directory"] != "."
+            for step in steps
+        ):
+            return False
+    return True
+
+
+def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
+    """Require freshness jobs to expose their run commands for inspection."""
+    jobs = document.get("jobs", {})
+    return (
+        isinstance(jobs, dict)
+        and bool(jobs)
+        and all(isinstance(job, dict) and "uses" not in job for job in jobs.values())
+    )
+
+
+def has_freshness_repository_context(document: dict[str, Any]) -> bool:
+    """Reject workflow overrides of the runner's current repository variable."""
+    jobs = document.get("jobs", {})
+    if not isinstance(jobs, dict) or not jobs:
+        return False
+    for scope in [document, *jobs.values()]:
+        if not isinstance(scope, dict):
+            return False
+        environment = scope.get("env")
+        if environment is not None:
+            if not isinstance(environment, dict):
+                return False
+            if "GITHUB_REPOSITORY" in environment:
+                return False
+        steps = scope.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        for step in steps:
+            if not isinstance(step, dict):
+                return False
+            step_environment = step.get("env")
+            if step_environment is not None:
+                if not isinstance(step_environment, dict):
+                    return False
+                if "GITHUB_REPOSITORY" in step_environment:
+                    return False
+    return True
+
+
+def option_values(tokens: list[str], option: str) -> tuple[str, ...] | None:
+    """Return unambiguous values for one option, or ``None`` on malformed use."""
+    option_prefix = f"{option}="
+    values: list[str] = []
+    for index, token in enumerate(tokens):
+        if token == "--":
+            break
+        if token.startswith(option_prefix):
+            value = token.partition("=")[2].strip()
+            if not value:
+                return None
+            values.append(value)
+            continue
+        if token == option and index + 1 < len(tokens):
+            value = tokens[index + 1].strip()
+            if not value or value.startswith("-"):
+                return None
+            values.append(value)
+        elif token == option:
+            return None
+    return tuple(values)
+
+
+def option_has_one_value(
+    tokens: list[str], option: str, expected_values: set[str] | None = None
+) -> bool:
+    """Return whether one option has exactly one optionally expected value."""
+    values = option_values(tokens, option)
+    return bool(
+        values
+        and len(values) == 1
+        and (expected_values is None or values[0] in expected_values)
+    )
+
+
+def has_embedded_command(tokens: list[str]) -> bool:
+    """Reject quoted command text that the shell tokenizer cannot execute safely."""
+    patterns = (EMBEDDED_GITHUB_COMMAND_PATTERN, EMBEDDED_FRESHNESS_AUDIT_PATTERN)
+    for token in tokens:
+        if not any(character.isspace() for character in token):
+            continue
+        if any(pattern.search(token) for pattern in patterns):
+            return True
+    direct_command = len(tokens) >= 2 and (
+        tokens[0] == "gh"
+        and tokens[1] in {"api", "issue"}
+        or tuple(tokens[:2]) == ("python", "scripts/audit_freshness.py")
+    )
+    return not direct_command and any(
+        pattern.search(" ".join(tokens)) for pattern in patterns
+    )
+
+
+def has_dynamic_shell_executor(tokens: list[str]) -> bool:
+    """Reject command interpreters that could hide an unparseable mutation."""
+    index = 0
+    while index < len(tokens):
+        if "=" not in tokens[index]:
+            break
+        assignment_name = tokens[index].partition("=")[0]
+        if not assignment_name.isidentifier():
+            break
+        index += 1
+    if index >= len(tokens):
+        return False
+    command = executable_basename(tokens[index])
+    if command in SHELL_COMMAND_WRAPPERS or command in {
+        "call",
+        "iex",
+        "invoke-expression",
+        "start",
+        "start-process",
+    }:
+        return True
+    if command in DYNAMIC_SHELL_EXECUTORS:
+        return True
+    if not command.startswith(("$", "`")) or command in {"${", "$("}:
+        return False
+    if tokens[index].startswith("${{") or (
+        len(tokens) > index + 1 and tokens[index + 1].casefold() in SHELL_TEST_OPERATORS
+    ):
+        return False
+    if len(tokens) > 1:
+        return True
+    return re.fullmatch(r"\$[A-Z_][A-Z0-9_]*", tokens[index]) is None
+
+
+def network_client_is_mutation(tokens: list[str]) -> bool:
+    """Reject state-changing calls through known direct HTTP clients."""
+    if not tokens or executable_basename(tokens[0]) not in UNSAFE_NETWORK_EXECUTORS:
+        return False
+    methods: list[str | None] = []
+    has_body = False
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        normalized = token.casefold()
+        if token == "-X" or normalized in NETWORK_METHOD_OPTIONS:
+            if index + 1 >= len(tokens):
+                methods.append(None)
+            else:
+                methods.append(tokens[index + 1])
+                index += 1
+        elif any(
+            normalized.startswith(f"{option}=") for option in NETWORK_METHOD_OPTIONS
+        ):
+            methods.append(token.partition("=")[2])
+        elif token.startswith("-X") and token != "-X":
+            methods.append(token[2:].lstrip("="))
+        elif token == "-G" or normalized == "--get":
+            methods.append("GET")
+        elif token == "-I" or normalized == "--head":
+            methods.append("HEAD")
+        elif (
+            normalized in NETWORK_BODY_OPTIONS
+            or any(
+                normalized.startswith(option)
+                for option in (
+                    "--data=",
+                    "--data-",
+                    "--form=",
+                    "--post-data=",
+                    "--post-file=",
+                    "--upload-file=",
+                )
+            )
+            or token == "-d"
+            or token == "-F"
+            or token == "-T"
+            or token.startswith(("-d", "-F", "-T"))
+        ):
+            has_body = True
+        index += 1
+    if any(
+        method is None or method.strip().upper() not in GITHUB_API_READ_ONLY_METHODS
+        for method in methods
+    ):
+        return True
+    return has_body and not methods
+
+
+def github_api_is_mutation(tokens: list[str], position: int) -> bool:
+    """Return whether one ``gh api`` invocation can issue a state-changing request."""
+    api_tokens = tokens[position:]
+    methods: list[str | None] = []
+    has_body = False
+    index = 2
+    while index < len(api_tokens):
+        token = api_tokens[index]
+        if token in GITHUB_API_METHOD_OPTIONS:
+            if index + 1 >= len(api_tokens):
+                methods.append(None)
+            else:
+                methods.append(api_tokens[index + 1])
+                index += 1
+        elif token.startswith("--method="):
+            methods.append(token.partition("=")[2])
+        elif token.startswith("-X") and token != "-X":
+            methods.append(token[2:].lstrip("="))
+        elif (
+            token in GITHUB_API_BODY_OPTIONS
+            or any(
+                token.startswith(f"{option}=")
+                for option in {"--field", "--input", "--raw-field"}
+            )
+            or (token.startswith("-f") and token != "-f")
+            or (token.startswith("-F") and token != "-F")
+        ):
+            has_body = True
+        index += 1
+    if any(
+        method is None or method.strip().upper() not in GITHUB_API_READ_ONLY_METHODS
+        for method in methods
+    ):
+        return True
+    return has_body and not methods
+
+
+def issue_subcommand_positions(tokens: list[str]) -> tuple[int, ...] | None:
+    """Return literal ``gh issue`` positions, including the global ``--repo`` form."""
+    if not tokens:
+        return ()
+    if not is_github_cli_executable(tokens[0]):
+        return (
+            None
+            if any(
+                is_github_cli_executable(tokens[index]) and tokens[index + 1] == "issue"
+                for index in range(1, len(tokens) - 1)
+            )
+            else ()
+        )
+    issue_position = 1
+    if issue_position < len(tokens) and tokens[issue_position] in {"--repo", "-R"}:
+        issue_position += 2
+    elif issue_position < len(tokens) and (
+        tokens[issue_position].startswith("--repo=")
+        or (tokens[issue_position].startswith("-R") and tokens[issue_position] != "-R")
+    ):
+        issue_position += 1
+    adjacent_positions = [
+        index
+        for index in range(len(tokens) - 1)
+        if is_github_cli_executable(tokens[index]) and tokens[index + 1] == "issue"
+    ]
+    if any(index != 0 for index in adjacent_positions):
+        return None
+    if issue_position < len(tokens) and tokens[issue_position] == "issue":
+        return (issue_position,)
+    if "issue" in tokens[issue_position + 1 :]:
+        return None
+    return ()
+
+
+def freshness_issue_options_are_safe(
+    tokens: list[str], issue_position: int, subcommand: str
+) -> bool:
+    """Reject unreviewed options on freshness Issue mutations."""
+    allowed_options = FRESHNESS_ALLOWED_ISSUE_OPTIONS.get(subcommand)
+    if allowed_options is None:
+        return False
+    arguments = tokens[issue_position + 2 :]
+    if subcommand in {"close", "edit"}:
+        if not arguments:
+            return False
+        arguments = arguments[1:]
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        option, separator, value = token.partition("=")
+        if not token.startswith("-") or option not in allowed_options:
+            return False
+        if separator:
+            if not value.strip():
+                return False
+            index += 1
+            continue
+        if index + 1 >= len(arguments) or arguments[index + 1].startswith("-"):
+            return False
+        index += 2
+    title_values = option_values(tokens, "--title")
+    if title_values is None or subcommand == "create" and len(title_values) != 1:
+        return False
+    if subcommand == "edit" and len(title_values) > 1:
+        return False
+    if any(
+        value not in {"$title", "${title}"}
+        and any(character in value for character in "$`")
+        for value in title_values
+    ):
+        return False
+    return True
+
+
+def reminder_issue_mutation_blocks(
+    text: str,
+) -> list[tuple[str, list[str]]] | None:
+    """Return parsed reminder mutations, or ``None`` for ambiguous shell text."""
+    segments = shell_command_segments(text)
+    if segments is None:
+        return None
+    commands: list[tuple[str, list[str]]] = []
+    for segment in segments:
+        tokens = shell_command_prefix(segment)
+        if has_embedded_command(tokens) or has_dynamic_shell_executor(tokens):
+            return None
+        if network_client_is_mutation(tokens):
+            return None
+        api_positions = [
+            index
+            for index in range(len(tokens) - 1)
+            if is_github_cli_executable(tokens[index]) and tokens[index + 1] == "api"
+        ]
+        if any(github_api_is_mutation(tokens, position) for position in api_positions):
+            return None
+        issue_positions = issue_subcommand_positions(tokens)
+        if issue_positions is None:
+            return None
+        if not issue_positions:
+            continue
+        issue_position = issue_positions[0]
+        if tokens[issue_position] != "issue" or len(tokens) <= issue_position + 1:
+            return None
+        subcommand = tokens[issue_position + 1]
+        if subcommand in REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS:
+            continue
+        if subcommand not in REMINDER_ISSUE_MUTATION_SUBCOMMANDS:
+            return None
+        if (
+            subcommand in REMINDER_ISSUE_ALLOWED_MUTATIONS
+            and not freshness_issue_options_are_safe(tokens, issue_position, subcommand)
+        ):
+            return None
+        commands.append((subcommand, tokens))
+    return commands
+
+
+def has_repo_bound_issue_reconciliation(
+    text: str,
+    expected_body_files: set[str] | None = None,
+    expected_repository_values: set[str] | None = None,
+) -> bool:
+    """Require every reminder issue mutation to bind its repository."""
+    commands = reminder_issue_mutation_blocks(text)
+    if commands is None:
+        return False
+    body_commands = [
+        (subcommand, tokens)
+        for subcommand, tokens in commands
+        if subcommand in REMINDER_ISSUE_BODY_MUTATIONS
+        and option_has_one_value(tokens, "--body-file", expected_body_files)
+    ]
+    return bool(body_commands) and all(
+        subcommand in REMINDER_ISSUE_ALLOWED_MUTATIONS
+        and option_has_one_value(tokens, "--repo", expected_repository_values)
+        and (
+            subcommand == "close"
+            or option_has_one_value(tokens, "--body-file", expected_body_files)
+        )
+        and (subcommand != "create" or option_has_one_value(tokens, "--title"))
+        for subcommand, tokens in commands
+    )
+
+
+def has_freshness_repository_api_reads(
+    text: str, *, require_lookup: bool = True
+) -> bool:
+    """Validate freshness API lookups and optionally require one lookup."""
+    saw_api = False
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    for segment in segments:
+        tokens = shell_command_prefix(segment)
+        if any(
+            token == "GITHUB_REPOSITORY"
+            or token.partition("=")[0] == "GITHUB_REPOSITORY"
+            for token in tokens
+        ):
+            return False
+        github_positions = [
+            index
+            for index, token in enumerate(tokens)
+            if is_github_cli_executable(token)
+        ]
+        if any(
+            position + 1 < len(tokens)
+            and tokens[position + 1].startswith("-")
+            and "api" in tokens[position + 2 :]
+            for position in github_positions
+        ):
+            return False
+        api_positions = [
+            index
+            for index in range(len(tokens) - 1)
+            if is_github_cli_executable(tokens[index]) and tokens[index + 1] == "api"
+        ]
+        for position in api_positions:
+            saw_api = True
+            if has_embedded_command(tokens) or has_dynamic_shell_executor(tokens):
+                return False
+            if github_api_is_mutation(tokens, position):
+                return False
+            api_arguments = tokens[position + 2 :]
+            if "--" in api_arguments:
+                return False
+            if tuple(token for token in api_arguments if token == "--paginate") != (
+                "--paginate",
+            ):
+                return False
+            methods = [
+                api_arguments[index + 1]
+                for index, token in enumerate(api_arguments[:-1])
+                if token in GITHUB_API_METHOD_OPTIONS
+            ]
+            methods.extend(
+                token.partition("=")[2]
+                for token in api_arguments
+                if token.startswith("--method=")
+            )
+            methods.extend(
+                token[2:].lstrip("=")
+                for token in api_arguments
+                if token.startswith("-X") and token != "-X"
+            )
+            if len(methods) > 1 or any(
+                method.strip().upper() != "GET" for method in methods
+            ):
+                return False
+            hostname = option_values(api_arguments, "--hostname")
+            if hostname != ("github.com",):
+                return False
+            jq_values = option_values(api_arguments, "--jq")
+            if jq_values is None or jq_values != (FRESHNESS_REMINDER_API_JQ,):
+                return False
+            endpoints = [token for token in api_arguments if token.startswith("repos/")]
+            if endpoints != [FRESHNESS_REMINDER_API_ENDPOINT]:
+                return False
+            if any(
+                token not in FRESHNESS_REMINDER_API_ALLOWED_ARGUMENTS
+                for token in api_arguments
+            ):
+                return False
+            method_forms = sum(
+                token in {"--method", "-X"}
+                or token in {"--method=GET", "-XGET", "-X=GET"}
+                for token in api_arguments
+            )
+            expected_argument_count = (
+                1
+                + 1
+                + (2 if "--hostname" in api_arguments else 1)
+                + (2 if "--jq" in api_arguments else 1)
+                + (
+                    0
+                    if method_forms == 0
+                    else 2
+                    if "--method" in api_arguments or "-X" in api_arguments
+                    else 1
+                )
+            )
+            if len(api_arguments) != expected_argument_count:
+                return False
+    return saw_api or not require_lookup
+
+
+def freshness_command_order_is_valid(text: str) -> bool:
+    """Require the audit, lookup, and mutation phases to run in that order."""
+    audit_positions: list[int] = []
+    api_positions: list[int] = []
+    mutation_positions: list[int] = []
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        if any(token in SHELL_UNSAFE_PHASE_OPERATORS for token in lexer):
+            return False
+    except ValueError:
+        return False
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    for command_index, segment in enumerate(segments):
+        tokens = shell_command_prefix(segment)
+        if tokens[:2] == list(FRESHNESS_AUDIT_COMMAND):
+            audit_positions.append(command_index)
+        api_commands = [
+            index
+            for index in range(len(tokens) - 1)
+            if is_github_cli_executable(tokens[index]) and tokens[index + 1] == "api"
+        ]
+        api_positions.extend(command_index for _ in api_commands)
+        issue_positions = issue_subcommand_positions(tokens)
+        if issue_positions is None:
+            return False
+        mutation_positions.extend(
+            command_index
+            for position in issue_positions
+            if position + 1 < len(tokens)
+            and tokens[position + 1] in REMINDER_ISSUE_ALLOWED_MUTATIONS
+        )
+    return bool(audit_positions and api_positions and mutation_positions) and (
+        max(audit_positions) < min(api_positions) < min(mutation_positions)
+        and max(api_positions) < min(mutation_positions)
+    )
+
+
+def freshness_api_result_assignments(
+    text: str,
+) -> tuple[list[str], list[tuple[str, int]]] | None:
+    """Return shell tokens and assignments whose substitution invokes ``gh api``."""
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    assignments: list[tuple[str, int]] = []
+    for index, token in enumerate(tokens[:-1]):
+        if not token.endswith("=$"):
+            continue
+        variable = token[:-2]
+        if not variable.isidentifier() or tokens[index + 1] != "(":
+            continue
+        depth = 1
+        api_found = False
+        closing_index: int | None = None
+        for cursor in range(index + 2, len(tokens)):
+            current = tokens[cursor]
+            if current == "(":
+                depth += 1
+            elif current == ")":
+                depth -= 1
+                if depth == 0:
+                    closing_index = cursor
+                    break
+            elif (
+                current == "gh"
+                and cursor + 1 < len(tokens)
+                and tokens[cursor + 1] == "api"
+            ):
+                api_found = True
+        if api_found and closing_index is not None:
+            assignments.append((variable, closing_index))
+    return tokens, assignments
+
+
+def freshness_api_result_is_consumed(text: str) -> bool:
+    """Require the freshness API result to be assigned and consumed later."""
+    parsed = freshness_api_result_assignments(text)
+    if parsed is None:
+        return False
+    tokens, assignments = parsed
+    for variable, closing_index in assignments:
+        plain_reference = f"${variable}"
+        braced_reference = f"${{{variable}"
+        for current in tokens[closing_index + 1 :]:
+            if current.startswith(f"{variable}="):
+                break
+            if current == plain_reference:
+                return True
+            if current.startswith(braced_reference):
+                suffix = current[len(braced_reference) :]
+                if not suffix or suffix[0] in "}:#%/^,?+-=":
+                    return True
+            if current.startswith(plain_reference):
+                suffix = current[len(plain_reference) :]
+                if not suffix or not (suffix[0].isalnum() or suffix[0] == "_"):
+                    return True
+    return False
+
+
+def freshness_variable_reference(token: str, variable: str) -> bool:
+    """Return whether one shell token references the named variable."""
+    plain_reference = f"${variable}"
+    if token == plain_reference:
+        return True
+    braced_reference = f"${{{variable}"
+    if token.startswith(braced_reference):
+        suffix = token[len(braced_reference) :]
+        return not suffix or suffix[0] in ":#%/^,?+-=[]}"
+    if token.startswith(plain_reference):
+        suffix = token[len(plain_reference) :]
+        return not suffix or not (suffix[0].isalnum() or suffix[0] == "_")
+    return False
+
+
+def freshness_issue_argument_reference(token: str, variable: str) -> bool:
+    """Allow only an unmodified lookup result as an Issue argument."""
+    return token in {
+        f"${variable}",
+        f"${{{variable}}}",
+        f"${{{variable}[0]}}",
+    }
+
+
+def freshness_variable_is_reassigned(tokens: list[str], variable: str) -> bool:
+    """Return whether shell tokens overwrite or unset the named variable."""
+    assignment_prefixes = (f"{variable}=", f"{variable}+=", f"{variable}[")
+    if any(token.startswith(assignment_prefixes) for token in tokens):
+        return True
+    if any(
+        re.search(rf"\$\{{{re.escape(variable)}(?:\[[^]]*\])?(?::)?=", token)
+        for token in tokens
+    ):
+        return True
+    if not tokens:
+        return False
+    executable = executable_basename(tokens[0])
+    if executable in {
+        "declare",
+        "export",
+        "local",
+        "mapfile",
+        "read",
+        "readarray",
+        "readonly",
+        "typeset",
+        "unset",
+    }:
+        return variable in tokens[1:]
+    if executable != "printf":
+        return False
+    if any("%n" in token for token in tokens[1:]):
+        return True
+    return any(
+        (token == "-v" and index + 1 < len(tokens) and tokens[index + 1] == variable)
+        or (token.startswith("-v") and token[2:] == variable)
+        for index, token in enumerate(tokens[1:], 1)
+    )
+
+
+def freshness_api_result_controls_issue_selection(text: str) -> bool:
+    """Require lookup output to identify the Issue passed to a mutation."""
+    parsed = freshness_api_result_assignments(text)
+    if parsed is None:
+        return False
+    if not freshness_api_result_is_consumed(text):
+        return False
+    _, api_result_assignments = parsed
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    result_variables = {variable for variable, _ in api_result_assignments}
+    api_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if any(
+            is_github_cli_executable(token)
+            and index_token + 1 < len(segment)
+            and segment[index_token + 1] == "api"
+            for index_token, token in enumerate(segment)
+        )
+    ]
+    collections: list[tuple[int, str]] = []
+    for api_index in api_indices:
+        for variable in result_variables:
+            if not any(
+                freshness_variable_is_reassigned(segment, variable)
+                for segment in segments[api_index + 1 :]
+            ):
+                collections.append((api_index, variable))
+
+    for collection_index, segment in enumerate(segments):
+        command = shell_command_prefix(segment)
+        if not command or command[0] not in {"mapfile", "readarray"}:
+            continue
+        redirect_indices = [
+            index for index, token in enumerate(command) if token == "<<<"
+        ]
+        if len(redirect_indices) != 1:
+            continue
+        redirect_index = redirect_indices[0]
+        if redirect_index < 2 or redirect_index + 1 >= len(command):
+            continue
+        target = command[redirect_index - 1]
+        source = command[redirect_index + 1]
+        if not target.isidentifier():
+            continue
+        source_variables = [
+            variable
+            for variable in result_variables
+            if freshness_variable_reference(source, variable)
+        ]
+        if not source_variables:
+            continue
+        for api_index in api_indices:
+            if api_index >= collection_index:
+                continue
+            if any(
+                freshness_variable_is_reassigned(segment, variable)
+                for variable in source_variables
+                for segment in segments[api_index + 1 : collection_index]
+            ):
+                continue
+            collections.append((collection_index, target))
+            break
+
+    if not collections:
+        return False
+    saw_bound_mutation = False
+    for mutation_index, segment in enumerate(segments):
+        command = shell_command_prefix(segment)
+        issue_positions = issue_subcommand_positions(command)
+        if issue_positions is None:
+            return False
+        for position in issue_positions:
+            if position + 1 >= len(command):
+                return False
+            subcommand = command[position + 1]
+            if subcommand == "create":
+                continue
+            if subcommand not in {"close", "edit"}:
+                continue
+            if position + 2 >= len(command):
+                return False
+            issue_argument = command[position + 2]
+            mutation_bound = False
+            for collection_index, variable in collections:
+                if (
+                    collection_index >= mutation_index
+                    or not freshness_issue_argument_reference(issue_argument, variable)
+                ):
+                    continue
+                if any(
+                    freshness_variable_is_reassigned(segment, variable)
+                    for segment in segments[collection_index + 1 : mutation_index]
+                ):
+                    continue
+                mutation_bound = True
+                break
+            if not mutation_bound:
+                return False
+            saw_bound_mutation = True
+    return saw_bound_mutation
+
+
+def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
+    """Return checker Markdown outputs, or ``None`` for an ambiguous invocation."""
+    outputs: set[str] = set()
+    saw_audit = False
+    segments = shell_command_segments(text)
+    if segments is None:
+        return None
+    for segment in segments:
+        tokens = shell_command_prefix(segment)
+        if (
+            has_embedded_command(tokens)
+            or has_dynamic_shell_executor(tokens)
+            or has_directory_change_command(tokens)
+        ):
+            return None
+        audit_positions = [
+            index
+            for index in range(len(tokens) - 1)
+            if tokens[index : index + 2] == list(FRESHNESS_AUDIT_COMMAND)
+        ]
+        if not audit_positions:
+            continue
+        if audit_positions[0] != 0 or len(audit_positions) != 1:
+            return None
+        saw_audit = True
+        values = {
+            option: option_values(tokens, option)
+            for option in FRESHNESS_AUDIT_REQUIRED_OPTIONS
+        }
+        if any(value is None or len(value) != 1 for value in values.values()):
+            return None
+        repository_root = values["--repository-root"]
+        tracker_registry = option_values(tokens, "--tracker-registry")
+        if (
+            repository_root is None
+            or repository_root[0] != FRESHNESS_AUDIT_REPOSITORY_ROOT
+            or tracker_registry is None
+            or len(tracker_registry) > 1
+            or tracker_registry
+            and tracker_registry[0] != FRESHNESS_AUDIT_TRACKER_REGISTRY
+        ):
+            return None
+        expected_argument_count = 2
+        for option in FRESHNESS_AUDIT_REQUIRED_OPTIONS:
+            expected_argument_count += (
+                1 if any(token.startswith(f"{option}=") for token in tokens) else 2
+            )
+        if tracker_registry:
+            expected_argument_count += (
+                1
+                if any(token.startswith("--tracker-registry=") for token in tokens)
+                else 2
+            )
+        if len(tokens) != expected_argument_count:
+            return None
+        json_output = values["--json-output"]
+        markdown_output = values["--markdown-output"]
+        assert json_output is not None and markdown_output is not None
+        if json_output[0] == markdown_output[0]:
+            return None
+        outputs.add(markdown_output[0])
+    return outputs if saw_audit else set()
+
+
+def has_freshness_job_reconciliation(workflow: object, text: str) -> bool:
+    """Require one job to publish and reconcile the same freshness report."""
+    if (
+        not isinstance(workflow, dict)
+        or not has_least_privileged_freshness_permissions(workflow)
+        or not has_repository_root_working_directory(workflow)
+        or not has_direct_freshness_jobs(workflow)
+        or not has_freshness_repository_context(workflow)
+        or not has_repo_bound_issue_reconciliation(
+            text, expected_repository_values={FRESHNESS_REMINDER_REPOSITORY}
+        )
+        or not has_freshness_repository_api_reads(text)
+    ):
+        return False
+    jobs = workflow.get("jobs", {})
+    assert isinstance(jobs, dict)
+    reconciliation_jobs = 0
+    mutation_jobs = 0
+    for job in jobs.values():
+        assert isinstance(job, dict)
+        steps = job.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        job_commands = [
+            step["run"]
+            for step in steps
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        ]
+        job_text = "\n".join(job_commands)
+        blocks = reminder_issue_mutation_blocks(job_text)
+        if not blocks and steps:
+            return False
+        if blocks is None:
+            return False
+        if not has_freshness_repository_api_reads(
+            job_text, require_lookup=bool(blocks)
+        ):
+            return False
+        if blocks:
+            mutation_jobs += 1
+            if (
+                not freshness_job_execution_is_unconditional(job)
+                or not freshness_execution_context_is_bash(workflow, job)
+                or not freshness_authentication_bindings_are_safe(workflow, job)
+                or not freshness_checker_result_binding_is_safe(workflow, job)
+                or not freshness_shell_definitions_are_safe(job_text)
+                or not freshness_checker_result_controls_reconciliation(job_text)
+                or not freshness_api_result_controls_issue_selection(job_text)
+                or not freshness_summary_output_is_safe(job_text)
+            ):
+                return False
+            if not freshness_command_order_is_valid(job_text):
+                return False
+            if not (
+                job_effective_issue_write(workflow, job)
+                and job_effective_contents_read(workflow, job)
+            ):
+                return False
+        markdown_outputs = freshness_audit_markdown_outputs(job_text)
+        lines = [
+            line
+            for command in job_commands
+            for line in command.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if (
+            markdown_outputs
+            and any("repo-scaffold-freshness-audit" in line for line in lines)
+            and has_repo_bound_issue_reconciliation(
+                job_text,
+                markdown_outputs,
+                {FRESHNESS_REMINDER_REPOSITORY},
+            )
+            and job.get("name") == FRESHNESS_REMINDER_JOB_NAME
+            and job.get("timeout-minutes") == FRESHNESS_REMINDER_TIMEOUT_MINUTES
+        ):
+            reconciliation_jobs += 1
+    return reconciliation_jobs == 1 and mutation_jobs == 1
+
+
+def is_canonical_allowlist_path(value: object) -> bool:
+    """Return whether an alert path uses the same safe POSIX form as preflight."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    path = PurePosixPath(value)
+    return (
+        bool(path.parts)
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and "\\" not in value
+        and not any(PureWindowsPath(part).drive for part in path.parts)
+        and path.as_posix() == value
+    )
 
 
 def reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -807,16 +2987,58 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
     return problems
 
 
-def iter_uses_values(value: Any) -> Iterable[Any]:
-    """Yield every workflow ``uses`` value from a decoded YAML tree."""
+def iter_uses_values(value: Any, _seen: set[int] | None = None) -> Iterable[Any]:
+    """Yield each workflow ``uses`` value once from a decoded YAML tree."""
+    seen = _seen if _seen is not None else set()
+    if isinstance(value, (dict, list)):
+        identity = id(value)
+        if identity in seen:
+            return
+        seen.add(identity)
     if isinstance(value, dict):
         for key, child in value.items():
             if key == "uses":
                 yield child
-            yield from iter_uses_values(child)
+            yield from iter_uses_values(child, seen)
     elif isinstance(value, list):
         for child in value:
-            yield from iter_uses_values(child)
+            yield from iter_uses_values(child, seen)
+
+
+def validate_job_container_images(document: object, source: Path) -> list[str]:
+    """Require job and service container images to use immutable digests."""
+    if not isinstance(document, dict):
+        return []
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        return []
+    problems: list[str] = []
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        containers: list[tuple[str, object]] = []
+        if "container" in job:
+            containers.append((f"job {job_name!r} container", job["container"]))
+        services = job.get("services")
+        if services is not None:
+            if not isinstance(services, dict):
+                problems.append(
+                    f"{source}: job {job_name!r} services must be a mapping"
+                )
+                continue
+            containers.extend(
+                (f"job {job_name!r} service {service_name!r}", service)
+                for service_name, service in services.items()
+            )
+        for location, container in containers:
+            image = container.get("image") if isinstance(container, dict) else container
+            if not isinstance(
+                image, str
+            ) or not CONTAINER_IMAGE_REFERENCE_PATTERN.fullmatch(image):
+                problems.append(
+                    f"{source}: {location} image must use a full sha256 digest: {image!r}"
+                )
+    return problems
 
 
 def validate_action_references(repository_root: Path) -> list[str]:
@@ -854,6 +3076,7 @@ def validate_action_references(repository_root: Path) -> list[str]:
         except (OSError, UnicodeError, yaml.YAMLError):
             continue
         if isinstance(document, dict):
+            problems.extend(validate_job_container_images(document, relative))
             if "permissions" not in document:
                 problems.append(
                     f"{relative}: workflow must declare top-level permissions"
@@ -874,7 +3097,7 @@ def validate_action_references(repository_root: Path) -> list[str]:
             if reference.startswith("./"):
                 continue
             if reference.startswith("docker://"):
-                if re.fullmatch(r"docker://[^\s@]+@sha256:[0-9a-f]{64}", reference):
+                if CONTAINER_IMAGE_REFERENCE_PATTERN.fullmatch(reference):
                     continue
                 problems.append(
                     f"{relative}: external container reference must use a full "
@@ -1347,6 +3570,15 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
             ".github/workflows/ci.yml: policy drift reminder must depend on both "
             "scheduled canaries with least-privilege issue access"
         ]
+    if (
+        not isinstance(job.get("concurrency"), dict)
+        or job["concurrency"].get("group") != POLICY_REMINDER_CONCURRENCY_GROUP
+        or job["concurrency"].get("cancel-in-progress") != "false"
+    ):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder must use a "
+            "repository-scoped non-cancelling concurrency group"
+        ]
     for fragment in (
         "repo-scaffold-ci-policy-drift",
         "CI policy review required",
@@ -1360,6 +3592,11 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
                 ".github/workflows/ci.yml: policy drift reminder must reconcile "
                 "one marker issue from both canary results"
             ]
+    if not has_repo_bound_issue_reconciliation(workflow_text):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder must reconcile "
+            "one marker issue from both canary results"
+        ]
     return []
 
 
@@ -1807,12 +4044,15 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "scripts/validate_mutation_results.py",
         "tests/test_audit_freshness.py",
         "tests/test_branch_protection_preflight.py",
+        "tests/test_advanced_codeql_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
+        "tests/test_dependency_review_preflight.py",
         "tests/test_merge_settings_preflight.py",
         "tests/test_release_preflight.py",
         "tests/test_repository_settings_preflight.py",
         "tests/test_security_features_preflight.py",
+        "tests/test_scorecard_preflight.py",
         "tests/test_workflow_installation_preflight.py",
         "tests/test_validate_mutation_results.py",
         "tests/test_prepare_mutation_cache.py",
@@ -2510,6 +4750,10 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.branch_protection_preflight",
         ),
+        "tests/test_advanced_codeql_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.advanced_codeql_preflight",
+        ),
         "tests/test_merge_settings_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.branch_protection_preflight",
@@ -2519,12 +4763,21 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.security_features_preflight",
         ),
+        "tests/test_dependency_review_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.dependency_review_preflight",
+        ),
+        "tests/test_scorecard_preflight.py": (
+            "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.scorecard_preflight",
+        ),
         "tests/test_repository_settings_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
             "skills.repo-scaffold.scripts.repository_settings_preflight",
         ),
         "tests/test_workflow_installation_preflight.py": (
             "skills.repo-scaffold.scripts.codeql_preflight",
+            "skills.repo-scaffold.scripts.sync_action_pins",
             "skills.repo-scaffold.scripts.workflow_installation_preflight",
         ),
         "tests/test_release_preflight.py": (
@@ -4656,11 +6909,22 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
         ):
             problems.append(f"{relative}: concurrent reminder runs must not cancel")
         if (
+            not isinstance(concurrency, dict)
+            or concurrency.get("group") != REMINDER_WORKFLOW_CONCURRENCY_GROUP
+        ):
+            problems.append(
+                f"{relative}: concurrent reminder runs must serialize repository issue state"
+            )
+        if (
             not isinstance(job, dict)
             or job.get("name") != "community-health-upstream"
             or job.get("timeout-minutes") != "10"
         ):
             problems.append(f"{relative}: upstream-drift job contract is invalid")
+        elif not job_effective_issue_write(workflow, job):
+            problems.append(
+                f"{relative}: upstream-drift job must have effective issues: write permission"
+            )
         expected_script = (
             "scripts/check_community_health.py"
             if path == asset_workflow
@@ -4673,6 +6937,10 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
         ):
             problems.append(
                 f"{relative}: workflow must run the checker and reconcile one marker issue"
+            )
+        if not has_repo_bound_issue_reconciliation(text):
+            problems.append(
+                f"{relative}: reminder mutations must bind an explicit repository"
             )
     return problems
 
@@ -4712,10 +6980,11 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             "load_trackers" not in current_text
             or "--tracker-registry" not in current_text
             or "auditable_action_repositories" not in current_text
+            or "code_scanning_allowlist_findings" not in current_text
         ):
             problems.append(
                 "freshness tracking: checker must load an explicit tracker registry "
-                "and audit generic pinned actions"
+                "and audit generic pinned actions plus code-scanning exceptions"
             )
 
     expected_asset_registry = {
@@ -4724,13 +6993,45 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         "release-please-configs": [],
         "optional-release-please-configs": ["release-please-config.json"],
         "ci-toolchain-policies": [".github/ci-toolchain.json"],
+        "code-scanning-allowlists": [],
+        "optional-code-scanning-allowlists": [".github/code-scanning-allowlist.json"],
         "requirement-sources": [
             {"path": "requirements-docs.txt", "locks": []},
         ],
     }
+    expected_root_registry = {
+        "schema-version": 1,
+        "workflow-directories": [
+            ".github/workflows",
+            "skills/repo-scaffold/assets/workflows",
+        ],
+        "release-please-configs": [
+            "release-please-config.json",
+            "skills/repo-scaffold/assets/release-please-config.json",
+            "skills/repo-scaffold/assets/release-please-config.vi.json",
+        ],
+        "optional-release-please-configs": [],
+        "ci-toolchain-policies": [],
+        "code-scanning-allowlists": [".github/code-scanning-allowlist.json"],
+        "optional-code-scanning-allowlists": [],
+        "requirement-sources": [
+            {
+                "path": "requirements-dev.in",
+                "locks": ["requirements-dev.txt", "requirements-mutation.txt"],
+            },
+            {
+                "path": "requirements-mutation.in",
+                "locks": ["requirements-mutation.txt"],
+            },
+            {
+                "path": "skills/repo-scaffold/assets/requirements-docs.txt",
+                "locks": [],
+            },
+        ],
+    }
     for path, expected in (
         (asset_registry, expected_asset_registry),
-        (root_registry, None),
+        (root_registry, expected_root_registry),
     ):
         relative = path.relative_to(repository_root).as_posix()
         try:
@@ -4740,7 +7041,15 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             continue
         if expected is not None and registry != expected:
             problems.append(
-                f"{relative}: scaffold freshness registry must track its shipped inputs"
+                f"{relative}: freshness registry must track its shipped inputs"
+            )
+        if path == root_registry and (
+            not isinstance(registry, dict)
+            or registry.get("code-scanning-allowlists")
+            != [".github/code-scanning-allowlist.json"]
+        ):
+            problems.append(
+                f"{relative}: must track code-scanning allowlist review dates"
             )
         if not isinstance(registry, dict) or registry.get("schema-version") != 1:
             problems.append(f"{relative}: freshness registry must use schema-version 1")
@@ -4777,13 +7086,50 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             problems.append(
                 f"{relative}: freshness workflow must use contents: read and issues: write"
             )
+        concurrency = workflow.get("concurrency")
+        if (
+            not isinstance(concurrency, dict)
+            or concurrency.get("group") != REMINDER_WORKFLOW_CONCURRENCY_GROUP
+            or concurrency.get("cancel-in-progress") != "false"
+        ):
+            problems.append(
+                f"{relative}: freshness reminder must use a repository-scoped "
+                "non-cancelling concurrency group"
+            )
+        jobs = workflow.get("jobs")
+        audit_job = jobs.get("audit") if isinstance(jobs, dict) else None
+        if (
+            not isinstance(audit_job, dict)
+            or audit_job.get("name") != FRESHNESS_REMINDER_JOB_NAME
+            or audit_job.get("timeout-minutes") != FRESHNESS_REMINDER_TIMEOUT_MINUTES
+        ):
+            problems.append(
+                f"{relative}: freshness audit job must use the "
+                f"{FRESHNESS_REMINDER_JOB_NAME!r} name and a "
+                f"{FRESHNESS_REMINDER_TIMEOUT_MINUTES}-minute timeout"
+            )
+        if not job_effective_issue_write(workflow, audit_job):
+            problems.append(
+                f"{relative}: audit job must have effective issues: write permission"
+            )
+        if not job_effective_contents_read(workflow, audit_job):
+            problems.append(
+                f"{relative}: audit job must have effective contents: read permission"
+            )
         if (
             "python scripts/audit_freshness.py" not in text
             or "repo-scaffold-freshness-audit" not in text
             or "--body-file" not in text
+            or not has_freshness_job_reconciliation(workflow, text)
         ):
             problems.append(
-                f"{relative}: freshness workflow must run the checker and reconcile one marker issue"
+                f"{relative}: freshness workflow must run the checker and reconcile one marker issue from its report"
+            )
+        if not has_repo_bound_issue_reconciliation(
+            text, expected_repository_values={FRESHNESS_REMINDER_REPOSITORY}
+        ):
+            problems.append(
+                f"{relative}: reminder mutations must bind the current GitHub repository"
             )
     if len(texts) == 2 and texts[0] != texts[1]:
         problems.append("freshness workflow must match its scaffold asset")
@@ -4818,9 +7164,13 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
         else:
             tracked_paths_by_url: dict[str, set[str]] = {}
             tracked_hosts: set[str] = set()
+            claim_paths_by_id: dict[str, object] = {}
             for claim in claims:
                 if not isinstance(claim, dict):
                     continue
+                identifier = claim.get("id")
+                if isinstance(identifier, str):
+                    claim_paths_by_id[identifier] = claim.get("paths")
                 url = claim.get("url")
                 claim_paths = claim.get("paths")
                 if isinstance(url, str) and isinstance(claim_paths, list):
@@ -4860,6 +7210,217 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                         problems.append(
                             f"{relative}: official documentation URL must list this file in its tracker claim: {source_url}"
                         )
+            required_claim_paths = {
+                "github-actions-dependabot": {
+                    ".github/dependabot.yml",
+                    "skills/repo-scaffold/assets/dependabot.yml",
+                },
+                "github-dependabot-auto-merge": {
+                    "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
+                },
+                "github-dependency-review": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/dependency-review.yml",
+                    "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                },
+                "github-dependency-graph-sbom-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                },
+                "github-actions-permissions-api": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                },
+                "github-actions-workflow-permissions-syntax": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                },
+                "github-actions-workflow-runs-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-codeql-advanced-setup": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/codeql.yml",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                },
+                "github-codeql-default-setup-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                },
+                "github-code-scanning-sarif-upload": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/scorecard.yml",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                },
+                "github-code-scanning-alerts-api": {
+                    "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                },
+                "github-repository-contents-api": {
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                },
+                "github-community-profile-metrics-api": {
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-repository-license-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-action-pin-repository-tags-api": {
+                    "scripts/sync_action_pins.py",
+                    "skills/repo-scaffold/scripts/sync_action_pins.py",
+                },
+                "github-git-refs-api": {
+                    "scripts/sync_action_pins.py",
+                    "skills/repo-scaffold/scripts/sync_action_pins.py",
+                    "scripts/check_code_scanning_alerts.py",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                },
+                "github-git-tags-api": {
+                    "scripts/sync_action_pins.py",
+                    "skills/repo-scaffold/scripts/sync_action_pins.py",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                },
+                "github-releases-api": {
+                    "scripts/sync_action_pins.py",
+                    "skills/repo-scaffold/scripts/sync_action_pins.py",
+                    "skills/repo-scaffold/scripts/ci_toolchain.py",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                },
+                "github-pull-requests-api": {
+                    "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-git-commits-api": {
+                    "scripts/check_code_scanning_alerts.py",
+                },
+                "github-repository-commits-api": {
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                },
+                "github-community-health-branches-api": {
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                },
+                "github-community-health-git-trees-api": {
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-git-blobs-api": {
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                },
+                "github-check-runs-api": {
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-commit-statuses-api": {
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-reminder-issues-api": {
+                    ".github/workflows/ci.yml",
+                    ".github/workflows/community-health.yml",
+                    ".github/workflows/freshness.yml",
+                    ".github/workflows/official-docs.yml",
+                    "skills/repo-scaffold/assets/workflows/community-health.yml",
+                    "skills/repo-scaffold/assets/workflows/freshness.yml",
+                },
+                "github-repository-labels-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-branch-protection-status-checks": {
+                    "README.md",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                },
+                "github-branches-api": {
+                    "README.md",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                },
+                "github-effective-branch-rules-api": {
+                    "README.md",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                },
+                "github-merge-queue-auto-merge": {
+                    "README.md",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                    "skills/repo-scaffold/assets/workflows/auto-merge.yml",
+                    "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
+                },
+                "github-security-analysis-settings": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/security_features_preflight.py",
+                },
+                "github-repository-security-features-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/security_features_preflight.py",
+                },
+                "github-users-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-artifact-attestations": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/release_preflight.py",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/assets/workflows/release-please.yml",
+                },
+                "github-actions-secrets-api": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/release_preflight.py",
+                },
+                "github-repository-settings-api": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/repository_settings_preflight.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                    "skills/repo-scaffold/scripts/release_preflight.py",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                    "skills/repo-scaffold/scripts/security_features_preflight.py",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                },
+            }
+            for identifier, required_paths in required_claim_paths.items():
+                claim_paths = claim_paths_by_id.get(identifier)
+                if claim_paths is None:
+                    problems.append(
+                        ".github/official-docs-trackers.json: "
+                        f"{identifier} claim is missing"
+                    )
+                elif not isinstance(claim_paths, list) or not required_paths.issubset(
+                    claim_paths
+                ):
+                    problems.append(
+                        ".github/official-docs-trackers.json: "
+                        f"{identifier} claim must track every affected path"
+                    )
     try:
         script_text = script_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
@@ -4912,6 +7473,18 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
         problems.append(
             ".github/workflows/official-docs.yml: reminder concurrency or audit job contract is invalid"
         )
+    if (
+        not isinstance(concurrency, dict)
+        or concurrency.get("group") != REMINDER_WORKFLOW_CONCURRENCY_GROUP
+    ):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder runs must serialize "
+            "repository issue state"
+        )
+    elif not job_effective_issue_write(workflow, job):
+        problems.append(
+            ".github/workflows/official-docs.yml: audit job must have effective issues: write permission"
+        )
     for fragment in (
         "python scripts/audit_official_docs.py",
         "repo-scaffold-official-docs-audit",
@@ -4922,6 +7495,10 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 ".github/workflows/official-docs.yml: must run the checker and reconcile one marker issue"
             )
             break
+    if not has_repo_bound_issue_reconciliation(workflow_text):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder mutations must bind an explicit repository"
+        )
     try:
         ci_text = ci_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
@@ -4950,13 +7527,32 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         schema_version = (
             allowlist.get("schema-version") if isinstance(allowlist, dict) else None
         )
-        if schema_version != 2 or not isinstance(entries, list):
+        if (
+            not isinstance(allowlist, dict)
+            or set(allowlist) != CODE_SCANNING_ALLOWLIST_KEYS
+            or schema_version != 3
+            or not isinstance(entries, list)
+        ):
             problems.append(
-                ".github/code-scanning-allowlist.json: require schema-version 2 and an allowlist"
+                ".github/code-scanning-allowlist.json: require schema-version 3 and an allowlist"
+            )
+        elif len(entries) > MAX_CODE_SCANNING_ALLOWLIST_ENTRIES:
+            problems.append(
+                ".github/code-scanning-allowlist.json: allowlist exceeds the "
+                f"{MAX_CODE_SCANNING_ALLOWLIST_ENTRIES}-entry limit"
             )
         elif any(
             not isinstance(entry, dict)
-            or set(entry) != {"number", "tool", "rule", "path", "reason"}
+            or set(entry)
+            != {
+                "number",
+                "tool",
+                "rule",
+                "path",
+                "reason",
+                "reviewed-on",
+                "review-period-days",
+            }
             or type(entry.get("number")) is not int
             or entry["number"] < 1
             or not all(
@@ -4964,13 +7560,44 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
                 for field in ("tool", "rule", "reason")
             )
             or (
-                entry.get("path") is not None and not isinstance(entry.get("path"), str)
+                entry.get("path") is not None
+                and not is_canonical_allowlist_path(entry.get("path"))
             )
+            or not isinstance(entry.get("reviewed-on"), str)
+            or not entry["reviewed-on"].strip()
+            or not isinstance(entry.get("review-period-days"), int)
+            or isinstance(entry["review-period-days"], bool)
+            or not 1
+            <= entry["review-period-days"]
+            <= MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS
             for entry in entries
         ):
             problems.append(
-                ".github/code-scanning-allowlist.json: each entry must use an exact positive alert number and selector"
+                ".github/code-scanning-allowlist.json: each entry must use an exact positive alert selector and review period"
             )
+        else:
+            seen_numbers: set[int] = set()
+            today = datetime.now(timezone.utc).date()
+            for entry in entries:
+                number = entry["number"]
+                if number in seen_numbers:
+                    problems.append(
+                        ".github/code-scanning-allowlist.json: alert numbers must be unique"
+                    )
+                    break
+                seen_numbers.add(number)
+                try:
+                    reviewed_date = date.fromisoformat(entry["reviewed-on"])
+                except ValueError:
+                    problems.append(
+                        ".github/code-scanning-allowlist.json: reviewed-on must use ISO date format"
+                    )
+                    break
+                if reviewed_date > today:
+                    problems.append(
+                        ".github/code-scanning-allowlist.json: reviewed-on cannot be in the future"
+                    )
+                    break
     expected_permissions = {
         "contents": "read",
         "pull-requests": "read",
@@ -5279,7 +7906,10 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                 "repo-scaffold/skills/repo-scaffold/assets/gitattributes.template",
                 "repo-scaffold/skills/repo-scaffold/scripts/ci_toolchain.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/codeql_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                "repo-scaffold/skills/repo-scaffold/scripts/scorecard_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/validate_scaffold.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/merge_settings_preflight.py",
                 "repo-scaffold/skills/repo-scaffold/scripts/release_preflight.py",

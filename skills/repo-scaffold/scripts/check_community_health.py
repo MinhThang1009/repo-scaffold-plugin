@@ -247,8 +247,14 @@ def checked_repository_path(root: Path, relative: str) -> Path:
 
 
 def _directory_files(root: Path, directory: Path) -> list[str]:
+    try:
+        candidates = sorted(directory.rglob("*"))
+    except OSError as error:
+        raise AuditError(
+            f"could not enumerate community-health directory: {directory}"
+        ) from error
     files: list[str] = []
-    for path in sorted(directory.rglob("*")):
+    for path in candidates:
         relative = path.relative_to(root).as_posix()
         if is_link_or_reparse(path):
             raise AuditError(f"refusing linked or reparse-point path: {relative}")
@@ -397,8 +403,24 @@ def audit(
 ) -> dict[str, Any]:
     if not REPOSITORY_PATTERN.fullmatch(repository):
         raise AuditError("repository must use OWNER/REPO syntax")
-    results = [inventory_entry(root, entry) for entry in entries]
+    results: list[dict[str, Any]] = []
     errors: list[str] = []
+    for entry in entries:
+        try:
+            results.append(inventory_entry(root, entry))
+        except AuditError as error:
+            errors.append(str(error))
+            results.append(
+                {
+                    "id": entry.identifier,
+                    "label": entry.label,
+                    "scope": entry.scope,
+                    "tracker": entry.tracker,
+                    "status": "indeterminate",
+                    "paths": [],
+                    "details": str(error),
+                }
+            )
     profile: dict[str, object]
     try:
         raw_profile = client.get_json(f"repos/{repository}/community/profile")

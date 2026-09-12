@@ -536,6 +536,24 @@ class PythonSupportContractValidationTests(unittest.TestCase):
 
 
 class ActionReferenceValidationTests(unittest.TestCase):
+    def test_freshness_expansions_require_complete_variable_names(self) -> None:
+        path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        original = path.read_text(encoding="utf-8")
+        comment = "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'"
+        for reference in ("$title_UNSET", "$marker2", "$RUNNER_TEMPORARY"):
+            with self.subTest(reference=reference):
+                candidate = original.replace(comment, f'--comment "{reference}"', 1)
+                self.assertFalse(
+                    validate_repository.has_freshness_job_reconciliation(
+                        validate_repository.load_yaml_text(candidate), candidate
+                    )
+                )
+        for reference in ("$title", "${title}suffix", "$RUNNER_TEMP/report.md", "$?"):
+            with self.subTest(valid_reference=reference):
+                self.assertTrue(
+                    validate_repository.freshness_shell_expansions_are_safe(reference)
+                )
+
     def test_repository_action_references_are_immutable(self) -> None:
         self.assertEqual(
             validate_repository.validate_action_references(PLUGIN_ROOT),
@@ -565,6 +583,61 @@ class ActionReferenceValidationTests(unittest.TestCase):
                     "must use a full commit SHA: actions/checkout@v7"
                 ],
             )
+
+    def test_mutable_job_and_service_container_images_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            (workflow_root / "containers.yml").write_text(
+                "permissions: {}\n"
+                "jobs:\n"
+                "  build:\n"
+                "    container: alpine:latest\n"
+                "    services:\n"
+                "      database:\n"
+                "        image: postgres:latest\n"
+                "    steps: []\n",
+                encoding="utf-8",
+            )
+            (workflow_root / "pinned.yml").write_text(
+                "permissions: {}\n"
+                "jobs:\n"
+                "  build:\n"
+                "    container: alpine@sha256:" + "a" * 64 + "\n"
+                "    services:\n"
+                "      database:\n"
+                "        image: postgres@sha256:" + "b" * 64 + "\n"
+                "    steps: []\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_action_references(root)
+
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any("job 'build' container image" in item for item in problems))
+        self.assertTrue(any("service 'database' image" in item for item in problems))
+
+    def test_invalid_job_container_shapes_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_root = root / ".github" / "workflows"
+            workflow_root.mkdir(parents=True)
+            (workflow_root / "invalid-containers.yml").write_text(
+                "permissions: {}\n"
+                "jobs:\n"
+                "  missing-image:\n"
+                "    container: {options: --init}\n"
+                "  invalid-services:\n"
+                "    services: []\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_action_references(root)
+
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any("missing-image" in item for item in problems))
+        self.assertTrue(any("services must be a mapping" in item for item in problems))
 
     def test_missing_and_broad_workflow_permissions_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -642,6 +715,21 @@ class ActionReferenceValidationTests(unittest.TestCase):
                 any("container reference must use" in item for item in problems)
             )
             self.assertFalse(any("invalid.yml" in item for item in problems))
+
+    def test_workflow_aliases_are_walked_once(self) -> None:
+        digest = "a" * 64
+        shared = {"uses": f"docker://example/image@sha256:{digest}"}
+        value: dict[str, Any] = {"base": shared}
+        for index in range(20):
+            value = {
+                "left": value,
+                "right": value,
+            }
+
+        self.assertEqual(
+            list(validate_repository.iter_uses_values(value)),
+            [f"docker://example/image@sha256:{digest}"],
+        )
 
     def test_linked_workflow_boundaries_are_reported_without_dereferencing(
         self,
@@ -1752,8 +1840,11 @@ class MutationTestingContractTests(unittest.TestCase):
         "scripts/validate_mutation_results.py",
         "tests/test_audit_freshness.py",
         "tests/test_branch_protection_preflight.py",
+        "tests/test_advanced_codeql_preflight.py",
         "tests/test_ci_toolchain.py",
         "tests/test_codeql_preflight.py",
+        "tests/test_dependency_review_preflight.py",
+        "tests/test_scorecard_preflight.py",
         "tests/test_merge_settings_preflight.py",
         "tests/test_release_preflight.py",
         "tests/test_repository_settings_preflight.py",
@@ -3195,7 +3286,10 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             for script in (
                 "ci_toolchain.py",
                 "branch_protection_preflight.py",
+                "advanced_codeql_preflight.py",
                 "codeql_preflight.py",
+                "dependency_review_preflight.py",
+                "scorecard_preflight.py",
                 "merge_settings_preflight.py",
                 "release_preflight.py",
                 "repository_settings_preflight.py",
@@ -5159,29 +5253,164 @@ class CodeScanningGateContractTests(unittest.TestCase):
             )
 
             allowlist.write_text(
-                '{"schema-version": 2, "allowlist": ['
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [],
+                        "unreviewed-inputs": ["ignored.json"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unknown_fields = validate_repository.validate_code_scanning_gate_contract(
+                root
+            )
+            self.assertTrue(
+                any("require schema-version" in item for item in unknown_fields)
+            )
+
+            allowlist.write_text(
+                '{"schema-version": 3, "allowlist": ['
                 '{"number": 0, "tool": "CodeQL", "rule": "x", '
-                '"path": null, "reason": "x"}]}',
+                '"path": null, "reason": "x", "reviewed-on": "2026-09-09", '
+                '"review-period-days": 90}]}',
                 encoding="utf-8",
             )
             invalid_selector = validate_repository.validate_code_scanning_gate_contract(
                 root
             )
             self.assertTrue(
-                any("exact positive alert number" in item for item in invalid_selector)
+                any(
+                    "exact positive alert selector" in item for item in invalid_selector
+                )
             )
 
             allowlist.write_text(
-                '{"schema-version": 2, "allowlist": ['
+                '{"schema-version": 3, "allowlist": ['
                 '{"number": true, "tool": "CodeQL", "rule": "x", '
-                '"path": null, "reason": "x"}]}',
+                '"path": null, "reason": "x", "reviewed-on": "2026-09-09", '
+                '"review-period-days": 90}]}',
                 encoding="utf-8",
             )
             boolean_number = validate_repository.validate_code_scanning_gate_contract(
                 root
             )
             self.assertTrue(
-                any("exact positive alert number" in item for item in boolean_number)
+                any("exact positive alert selector" in item for item in boolean_number)
+            )
+
+            for invalid_path in (
+                "",
+                "../escape",
+                "C:/example.py",
+                "scripts//example.py",
+            ):
+                with self.subTest(invalid_path=invalid_path):
+                    allowlist.write_text(
+                        '{"schema-version": 3, "allowlist": ['
+                        '{"number": 1, "tool": "CodeQL", "rule": "x", '
+                        f'"path": {json.dumps(invalid_path)}, "reason": "x", '
+                        '"reviewed-on": "2026-09-09", "review-period-days": 90}]}',
+                        encoding="utf-8",
+                    )
+                    invalid_path_result = (
+                        validate_repository.validate_code_scanning_gate_contract(root)
+                    )
+                    self.assertTrue(
+                        any(
+                            "exact positive alert selector" in item
+                            for item in invalid_path_result
+                        )
+                    )
+
+            allowlist.write_text(
+                '{"schema-version": 3, "allowlist": ['
+                '{"number": 1, "tool": "CodeQL", "rule": "x", '
+                '"path": null, "reason": "x", "reviewed-on": "not-a-date", '
+                '"review-period-days": 90}]}',
+                encoding="utf-8",
+            )
+            invalid_review_date = (
+                validate_repository.validate_code_scanning_gate_contract(root)
+            )
+            self.assertTrue(
+                any("reviewed-on must use ISO" in item for item in invalid_review_date)
+            )
+
+            valid_entry = {
+                "number": 1,
+                "tool": "CodeQL",
+                "rule": "py/example",
+                "path": None,
+                "reason": "Reviewed.",
+                "reviewed-on": "2000-01-01",
+                "review-period-days": 90,
+            }
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [valid_entry, {**valid_entry}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(validate_repository, "datetime") as clock:
+                clock.now.return_value.date.return_value = validate_repository.date(
+                    2026, 9, 9
+                )
+                duplicate_numbers = (
+                    validate_repository.validate_code_scanning_gate_contract(root)
+                )
+                clock.now.assert_called_once_with(validate_repository.timezone.utc)
+            self.assertTrue(
+                any(
+                    "alert numbers must be unique" in item for item in duplicate_numbers
+                )
+            )
+
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [
+                            {**valid_entry, "number": number}
+                            for number in range(
+                                1,
+                                validate_repository.MAX_CODE_SCANNING_ALLOWLIST_ENTRIES
+                                + 2,
+                            )
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            oversized = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertTrue(
+                any(
+                    f"exceeds the {validate_repository.MAX_CODE_SCANNING_ALLOWLIST_ENTRIES}-entry limit"
+                    in item
+                    for item in oversized
+                )
+            )
+
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid_entry, "reviewed-on": "2999-01-01"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            future_review_date = (
+                validate_repository.validate_code_scanning_gate_contract(root)
+            )
+            self.assertTrue(
+                any(
+                    "reviewed-on cannot be in the future" in item
+                    for item in future_review_date
+                )
             )
 
             source_paths = (
@@ -5201,7 +5430,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
                     encoding="utf-8",
                 )
             allowlist.write_text(
-                '{"schema-version": 2, "allowlist": []}', encoding="utf-8"
+                '{"schema-version": 3, "allowlist": []}', encoding="utf-8"
             )
             unsafe = validate_repository.validate_code_scanning_gate_contract(root)
             self.assertTrue(
@@ -7550,8 +7779,57 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
         for fragment in expected:
             self.assertTrue(any(fragment in problem for problem in problems), fragment)
 
+    def test_reconciliation_job_must_keep_effective_issue_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/community-health.yml"
+            workflow_text = installed.read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(
+                "  upstream-drift:\n    name: community-health-upstream\n",
+                "  upstream-drift:\n"
+                "    name: community-health-upstream\n"
+                "    permissions:\n"
+                "      contents: read\n",
+                1,
+            )
+            installed.write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any("effective issues: write permission" in problem for problem in problems)
+        )
+
 
 class FreshnessTrackingContractTests(unittest.TestCase):
+    def test_freshness_requires_preparation_before_audit(self) -> None:
+        for relative in (
+            ".github/workflows/freshness.yml",
+            "skills/repo-scaffold/assets/workflows/freshness.yml",
+        ):
+            original = (PLUGIN_ROOT / relative).read_text(encoding="utf-8")
+            for order in (
+                (1, 2, 3, 4),
+                (0, 2, 3, 4),
+                (2, 0, 1, 3, 4),
+                (1, 2, 0, 3, 4),
+                (0, 2, 1, 3, 4),
+                (0, 1, 0, 2, 3, 4),
+                (0, 1, 1, 2, 3, 4),
+                (0, 1, 2, 0, 3, 4),
+            ):
+                with self.subTest(workflow=relative, order=order):
+                    document = validate_repository.load_yaml_text(original)
+                    steps = document["jobs"]["audit"]["steps"]
+                    document["jobs"]["audit"]["steps"] = [steps[i] for i in order]
+                    self.assertFalse(
+                        validate_repository.has_freshness_job_reconciliation(
+                            document, original
+                        )
+                    )
+
     def copy_contract(self, root: Path) -> None:
         relative_paths = (
             ".github/freshness-trackers.json",
@@ -7575,12 +7853,2919 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             [],
         )
 
+    def test_freshness_job_runtime_contract_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            for relative in (
+                ".github/workflows/freshness.yml",
+                "skills/repo-scaffold/assets/workflows/freshness.yml",
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8")
+                    .replace("    name: freshness-audit\n", "    name: reminder\n")
+                    .replace("    timeout-minutes: 15\n", ""),
+                    encoding="utf-8",
+                )
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+
+        self.assertTrue(
+            any(
+                "freshness audit job must use the 'freshness-audit' name and a "
+                "15-minute timeout" in problem
+                for problem in problems
+            )
+        )
+
+    def test_freshness_checker_status_binding_is_derived(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow = validate_repository.load_yaml_text(workflow_text)
+        job = workflow["jobs"]["audit"]
+        audit_step = next(step for step in job["steps"] if step.get("id") == "audit")
+        binding_step = next(
+            step
+            for step in job["steps"]
+            if isinstance(step.get("env"), dict) and "CHECKER_EXIT" in step["env"]
+        )
+        audit_run = audit_step["run"]
+        binding_run = binding_step["run"]
+        self.assertTrue(
+            validate_repository.freshness_checker_result_output_is_safe(audit_run)
+        )
+        self.assertFalse(
+            validate_repository.freshness_checker_result_output_is_safe("echo ready")
+        )
+        self.assertTrue(
+            validate_repository.freshness_checker_result_binding_is_safe(workflow, job)
+        )
+        self.assertTrue(
+            validate_repository.freshness_authentication_bindings_are_safe(
+                workflow, job
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_authentication_bindings_are_safe(None, job)
+        )
+        self.assertFalse(
+            validate_repository.freshness_authentication_bindings_are_safe(
+                workflow, None
+            )
+        )
+        for scope in ("workflow", "job"):
+            candidate = validate_repository.load_yaml_text(workflow_text)
+            target = candidate if scope == "workflow" else candidate["jobs"]["audit"]
+            target["env"] = {"GH_TOKEN": "attacker"}
+            with self.subTest(authentication_scope=scope):
+                self.assertFalse(
+                    validate_repository.freshness_authentication_bindings_are_safe(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+        for variable in ("GIT_SSH_COMMAND", "LD_PRELOAD", "GH_CONFIG_DIR", "HOME"):
+            for scope in ("workflow", "job"):
+                candidate = validate_repository.load_yaml_text(workflow_text)
+                target = (
+                    candidate if scope == "workflow" else candidate["jobs"]["audit"]
+                )
+                target["env"] = {variable: "attacker"}
+                with self.subTest(
+                    authentication_scope=scope, unexpected_environment=variable
+                ):
+                    self.assertFalse(
+                        validate_repository.freshness_authentication_bindings_are_safe(
+                            candidate, candidate["jobs"]["audit"]
+                        )
+                    )
+            candidate = validate_repository.load_yaml_text(workflow_text)
+            audit_step = candidate["jobs"]["audit"]["steps"][2]
+            audit_step["env"][variable] = "attacker"
+            with self.subTest(
+                authentication_step="audit", unexpected_environment=variable
+            ):
+                self.assertFalse(
+                    validate_repository.freshness_authentication_bindings_are_safe(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+        auth_cases = (
+            (
+                "wrong audit token",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][2]["env"].update(
+                    {"GITHUB_TOKEN": "attacker"}
+                ),
+            ),
+            (
+                "wrong issue token",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][4]["env"].update(
+                    {"GH_TOKEN": "attacker"}
+                ),
+            ),
+            (
+                "missing audit token",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][2]["env"].pop(
+                    "GITHUB_TOKEN"
+                ),
+            ),
+            (
+                "missing issue token",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][4]["env"].pop(
+                    "GH_TOKEN"
+                ),
+            ),
+            (
+                "audit uses issue token",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][2]["env"].update(
+                    {"GH_TOKEN": "${{ github.token }}"}
+                ),
+            ),
+            (
+                "issue uses audit token",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][4]["env"].update(
+                    {"GITHUB_TOKEN": "${{ github.token }}"}
+                ),
+            ),
+            (
+                "invalid token step environment",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0].update(
+                    {"env": []}
+                ),
+            ),
+            (
+                "invalid token steps",
+                lambda candidate: candidate["jobs"]["audit"].update({"steps": {}}),
+            ),
+            (
+                "invalid token step item",
+                lambda candidate: candidate["jobs"]["audit"]["steps"].append(None),
+            ),
+        )
+        for name, mutate in auth_cases:
+            candidate = validate_repository.load_yaml_text(workflow_text)
+            mutate(candidate)
+            with self.subTest(authentication_case=name):
+                self.assertFalse(
+                    validate_repository.freshness_authentication_bindings_are_safe(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+
+        output_cases = (
+            ("missing audit result", audit_run.replace("checker_exit=$?\n", "", 1)),
+            ("missing errexit disable", audit_run.replace("set +e\n", "", 1)),
+            ("missing errexit restore", audit_run.replace("set -e\n", "", 1)),
+            (
+                "errexit restored too early",
+                audit_run.replace("set +e\n", "set -e\n", 1),
+            ),
+            (
+                "errexit disabled through long option",
+                audit_run.replace("set -e\n", "set -e\nset +o errexit\n", 1),
+            ),
+            (
+                "non-adjacent audit result",
+                audit_run.replace(
+                    "checker_exit=$?\n", "echo captured\nchecker_exit=$?\n", 1
+                ),
+            ),
+            (
+                "constant audit result",
+                audit_run.replace('"$checker_exit" >>', '"0" >>', 1),
+            ),
+            (
+                "additional audit printf",
+                audit_run.replace(
+                    "set -e\n", "set -e\nprintf 'side effect' > /tmp/ignored\n", 1
+                ),
+            ),
+            (
+                "negated audit result",
+                audit_run.replace(
+                    "python scripts/audit_freshness.py",
+                    "! python scripts/audit_freshness.py",
+                    1,
+                ),
+            ),
+            (
+                "additional output writer",
+                audit_run.replace(
+                    'printf \'checker_exit=%s\\n\' "$checker_exit" >> "$GITHUB_OUTPUT"',
+                    "printf 'other=0\\nchecker_exit=0\\n' >> \"$GITHUB_OUTPUT\"\n"
+                    'printf \'checker_exit=%s\\n\' "$checker_exit" >> "$GITHUB_OUTPUT"',
+                    1,
+                ),
+            ),
+            (
+                "missing output",
+                audit_run.replace(
+                    'printf \'checker_exit=%s\\n\' "$checker_exit" >> "$GITHUB_OUTPUT"\n',
+                    "",
+                    1,
+                ),
+            ),
+            (
+                "unset audit result",
+                audit_run.replace(
+                    "checker_exit=$?\n", "checker_exit=$?\nunset checker_exit\n", 1
+                ),
+            ),
+            (
+                "read audit result",
+                audit_run.replace(
+                    "checker_exit=$?\n", "checker_exit=$?\nread checker_exit\n", 1
+                ),
+            ),
+            (
+                "printf audit result",
+                audit_run.replace(
+                    "checker_exit=$?\n",
+                    "checker_exit=$?\nprintf -v checker_exit 0\n",
+                    1,
+                ),
+            ),
+            (
+                "invalid fallback result",
+                audit_run.replace("checker_exit=2\n", "checker_exit=0\n", 1),
+            ),
+            (
+                "fallback outside guard",
+                audit_run.replace("checker_exit=2\n", "", 1).replace(
+                    "printf 'checker_exit=%s\\n' \"$checker_exit\"",
+                    "checker_exit=2\nprintf 'checker_exit=%s\\n' \"$checker_exit\"",
+                    1,
+                ),
+            ),
+            (
+                "multiple fallback guards",
+                audit_run.replace(
+                    'if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then\n',
+                    'if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then\n'
+                    'if [[ ! -f "$RUNNER_TEMP/other.md" ]]; then\n'
+                    "fi\n",
+                    1,
+                ),
+            ),
+            (
+                "fallback without guard",
+                audit_run.replace(
+                    'if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then\n',
+                    'if [[ -f "$RUNNER_TEMP/freshness.md" ]]; then\n',
+                    1,
+                ),
+            ),
+            (
+                "fallback path mismatch",
+                audit_run.replace(
+                    'if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then\n',
+                    'if [[ ! -f "$RUNNER_TEMP/other.md" ]]; then\n',
+                    1,
+                ),
+            ),
+            (
+                "fallback marker missing",
+                audit_run.replace(
+                    "<!-- repo-scaffold-freshness-audit -->",
+                    "fallback report",
+                    1,
+                ),
+            ),
+            (
+                "fallback writer is not printf",
+                audit_run.replace("printf '%s\\n' \\\n", "echo \\\n", 1),
+            ),
+            (
+                "output published inside fallback",
+                audit_run.replace(
+                    "fi\nprintf 'checker_exit=%s\\n' \"$checker_exit\"",
+                    "printf 'checker_exit=%s\\n' \"$checker_exit\"\nfi",
+                    1,
+                ),
+            ),
+            (
+                "fallback status before report",
+                audit_run.replace(
+                    "  checker_exit=2\nfi",
+                    "  checker_exit=2\nfi",
+                    1,
+                ).replace(
+                    "  printf '%s\\n' \\\n",
+                    "  checker_exit=2\n  printf '%s\\n' \\\n",
+                    1,
+                ),
+            ),
+            ("malformed shell", audit_run + "echo 'unterminated"),
+        )
+        for name, command in output_cases:
+            with self.subTest(output_case=name):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_output_is_safe(command)
+                )
+        no_fallback = audit_run.replace(
+            'if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then\n'
+            "  printf '%s\\n' \\\n"
+            "    '<!-- repo-scaffold-freshness-audit -->' \\\n"
+            "    '# Repository freshness report' \\\n"
+            "    '' \\\n"
+            "    'The checker failed before it could produce a report. Inspect this workflow run.' \\\n"
+            '    > "$RUNNER_TEMP/freshness.md"\n'
+            "  checker_exit=2\n"
+            "fi\n",
+            "",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.freshness_checker_result_output_is_safe(no_fallback)
+        )
+        self.assertFalse(
+            validate_repository.freshness_shell_definitions_are_safe("CHECKER_EXIT=0")
+        )
+        with (
+            mock.patch.object(
+                validate_repository,
+                "shell_command_segments",
+                return_value=[["echo", "ready"]],
+            ),
+            mock.patch.object(
+                validate_repository.shlex, "shlex", side_effect=ValueError("malformed")
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.freshness_shell_definitions_are_safe("ignored")
+            )
+
+        def fresh_workflow() -> Any:
+            return validate_repository.load_yaml_text(workflow_text)
+
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(None, job)
+        )
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(workflow, None)
+        )
+        for scope in ("workflow", "job"):
+            candidate = fresh_workflow()
+            target = candidate if scope == "workflow" else candidate["jobs"]["audit"]
+            target["env"] = []
+            with self.subTest(invalid_environment=scope):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_binding_is_safe(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+        candidate = fresh_workflow()
+        candidate["env"] = {"CHECKER_EXIT": "0"}
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["env"] = {"CHECKER_EXIT": "0"}
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        for variable in ("PATH", "BASH_ENV", "ENV"):
+            candidate = fresh_workflow()
+            candidate["jobs"]["audit"]["steps"][0]["env"] = {variable: "/tmp/fake"}
+            with self.subTest(protected_environment=variable):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_binding_is_safe(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+        for variable in ("GITHUB_ENV", "GITHUB_PATH", "GITHUB_OUTPUT", "RUNNER_TEMP"):
+            candidate = fresh_workflow()
+            candidate["jobs"]["audit"]["steps"][4]["env"] = {variable: "/tmp/fake"}
+            with self.subTest(runner_file_environment=variable):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_binding_is_safe(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][4]["env"]["PATH"] = "/tmp/fake"
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        invalid_step_values: tuple[object, ...] = ({}, [None])
+        for invalid_steps in invalid_step_values:
+            candidate = fresh_workflow()
+            candidate["jobs"]["audit"]["steps"] = invalid_steps
+            with self.subTest(invalid_steps=invalid_steps):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_binding_is_safe(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][0]["env"] = []
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][4]["env"]["CHECKER_EXIT"] = "0"
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][0]["id"] = "audit"
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][4]["env"].pop("CHECKER_EXIT")
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][2]["env"] = {
+            "CHECKER_EXIT": "${{ steps.audit.outputs.checker_exit }}"
+        }
+        candidate["jobs"]["audit"]["steps"][4]["env"].pop("CHECKER_EXIT")
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][2]["run"] = None
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][4]["run"] = None
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][4]["run"] = "gh issue create"
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][4]["run"] = binding_run.replace(
+            "issue_numbers_output=$(", "issue_numbers_output=", 1
+        )
+        self.assertFalse(
+            validate_repository.freshness_checker_result_binding_is_safe(
+                candidate, candidate["jobs"]["audit"]
+            )
+        )
+        candidate = fresh_workflow()
+        steps = candidate["jobs"]["audit"]["steps"]
+        steps[2], steps[4] = steps[4], steps[2]
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                candidate, workflow_text
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][2]["run"] = audit_run.replace(
+            "printf 'checker_exit=%s\\n' \"$checker_exit\"",
+            "printf 'checker_exit=%s\\n' \"0\"",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                candidate, workflow_text
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][4]["env"].pop("CHECKER_EXIT")
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                candidate, workflow_text
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][4]["run"] += "\nPATH=/tmp/fake:$PATH"
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                candidate, workflow_text
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][2]["env"]["GITHUB_TOKEN"] = "attacker"
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                candidate, workflow_text
+            )
+        )
+        candidate = fresh_workflow()
+        candidate["jobs"]["audit"]["steps"][2]["env"]["GITHUB_OUTPUT"] = "/tmp/output"
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                candidate, workflow_text
+            )
+        )
+
+    def test_root_freshness_registry_cannot_disable_shipped_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            registry_path = root / ".github/freshness-trackers.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["workflow-directories"] = [".github/workflows"]
+            registry["release-please-configs"] = []
+            registry["requirement-sources"] = []
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+
+        self.assertIn(
+            ".github/freshness-trackers.json: freshness registry must track its shipped inputs",
+            problems,
+        )
+
+    def test_freshness_workflow_cannot_hide_a_job_behind_reusable_workflow(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            for relative in (
+                ".github/workflows/freshness.yml",
+                "skills/repo-scaffold/assets/workflows/freshness.yml",
+            ):
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8")
+                    + "\n  hidden:\n"
+                    + "    uses: owner/repository/.github/workflows/reusable.yml@"
+                    + "0123456789abcdef0123456789abcdef01234567\n",
+                    encoding="utf-8",
+                )
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+
+        self.assertEqual(
+            sum(
+                "freshness workflow must run the checker" in problem
+                for problem in problems
+            ),
+            2,
+        )
+
     def test_missing_freshness_tracking_contract_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             problems = validate_repository.validate_freshness_tracking_contract(
                 Path(directory)
             )
         self.assertTrue(any("freshness" in problem for problem in problems))
+
+    def test_issue_permission_helpers_resolve_effective_job_scope(self) -> None:
+        self.assertTrue(
+            validate_repository.has_explicit_repository_binding(
+                'gh issue create --repo "$REPOSITORY" --body-file report.md'
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_explicit_repository_binding(
+                "gh issue edit --repo=$REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_explicit_repository_binding(
+                'gh issue create --repo "" --body-file report.md'
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_explicit_repository_binding(
+                "gh issue create --repo --title reminder --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_explicit_repository_binding(
+                'gh issue create --repo "unterminated'
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_explicit_repository_binding(
+                "python audit.py --repository-root ."
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_embedded_command(
+                ["echo", r"C:\Program Files\gh.exe issue close 1"]
+            )
+        )
+        self.assertFalse(validate_repository.has_dynamic_shell_executor(["${{"]))
+        self.assertFalse(validate_repository.has_dynamic_shell_executor(["$UPPER"]))
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md"
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                'gh issue create --repo "github.com/$GITHUB_REPOSITORY" '
+                "--title reminder --body-file report.md",
+                expected_repository_values={"github.com/$GITHUB_REPOSITORY"},
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo attacker/repository --title reminder "
+                "--body-file report.md",
+                expected_repository_values={"github.com/$GITHUB_REPOSITORY"},
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                r"""gh issue create \
+  --repo $REPOSITORY \
+  --title reminder \
+  --body-file report.md"""
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue close 1 --repo $REPOSITORY"
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue close 1 --repo $REPOSITORY\n"
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue close 1\n"
+                "gh issue create --repo $REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --body-file report.md\n"
+                "gh issue edit --repo $REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                'gh issue create --repo "$REPOSITORY" --body-file ""'
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "# gh issue create --repo $REPOSITORY --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation("gh issue")
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create 'unterminated"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "echo gh issue create"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation("gh issue list")
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue archive 1 --repo $REPOSITORY"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md; gh issue close 1"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "gh issue edit 1 --repo $REPOSITORY --body stale"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "gh api --method POST repos/$REPOSITORY/issues -f title=x"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "bash -c 'gh issue close 1'"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                'env bash -c "$COMMAND"'
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "gh --repo $REPOSITORY issue reopen 1"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.reminder_issue_mutation_blocks(
+                "gh --hostname github.com issue close 1"
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh --repo $REPOSITORY issue create --title reminder "
+                "--body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "echo `gh issue close 1`"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --title reminder --body-file report.md "
+                "-- --repo $REPOSITORY"
+            )
+        )
+        for command in (
+            "/usr/bin/gh issue create --repo r --title t --body-file report.md",
+            "gh.exe issue create --repo r --title t --body-file report.md",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(
+                    validate_repository.has_repo_bound_issue_reconciliation(command)
+                )
+        for command in (
+            "$command issue create --repo r --title t --body-file report.md",
+            "Start-Process gh -ArgumentList 'issue create --repo r --title t --body-file report.md'",
+            "curl -X POST https://api.github.com/repos/r/issues",
+            "Invoke-RestMethod -Method Post -Uri https://api.github.com/repos/r/issues",
+            "iwr -Method Post https://api.github.com/repos/r/issues",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(
+                    validate_repository.reminder_issue_mutation_blocks(command)
+                )
+        self.assertTrue(
+            validate_repository.has_repo_bound_issue_reconciliation(
+                "gh issue create --repo $REPOSITORY --title reminder "
+                "--body-file report.md\n"
+                "gh api repos/$REPOSITORY/issues --method GET -f q=x"
+            )
+        )
+        self.assertIsNone(validate_repository.option_values(["--repo="], "--repo"))
+        self.assertEqual(
+            validate_repository.option_values(
+                ["--repo", "one", "--", "--repo", "two"], "--repo"
+            ),
+            ("one",),
+        )
+        self.assertFalse(
+            validate_repository.has_value_bearing_option(
+                "gh issue create --repo", "--repo"
+            )
+        )
+        self.assertFalse(validate_repository.has_dynamic_shell_executor([]))
+        for tokens, expected in (
+            ([], False),
+            (["FOO=bar", "cd", "other"], True),
+            (["1=bad", "cd", "other"], True),
+            (["FOO=bar"], False),
+            (["if", "cd", "other"], True),
+            (["Set-Location", "other"], True),
+        ):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(
+                    validate_repository.has_directory_change_command(tokens), expected
+                )
+        self.assertTrue(
+            validate_repository.has_dynamic_shell_executor(["env", "--", "bash"])
+        )
+        self.assertTrue(validate_repository.has_dynamic_shell_executor(["env"]))
+        self.assertTrue(validate_repository.has_dynamic_shell_executor(["bash"]))
+        self.assertTrue(validate_repository.has_dynamic_shell_executor(["source"]))
+        self.assertTrue(validate_repository.has_dynamic_shell_executor(["."]))
+        self.assertFalse(
+            validate_repository.has_dynamic_shell_executor(["1=bad", "bash"])
+        )
+        for tokens, expected in (
+            (["gh", "api", "repos/example/issues", "--method="], True),
+            (["/usr/bin/gh", "api", "repos/example/issues", "-f", "title=x"], True),
+            (["gh", "api", "repos/example/issues", "-XDELETE"], True),
+            (["gh", "api", "repos/example/issues", "-X", "HEAD"], False),
+            (["gh", "api", "repos/example/issues", "--method"], True),
+        ):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(
+                    validate_repository.github_api_is_mutation(tokens, 0), expected
+                )
+        for tokens, expected in (
+            (["curl", "--fail", "https://example.test"], False),
+            (["curl", "-x", "proxy", "https://example.test"], False),
+            (["curl", "-f", "https://example.test"], False),
+            (["curl", "-X", "GET", "https://example.test"], False),
+            (["curl", "-XPOST", "https://example.test"], True),
+            (["curl", "-d", "title=x", "https://example.test"], True),
+            (["curl", "-F", "title=x", "https://example.test"], True),
+            (["curl", "-T", "payload", "https://example.test"], True),
+            (["curl", "--upload-file=payload", "https://example.test"], True),
+            (["curl", "--json", '{"title":"x"}', "https://example.test"], True),
+            (["curl", "-g", "-d", "q=x", "https://example.test"], True),
+            (["curl", "-i", "-d", "q=x", "https://example.test"], True),
+            (["curl", "-G", "-d", "q=x", "https://example.test"], False),
+            (["curl", "-I", "-d", "q=x", "https://example.test"], False),
+            (["curl", "--get", "--data", "q=x", "https://example.test"], False),
+            (["curl", "--head", "https://example.test"], False),
+            (["curl", "--method=POST", "https://example.test"], True),
+            (["curl", "-X"], True),
+            (["Invoke-WebRequest", "-Method=Post", "https://example.test"], True),
+            (["wget", "--post-data=x", "https://example.test"], True),
+        ):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(
+                    validate_repository.network_client_is_mutation(tokens), expected
+                )
+        self.assertEqual(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md"
+            ),
+            {"report.md"},
+        )
+        self.assertEqual(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md "
+                "--tracker-registry .github/freshness-trackers.json"
+            ),
+            {"report.md"},
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root other "
+                "--json-output report.json --markdown-output report.md"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md "
+                "--tracker-registry other.json"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md "
+                "--unexpected ignored"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "cd other\n"
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md"
+            )
+        )
+        jq_expression = (
+            '.[] | select(.pull_request == null) | select((.body // "") | '
+            'contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
+        )
+        api_lookup = (
+            "gh api --hostname github.com --paginate "
+            '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+            f"--jq '{jq_expression}'"
+        )
+        self.assertTrue(
+            validate_repository.has_freshness_repository_api_reads(api_lookup)
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    "repos/$GITHUB_REPOSITORY", "repos/attacker/repository"
+                )
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("gh api", "gh --hostname github.com api")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("gh api", "echo gh api")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("--hostname github.com ", "")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("github.com", "ghe.example.com")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("--hostname github.com", "github.com --hostname")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("--paginate ", "")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    "state=open&per_page=100", "state=closed&per_page=100"
+                )
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(f"--jq '{jq_expression}'", "--jq '.number'")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    f"--jq '{jq_expression}'", f"--jq '{jq_expression}, 999'"
+                )
+            )
+        )
+        for option in ("--slurp", "--include", "GET"):
+            with self.subTest(option=option):
+                self.assertFalse(
+                    validate_repository.has_freshness_repository_api_reads(
+                        api_lookup.replace("--paginate ", f"--paginate {option} ")
+                    )
+                )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace("--paginate ", "-- ")
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup + " --method"
+            )
+        )
+        for method in (
+            "--method HEAD",
+            "--method=HEAD",
+            "-XHEAD",
+            "-X HEAD",
+        ):
+            with self.subTest(method=method):
+                self.assertFalse(
+                    validate_repository.has_freshness_repository_api_reads(
+                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                    )
+                )
+        for method in ("--method GET", "--method=GET", "-XGET", "-X GET"):
+            with self.subTest(method=method):
+                self.assertTrue(
+                    validate_repository.has_freshness_repository_api_reads(
+                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                    )
+                )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                api_lookup.replace(
+                    "--paginate ", "--paginate --method GET --method GET "
+                )
+            )
+        )
+        audit_command = (
+            "python scripts/audit_freshness.py --repository-root . "
+            "--json-output report.json --markdown-output report.md"
+        )
+        mutation_command = (
+            'gh issue create --repo "github.com/$GITHUB_REPOSITORY" '
+            "--title reminder --body-file report.md"
+        )
+        ordered_commands = "\n".join((audit_command, api_lookup, mutation_command))
+        self.assertTrue(
+            validate_repository.freshness_command_order_is_valid(ordered_commands)
+        )
+        for operator in ("&", "|", "|&", "&&", "||"):
+            with self.subTest(operator=operator):
+                self.assertFalse(
+                    validate_repository.freshness_command_order_is_valid(
+                        f" {operator} ".join(
+                            (audit_command, api_lookup, mutation_command)
+                        )
+                    )
+                )
+        bound_api_lookup = (
+            "issue_numbers_output=$(\n  "
+            + api_lookup
+            + '\n)\nmapfile -t issue_numbers <<< "$issue_numbers_output"'
+        )
+        self.assertTrue(
+            validate_repository.freshness_api_result_is_consumed(bound_api_lookup)
+        )
+        self.assertTrue(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                bound_api_lookup + '\ngh issue edit "${issue_numbers[0]}" --repo r '
+                "--body-file report.md"
+            )
+        )
+        self.assertTrue(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                'output=$(gh api)\ngh issue edit "$output" --repo r '
+                "--body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                'unrelated=attacker\noutput=$(gh api)\necho "$output"\n'
+                'gh issue edit "$unrelated" --repo r --body-file report.md'
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                bound_api_lookup
+                + '\ngh issue edit "${issue_numbers[0]}" --repo r --body-file report.md\n'
+                + "gh issue edit 999 --repo r --body-file report.md"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                bound_api_lookup + "\ngh issue close"
+            )
+        )
+        for command in (
+            'output=$(gh api)\necho "$output"\n'
+            "gh issue create --repo r --title t --body-file report.md",
+            'output=$(gh api)\nif [[ -n "$output" ]]; then :; fi\n'
+            "gh issue create --repo r --title t --body-file report.md",
+            'output=$(gh api)\nmapfile -t ids <<< "$other"\n'
+            'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+            'output=$(gh api)\nmapfile -t 1bad <<< "$output"\n'
+            'gh issue edit "${1bad[0]}" --repo r --body-file report.md',
+            'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+            'ids=(999)\ngh issue edit "${ids[0]}" --repo r --body-file report.md',
+            'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+            'unset ids\ngh issue edit "${ids[0]}" --repo r --body-file report.md',
+            'output=$(gh api)\necho "$output"\ngh issue',
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(
+                    validate_repository.freshness_api_result_controls_issue_selection(
+                        command
+                    )
+                )
+        flow_cases = (
+            (
+                "plain variable suffix is rejected",
+                'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+                'gh issue edit "$ids_suffix" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "plain variable suffix is not an Issue argument",
+                'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+                'gh issue edit "$ids-suffix" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "malformed later shell line",
+                "output=$(gh api)\necho 'open\nclosed'\n$output",
+                False,
+            ),
+            (
+                "malformed assignment",
+                "output=$(gh api 'unterminated",
+                False,
+            ),
+            (
+                "result reassigned after an early reference",
+                'output=$(gh api)\necho "$output"\noutput=bad\n'
+                'gh issue edit "$output" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "duplicate here-string redirects",
+                'output=$(gh api)\nmapfile -t ids <<< "$output" <<< "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "here-string has no target",
+                'output=$(gh api)\nmapfile <<< "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "here-string has no source",
+                'output=$(gh api)\necho "$output"\nmapfile -t ids <<<\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "collection source is unrelated",
+                'output=$(gh api)\necho "$output"\nmapfile -t ids <<< "$other"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "invalid collection target",
+                'output=$(gh api)\nmapfile -t 1bad <<< "$output"\n'
+                'gh issue edit "${1bad[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "collection precedes lookup",
+                'mapfile -t ids <<< "$output"\noutput=$(gh api)\necho "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "lookup source is reassigned",
+                'output=$(gh api)\necho "$output"\noutput=bad\n'
+                'mapfile -t ids <<< "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                False,
+            ),
+            (
+                "unsupported global issue option",
+                'output=$(gh api)\necho "$output"\n'
+                'gh --hostname github.com issue edit "$output" --repo r '
+                "--body-file report.md",
+                False,
+            ),
+            (
+                "read-only issue command",
+                'output=$(gh api)\necho "$output"\ngh issue list',
+                False,
+            ),
+            (
+                "mutation without issue argument",
+                'output=$(gh api)\necho "$output"\ngh issue edit',
+                False,
+            ),
+            (
+                "readarray collection",
+                'output=$(gh api)\nreadarray -t ids <<< "$output"\n'
+                'gh issue edit "${ids[0]}" --repo r --body-file report.md',
+                True,
+            ),
+        )
+        for name, command, expected in flow_cases:
+            with self.subTest(flow_case=name):
+                self.assertEqual(
+                    validate_repository.freshness_api_result_controls_issue_selection(
+                        command
+                    ),
+                    expected,
+                )
+        self.assertFalse(
+            validate_repository.freshness_api_result_is_consumed(api_lookup)
+        )
+        for command, expected in (
+            ("output=$(echo ready)", False),
+            ("output=$(", False),
+            ("output=$()", False),
+            ("output=$ echo ready", False),
+            ("bad-name=$(gh api)", False),
+            ("output=$(gh api 'unterminated", False),
+            ("output=$(gh api)\noutput=''\n$output", False),
+            ("output=$(gh api)\n${output}", True),
+            ("output=$(gh api)\n$output-suffix", True),
+            ("output=$(gh api)\n$output_suffix", False),
+            ("output=$(gh api)\n${outputevil}", False),
+            ("output=$(echo $(gh api) )\n$output", True),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    validate_repository.freshness_api_result_is_consumed(command),
+                    expected,
+                )
+        for commands in (
+            (mutation_command, audit_command, api_lookup),
+            (api_lookup, audit_command, mutation_command),
+            (audit_command, mutation_command, api_lookup),
+        ):
+            with self.subTest(commands=commands):
+                self.assertFalse(
+                    validate_repository.freshness_command_order_is_valid(
+                        "\n".join(commands)
+                    )
+                )
+        self.assertFalse(
+            validate_repository.freshness_command_order_is_valid(
+                "gh issue 'unterminated"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_command_order_is_valid(
+                "gh issue create gh issue close"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_command_order_is_valid("echo 'open\nclosed'")
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                "gh api --method POST repos/$GITHUB_REPOSITORY/issues"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                "GITHUB_REPOSITORY=attacker/repository "
+                "gh api --hostname github.com --paginate "
+                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"'
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads(
+                "gh api 'unterminated"
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_repository_api_reads("echo ready")
+        )
+        self.assertTrue(
+            validate_repository.has_freshness_repository_api_reads(
+                "echo ready", require_lookup=False
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_repository_root_working_directory(
+                {
+                    "jobs": {
+                        "audit": {
+                            "defaults": {"run": {"working-directory": "."}},
+                            "steps": [{"working-directory": "."}],
+                        }
+                    }
+                }
+            )
+        )
+        working_directory_documents: tuple[dict[str, Any], ...] = (
+            {},
+            {"jobs": []},
+            {"jobs": {"audit": []}},
+            {"jobs": {"audit": {"defaults": []}}},
+            {"jobs": {"audit": {"defaults": {"run": []}}}},
+            {"jobs": {"audit": {"defaults": {}, "steps": {}}}},
+            {"jobs": {"audit": {"defaults": {"run": {"working-directory": "other"}}}}},
+            {"jobs": {"audit": {"steps": [{"working-directory": "other"}]}}},
+        )
+        for document in working_directory_documents:
+            with self.subTest(document=document):
+                self.assertFalse(
+                    validate_repository.has_repository_root_working_directory(document)
+                )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root ."
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_direct_freshness_jobs(
+                {"jobs": {"audit": {"steps": []}}}
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_direct_freshness_jobs(
+                {
+                    "jobs": {
+                        "audit": {"steps": []},
+                        "hidden": {"uses": "./.github/workflows/reusable.yml"},
+                    }
+                }
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_freshness_repository_context(
+                {"jobs": {"audit": {"steps": []}}}
+            )
+        )
+        self.assertTrue(
+            validate_repository.has_freshness_repository_context(
+                {"jobs": {"audit": {"env": {}}}}
+            )
+        )
+        for document in (
+            {"jobs": []},
+            {"jobs": {"audit": []}},
+            {"jobs": {"audit": {"env": []}}},
+            {"jobs": {"audit": {"env": {}, "steps": {}}}},
+            {
+                "jobs": {
+                    "audit": {
+                        "env": {"GITHUB_REPOSITORY": "attacker/repository"},
+                        "steps": [],
+                    }
+                }
+            },
+            {
+                "jobs": {
+                    "audit": {
+                        "steps": [{"env": {"GITHUB_REPOSITORY": "attacker/repository"}}]
+                    }
+                }
+            },
+            {"jobs": {"audit": {"steps": [{"env": []}]}}},
+            {"jobs": {"audit": {"steps": [[]]}}},
+        ):
+            with self.subTest(document=document):
+                self.assertFalse(
+                    validate_repository.has_freshness_repository_context(document)
+                )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.md --markdown-output report.md"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py 'unterminated"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "bash -c 'python scripts/audit_freshness.py --repository-root .'"
+            )
+        )
+        self.assertIsNone(
+            validate_repository.freshness_audit_markdown_outputs(
+                "python scripts/audit_freshness.py --repository-root . "
+                "--json-output report.json --markdown-output report.md "
+                "python scripts/audit_freshness.py"
+            )
+        )
+        self.assertEqual(
+            validate_repository.freshness_audit_markdown_outputs("echo ready"),
+            set(),
+        )
+        contract_workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        )
+        contract_text = (PLUGIN_ROOT / ".github/workflows/freshness.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertTrue(
+            validate_repository.has_least_privileged_freshness_permissions(
+                contract_workflow
+            )
+        )
+        permission_documents: tuple[dict[str, Any], ...] = (
+            {"permissions": {"issues": "write"}, "jobs": {}},
+            {"permissions": {"contents": "read", "issues": "write"}, "jobs": []},
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": "not-a-job"},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": "write-all"}},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"contents": "write"}}},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"issues": "admin"}}},
+            },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"actions": "read"}}},
+            },
+        )
+        for document in permission_documents:
+            with self.subTest(document=document):
+                self.assertFalse(
+                    validate_repository.has_least_privileged_freshness_permissions(
+                        document
+                    )
+                )
+        self.assertTrue(
+            validate_repository.has_freshness_job_reconciliation(
+                contract_workflow, contract_text
+            )
+        )
+        self.assertTrue(
+            validate_repository.freshness_job_execution_is_unconditional(
+                contract_workflow["jobs"]["audit"]
+            )
+        )
+        self.assertTrue(
+            validate_repository.freshness_execution_context_is_bash(
+                contract_workflow, contract_workflow["jobs"]["audit"]
+            )
+        )
+        self.assertIsNone(validate_repository.freshness_shell_if_block_ranges([["fi"]]))
+        self.assertIsNone(
+            validate_repository.freshness_shell_if_block_ranges([["if", "true"]])
+        )
+        self.assertEqual(
+            validate_repository.freshness_shell_if_block_ranges(
+                [["if", "true"], ["if", "true"], ["fi"], ["fi"]]
+            ),
+            {1: 2, 0: 3},
+        )
+        defaults_candidate = validate_repository.load_yaml_text(contract_text)
+        defaults_candidate["defaults"] = {"run": {"shell": "bash"}}
+        self.assertTrue(
+            validate_repository.freshness_execution_context_is_bash(
+                defaults_candidate, defaults_candidate["jobs"]["audit"]
+            )
+        )
+        defaults_without_run = validate_repository.load_yaml_text(contract_text)
+        defaults_without_run["defaults"] = {}
+        self.assertTrue(
+            validate_repository.freshness_execution_context_is_bash(
+                defaults_without_run, defaults_without_run["jobs"]["audit"]
+            )
+        )
+        context_cases: tuple[tuple[str, Any], ...] = (
+            ("invalid workflow", None),
+            ("invalid job", None),
+        )
+        for name, invalid in context_cases:
+            with self.subTest(context=name):
+                self.assertFalse(
+                    validate_repository.freshness_execution_context_is_bash(
+                        invalid,
+                        contract_workflow["jobs"]["audit"],
+                    )
+                )
+        for name, mutate in (
+            (
+                "runner",
+                lambda candidate: candidate["jobs"]["audit"].update(
+                    {"runs-on": "windows-latest"}
+                ),
+            ),
+            (
+                "workflow defaults type",
+                lambda candidate: candidate.update({"defaults": []}),
+            ),
+            (
+                "workflow run defaults type",
+                lambda candidate: candidate.update({"defaults": {"run": []}}),
+            ),
+            (
+                "workflow shell",
+                lambda candidate: candidate.update(
+                    {"defaults": {"run": {"shell": "pwsh"}}}
+                ),
+            ),
+        ):
+            candidate = validate_repository.load_yaml_text(contract_text)
+            mutate(candidate)
+            with self.subTest(context=name):
+                self.assertFalse(
+                    validate_repository.freshness_execution_context_is_bash(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+        for name, mutate in (
+            (
+                "job defaults type",
+                lambda candidate: candidate["jobs"]["audit"].update({"defaults": []}),
+            ),
+            (
+                "job run defaults type",
+                lambda candidate: candidate["jobs"]["audit"].update(
+                    {"defaults": {"run": []}}
+                ),
+            ),
+            (
+                "job shell",
+                lambda candidate: candidate["jobs"]["audit"].update(
+                    {"defaults": {"run": {"shell": "pwsh"}}}
+                ),
+            ),
+            (
+                "step shell",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0].update(
+                    {"shell": "pwsh"}
+                ),
+            ),
+            (
+                "invalid steps",
+                lambda candidate: candidate["jobs"]["audit"].update({"steps": {}}),
+            ),
+        ):
+            candidate = validate_repository.load_yaml_text(contract_text)
+            mutate(candidate)
+            with self.subTest(context=name):
+                self.assertFalse(
+                    validate_repository.freshness_execution_context_is_bash(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+        contract_job_text = "\n".join(
+            step["run"]
+            for step in contract_workflow["jobs"]["audit"]["steps"]
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        )
+        issue_id = "$" + "{issue_numbers[0]}"
+        self.assertTrue(
+            validate_repository.freshness_shell_definitions_are_safe(contract_job_text)
+        )
+        self.assertTrue(validate_repository.freshness_shell_definitions_are_safe(""))
+        self.assertTrue(
+            validate_repository.freshness_shell_expansions_are_safe(contract_job_text)
+        )
+        for expansion in (
+            "echo $(true)",
+            "issue_numbers_output=$(gh api)\nissue_numbers_output=$(gh api)",
+            "echo ${IFS}",
+            "echo $UNTRUSTED",
+        ):
+            with self.subTest(shell_expansion=expansion):
+                self.assertFalse(
+                    validate_repository.freshness_shell_expansions_are_safe(expansion)
+                )
+        self.assertTrue(
+            validate_repository.freshness_variable_is_reassigned(
+                ["printf", "%n", "target"], "target"
+            )
+        )
+        self.assertTrue(
+            validate_repository.freshness_variable_is_reassigned(
+                ["${target:=0}"], "target"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                ["gh", "issue", "reopen", "1"], 1, "reopen"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                ["gh", "issue", "close"], 1, "close"
+            )
+        )
+        self.assertTrue(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo=repo",
+                    "--title=title",
+                    "--body-file=report.md",
+                ],
+                1,
+                "create",
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    "1",
+                    "--repo",
+                    "repo",
+                    "--title",
+                    "one",
+                    "--title",
+                    "two",
+                ],
+                1,
+                "edit",
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo",
+                    "repo",
+                    "--title=",
+                    "--body-file",
+                    "report.md",
+                ],
+                1,
+                "create",
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo",
+                    "repo",
+                    "--title",
+                    "$UNTRUSTED_TITLE",
+                    "--body-file",
+                    "report.md",
+                ],
+                1,
+                "create",
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_options_are_safe(
+                [
+                    "gh",
+                    "issue",
+                    "create",
+                    "--repo",
+                    "--title",
+                    "title",
+                    "--body-file",
+                    "report.md",
+                ],
+                1,
+                "create",
+            )
+        )
+        for definition in (
+            "gh() { return 1; }",
+            "gh ( ) { return 1; }",
+            "function gh { return 1; }",
+            "alias gh='echo shadowed'",
+            "set-alias gh echo",
+            "declare -fx gh",
+            "PATH=/tmp/fake:$PATH",
+            "export PATH",
+            "BASH_ENV=/tmp/fake.sh",
+            "ENV=/tmp/fake.sh",
+            "hash -p /tmp/fake/gh gh",
+            "read CHECKER_EXIT",
+            "mapfile -t CHECKER_EXIT <<< 0",
+            "printf -v CHECKER_EXIT 0",
+            "typeset CHECKER_EXIT",
+            "printf 'PATH=/tmp/fake\\n' >> $GITHUB_ENV",
+            "printf '/tmp/fake\\n' >> $GITHUB_PATH",
+            "title='${{ secrets.TOP_SECRET }}'",
+            "printf '%s\\n' \"$GH_TOKEN\"",
+            "secret_copy=$GITHUB_TOKEN",
+            "gh auth token",
+            "gh issue list",
+            "grep secret /etc/passwd",
+            "mapfile -t other <<< value",
+            "printf '%s' \"${!secret_name}\"",
+            "printf '%n' CHECKER_EXIT",
+            "printf '%s' \"${CHECKER_EXIT:=0}\"",
+            "fmt='%n'\nprintf \"$fmt\" CHECKER_EXIT",
+            "printf %$fmt CHECKER_EXIT",
+            'printf -v "$target" 0',
+            "printf --",
+            "printf `format` value",
+            "exit 2",
+            'gh issue close "${issue_numbers[0]}" --repo repo --comment clean --delete-branch',
+            "gh issue create --repo repo --title title --body-file report.md --project 1",
+            'gh issue create --repo repo --title "$UNTRUSTED_TITLE" --body-file report.md',
+        ):
+            with self.subTest(shell_definition=definition):
+                self.assertFalse(
+                    validate_repository.freshness_shell_definitions_are_safe(definition)
+                )
+        self.assertFalse(
+            validate_repository.freshness_shell_definitions_are_safe(
+                "echo 'unterminated"
+            )
+        )
+        self.assertTrue(
+            validate_repository.freshness_checker_result_controls_reconciliation(
+                contract_job_text
+            )
+        )
+        create_command = (
+            "gh issue create \\\n"
+            '    --repo "github.com/$GITHUB_REPOSITORY" \\\n'
+            '    --title "$title" \\\n'
+            '    --body-file "$RUNNER_TEMP/freshness.md"'
+        )
+        duplicate_create = contract_job_text.replace(
+            create_command, create_command + "; " + create_command, 1
+        )
+        self.assertFalse(
+            validate_repository.freshness_checker_result_controls_reconciliation(
+                duplicate_create
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_checker_result_controls_reconciliation(
+                contract_job_text + "\ngh --hostname github.com issue close 1"
+            )
+        )
+        checker_flow_cases = (
+            (
+                "missing clean status",
+                contract_job_text.replace(
+                    "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
+                    "if true; then",
+                    1,
+                ),
+            ),
+            (
+                "missing stale status",
+                contract_job_text.replace(
+                    "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
+                    "if true; then",
+                    1,
+                ),
+            ),
+            (
+                "marker check after clean branch",
+                contract_job_text.replace(
+                    'grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n',
+                    "",
+                    1,
+                ).replace(
+                    "if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n",
+                    "if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
+                    '  grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n',
+                    1,
+                ),
+            ),
+            (
+                "clean close missing",
+                contract_job_text.replace(
+                    f'gh issue close "{issue_id}"',
+                    "echo closed",
+                    1,
+                ),
+            ),
+            (
+                "clean exit missing",
+                contract_job_text.replace("exit 0\n", "", 1),
+            ),
+            (
+                "stale failure exit missing",
+                contract_job_text.replace(
+                    "if [[ \"$CHECKER_EXIT\" != '0' ]]; then\n  exit 1\nfi\n",
+                    "",
+                    1,
+                ),
+            ),
+            (
+                "unreviewed failure exit",
+                contract_job_text.replace(
+                    "set -euo pipefail\n",
+                    "set -euo pipefail\nexit 1\n",
+                    1,
+                ),
+            ),
+            (
+                "ambiguous issue command",
+                contract_job_text.replace(
+                    f'gh issue close "{issue_id}"',
+                    f'gh --hostname github.com issue close "{issue_id}"',
+                    1,
+                ),
+            ),
+            ("incomplete issue command", contract_job_text + "\ngh issue"),
+            ("malformed shell", contract_job_text + "\necho 'unterminated"),
+            (
+                "close outside clean branch",
+                contract_job_text.replace("gh issue close", "echo closed", 1).replace(
+                    "  exit 0\nfi\ngrep -Fq",
+                    "  exit 0\nfi\ngh issue close 1\ngrep -Fq",
+                    1,
+                ),
+            ),
+            ("unmatched shell block", contract_job_text + "\nif true"),
+            ("unsupported issue mutation", contract_job_text + "\ngh issue reopen 1"),
+            ("missing issue argument", contract_job_text + "\ngh issue close"),
+            (
+                "title overwritten",
+                contract_job_text.replace(
+                    "title='Repository freshness update required'\n",
+                    "title='Repository freshness update required'\ntitle=attacker\n",
+                    1,
+                ),
+            ),
+            (
+                "title assignment missing",
+                contract_job_text.replace(
+                    "title='Repository freshness update required'\n", "", 1
+                ),
+            ),
+            (
+                "issue number seeded",
+                contract_job_text.replace(
+                    "issue_numbers=()\n", "issue_numbers=99\n", 1
+                ),
+            ),
+            (
+                "issue number reseeded",
+                contract_job_text.replace(
+                    "issue_numbers=()\n",
+                    "issue_numbers=()\nissue_numbers=99\n",
+                    1,
+                ),
+            ),
+            (
+                "late issue number initialization",
+                contract_job_text.replace("issue_numbers=()\n", "", 1)
+                + "\nissue_numbers=()\n",
+            ),
+            (
+                "late title assignment",
+                contract_job_text.replace(
+                    "title='Repository freshness update required'\n", "", 1
+                )
+                + "\ntitle='Repository freshness update required'\n",
+            ),
+        )
+        for name, command in checker_flow_cases:
+            with self.subTest(checker_flow=name):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_controls_reconciliation(
+                        command
+                    )
+                )
+        jobs: tuple[object, ...] = (
+            None,
+            {"if": "false", "steps": []},
+            {"continue-on-error": "true", "steps": []},
+            {"needs": "gate", "steps": []},
+            {"strategy": {"matrix": {"item": ["one", "two"]}}, "steps": []},
+            {"environment": "production", "steps": []},
+            {"concurrency": {"group": "other"}, "steps": []},
+            {"steps": {}},
+            {"steps": [None]},
+            {"steps": [{"if": "false"}]},
+            {"steps": [{"continue-on-error": "true"}]},
+            {"steps": [{"background": "true"}]},
+            {"steps": [{"parallel": []}]},
+            {"steps": [{"wait": "audit"}]},
+            {"steps": [{"wait-all": "true"}]},
+            {"steps": [{"cancel": "audit"}]},
+            {"steps": [{"timeout-minutes": "1"}]},
+            {"snapshot": "freshness-image", "steps": []},
+            {"cache-mode": "write", "steps": []},
+        )
+        for job in jobs:
+            with self.subTest(unconditional_job=job):
+                self.assertFalse(
+                    validate_repository.freshness_job_execution_is_unconditional(job)
+                )
+        for field, value in (
+            ("if", "false"),
+            ("continue-on-error", "true"),
+            ("needs", "gate"),
+            ("strategy", {"matrix": {"item": ["one", "two"]}}),
+            ("environment", "production"),
+            ("concurrency", {"group": "other"}),
+        ):
+            candidate = validate_repository.load_yaml_text(contract_text)
+            candidate["jobs"]["audit"][field] = value
+            with self.subTest(unconditional_field=field):
+                self.assertFalse(
+                    validate_repository.has_freshness_job_reconciliation(
+                        candidate, contract_text
+                    )
+                )
+        for step_field, step_value in (
+            ("if", "false"),
+            ("continue-on-error", "true"),
+            ("background", "true"),
+            ("parallel", []),
+            ("wait", "audit"),
+            ("wait-all", "true"),
+            ("cancel", "audit"),
+            ("timeout-minutes", "1"),
+        ):
+            candidate = validate_repository.load_yaml_text(contract_text)
+            candidate["jobs"]["audit"]["steps"][0][step_field] = step_value
+            with self.subTest(unconditional_step_field=step_field):
+                self.assertFalse(
+                    validate_repository.has_freshness_job_reconciliation(
+                        candidate, contract_text
+                    )
+                )
+        ignored_api_output_text = contract_text.replace(
+            '          if [[ -n "$issue_numbers_output" ]]; then\n'
+            '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
+            "          fi\n",
+            "",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(ignored_api_output_text),
+                ignored_api_output_text,
+            )
+        )
+        logged_api_output_text = contract_text.replace(
+            '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n',
+            '            echo "$issue_numbers_output"\n',
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(logged_api_output_text),
+                logged_api_output_text,
+            )
+        )
+        contents_none_workflow_text = contract_text.replace(
+            "    timeout-minutes: 15\n",
+            "    timeout-minutes: 15\n"
+            "    permissions:\n"
+            "      contents: none\n"
+            "      issues: write\n",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(contents_none_workflow_text),
+                contents_none_workflow_text,
+            )
+        )
+        early_mutation = (
+            '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" '
+            '--title "$title" --body-file "$RUNNER_TEMP/freshness.md"\n'
+        )
+        mutation_before_audit_text = contract_text.replace(
+            "          python scripts/audit_freshness.py \\\n",
+            early_mutation + "          python scripts/audit_freshness.py \\\n",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(mutation_before_audit_text),
+                mutation_before_audit_text,
+            )
+        )
+        wrong_repository_text = contract_text.replace(
+            '--repo "github.com/$GITHUB_REPOSITORY"',
+            '--repo "attacker/repository"',
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(wrong_repository_text),
+                wrong_repository_text,
+            )
+        )
+        modified_text = contract_text.replace(
+            '--body-file "$RUNNER_TEMP/freshness.md"',
+            '--body-file "$RUNNER_TEMP/other.md"',
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(modified_text), modified_text
+            )
+        )
+        workflow_with_noop = dict(contract_workflow)
+        workflow_with_noop["jobs"] = {
+            **contract_workflow["jobs"],
+            "noop": {"steps": []},
+        }
+        self.assertTrue(
+            validate_repository.has_freshness_job_reconciliation(
+                workflow_with_noop, contract_text
+            )
+        )
+        global_api_workflow_text = (
+            contract_text
+            + "\n"
+            + "  hidden-api:\n"
+            + "    steps:\n"
+            + "      - run: gh --hostname github.com api "
+            + "\"repos/attacker/repository/issues\" --jq '.number'\n"
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(global_api_workflow_text),
+                global_api_workflow_text,
+            )
+        )
+        workflow_with_mutation_without_lookup = dict(contract_workflow)
+        workflow_with_mutation_without_lookup["jobs"] = {
+            **contract_workflow["jobs"],
+            "mutation": {
+                "steps": [
+                    {
+                        "run": (
+                            'gh issue create --repo "github.com/$GITHUB_REPOSITORY" '
+                            "--title reminder --body-file report.md"
+                        )
+                    }
+                ]
+            },
+        }
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                workflow_with_mutation_without_lookup, contract_text
+            )
+        )
+        workflow_with_read_only_mutation = dict(contract_workflow)
+        workflow_with_read_only_mutation["jobs"] = {
+            **contract_workflow["jobs"],
+            "audit": {
+                **contract_workflow["jobs"]["audit"],
+                "permissions": {"issues": "read"},
+            },
+        }
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                workflow_with_read_only_mutation, contract_text
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                {
+                    "permissions": {"contents": "read", "issues": "write"},
+                    "jobs": [],
+                },
+                contract_text,
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(None, contract_text)
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                {
+                    "permissions": {"contents": "read", "issues": "write"},
+                    "jobs": {"audit": {"steps": [{}]}},
+                },
+                "echo ready",
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                {
+                    "permissions": {"contents": "read", "issues": "write"},
+                    "jobs": {"audit": "not-a-job"},
+                },
+                contract_text,
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                {
+                    "permissions": {"contents": "read", "issues": "write"},
+                    "jobs": {
+                        "audit": {"steps": [{"run": "gh issue create 'unterminated"}]}
+                    },
+                },
+                contract_text,
+            )
+        )
+        self.assertEqual(
+            validate_repository.issue_subcommand_positions(
+                ["gh", "--repo=r", "issue", "create"]
+            ),
+            (2,),
+        )
+        self.assertEqual(
+            validate_repository.issue_subcommand_positions(
+                ["/usr/bin/gh", "issue", "create"]
+            ),
+            (1,),
+        )
+        self.assertEqual(
+            validate_repository.issue_subcommand_positions(
+                ["gh.exe", "issue", "create"]
+            ),
+            (1,),
+        )
+        self.assertIsNone(
+            validate_repository.issue_subcommand_positions(
+                ["gh", "issue", "create", "gh", "issue", "close"]
+            )
+        )
+        self.assertIsNone(
+            validate_repository.reminder_issue_mutation_blocks("echo gh issue create")
+        )
+        self.assertIsNone(
+            validate_repository.reminder_issue_mutation_blocks(
+                "gh issue create gh issue close"
+            )
+        )
+        no_permission_workflow = {
+            "permissions": {"contents": "read", "issues": "write"},
+            "jobs": {
+                "audit": {
+                    "permissions": {"contents": "read"},
+                    "steps": [
+                        {
+                            "run": (
+                                "gh issue create --repo r --title t "
+                                "--body-file report.md"
+                            )
+                        }
+                    ],
+                }
+            },
+        }
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                no_permission_workflow,
+                "gh issue create --repo r --title t --body-file report.md",
+            )
+        )
+        self.assertFalse(validate_repository.permissions_grant_issue_write(None))
+        self.assertFalse(
+            validate_repository.permissions_grant_issue_write({"permissions": {}})
+        )
+        self.assertTrue(
+            validate_repository.permissions_grant_issue_write(
+                {"permissions": "write-all"}
+            )
+        )
+        self.assertTrue(
+            validate_repository.permissions_grant_issue_write(
+                {"permissions": {"issues": "write"}}
+            )
+        )
+        self.assertFalse(
+            validate_repository.permissions_grant_issue_write(
+                {"permissions": {"issues": "read"}}
+            )
+        )
+        self.assertFalse(validate_repository.job_effective_issue_write(None, {}))
+        self.assertFalse(validate_repository.job_effective_issue_write({}, None))
+        self.assertTrue(
+            validate_repository.job_effective_issue_write(
+                {"permissions": {"issues": "write"}}, {}
+            )
+        )
+        self.assertTrue(
+            validate_repository.job_effective_issue_write(
+                {}, {"permissions": "write-all"}
+            )
+        )
+        self.assertFalse(
+            validate_repository.job_effective_issue_write(
+                {"permissions": {"issues": "write"}},
+                {"permissions": {"issues": "read"}},
+            )
+        )
+        workflow_permissions = {"permissions": {"contents": "read", "issues": "write"}}
+        self.assertFalse(validate_repository.job_effective_contents_read(None, {}))
+        self.assertFalse(validate_repository.job_effective_contents_read({}, None))
+        self.assertTrue(
+            validate_repository.job_effective_contents_read(workflow_permissions, {})
+        )
+        self.assertTrue(
+            validate_repository.job_effective_contents_read(
+                workflow_permissions,
+                {"permissions": {"contents": "read", "issues": "write"}},
+            )
+        )
+        self.assertFalse(
+            validate_repository.job_effective_contents_read(
+                workflow_permissions, {"permissions": {"issues": "write"}}
+            )
+        )
+
+    def test_freshness_contract_rejects_runtime_and_shell_bypasses(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        contract_text = workflow_path.read_text(encoding="utf-8")
+        contract_workflow = validate_repository.load_yaml_text(contract_text)
+        contract_job = contract_workflow["jobs"]["audit"]
+
+        for name, mutate in (
+            (
+                "workflow container",
+                lambda candidate: candidate.update({"container": "evil:latest"}),
+            ),
+            (
+                "job container",
+                lambda candidate: candidate["jobs"]["audit"].update(
+                    {"container": "evil:latest"}
+                ),
+            ),
+            (
+                "job service",
+                lambda candidate: candidate["jobs"]["audit"].update(
+                    {"services": {"evil": {"image": "evil:latest"}}}
+                ),
+            ),
+            (
+                "unreviewed action",
+                lambda candidate: candidate["jobs"]["audit"]["steps"].append(
+                    {"uses": "evil/action@" + "a" * 40}
+                ),
+            ),
+            (
+                "unpinned freshness action",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0].update(
+                    {"uses": "actions/checkout@main"}
+                ),
+            ),
+            (
+                "checkout repository override",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0]["with"].update(
+                    {"repository": "attacker/repo"}
+                ),
+            ),
+            (
+                "checkout ref override",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][0]["with"].update(
+                    {"ref": "attacker"}
+                ),
+            ),
+            (
+                "setup Python override",
+                lambda candidate: candidate["jobs"]["audit"]["steps"][1]["with"].update(
+                    {"python-version": "attacker"}
+                ),
+            ),
+        ):
+            candidate = validate_repository.load_yaml_text(contract_text)
+            mutate(candidate)
+            with self.subTest(runtime_context=name):
+                self.assertFalse(
+                    validate_repository.freshness_execution_context_is_bash(
+                        candidate, candidate["jobs"]["audit"]
+                    )
+                )
+
+        for variable in (
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONSTARTUP",
+            "GITHUB_STEP_SUMMARY",
+            "GITHUB_STATE",
+        ):
+            candidate = validate_repository.load_yaml_text(contract_text)
+            candidate["jobs"]["audit"]["steps"][0]["env"] = {variable: "attacker"}
+            with self.subTest(protected_environment=variable):
+                if variable in {"GITHUB_TOKEN", "GH_TOKEN"}:
+                    self.assertFalse(
+                        validate_repository.freshness_authentication_bindings_are_safe(
+                            candidate, candidate["jobs"]["audit"]
+                        )
+                    )
+                else:
+                    self.assertFalse(
+                        validate_repository.freshness_checker_result_binding_is_safe(
+                            candidate, candidate["jobs"]["audit"]
+                        )
+                    )
+
+        audit_step = next(
+            step for step in contract_job["steps"] if step.get("id") == "audit"
+        )
+        audit_run = audit_step["run"]
+        for name, replacement in (
+            (
+                "JSON output outside runner temp",
+                ("$RUNNER_TEMP/freshness.json", "report.json"),
+            ),
+            (
+                "Markdown output outside runner temp",
+                ("$RUNNER_TEMP/freshness.md", "report.md"),
+            ),
+        ):
+            with self.subTest(report_path=name):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_output_is_safe(
+                        audit_run.replace(*replacement, 1)
+                    )
+                )
+
+        for definition in (
+            "GH_TOKEN=attacker",
+            "GITHUB_TOKEN=attacker",
+            "export GH_TOKEN=attacker",
+            "OTHER=value echo",
+            "PYTHONPATH=/tmp/evil",
+            "python -c \"import subprocess; subprocess.run(['gh','issue','close','999'])\"",
+            "node -e \"require('child_process').execFileSync('gh',['issue','close','999'])\"",
+            "awk 'BEGIN { system(\"gh issue close 999\") }'",
+            "./mutate_issue",
+        ):
+            with self.subTest(shell_definition=definition):
+                self.assertFalse(
+                    validate_repository.freshness_shell_definitions_are_safe(definition)
+                )
+
+        contract_job_text = "\n".join(
+            step["run"]
+            for step in contract_job["steps"]
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        )
+        binding_step = next(
+            step
+            for step in contract_job["steps"]
+            if isinstance(step.get("env"), dict) and "CHECKER_EXIT" in step["env"]
+        )
+        binding_run = binding_step["run"]
+        parameter_expansion_bypass = binding_run.replace(
+            "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+            "--comment \\\n# hidden continuation\n"
+            "curl${IFS}touch${IFS}/tmp/freshness-preflight-bypass",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.freshness_shell_definitions_are_safe(
+                parameter_expansion_bypass
+            )
+        )
+        _bypass_workflow = validate_repository.load_yaml_text(
+            contract_text.replace(
+                "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+                "--comment \\\n                # hidden continuation\n"
+                "                curl${IFS}touch${IFS}/tmp/freshness-preflight-bypass",
+                1,
+            )
+        )
+        self.assertTrue(
+            validate_repository.freshness_reconciliation_shell_options_are_safe(
+                binding_run
+            )
+        )
+        for command in (
+            binding_run.replace("set -euo pipefail\n", "", 1),
+            binding_run.replace(
+                "set -euo pipefail\n", "set +e\nset -euo pipefail\n", 1
+            ),
+            binding_run.replace("set -euo pipefail", "set -e", 1),
+            binding_run.replace(
+                "marker='<!-- repo-scaffold-freshness-audit -->'",
+                'printf "fake" > "$RUNNER_TEMP/freshness.md"\n'
+                "marker='<!-- repo-scaffold-freshness-audit -->'",
+                1,
+            ),
+            "",
+            "echo 'unterminated",
+        ):
+            with self.subTest(reconciliation_options=command):
+                self.assertFalse(
+                    validate_repository.freshness_reconciliation_shell_options_are_safe(
+                        command
+                    )
+                )
+        for variable in ("GIT_SSH_COMMAND", "LD_PRELOAD", "GH_CONFIG_DIR", "HOME"):
+            command = binding_run.replace(
+                "gh api --hostname github.com",
+                f"{variable}=/tmp/fake gh api --hostname github.com",
+                1,
+            )
+            with self.subTest(shell_environment=variable):
+                self.assertFalse(
+                    validate_repository.freshness_shell_definitions_are_safe(command)
+                )
+        self.assertTrue(
+            validate_repository.freshness_shell_control_flow_is_safe(contract_job_text)
+        )
+        expression_workflow = validate_repository.load_yaml_text(
+            contract_text.replace(
+                "title='Repository freshness update required'",
+                "title='${{ secrets.TOP_SECRET }}'",
+                1,
+            )
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                expression_workflow,
+                contract_text.replace(
+                    "title='Repository freshness update required'",
+                    "title='${{ secrets.TOP_SECRET }}'",
+                    1,
+                ),
+            )
+        )
+        token_text = contract_text.replace(
+            "--comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+            '--comment "$GH_TOKEN"',
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(token_text), token_text
+            )
+        )
+        negated_api_text = contract_text.replace(
+            "gh api --hostname github.com",
+            "! gh api --hostname github.com",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(negated_api_text), negated_api_text
+            )
+        )
+        hidden_job_workflow = validate_repository.load_yaml_text(contract_text)
+        hidden_job_workflow["jobs"]["hidden"] = {
+            "steps": [
+                {
+                    "run": "python -c \"import subprocess; subprocess.run(['gh','issue','close','999'])\""
+                }
+            ]
+        }
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                hidden_job_workflow, contract_text
+            )
+        )
+        duplicate_guard = (
+            "          if (( ${#issue_numbers[@]} > 1 )); then\n"
+            "            printf 'Found multiple open freshness reminder issues.\\n' >&2\n"
+            "            exit 1\n"
+            "          fi\n"
+        )
+        flow_bypasses = (
+            (
+                "clean nested condition",
+                contract_text.replace(
+                    "if (( ${#issue_numbers[@]} == 1 )); then",
+                    "if false; then",
+                    1,
+                ),
+            ),
+            (
+                "stale nested condition",
+                contract_text.replace(
+                    "if (( ${#issue_numbers[@]} == 1 )); then",
+                    "if false; then",
+                    2,
+                ),
+            ),
+            (
+                "duplicate issue guard missing",
+                contract_text.replace(duplicate_guard, "", 1),
+            ),
+            (
+                "duplicate issue guard does not exit",
+                contract_text.replace(
+                    "            exit 1\n          fi\n",
+                    "            :\n          fi\n",
+                    1,
+                ),
+            ),
+            (
+                "clean cardinality guard missing",
+                contract_text.replace(
+                    "            if (( ${#issue_numbers[@]} == 1 )); then\n",
+                    "",
+                    1,
+                ),
+            ),
+            (
+                "stale cardinality guard missing",
+                contract_text.replace(
+                    "          if (( ${#issue_numbers[@]} == 1 )); then\n",
+                    "",
+                    1,
+                ),
+            ),
+            (
+                "marker check uses another variable",
+                contract_text.replace(
+                    'grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"',
+                    'grep -Fq "$title" "$RUNNER_TEMP/freshness.md"',
+                    1,
+                ),
+            ),
+            (
+                "marker is reassigned",
+                contract_text.replace(
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
+                    "          marker=attacker\n",
+                    1,
+                ),
+            ),
+            (
+                "unreviewed command substitution",
+                contract_text.replace(
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                    '          printf "%s" "$(./mutate_issue)"\n'
+                    "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                    1,
+                ),
+            ),
+            (
+                "loop around mutation",
+                contract_text.replace(
+                    "            gh issue close",
+                    "            for item in; do\n            gh issue close",
+                    1,
+                ).replace(
+                    "            --comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'",
+                    "            --comment 'The scheduled freshness audit is clean, so this reminder is closing automatically.'\n            done",
+                    1,
+                ),
+            ),
+            (
+                "unmatched closing shell block",
+                contract_job_text + "\nfi",
+            ),
+            (
+                "unmatched opening shell block",
+                contract_job_text.replace("fi\n", "", 1),
+            ),
+        )
+        for name, candidate_text in flow_bypasses:
+            if candidate_text.startswith("set "):
+                job_text = candidate_text
+            else:
+                candidate = validate_repository.load_yaml_text(candidate_text)
+                job_text = "\n".join(
+                    step["run"]
+                    for step in candidate["jobs"]["audit"]["steps"]
+                    if isinstance(step, dict) and isinstance(step.get("run"), str)
+                )
+            with self.subTest(flow_bypass=name):
+                self.assertFalse(
+                    validate_repository.freshness_checker_result_controls_reconciliation(
+                        job_text
+                    )
+                )
+
+        lookup = (
+            'output=$(gh api)\nmapfile -t ids <<< "$output"\n'
+            'gh issue edit "${ids[0]:-999}" --repo r --body-file report.md'
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(lookup)
+        )
+        transformed_lookup = lookup.replace(":-999", "//1/999")
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                transformed_lookup
+            )
+        )
+
+    def test_freshness_defensive_helpers_and_workflow_shapes_fail_closed(self) -> None:
+        action_step_cases: tuple[object, ...] = (
+            None,
+            {},
+            [None],
+            [{"uses": 1}],
+            [{"uses": "one@two@three"}],
+        )
+        for steps in action_step_cases:
+            with self.subTest(action_steps=steps):
+                self.assertFalse(
+                    validate_repository.freshness_action_steps_are_safe(steps)
+                )
+        self.assertFalse(
+            validate_repository.freshness_action_steps_are_safe([{"run": "echo"}])
+        )
+        for (
+            repository,
+            reference,
+        ) in validate_repository.FRESHNESS_REVIEWED_ACTION_REFERENCES.items():
+            with self.subTest(reviewed_action=repository):
+                step = {
+                    "uses": reference,
+                    "with": validate_repository.FRESHNESS_ALLOWED_ACTION_INPUTS[
+                        repository
+                    ],
+                }
+                self.assertFalse(
+                    validate_repository.freshness_action_steps_are_safe([step])
+                )
+                step["uses"] = f"{repository}@{'a' * 40}"
+                self.assertFalse(
+                    validate_repository.freshness_action_steps_are_safe([step])
+                )
+        preparation_with_run = [
+            {
+                "uses": validate_repository.FRESHNESS_REVIEWED_ACTION_REFERENCES[
+                    "actions/checkout"
+                ],
+                "with": validate_repository.FRESHNESS_ALLOWED_ACTION_INPUTS[
+                    "actions/checkout"
+                ],
+                "run": "printf x",
+            },
+            {
+                "uses": validate_repository.FRESHNESS_REVIEWED_ACTION_REFERENCES[
+                    "actions/setup-python"
+                ],
+                "with": validate_repository.FRESHNESS_ALLOWED_ACTION_INPUTS[
+                    "actions/setup-python"
+                ],
+            },
+            {"run": "printf y"},
+        ]
+        self.assertFalse(
+            validate_repository.freshness_action_steps_are_safe(preparation_with_run)
+        )
+        self.assertFalse(
+            validate_repository.freshness_action_steps_are_safe(
+                [{"uses": None, "run": "printf x"}]
+            )
+        )
+
+        for definition in (
+            "alias gh='echo shadowed'",
+            "declare -fx gh",
+            "function gh { return 1; }",
+            "gh ( ) { return 1; }",
+        ):
+            with self.subTest(shell_definition=definition):
+                self.assertFalse(
+                    validate_repository.freshness_shell_definitions_are_safe(definition)
+                )
+        with (
+            mock.patch.object(
+                validate_repository,
+                "shell_command_segments",
+                return_value=[["echo", "ready"]],
+            ),
+            mock.patch.object(
+                validate_repository.shlex,
+                "shlex",
+                side_effect=ValueError("malformed"),
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.freshness_shell_definitions_are_safe("ignored")
+            )
+
+        variable_reference_cases = (
+            ("$NAME", True),
+            ("${NAME}", True),
+            ("${NAMEevil}", False),
+            ("$NAME-suffix", True),
+            ("$NAMEevil", False),
+        )
+        for token, expected in variable_reference_cases:
+            with self.subTest(variable_reference=token):
+                self.assertEqual(
+                    validate_repository.freshness_variable_reference(token, "NAME"),
+                    expected,
+                )
+
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow = validate_repository.load_yaml_text(workflow_text)
+        contract_job_text = "\n".join(
+            step["run"]
+            for step in workflow["jobs"]["audit"]["steps"]
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        )
+        self.assertTrue(
+            validate_repository.freshness_summary_output_is_safe(contract_job_text)
+        )
+        self.assertFalse(
+            validate_repository.freshness_summary_output_is_safe("echo 'unterminated")
+        )
+        self.assertFalse(
+            validate_repository.freshness_summary_output_is_safe(
+                contract_job_text.replace(
+                    'cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"',
+                    'cat "$RUNNER_TEMP/other.md" >> "$GITHUB_STEP_SUMMARY"',
+                    1,
+                )
+            )
+        )
+        duplicate_guard = (
+            "\n".join(
+                (
+                    "if (( ${#issue_numbers[@]} > 1 )); then",
+                    "  printf 'Found multiple open freshness reminder issues.\\n' >&2",
+                    "  exit 1",
+                    "fi",
+                )
+            )
+            + "\n"
+        )
+        clean_condition = "if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
+        out_of_order = contract_job_text.replace(duplicate_guard, "", 1).replace(
+            clean_condition, clean_condition + duplicate_guard, 1
+        )
+        self.assertFalse(
+            validate_repository.freshness_shell_control_flow_is_safe(out_of_order)
+        )
+        nonempty_guard = (
+            "\n".join(
+                (
+                    'if [[ -n "$issue_numbers_output" ]]; then',
+                    '  mapfile -t issue_numbers <<< "$issue_numbers_output"',
+                    "fi",
+                )
+            )
+            + "\n"
+        )
+        nonempty_after_clean = contract_job_text.replace(nonempty_guard, "", 1).replace(
+            clean_condition, clean_condition + nonempty_guard, 1
+        )
+        self.assertFalse(
+            validate_repository.freshness_shell_control_flow_is_safe(
+                nonempty_after_clean
+            )
+        )
+
+        with (
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_control_flow_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                validate_repository, "freshness_marker_check_is_safe", return_value=True
+            ),
+            mock.patch.object(
+                validate_repository, "shell_command_segments", return_value=None
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.freshness_checker_result_controls_reconciliation(
+                    "ignored"
+                )
+            )
+        with (
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_control_flow_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                validate_repository, "freshness_marker_check_is_safe", return_value=True
+            ),
+            mock.patch.object(
+                validate_repository,
+                "shell_command_segments",
+                return_value=[["echo", "ready"]],
+            ),
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_if_block_ranges",
+                return_value=None,
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.freshness_checker_result_controls_reconciliation(
+                    "ignored"
+                )
+            )
+        with (
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_control_flow_is_safe",
+                return_value=True,
+            ),
+            mock.patch.object(
+                validate_repository, "freshness_marker_check_is_safe", return_value=True
+            ),
+            mock.patch.object(
+                validate_repository,
+                "shell_command_segments",
+                return_value=[["gh", "issue", "create", "gh", "issue", "close"]],
+            ),
+            mock.patch.object(
+                validate_repository,
+                "freshness_shell_if_block_ranges",
+                return_value={},
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.freshness_checker_result_controls_reconciliation(
+                    "ignored"
+                )
+            )
+
+        preconditions = {
+            name: mock.Mock(return_value=True)
+            for name in (
+                "has_least_privileged_freshness_permissions",
+                "has_repository_root_working_directory",
+                "has_direct_freshness_jobs",
+                "has_freshness_repository_context",
+                "has_repo_bound_issue_reconciliation",
+                "has_freshness_repository_api_reads",
+            )
+        }
+        with mock.patch.multiple(validate_repository, **preconditions):
+            self.assertFalse(
+                validate_repository.has_freshness_job_reconciliation(
+                    {"jobs": {"audit": {"steps": {}}}}, ""
+                )
+            )
+        summary_candidate = validate_repository.load_yaml_text(workflow_text)
+        summary_step = next(
+            step
+            for step in summary_candidate["jobs"]["audit"]["steps"]
+            if step.get("name") == "Add report to job summary"
+        )
+        summary_step["run"] = 'cat "$RUNNER_TEMP/other.md" >> "$GITHUB_STEP_SUMMARY"'
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                summary_candidate, workflow_text
+            )
+        )
+        with (
+            mock.patch.multiple(validate_repository, **preconditions),
+            mock.patch.object(
+                validate_repository, "reminder_issue_mutation_blocks", return_value=None
+            ),
+        ):
+            self.assertFalse(
+                validate_repository.has_freshness_job_reconciliation(
+                    {"jobs": {"audit": {"steps": []}}}, ""
+                )
+            )
+
+        container_document_cases: tuple[object, ...] = (
+            None,
+            [],
+            {"jobs": []},
+            {"jobs": {"invalid": None}},
+        )
+        for document in container_document_cases:
+            with self.subTest(container_document=document):
+                self.assertEqual(
+                    validate_repository.validate_job_container_images(
+                        document, Path("workflow.yml")
+                    ),
+                    [],
+                )
+
+    def test_freshness_reconciliation_requires_effective_permission_and_repo_binding(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/freshness.yml"
+            workflow_text = installed.read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(
+                "  audit:\n    name: freshness-audit\n",
+                "  audit:\n"
+                "    name: freshness-audit\n"
+                "    permissions:\n"
+                "      contents: read\n",
+                1,
+            ).replace(
+                '--repo "github.com/$GITHUB_REPOSITORY"',
+                '--repository "github.com/$GITHUB_REPOSITORY"',
+            )
+            installed.write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/freshness.yml"
+            contents_none_text = installed.read_text(encoding="utf-8").replace(
+                "    timeout-minutes: 15\n",
+                "    timeout-minutes: 15\n"
+                "    permissions:\n"
+                "      contents: none\n"
+                "      issues: write\n",
+                1,
+            )
+            installed.write_text(contents_none_text, encoding="utf-8")
+            contents_problems = (
+                validate_repository.validate_freshness_tracking_contract(root)
+            )
+
+        self.assertTrue(
+            any(
+                "audit job must have effective issues: write permission" in problem
+                for problem in problems
+            )
+        )
+        self.assertTrue(
+            any(
+                "reminder mutations must bind the current GitHub repository" in problem
+                for problem in problems
+            )
+        )
+        self.assertTrue(
+            any(
+                "audit job must have effective contents: read permission" in problem
+                for problem in contents_problems
+            )
+        )
 
     def test_freshness_contract_drift_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -7631,6 +10816,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             "must use schema-version 1",
             "use only schedule",
             "must use contents",
+            "repository-scoped",
             "reconcile one marker issue",
             "workflow must be a mapping",
         ):
@@ -7657,6 +10843,199 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
         self.assertEqual(
             validate_repository.validate_official_docs_tracking_contract(PLUGIN_ROOT),
             [],
+        )
+
+    def test_reconciliation_job_must_keep_effective_issue_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/official-docs.yml"
+            workflow_text = workflow.read_text(encoding="utf-8").replace(
+                "  audit:\n    name: official-docs-review\n",
+                "  audit:\n"
+                "    name: official-docs-review\n"
+                "    permissions:\n"
+                "      contents: read\n",
+                1,
+            )
+            workflow.write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "audit job must have effective issues: write permission" in problem
+                for problem in problems
+            )
+        )
+
+    def test_critical_policy_claims_must_track_every_affected_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            registry_path = root / ".github" / "official-docs-trackers.json"
+            cases = {
+                "github-actions-dependabot": "skills/repo-scaffold/assets/dependabot.yml",
+                "github-dependabot-auto-merge": "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
+                "github-dependency-review": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                "github-dependency-graph-sbom-api": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                "github-actions-permissions-api": [
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                ],
+                "github-actions-workflow-permissions-syntax": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                "github-actions-workflow-runs-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-codeql-advanced-setup": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                "github-codeql-default-setup-api": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                "github-code-scanning-sarif-upload": "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                "github-code-scanning-alerts-api": [
+                    "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                ],
+                "github-repository-contents-api": "skills/repo-scaffold/scripts/codeql_preflight.py",
+                "github-community-profile-metrics-api": [
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
+                "github-repository-license-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-action-pin-repository-tags-api": "skills/repo-scaffold/scripts/sync_action_pins.py",
+                "github-git-refs-api": "skills/repo-scaffold/assets/workflows/release.yml",
+                "github-git-tags-api": "skills/repo-scaffold/assets/workflows/release.yml",
+                "github-releases-api": "skills/repo-scaffold/scripts/ci_toolchain.py",
+                "github-pull-requests-api": [
+                    "scripts/check_code_scanning_alerts.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
+                "github-git-commits-api": [
+                    "scripts/check_code_scanning_alerts.py",
+                ],
+                "github-repository-commits-api": "skills/repo-scaffold/scripts/codeql_preflight.py",
+                "github-community-health-branches-api": "skills/repo-scaffold/scripts/check_community_health.py",
+                "github-community-health-git-trees-api": [
+                    "skills/repo-scaffold/scripts/check_community_health.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
+                "github-git-blobs-api": [
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                ],
+                "github-check-runs-api": [
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
+                "github-commit-statuses-api": [
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
+                "github-reminder-issues-api": "skills/repo-scaffold/assets/workflows/freshness.yml",
+                "github-repository-labels-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-branch-protection-status-checks": [
+                    "README.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                ],
+                "github-branches-api": [
+                    "README.md",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                ],
+                "github-effective-branch-rules-api": [
+                    "README.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                ],
+                "github-merge-queue-auto-merge": [
+                    "README.md",
+                    "skills/repo-scaffold/assets/workflows/auto-merge.yml",
+                ],
+                "github-security-analysis-settings": "skills/repo-scaffold/scripts/security_features_preflight.py",
+                "github-repository-security-features-api": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/security_features_preflight.py",
+                ],
+                "github-users-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-artifact-attestations": "skills/repo-scaffold/scripts/release_preflight.py",
+                "github-actions-secrets-api": "skills/repo-scaffold/scripts/release_preflight.py",
+                "github-repository-settings-api": [
+                    "skills/repo-scaffold/scripts/repository_settings_preflight.py",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                    "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                    "skills/repo-scaffold/scripts/release_preflight.py",
+                    "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                    "skills/repo-scaffold/scripts/security_features_preflight.py",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                ],
+            }
+            for identifier, removed_paths in cases.items():
+                for removed_path in (
+                    removed_paths
+                    if isinstance(removed_paths, list)
+                    else [removed_paths]
+                ):
+                    registry = validate_repository.load_json(registry_path)
+                    claim = next(
+                        item for item in registry["claims"] if item["id"] == identifier
+                    )
+                    claim["paths"].remove(removed_path)
+                    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+                    with self.subTest(identifier=identifier, removed_path=removed_path):
+                        problems = validate_repository.validate_official_docs_tracking_contract(
+                            root
+                        )
+                        self.assertTrue(
+                            any(identifier in problem for problem in problems), problems
+                        )
+                    self.copy_contract(root)
+
+    def test_critical_policy_claims_reject_missing_and_malformed_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            registry_path = root / ".github" / "official-docs-trackers.json"
+
+            registry = validate_repository.load_json(registry_path)
+            registry["claims"] = [
+                claim
+                for claim in registry["claims"]
+                if claim["id"] != "github-check-runs-api"
+            ]
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+            missing = validate_repository.validate_official_docs_tracking_contract(root)
+
+            self.copy_contract(root)
+            registry = validate_repository.load_json(registry_path)
+            claim = next(
+                item
+                for item in registry["claims"]
+                if item["id"] == "github-commit-statuses-api"
+            )
+            claim["paths"] = (
+                "skills/repo-scaffold/scripts/branch_protection_preflight.py"
+            )
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+            malformed = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "github-check-runs-api claim is missing" in problem
+                for problem in missing
+            )
+        )
+        self.assertTrue(
+            any(
+                "github-commit-statuses-api claim must track every affected path"
+                in problem
+                for problem in malformed
+            )
         )
 
     def test_missing_and_drifted_official_documentation_contract_is_reported(
@@ -7797,7 +11176,9 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             )
         )
 
-    def test_malformed_tracker_url_does_not_break_host_discovery(self) -> None:
+    def test_malformed_tracker_url_reports_critical_claim_gaps_without_crashing(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
@@ -7813,7 +11194,50 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             problems = validate_repository.validate_official_docs_tracking_contract(
                 root
             )
-        self.assertEqual(problems, [])
+        for identifier in (
+            "github-actions-dependabot",
+            "github-dependency-review",
+            "github-dependency-graph-sbom-api",
+            "github-actions-permissions-api",
+            "github-actions-workflow-runs-api",
+            "github-codeql-advanced-setup",
+            "github-codeql-default-setup-api",
+            "github-code-scanning-alerts-api",
+            "github-repository-contents-api",
+            "github-community-profile-metrics-api",
+            "github-repository-license-api",
+            "github-action-pin-repository-tags-api",
+            "github-git-refs-api",
+            "github-git-tags-api",
+            "github-releases-api",
+            "github-pull-requests-api",
+            "github-git-commits-api",
+            "github-repository-commits-api",
+            "github-community-health-branches-api",
+            "github-community-health-git-trees-api",
+            "github-git-blobs-api",
+            "github-check-runs-api",
+            "github-commit-statuses-api",
+            "github-repository-labels-api",
+            "github-reminder-issues-api",
+            "github-branch-protection-status-checks",
+            "github-branches-api",
+            "github-effective-branch-rules-api",
+            "github-merge-queue-auto-merge",
+            "github-security-analysis-settings",
+            "github-repository-security-features-api",
+            "github-users-api",
+            "github-artifact-attestations",
+            "github-actions-secrets-api",
+            "github-repository-settings-api",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertTrue(
+                    any(
+                        f"{identifier} claim is missing" in problem
+                        for problem in problems
+                    )
+                )
 
     def test_malformed_and_nonofficial_markdown_urls_do_not_break_tracking(
         self,
@@ -8187,6 +11611,53 @@ class PolicyDriftReminderContractTests(unittest.TestCase):
             unreadable[0].startswith(
                 ".github/workflows/ci.yml: could not verify policy reminder:"
             )
+        )
+
+    def test_policy_drift_reminder_requires_explicit_repository_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            workflow_path = workflow_directory / "ci.yml"
+            workflow_text = (
+                PLUGIN_ROOT / ".github" / "workflows" / "ci.yml"
+            ).read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(
+                '--repo "github.com/${REPOSITORY}"',
+                '--repository "github.com/${REPOSITORY}"',
+            )
+            workflow_path.write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_policy_drift_reminder_contract(root)
+
+        self.assertEqual(
+            problems,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must reconcile "
+                "one marker issue from both canary results"
+            ],
+        )
+
+    def test_policy_drift_reminder_requires_repository_scoped_concurrency(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            workflow_text = (
+                PLUGIN_ROOT / ".github" / "workflows" / "ci.yml"
+            ).read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(
+                "${{ github.workflow }}-policy-drift-${{ github.repository }}",
+                "${{ github.workflow }}-policy-drift-${{ github.ref }}",
+            )
+            (workflow_directory / "ci.yml").write_text(workflow_text, encoding="utf-8")
+            problems = validate_repository.validate_policy_drift_reminder_contract(root)
+
+        self.assertEqual(
+            problems,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must use a "
+                "repository-scoped non-cancelling concurrency group"
+            ],
         )
 
 

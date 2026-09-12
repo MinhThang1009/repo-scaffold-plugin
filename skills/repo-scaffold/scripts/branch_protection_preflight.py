@@ -125,15 +125,21 @@ def workflow_producers(
             if not isinstance(context, str) or not context or "${{" in context:
                 continue
             steps = job.get("steps")
+            executable_steps = steps if isinstance(steps, list) else []
+            step_controls_are_safe = isinstance(steps, list) and all(
+                isinstance(step, dict)
+                and not {"if", "continue-on-error"}.intersection(step)
+                for step in executable_steps
+            )
             executable = (
                 "uses" not in job
                 and isinstance(job.get("runs-on"), str)
-                and isinstance(steps, list)
+                and step_controls_are_safe
                 and any(
                     isinstance(step, dict)
                     and isinstance(step.get("uses") or step.get("run"), str)
                     and bool(step.get("uses") or step.get("run"))
-                    for step in steps
+                    for step in executable_steps
                 )
             )
             producers.append(
@@ -144,7 +150,7 @@ def workflow_producers(
                     merge_group_coverage=merge_group_coverage,
                     unconditional=job.get("if")
                     in {None, "${{ always() }}", "always()"},
-                    executable=executable,
+                    executable=executable and "continue-on-error" not in job,
                 )
             )
     return producers
@@ -177,6 +183,7 @@ def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
         completed_at = item.get("completed_at")
         if (
             not isinstance(app_id, int)
+            or isinstance(app_id, bool)
             or app_id <= 0
             or not isinstance(completed_at, str)
         ):
@@ -194,8 +201,8 @@ def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
                 f"Required check {context!r} has a timezone-less completion time."
             )
         app_ids.add(app_id)
-        success |= item.get("conclusion") == "success" and completed >= now - timedelta(
-            days=7
+        success |= item.get("conclusion") == "success" and (
+            now - timedelta(days=7) <= completed <= now
         )
     if len(app_ids) != 1:
         raise InspectionError(
@@ -295,9 +302,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Repository administration permission is required to change protection."
         )
+    if repository.get("default_branch") != args.default_branch:
+        raise InspectionError(
+            "Requested branch is not the verified current default branch."
+        )
     pr = client.json(f"repos/{owner}/{repo}/pulls/{args.pull_request}")
     if not isinstance(pr, dict):
         raise InspectionError("Pull request response is invalid.")
+    if pr.get("state") != "open":
+        raise InspectionError("Representative pull request is not open.")
     head = pr.get("head")
     head_sha = head.get("sha") if isinstance(head, dict) else None
     merge_sha = pr.get("merge_commit_sha")
@@ -307,6 +320,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     if pr.get("mergeable") is not True:
         raise InspectionError("Representative pull request is not confirmed mergeable.")
+    base = pr.get("base")
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+    if (
+        not isinstance(base, dict)
+        or base.get("ref") != args.default_branch
+        or not isinstance(base_name, str)
+        or base_name.casefold() != args.repository.casefold()
+    ):
+        raise InspectionError(
+            "Representative pull request does not verify the target repository and branch."
+        )
     rules = client.json(
         f"repos/{owner}/{repo}/rules/branches/"
         f"{quote(args.default_branch, safe='')}?per_page=100"
@@ -317,9 +342,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Effective rules response may be paginated; inspection is inconclusive."
         )
-    queue_required = any(
-        isinstance(rule, dict) and rule.get("type") == "merge_queue" for rule in rules
-    )
+    for rule in rules:
+        if (
+            not isinstance(rule, dict)
+            or not isinstance(rule.get("type"), str)
+            or not rule["type"].strip()
+        ):
+            raise InspectionError("Effective rule has an invalid or missing type.")
+    queue_required = any(rule["type"] == "merge_queue" for rule in rules)
     producers = workflow_producers(client, owner, repo, head_sha)
     now = datetime.now(timezone.utc)
     verified: list[dict[str, Any]] = []

@@ -10,6 +10,7 @@ import re
 import stat
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from html import unescape
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -282,10 +283,12 @@ def load_trackers(
 
 def read_document(url: str, allowed_hosts: tuple[str, ...]) -> tuple[str, str]:
     """Fetch one bounded official page and return its resolved URL and UTF-8 text."""
+    # GitHub REST Markdown omits permission sections and some response schemas.
+    github_rest = url.startswith("https://docs.github.com/en/rest/")
     request = Request(
         url,
         headers={
-            "Accept": "text/markdown,text/html;q=0.9",
+            "Accept": "text/html" if github_rest else "text/markdown,text/html;q=0.9",
             "User-Agent": "repo-scaffold-official-docs-audit",
         },
     )
@@ -301,7 +304,8 @@ def read_document(url: str, allowed_hosts: tuple[str, ...]) -> tuple[str, str]:
     if len(payload) > MAX_RESPONSE_BYTES:
         raise AuditError(f"official documentation response is too large for {url}")
     try:
-        return resolved_url, payload.decode("utf-8")
+        content = payload.decode("utf-8")
+        return resolved_url, unescape(content) if github_rest else content
     except UnicodeError as error:
         raise AuditError(
             f"official documentation response is not UTF-8 for {url}"
@@ -422,7 +426,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             for finding in findings
         )
         lines.append("")
-    else:
+    elif not report["errors"]:
         lines.extend(
             ["All official-documentation claims are within their review period.", ""]
         )

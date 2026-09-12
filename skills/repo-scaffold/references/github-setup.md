@@ -275,10 +275,27 @@ Before copying a GitHub Actions asset, run the bundled read-only preflight. It
 binds the response to the exact repository, rejects archived or disabled
 repositories, and checks whether GitHub Actions is enabled. Pass
 `--require-external-actions` for any asset with `uses:`. A `local_only` policy
-forbids those assets; a `selected` policy is inconclusive until its selected
-allowlist has been reviewed against every exact action reference. Pass
-`--require-issues` for `stale.yml`, `freshness.yml`, and
-`community-health.yml`, because each performs issue operations.
+forbids those assets. For a `selected` policy, pass each candidate asset with
+`--workflow`; the preflight reads the effective selected-actions policy and
+checks every exact pinned action reference. It fails closed unless each reference
+matches an explicit allowlist pattern or is covered by GitHub's `actions/*`
+allowance. This preflight accepts pattern matches only for public repositories,
+because it does not infer Enterprise Cloud eligibility. Marketplace verified-creator
+access alone is not treated as proof for a specific action. When an asset is
+provided through `--workflow`, the preflight derives its external-action and
+shipped issue-workflow requirements. `--require-issues` remains an explicit
+assertion for an issue-writing workflow outside the shipped asset names.
+If a supplied workflow calls a local reusable workflow, pass the called
+workflow as another `--workflow` input in the same invocation; unresolved local
+calls are rejected before the action policy can be approved.
+For any supplied `pull_request` workflow with a write permission, it also
+requires `--confirm-pull-request-write-tokens`. Before passing that flag,
+verify the repository Actions setting **Send write tokens to workflows from
+pull requests** is enabled and not prohibited by organization policy. Without
+that setting GitHub can reduce a pull-request token to read-only. This is
+required for `dependabot-auto-merge.yml`; do not substitute
+`pull_request_target`, because Dependabot-triggered runs have their own token
+and secret restrictions.
 
 ```powershell
 $workflowPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/workflow_installation_preflight.py"
@@ -288,11 +305,19 @@ if (-not (Test-Path -LiteralPath $workflowPreflight -PathType Leaf)) {
 $workflowPreflightArguments = @(
   "--repository", "OWNER/REPO",
   "--hostname", "github.com",
-  "--require-external-actions"
+  "--require-external-actions",
+  "--workflow", "assets/workflows/ci.yml"
 )
-# Add this only for stale.yml, freshness.yml, or community-health.yml.
+# For an issue-writing workflow that does not contain either marker, set this true.
+# Every --workflow input containing issues: write or permissions: write-all is
+# detected and cannot bypass the Issues check when this stays false.
 $requiresIssueOperations = $false
 if ($requiresIssueOperations) { $workflowPreflightArguments += "--require-issues" }
+$pullRequestWriteTokensConfirmed = $false
+# Set only after verifying the repository Actions setting and applicable organization policy.
+if ($pullRequestWriteTokensConfirmed) {
+  $workflowPreflightArguments += "--confirm-pull-request-write-tokens"
+}
 $workflowPreflightOutput = python $workflowPreflight @workflowPreflightArguments 2>&1
 if ($LASTEXITCODE -ne 0) {
   throw "Workflow-installation inspection is inconclusive; do not copy the asset. $($workflowPreflightOutput | Out-String)"
@@ -303,6 +328,121 @@ if (-not $workflowPreflightResult.inspection_complete -or
   throw "Workflow capability is not confirmed. Resolve the returned decision and rerun before copying the asset."
 }
 ```
+
+When installing `code-scanning-gate.yml`, pass both the gate and
+`freshness.yml` as `--workflow` inputs in the same preflight invocation, then
+pass `assets/code-scanning-allowlist.json` with `--code-scanning-allowlist`.
+The preflight rejects a gate plan without both companions, so copy all three
+verified inputs only after it returns `may-install-workflow-assets`. The supplied
+allowlist must contain only schema-v3 entries with exact selector fields, unique
+positive alert numbers, canonical POSIX paths, non-future ISO review dates, and
+review periods from 1 to 366 days. Its top-level fields must be exactly
+`schema-version` and `allowlist`; malformed entries fail before approval. The
+freshness workflow must use only scheduled and manual triggers. Each schedule
+entry must use a five-field POSIX cron expression with an optional valid IANA
+timezone, and `workflow_dispatch` must
+be empty or a valid input mapping. A configured manual trigger may contain at
+most 25 named input mappings, using only supported fields and input types. It
+must request only `contents: read` and `issues: write` permissions, execute the
+freshness checker,
+and reconcile a marker issue
+through a real repo-bound `gh issue create` or `gh issue edit --repo ...
+--body-file` command. Every `create` or `edit` mutation must use
+`--body-file`, `create` must provide a non-empty `--title`, and any `gh issue
+close` mutation must also use an explicit `--repo` binding. Its concurrency
+group must be repository-scoped and non-cancelling so a manual run on another
+ref cannot race the scheduled run. Untrusted triggers, comments, shell-
+ambiguous commands, or an incomplete reminder do not satisfy the companion
+requirement. If the reconciliation job declares job-level permissions, it must
+retain effective `contents: read` and `issues: write` access so it can check
+out and reconcile the repository. The `--body-file` value must match the
+audit's Markdown output in the same job. Direct REST mutations through
+`gh api`, including body-bearing default-`POST` calls, state-changing calls
+through known direct HTTP clients
+(`curl`, `wget`, and PowerShell REST cmdlets), path-qualified `gh` executables,
+and shell wrappers, aliases, or function definitions that can hide or shadow
+GitHub commands are rejected.
+Changes to command lookup through `PATH`, `BASH_ENV`, `ENV`, or the shell's
+command hash are also rejected.
+Every freshness API lookup and Issue mutation must bind directly to the runner's
+`$GITHUB_REPOSITORY` value, with `github.com/` explicit for `gh issue --repo`;
+hard-coded repositories and overrides of that variable are rejected. The lookup
+must be a paginated GET of open Issues, filter non-PR bodies for the freshness
+marker, and return their issue numbers so reruns remain idempotent. It must use
+the canonical marker-filtering JQ expression and no extra `gh api` arguments.
+The lookup result must be captured and flow into the Issue number passed to a
+`close` or `edit` mutation, directly or through an issue-number array; logging
+or testing the result alone is insufficient.
+The reconciliation shell must start with `set -euo pipefail` and may not later
+disable any of those options.
+The reconciliation job and its steps may not use `if`, `needs`, `strategy`,
+`environment`, `concurrency`, `snapshot`, `cache-mode`, or
+`continue-on-error`; steps also may not use `background`, `parallel`, `wait`,
+`wait-all`, `cancel`, or `timeout-minutes`, which could silently skip, duplicate,
+or mask the reminder.
+The checker exit status must drive the clean/stale split: close the existing
+issue when clean, and edit or create the report when stale before failing.
+`CHECKER_EXIT` must be bound to the audit step's `checker_exit` output, and the
+audit output must derive from the checker's exit status.
+The audit must disable `errexit` while running the checker, capture its status,
+and restore `errexit` before publishing that output.
+The JSON and Markdown outputs must be exactly
+`$RUNNER_TEMP/freshness.json` and `$RUNNER_TEMP/freshness.md`; the reconciliation
+must validate that same marker with `grep` before branching on checker status or
+mutating an Issue, and reject multiple open marker issues.
+The `close` and `edit` issue argument must be the unmodified lookup result or
+its first array element; shell defaults and parameter transformations are
+rejected.
+The audit step's `GITHUB_TOKEN` and reconciliation step's `GH_TOKEN` must both
+bind to `${{ github.token }}`; runner output and temporary-report paths may not
+be overridden, including through shell assignments or parameter-expansion writes.
+`PYTHONPATH`, `PYTHONHOME`,
+and `PYTHONSTARTUP` may not be supplied to the checker. Shell assignments to
+process and GitHub CLI configuration variables such as `GIT_SSH_COMMAND`,
+`GH_CONFIG_DIR`, `HOME`, and `LD_PRELOAD` are also rejected. No other workflow,
+job, or step environment variables may be supplied.
+GitHub expressions are rejected inside freshness `run` blocks; only the exact
+YAML token bindings and repository-scoped concurrency expressions are allowed.
+The bound `GITHUB_TOKEN` and `GH_TOKEN` must not be referenced from a freshness
+`run` block; `gh` must inherit them only through the exact YAML bindings.
+The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
+non-Bash runner or shell overrides, workflow/job containers, and services are
+rejected. Its reviewed checkout and Python setup actions must retain the
+canonical full-SHA references and inputs, `persist-credentials: false` and
+`python-version: 3.x`. Both preparation actions must appear exactly once,
+before any run step, so the checker has its repository files and Python runtime.
+Any
+repository, ref, path, token, cache, or other input override is rejected.
+The job summary must publish only the checked Markdown report with
+`cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.
+Within the reconciliation job, the audit must complete before the lookup, and
+the lookup must complete before any Issue mutation. Pipeline, background, and
+short-circuit operators (`|`, `&`, `|&`, `&&`, and `||`) are rejected around
+these phases.
+Shell negation (`!`) is also rejected in freshness commands.
+The audit must run from the checkout root with `--repository-root .`; if a
+`--tracker-registry` override is present, it must name
+`.github/freshness-trackers.json`. Directory-changing commands and workflow,
+job, or step `working-directory` overrides are rejected.
+Job-level reusable-workflow calls are also rejected so every freshness command
+and Issue mutation remains directly inspectable in the supplied workflow.
+  Only the canonical freshness command set is permitted in the reconciliation
+  job; unreviewed executables, script interpreters, command substitutions, and
+  path-qualified programs are rejected. Issue mutations may use only their
+  reviewed `--repo`, `--comment`, `--title`, and `--body-file` options; extra
+  mutation flags and unreviewed exit statuses are rejected. `printf` formats
+  must be literal and may not use shell expansion, `%n`, or `-v`. Local title
+  and issue number state must use the canonical initialization and cannot be
+  reseeded or reordered.
+The checked-in tracker registry must retain every shipped workflow, release,
+allowlist, and requirement input; do not empty a category to suppress a check.
+Its version-1 schema supports only known top-level fields and known
+requirement-source fields; lock paths cannot reference requirement sources, so
+new inputs cannot be silently ignored.
+The reconciliation job itself
+must inherit or declare
+`issues: write`, be named `freshness-audit`, and use `timeout-minutes: 15`; a
+grant on another job is insufficient.
 
 ## Inherited community-health policy
 
@@ -559,7 +699,7 @@ Build the check list from contexts verified during the scaffold run, not from wo
 
 The bundled `scripts/branch_protection_preflight.py` turns this proof into a
 read-only, fail-closed gate. Run it after the final workflows are pushed to a
-mergeable representative PR and before any branch-protection mutation. It reads
+open, mergeable representative PR and before any branch-protection mutation. It reads
 the exact workflow blobs at that PR head, rejects duplicate YAML keys and
 ambiguous producers, verifies unfiltered `pull_request` coverage plus
 `merge_group` coverage when an effective merge queue applies, requires an
@@ -1206,7 +1346,69 @@ feature.
   }
   ```
 
-- **CodeQL advanced setup**: when the user explicitly chooses a repository-managed configuration, install `assets/workflows/codeql.yml`, render the verified default branch through `{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}` plus a supported detected language, and keep CodeQL default setup not configured. Inspect workflows and existing analyses first, and do not install a second advanced uploader silently. If default setup is already configured, stop and obtain explicit approval before switching modes.
+- **CodeQL advanced setup**: when the user explicitly chooses a repository-managed configuration, run the bundled `advanced_codeql_preflight.py` before installing `assets/workflows/codeql.yml`. It requires GitHub Actions, requires GitHub Code Security for private/internal repositories, and delegates the bounded workflow, analysis, and external-uploader inspection to the existing CodeQL preflight. Render the verified default branch through `{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}` plus a supported detected language, and keep CodeQL default setup not configured. Do not install a second advanced uploader silently. If default setup is already configured, stop and obtain explicit approval before switching modes.
+
+  CodeQL advanced setup, dependency review, and Scorecard inspect
+  `security_and_analysis.code_security.status` for private/internal repositories.
+  They use legacy `advanced_security.status` only when `code_security` is absent;
+  an explicit disabled or malformed value cannot fall back to legacy evidence.
+
+  ```powershell
+  if (-not (Get-Variable REPO_ROOT -ErrorAction SilentlyContinue)) {
+    throw "REPO_ROOT must be the surveyed target repository root before inspecting CodeQL setup."
+  }
+  if ([string]::IsNullOrWhiteSpace($DEFAULT_BRANCH)) {
+    throw "DEFAULT_BRANCH must be known before inspecting CodeQL setup."
+  }
+  $advancedCodeqlPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/advanced_codeql_preflight.py"
+  if (-not (Test-Path -LiteralPath $advancedCodeqlPreflight -PathType Leaf)) {
+    throw "The bundled advanced CodeQL preflight is missing; do not copy codeql.yml."
+  }
+  # Set this to $true only after the user explicitly confirms that no external
+  # or indirect process uploads CodeQL results.
+  $advancedCodeqlNoExternalConfirmed = $false
+  if (-not $advancedCodeqlNoExternalConfirmed) {
+    throw "Explicit confirmation of no external or indirect CodeQL uploader is required; do not copy codeql.yml."
+  }
+  $advancedCodeqlOutput = python $advancedCodeqlPreflight `
+    --repo-root $REPO_ROOT `
+    --repository "OWNER/REPO" `
+    --default-branch $DEFAULT_BRANCH `
+    --hostname "github.com" `
+    --confirm-no-external-codeql 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Advanced CodeQL inspection is inconclusive; do not copy codeql.yml. $($advancedCodeqlOutput | Out-String)"
+  }
+  $advancedCodeqlResult = ($advancedCodeqlOutput | Out-String) | ConvertFrom-Json
+  if (-not $advancedCodeqlResult.inspection_complete -or
+      $advancedCodeqlResult.decision -ne "may-install-advanced-codeql-workflow") {
+    throw "Advanced CodeQL setup is not eligible. Resolve the returned decision and rerun before copying codeql.yml."
+  }
+  ```
+
+  Then run `workflow_installation_preflight.py` against `codeql.yml`; this
+  separate gate verifies its exact action pins against the effective Actions
+  policy before the asset is copied.
+
+- **Scorecard SARIF upload**: `scorecard.yml` uploads third-party SARIF results
+  to code scanning. GitHub documents this in [Uploading a SARIF file to
+  GitHub](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file): public repositories are eligible, while private/internal repositories require an organization-owned target with GitHub Code Security enabled. Before copying the asset, run the bundled capability preflight and proceed only when it returns `may-install-scorecard-workflow`; then run the workflow-installation preflight for its exact action pins.
+
+  ```powershell
+  $scorecardPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/scorecard_preflight.py"
+  if (-not (Test-Path -LiteralPath $scorecardPreflight -PathType Leaf)) {
+    throw "The bundled Scorecard preflight is missing; do not copy scorecard.yml."
+  }
+  $scorecardPreflightOutput = python $scorecardPreflight --repository "OWNER/REPO" 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Scorecard preflight was inconclusive; do not copy scorecard.yml. $($scorecardPreflightOutput | Out-String)"
+  }
+  $scorecardPreflightResult = ($scorecardPreflightOutput | Out-String) | ConvertFrom-Json
+  if (-not $scorecardPreflightResult.inspection_complete -or
+      $scorecardPreflightResult.decision -ne "may-install-scorecard-workflow") {
+    throw "Scorecard is not eligible. Resolve the returned decision and rerun before copying scorecard.yml."
+  }
+  ```
 
 - **Code scanning default setup**: requires an eligible repository and supported detected language. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
 
@@ -1388,7 +1590,35 @@ feature.
   }
   ```
 
-- **Dependency review workflow**: install `assets/workflows/dependency-review.yml` for public repositories, or for organization-owned private or internal repositories only after confirming GitHub Code Security/Advanced Security eligibility. The v5 asset handles both `pull_request` and `merge_group` payloads. Require its `dependency-review` check only when the workflow can run on every event required by the repository's effective rules.
+- **Dependency review workflow**: before installing
+  `assets/workflows/dependency-review.yml`, run the bundled preflight. It proves
+  that the dependency graph returns an SBOM. Public repositories may proceed
+  only with that proof; private or internal repositories must additionally be
+  organization-owned and have GitHub Code Security enabled. A missing or
+  malformed response is inconclusive and forbids installation. Run the
+  workflow-installation preflight as well, because it independently checks the
+  Actions policy and exact action pin.
+
+  ```powershell
+  $dependencyReviewPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/dependency_review_preflight.py"
+  if (-not (Test-Path -LiteralPath $dependencyReviewPreflight -PathType Leaf)) {
+    throw "The bundled dependency-review preflight is missing; do not copy the workflow."
+  }
+  $dependencyReviewPreflightOutput = python $dependencyReviewPreflight `
+    --repository "OWNER/REPO" --hostname "github.com" 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Dependency-review inspection is inconclusive; do not copy the workflow. $($dependencyReviewPreflightOutput | Out-String)"
+  }
+  $dependencyReviewPreflightResult = ($dependencyReviewPreflightOutput | Out-String) | ConvertFrom-Json
+  if (-not $dependencyReviewPreflightResult.inspection_complete -or
+      $dependencyReviewPreflightResult.decision -ne "may-install-dependency-review-workflow") {
+    throw "Dependency-review capability is not confirmed. Resolve the returned decision and rerun before copying the workflow."
+  }
+  ```
+
+  The v5 asset handles both `pull_request` and `merge_group` payloads. Require
+  its `dependency-review` check only when the workflow can run on every event
+  required by the repository's effective rules.
 
 ## Merge settings
 
@@ -1411,6 +1641,11 @@ either shipped auto-merge asset. When it reports
 `enable-auto-merge-before-installing-workflows`, do not install either asset:
 enable the repository capability only with separate approval, verify the
 mutation, then rerun the preflight.
+When it reports `require-status-checks-before-installing-auto-merge-workflows`,
+do not install either asset: configure at least one effective required status
+check as a separate approved branch-policy change, verify it, then rerun the
+preflight. The helper accepts required checks from an applicable ruleset or
+classic protection, and fails closed when either API response is malformed.
 
 ```powershell
 $mergeSettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/merge_settings_preflight.py"
@@ -1437,6 +1672,9 @@ if ($mergeSettingsPreflightResult.decision -eq "require-explicit-merge-method-re
   $methods = @($mergeSettingsPreflightResult.methods_to_disable) -join ", "
   throw "Disabling enabled merge methods ($methods) needs separate user confirmation; do not mutate."
 }
+if ($mergeSettingsPreflightResult.decision -eq "require-status-checks-before-installing-auto-merge-workflows") {
+  throw "No effective required status check gates auto-merge. Configure and verify branch policy before installing auto-merge workflows."
+}
 if ($mergeSettingsPreflightResult.decision -notin @(
   "may-configure-merge-settings", "skip-auto-merge-workflows",
   "enable-auto-merge-before-installing-workflows"
@@ -1453,9 +1691,9 @@ After separate approval for listed removals, append
 `--confirm-disable-merge-methods`, rerun the preflight, and require the
 `may-configure-merge-settings`, `skip-auto-merge-workflows`, or
 `enable-auto-merge-before-installing-workflows` decision again. If the last
-decision requires auto-merge enablement, do not copy an auto-merge asset until
-the separately approved mutation succeeds, its final state is verified, and a
-rerun reports `may-configure-merge-settings`.
+decision requires auto-merge enablement or required status checks, do not copy
+an auto-merge asset until the separately approved mutation succeeds, its final
+state is verified, and a rerun reports `may-configure-merge-settings`.
 Use `$enableMergeCommit`, `$enableRebaseMerge`, and
 `$installAutoMergeWorkflows` only from its final JSON result. The detailed
 effective-rule inspection below is retained to explain the underlying GitHub

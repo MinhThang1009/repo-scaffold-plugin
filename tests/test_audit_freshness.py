@@ -8,12 +8,15 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import date
 from io import BytesIO, StringIO
 from pathlib import Path
 from types import ModuleType
 from typing import Any, ClassVar
 from unittest import mock
 from urllib.request import Request
+
+from markdown_it import MarkdownIt
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -248,6 +251,115 @@ class FreshnessTests(unittest.TestCase):
                 any(finding["subject"] == "actions/setup-node" for finding in findings)
             )
 
+    def test_action_findings_raises_lookup_error_without_an_error_sink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with self.assertRaisesRegex(ValueError, "release unavailable"):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: (_ for _ in ()).throw(
+                        ValueError("release unavailable")
+                    ),
+                )
+
+    def test_invalid_workflow_does_not_skip_other_action_pin_reminders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            invalid = root / ".github/workflows/bad.yml"
+            invalid.write_text(
+                "jobs:\n  bad:\n    steps:\n      - uses: actions/setup-node@v1\n",
+                encoding="utf-8",
+            )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with self.assertRaisesRegex(freshness.AuditError, "bad.yml"):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
+                )
+
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v2.0.0", "b" * 40),
+                "googleapis/release-please": release("v17.6.0", "c" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("bad.yml", report["errors"][0])
+            self.assertEqual(
+                {
+                    item["path"]
+                    for item in report["findings"]
+                    if item["kind"] == "action-pin"
+                },
+                {
+                    ".github/workflows/ci.yml",
+                    "skills/repo-scaffold/assets/workflows/ci.yml",
+                },
+            )
+
+    def test_invalid_workflow_directory_does_not_skip_other_action_reminders(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            asset_workflow = root / "skills/repo-scaffold/assets/workflows/ci.yml"
+            asset_workflow.unlink()
+            asset_workflow.parent.rmdir()
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with self.assertRaisesRegex(freshness.AuditError, "workflow directory"):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
+                )
+
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v2.0.0", "b" * 40),
+                "googleapis/release-please": release("v17.6.0", "c" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertTrue(
+                any("assets/workflows" in error for error in report["errors"])
+            )
+            self.assertEqual(
+                [
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                    if item["kind"] == "action-pin"
+                ],
+                [("action-pin", ".github/workflows/ci.yml", "actions/checkout")],
+            )
+
     def test_action_findings_accepts_equivalent_uppercase_sha(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -450,7 +562,9 @@ class FreshnessTests(unittest.TestCase):
             inconsistent = freshness.requirement_findings(
                 root, trackers.requirement_sources, versions.__getitem__
             )
-            self.assertEqual(inconsistent[-1]["kind"], "lock-consistency")
+            self.assertTrue(
+                any(item["kind"] == "lock-consistency" for item in inconsistent)
+            )
 
     def test_requirement_findings_reuses_latest_lookup_for_duplicate_pins(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -474,6 +588,33 @@ class FreshnessTests(unittest.TestCase):
             )
             self.assertEqual(calls, ["ruff"])
 
+    def test_requirement_findings_records_one_lookup_error_per_package(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for filename in ("first.in", "second.in"):
+                (root / filename).write_text("ruff==0.1.0\n", encoding="utf-8")
+            sources = tuple(
+                freshness.RequirementSource(Path(filename), ())
+                for filename in ("first.in", "second.in")
+            )
+            errors: list[str] = []
+
+            def unavailable(_name: str) -> str:
+                raise freshness.AuditError("PyPI unavailable")
+
+            self.assertEqual(
+                freshness.requirement_findings(root, sources, unavailable, errors), []
+            )
+            self.assertEqual(errors, ["PyPI unavailable"])
+            with self.assertRaisesRegex(freshness.AuditError, "PyPI unavailable"):
+                freshness.requirement_findings(root, sources, unavailable)
+            with self.assertRaisesRegex(freshness.AuditError, "requirements file"):
+                freshness.requirement_findings(
+                    root,
+                    (freshness.RequirementSource(Path("missing.in"), ()),),
+                    unavailable,
+                )
+
     def test_optional_release_please_and_ci_toolchain_trackers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -483,6 +624,10 @@ class FreshnessTests(unittest.TestCase):
             document["release-please-configs"] = []
             document["optional-release-please-configs"] = ["release-please-config.json"]
             document["ci-toolchain-policies"] = [".github/ci-toolchain.json"]
+            document["code-scanning-allowlists"] = []
+            document["optional-code-scanning-allowlists"] = [
+                ".github/code-scanning-allowlist.json"
+            ]
             registry.write_text(json.dumps(document), encoding="utf-8")
             policy = root / ".github/ci-toolchain.json"
             policy.write_text("{}\n", encoding="utf-8")
@@ -505,6 +650,33 @@ class FreshnessTests(unittest.TestCase):
                 (),
             )
             self.assertEqual(freshness.ci_toolchain_findings(root, ()), [])
+            self.assertEqual(
+                freshness.existing_optional_paths(
+                    root, trackers.optional_code_scanning_allowlists
+                ),
+                (),
+            )
+            self.assertEqual(
+                freshness.code_scanning_allowlist_findings(
+                    root,
+                    trackers.code_scanning_allowlists
+                    + freshness.existing_optional_paths(
+                        root, trackers.optional_code_scanning_allowlists
+                    ),
+                    date(2026, 9, 9),
+                ),
+                [],
+            )
+            (root / ".github/code-scanning-allowlist.json").write_text(
+                json.dumps({"schema-version": 3, "allowlist": []}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                freshness.existing_optional_paths(
+                    root, trackers.optional_code_scanning_allowlists
+                ),
+                (Path(".github/code-scanning-allowlist.json"),),
+            )
 
             current = mock.Mock(returncode=0, stderr="", stdout="current")
             with mock.patch.object(freshness.subprocess, "run", return_value=current):
@@ -570,6 +742,284 @@ class FreshnessTests(unittest.TestCase):
             ):
                 freshness.ci_toolchain_findings(root, trackers.ci_toolchain_policies)
 
+    def test_ci_toolchain_failure_does_not_skip_other_policy_reminders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            registry = root / freshness.DEFAULT_TRACKER_REGISTRY
+            document = json.loads(registry.read_text(encoding="utf-8"))
+            document["ci-toolchain-policies"] = [
+                ".github/first-toolchain.json",
+                ".github/second-toolchain.json",
+            ]
+            registry.write_text(json.dumps(document), encoding="utf-8")
+            for filename in ("first-toolchain.json", "second-toolchain.json"):
+                (root / ".github" / filename).write_text("{}\n", encoding="utf-8")
+            script = root / "scripts/ci_toolchain.py"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text("# bundled checker\n", encoding="utf-8")
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.6.0", "b" * 40),
+            }[repository]
+            indeterminate = mock.Mock(
+                returncode=1,
+                stderr="error: could not query latest npm release",
+                stdout="",
+            )
+            stale = mock.Mock(
+                returncode=1,
+                stderr="error: markdownlint-cli2 policy pins 1.0.0, but latest npm release is '2.0.0'",
+                stdout="",
+            )
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+                mock.patch.object(
+                    freshness.subprocess, "run", side_effect=[indeterminate, stale]
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("first-toolchain.json", report["errors"][0])
+            self.assertIn(
+                ("ci-toolchain", ".github/second-toolchain.json"),
+                {(item["kind"], item["path"]) for item in report["findings"]},
+            )
+
+            errors: list[str] = []
+            with mock.patch.object(
+                freshness.subprocess,
+                "run",
+                side_effect=[subprocess.TimeoutExpired("checker", 60), stale],
+            ):
+                findings = freshness.ci_toolchain_findings(
+                    root,
+                    (
+                        Path(".github/first-toolchain.json"),
+                        Path(".github/second-toolchain.json"),
+                    ),
+                    errors,
+                )
+            self.assertIn("could not run", errors[0])
+            self.assertEqual(findings[0]["path"], ".github/second-toolchain.json")
+
+            missing_policy = Path(".github/missing-toolchain.json")
+            with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
+                freshness.ci_toolchain_findings(root, (missing_policy,))
+            errors = []
+            with mock.patch.object(freshness.subprocess, "run", return_value=stale):
+                findings = freshness.ci_toolchain_findings(
+                    root,
+                    (missing_policy, Path(".github/second-toolchain.json")),
+                    errors,
+                )
+            self.assertIn("missing or unsafe", errors[0])
+            self.assertEqual(findings[0]["path"], ".github/second-toolchain.json")
+
+    def test_code_scanning_allowlist_review_dates_and_legacy_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            allowlist = root / ".github/code-scanning-allowlist.json"
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [
+                            {
+                                "number": 7,
+                                "tool": "CodeQL",
+                                "rule": "py/example",
+                                "path": "scripts/example.py",
+                                "reason": "Reviewed exception.",
+                                "reviewed-on": "2026-06-01",
+                                "review-period-days": 90,
+                            },
+                            {
+                                "number": 8,
+                                "tool": "CodeQL",
+                                "rule": "py/current",
+                                "path": None,
+                                "reason": "Recently reviewed exception.",
+                                "reviewed-on": "2026-09-01",
+                                "review-period-days": 90,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            findings = freshness.code_scanning_allowlist_findings(
+                root,
+                (Path(".github/code-scanning-allowlist.json"),),
+                date(2026, 9, 9),
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["kind"], "code-scanning-allowlist-review")
+            self.assertEqual(findings[0]["subject"], "alert #7: CodeQL/py/example")
+
+            allowlist.write_text(
+                json.dumps({"schema-version": 2, "allowlist": []}),
+                encoding="utf-8",
+            )
+            legacy = freshness.code_scanning_allowlist_findings(
+                root,
+                (Path(".github/code-scanning-allowlist.json"),),
+                date(2026, 9, 9),
+            )
+            self.assertEqual(legacy[0]["kind"], "code-scanning-allowlist-schema")
+
+            allowlist.write_text(
+                json.dumps({"schema-version": 3, "allowlist": [{"number": 1}]}),
+                encoding="utf-8",
+            )
+            errors: list[str] = []
+            self.assertEqual(
+                freshness.code_scanning_allowlist_findings(
+                    root,
+                    (Path(".github/code-scanning-allowlist.json"),),
+                    date(2026, 9, 9),
+                    errors,
+                ),
+                [],
+            )
+            self.assertIn("review period", errors[0])
+
+            valid = {
+                "number": 1,
+                "tool": "CodeQL",
+                "rule": "py/example",
+                "path": None,
+                "reason": "Reviewed exception.",
+                "reviewed-on": "2026-09-01",
+                "review-period-days": 90,
+            }
+            invalid_documents: tuple[tuple[object, str], ...] = (
+                ([], "must be an object"),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [],
+                        "unreviewed-inputs": ["ignored.json"],
+                    },
+                    "unsupported top-level fields",
+                ),
+                ({"schema-version": 1, "allowlist": []}, "schema-version 3"),
+                ({"schema-version": 3, "allowlist": {}}, "must be a list"),
+                (
+                    {"schema-version": 3, "allowlist": [{**valid, "number": True}]},
+                    "invalid selector",
+                ),
+                (
+                    {"schema-version": 3, "allowlist": [{**valid, "path": ""}]},
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "path": "../escape"}],
+                    },
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "path": "C:/example.py"}],
+                    },
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "path": "scripts//example.py"}],
+                    },
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "reviewed-on": "not-a-date"}],
+                    },
+                    "ISO date",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "reviewed-on": "2999-01-01"}],
+                    },
+                    "future",
+                ),
+            )
+            for document, message in invalid_documents:
+                with self.subTest(document=document):
+                    allowlist.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(freshness.AuditError, message):
+                        freshness.code_scanning_allowlist_findings(
+                            root,
+                            (Path(".github/code-scanning-allowlist.json"),),
+                            date(2026, 9, 9),
+                        )
+
+            allowlist.write_text(
+                json.dumps({"schema-version": 3, "allowlist": [valid]}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(freshness, "MAX_CODE_SCANNING_ALLOWLIST_ENTRIES", 0):
+                with self.assertRaisesRegex(freshness.AuditError, "entry limit"):
+                    freshness.code_scanning_allowlist_findings(
+                        root,
+                        (Path(".github/code-scanning-allowlist.json"),),
+                        date(2026, 9, 9),
+                    )
+            with mock.patch.object(freshness, "MAX_CODE_SCANNING_ALLOWLIST_BYTES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "size limit"):
+                    freshness.code_scanning_allowlist_findings(
+                        root,
+                        (Path(".github/code-scanning-allowlist.json"),),
+                        date(2026, 9, 9),
+                    )
+            with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
+                freshness.code_scanning_allowlist_findings(
+                    root,
+                    (Path(".github/missing-code-scanning-allowlist.json"),),
+                    date(2026, 9, 9),
+                )
+
+    def test_code_scanning_allowlist_audit_failure_is_indeterminate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trackers = freshness.FreshnessTrackers(
+                workflow_directories=(),
+                release_please_configs=(),
+                optional_release_please_configs=(),
+                ci_toolchain_policies=(),
+                code_scanning_allowlists=(
+                    Path(".github/code-scanning-allowlist.json"),
+                ),
+                optional_code_scanning_allowlists=(),
+                requirement_sources=(),
+            )
+            with (
+                mock.patch.object(freshness, "load_trackers", return_value=trackers),
+                mock.patch.object(
+                    freshness,
+                    "code_scanning_allowlist_findings",
+                    side_effect=freshness.AuditError("allowlist unavailable"),
+                ),
+            ):
+                report = freshness.audit(root, "token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("allowlist unavailable", report["errors"])
+
     def test_tracker_registry_rejects_invalid_and_unsafe_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -621,23 +1071,21 @@ class FreshnessTests(unittest.TestCase):
                 freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
             for document, message in (
                 ({"schema-version": 2}, "schema-version"),
+                ({**valid, "unreviewed-inputs": []}, "unsupported schema fields"),
                 (
                     {
-                        "schema-version": 1,
+                        **valid,
                         "workflow-directories": ["../outside"],
-                        "release-please-configs": [],
-                        "requirement-sources": [],
                     },
                     "safe relative",
                 ),
                 (
                     {
-                        "schema-version": 1,
+                        **valid,
                         "workflow-directories": [".github/workflows"],
-                        "release-please-configs": [],
                         "requirement-sources": [{"path": "requirements.in"}],
                     },
-                    "locks",
+                    "path and locks fields",
                 ),
                 (
                     {
@@ -682,6 +1130,31 @@ class FreshnessTests(unittest.TestCase):
                         ],
                     },
                     "locks",
+                ),
+                (
+                    {
+                        **valid,
+                        "requirement-sources": [
+                            {
+                                "path": "requirements.in",
+                                "locks": [],
+                                "unreviewed-inputs": ["important.in"],
+                            }
+                        ],
+                    },
+                    "path and locks fields",
+                ),
+                (
+                    {
+                        **valid,
+                        "requirement-sources": [
+                            {
+                                "path": "requirements.in",
+                                "locks": ["requirements.in"],
+                            }
+                        ],
+                    },
+                    "must not reference requirement source paths",
                 ),
                 (
                     {
@@ -831,13 +1304,41 @@ class FreshnessTests(unittest.TestCase):
                 }
             ]
             self.assertIn(
-                "| python\\|package next | `requirements\\|dev.in next` | "
-                "`package\\|name next` | `1\\|0 next` | `2\\|0 next` |",
+                "| `python\\|package next` | `requirements\\|dev.in next` | "
+                "`package\\|name next` | `1\\|0 next` | `2\\|0 next` | `outdated` |",
                 freshness.markdown_report(report),
             )
+            unsafe_report = {
+                "checked-at": "2026-09-09",
+                "status": "indeterminate",
+                "findings": [
+                    {
+                        "kind": "x` | [link](https://example.test)",
+                        "path": "path` | [link](https://example.test)",
+                        "subject": "subject`",
+                        "current": "current",
+                        "latest": "latest",
+                        "details": "details` | [link](https://example.test)",
+                    }
+                ],
+                "errors": ["error`\n- [link](https://example.test)"],
+            }
+            unsafe_markdown = freshness.markdown_report(unsafe_report)
+            self.assertIn("`` x` \\| [link](https://example.test) ``", unsafe_markdown)
+            self.assertIn(
+                "- `` error` - [link](https://example.test) ``", unsafe_markdown
+            )
+            self.assertNotIn(
+                "<a href=", MarkdownIt("commonmark").render(unsafe_markdown)
+            )
+            report["findings"] = []
             report["errors"] = ["offline"]
             report["status"] = "indeterminate"
-            self.assertIn("## Indeterminate", freshness.markdown_report(report))
+            indeterminate_markdown = freshness.markdown_report(report)
+            self.assertIn("## Indeterminate", indeterminate_markdown)
+            self.assertNotIn(
+                "No stale versioned inputs were found.", indeterminate_markdown
+            )
 
             json_output = root / "report.json"
             markdown_output = root / "report.md"
@@ -868,6 +1369,101 @@ class FreshnessTests(unittest.TestCase):
                 "freshness-audit", markdown_output.read_text(encoding="utf-8")
             )
 
+    def test_action_failure_does_not_skip_independent_reminders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + "      - uses: actions/setup-node@"
+                + "a" * 40
+                + " # v1.0.0\n",
+                encoding="utf-8",
+            )
+            client = mock.Mock()
+
+            def lookup(repository: str) -> Any:
+                if repository == "actions/checkout":
+                    raise ValueError("checkout release unavailable")
+                if repository == "actions/setup-node":
+                    return release("v2.0.0", "b" * 40)
+                self.assertEqual(repository, "googleapis/release-please")
+                return release("v17.7.0", "b" * 40)
+
+            client.latest_release.side_effect = lookup
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertEqual(report["errors"], ["checkout release unavailable"])
+            self.assertEqual(
+                [
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                    if item["kind"] == "action-pin"
+                ],
+                [("action-pin", ".github/workflows/ci.yml", "actions/setup-node")],
+            )
+            self.assertEqual(
+                {
+                    item["path"]
+                    for item in report["findings"]
+                    if item["kind"] == "release-please-schema"
+                },
+                {
+                    "release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.vi.json",
+                },
+            )
+
+    def test_invalid_release_please_config_does_not_skip_other_schema_reminders(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            (root / "release-please-config.json").write_text("{}\n", encoding="utf-8")
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.7.0", "b" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("release-please-config.json", report["errors"][0])
+            self.assertEqual(
+                {
+                    item["path"]
+                    for item in report["findings"]
+                    if item["kind"] == "release-please-schema"
+                },
+                {
+                    "skills/repo-scaffold/assets/release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.vi.json",
+                },
+            )
+
     def test_audit_records_independent_upstream_errors_and_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -886,13 +1482,214 @@ class FreshnessTests(unittest.TestCase):
             ):
                 report = freshness.audit(root, "")
             self.assertEqual(report["status"], "indeterminate")
-            self.assertEqual(len(report["errors"]), 2)
+            self.assertEqual(len(report["errors"]), 4)
+
+            client = mock.Mock()
+            client.latest_release.return_value = release("v17.6.0", "a" * 40)
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "action_findings",
+                    side_effect=freshness.AuditError("workflow input unavailable"),
+                ),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("workflow input unavailable", report["errors"])
+
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "requirement_findings",
+                    side_effect=freshness.AuditError(
+                        "requirements checker unavailable"
+                    ),
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("requirements checker unavailable", report["errors"])
 
         with (
             mock.patch.object(freshness, "main", return_value=0),
             self.assertRaises(SystemExit),
         ):
             runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+
+    def test_pypi_failure_does_not_skip_other_packages_or_lock_reminders(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            (root / "requirements-dev.txt").write_text(
+                "other==1.0.0\n", encoding="utf-8"
+            )
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.6.0", "b" * 40),
+            }[repository]
+
+            def latest(name: str) -> str:
+                if name == "ruff":
+                    raise freshness.AuditError("PyPI unavailable for ruff")
+                return {"mutmut": "2.0.0", "markdown-it-py": "1.0.0"}[name]
+
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(freshness, "latest_pypi_release", side_effect=latest),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertEqual(report["errors"], ["PyPI unavailable for ruff"])
+            self.assertIn(
+                ("lock-consistency", "requirements-dev.txt", "ruff"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
+            )
+            self.assertIn(
+                ("python-package", "requirements-mutation.in", "mutmut"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
+            )
+
+    def test_requirement_input_error_does_not_skip_other_freshness_domains(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            (root / "requirements-dev.in").unlink()
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.7.0", "b" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "latest_pypi_release",
+                    side_effect={
+                        "mutmut": "2.0.0",
+                        "markdown-it-py": "1.0.0",
+                    }.__getitem__,
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertTrue(
+                any("requirements file" in error for error in report["errors"])
+            )
+            self.assertIn(
+                ("python-package", "requirements-mutation.in", "mutmut"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
+            )
+            self.assertEqual(
+                {
+                    item["path"]
+                    for item in report["findings"]
+                    if item["kind"] == "release-please-schema"
+                },
+                {
+                    "release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.json",
+                    "skills/repo-scaffold/assets/release-please-config.vi.json",
+                },
+            )
+
+    def test_invalid_requirement_lock_does_not_skip_source_freshness(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            registry = root / freshness.DEFAULT_TRACKER_REGISTRY
+            document = json.loads(registry.read_text(encoding="utf-8"))
+            document["requirement-sources"][0]["locks"] = [
+                "missing-lock.txt",
+                "requirements-mutation.txt",
+            ]
+            registry.write_text(json.dumps(document), encoding="utf-8")
+            (root / "requirements-mutation.txt").write_text(
+                "other==1.0.0\n", encoding="utf-8"
+            )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with self.assertRaisesRegex(freshness.AuditError, "requirements lock"):
+                freshness.requirement_findings(
+                    root,
+                    trackers.requirement_sources,
+                    lambda _name: "0.2.0",
+                )
+
+            client = mock.Mock()
+            client.latest_release.side_effect = lambda repository: {
+                "actions/checkout": release("v1.0.0", "a" * 40),
+                "googleapis/release-please": release("v17.6.0", "c" * 40),
+            }[repository]
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(
+                    freshness,
+                    "latest_pypi_release",
+                    side_effect={
+                        "ruff": "0.2.0",
+                        "mutmut": "1.0.0",
+                        "markdown-it-py": "1.0.0",
+                    }.__getitem__,
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertTrue(
+                any("missing-lock.txt" in error for error in report["errors"])
+            )
+            self.assertIn(
+                ("python-package", "requirements-dev.in", "ruff"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
+            )
+            self.assertIn(
+                ("lock-consistency", "requirements-mutation.txt", "ruff"),
+                {
+                    (item["kind"], item["path"], item["subject"])
+                    for item in report["findings"]
+                },
+            )
 
     def test_freshness_workflow_is_scheduled_and_non_required(self) -> None:
         workflows = (

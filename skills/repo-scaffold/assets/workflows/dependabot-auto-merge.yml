@@ -9,9 +9,10 @@ name: Dependabot auto-merge
 # Do not install this asset when an effective merge queue rule applies: the built-in
 # GITHUB_TOKEN cannot add a pull request to the queue.
 #
-# Uses pull_request because GitHub forces Dependabot-triggered pull_request_target
-# workflows to a read-only token. The explicit permissions below can grant the
-# Dependabot pull_request workflow the write access needed for auto-merge. Safe use:
+# Uses pull_request because Dependabot-triggered pull_request_target workflows
+# have their own read-only-token and secret restrictions. Before installation,
+# verify that Actions is allowed to send write tokens to pull-request workflows;
+# otherwise GitHub can reduce the explicit permissions below to read-only. Safe use:
 # this workflow never checks out or runs PR code and only acts on same-repository PRs
 # authored by dependabot[bot].
 on:

@@ -11,7 +11,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -24,6 +24,10 @@ PYPI_ROOT = "https://pypi.org/pypi"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
+MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
+MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
+MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
+FRESHNESS_CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PINNED_REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\#]+)"
@@ -34,6 +38,19 @@ RELEASE_PLEASE_SCHEMA = re.compile(
     r"(?P<version>v\d+\.\d+\.\d+)/schemas/config\.json\Z"
 )
 DEFAULT_TRACKER_REGISTRY = Path(".github/freshness-trackers.json")
+FRESHNESS_TRACKER_REGISTRY_KEYS = frozenset(
+    {
+        "schema-version",
+        "workflow-directories",
+        "release-please-configs",
+        "optional-release-please-configs",
+        "ci-toolchain-policies",
+        "code-scanning-allowlists",
+        "optional-code-scanning-allowlists",
+        "requirement-sources",
+    }
+)
+FRESHNESS_REQUIREMENT_SOURCE_KEYS = frozenset({"path", "locks"})
 
 
 class AuditError(RuntimeError):
@@ -78,6 +95,8 @@ class FreshnessTrackers:
     release_please_configs: tuple[Path, ...]
     optional_release_please_configs: tuple[Path, ...]
     ci_toolchain_policies: tuple[Path, ...]
+    code_scanning_allowlists: tuple[Path, ...]
+    optional_code_scanning_allowlists: tuple[Path, ...]
     requirement_sources: tuple[RequirementSource, ...]
 
 
@@ -106,6 +125,21 @@ def safe_relative_path(value: object, *, field: str) -> Path:
     ):
         raise AuditError(f"{field} must be a safe relative path: {value!r}")
     return Path(value)
+
+
+def is_canonical_allowlist_path(value: object) -> bool:
+    """Return whether an alert path uses the same safe POSIX form as preflight."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    path = PurePosixPath(value)
+    return (
+        bool(path.parts)
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and "\\" not in value
+        and not any(PureWindowsPath(part).drive for part in path.parts)
+        and path.as_posix() == value
+    )
 
 
 def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
@@ -148,6 +182,10 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         ) from error
     if not isinstance(document, dict) or document.get("schema-version") != 1:
         raise AuditError("freshness tracker registry must use schema-version 1")
+    if not set(document).issubset(FRESHNESS_TRACKER_REGISTRY_KEYS):
+        raise AuditError(
+            "freshness tracker registry contains unsupported schema fields"
+        )
 
     def paths(
         key: str, *, allow_empty: bool, default_empty: bool = False
@@ -183,6 +221,10 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
             raise AuditError(
                 "freshness tracker registry requirement source must be an object"
             )
+        if set(entry) != FRESHNESS_REQUIREMENT_SOURCE_KEYS:
+            raise AuditError(
+                "freshness tracker registry requirement source must use path and locks fields"
+            )
         source = safe_relative_path(
             entry.get("path"), field="freshness tracker registry requirement path"
         )
@@ -203,6 +245,17 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
             )
         seen_sources.add(source)
         requirement_sources.append(RequirementSource(source, parsed_locks))
+    source_paths = {
+        requirement_source.path for requirement_source in requirement_sources
+    }
+    if any(
+        lock in source_paths
+        for requirement_source in requirement_sources
+        for lock in requirement_source.locks
+    ):
+        raise AuditError(
+            "freshness tracker registry requirement lock paths must not reference requirement source paths"
+        )
     return FreshnessTrackers(
         workflow_directories=paths("workflow-directories", allow_empty=False),
         release_please_configs=paths("release-please-configs", allow_empty=True),
@@ -211,6 +264,14 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         ),
         ci_toolchain_policies=paths(
             "ci-toolchain-policies", allow_empty=True, default_empty=True
+        ),
+        code_scanning_allowlists=paths(
+            "code-scanning-allowlists", allow_empty=True, default_empty=True
+        ),
+        optional_code_scanning_allowlists=paths(
+            "optional-code-scanning-allowlists",
+            allow_empty=True,
+            default_empty=True,
         ),
         requirement_sources=tuple(requirement_sources),
     )
@@ -294,68 +355,111 @@ def action_findings(
     root: Path,
     workflow_directories: tuple[Path, ...],
     release_lookup: Callable[[str], sync_action_pins.ActionRelease],
+    errors: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Compare every action SHA with the exact immutable upstream release SHA."""
+    """Compare action pins without letting one upstream outage hide other drift."""
     findings: list[dict[str, str]] = []
     releases: dict[str, sync_action_pins.ActionRelease] = {}
-    try:
-        workflow_paths = sync_action_pins.workflow_paths(root, workflow_directories)
-    except ValueError as error:
-        raise AuditError(str(error)) from error
-    for path in workflow_paths:
-        text = path.read_text(encoding="utf-8")
-        sync_action_pins.auditable_action_repositories(path, text)
-        for match in sync_action_pins.action_pin_matches(text):
-            action = sync_action_pins.normalized_action_pin_part(match, "action")
-            current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
-            repository = sync_action_pins.action_repository(action)
-            release = releases.get(repository)
-            if release is None:
-                release = release_lookup(repository)
-                releases[repository] = release
-            if current_sha.casefold() != release.sha:
-                findings.append(
-                    {
-                        "kind": "action-pin",
-                        "path": path.relative_to(root).as_posix(),
-                        "subject": action,
-                        "current": current_sha,
-                        "latest": release.tag,
-                        "details": f"Expected immutable SHA {release.sha}.",
-                    }
+    failed_releases: set[str] = set()
+    for workflow_directory in workflow_directories:
+        try:
+            workflow_paths = sync_action_pins.workflow_paths(
+                root, (workflow_directory,)
+            )
+        except ValueError as cause:
+            issue = AuditError(
+                "could not inspect workflow action pins in "
+                f"{workflow_directory.as_posix()}: {cause}"
+            )
+            if errors is None:
+                raise issue from cause
+            errors.append(str(issue))
+            continue
+        for path in workflow_paths:
+            try:
+                text = path.read_text(encoding="utf-8")
+                sync_action_pins.auditable_action_repositories(path, text)
+                matches = sync_action_pins.action_pin_matches(text)
+            except (OSError, UnicodeError, ValueError) as cause:
+                issue = AuditError(
+                    "could not inspect workflow action pins "
+                    f"{path.relative_to(root).as_posix()}: {cause}"
                 )
+                if errors is None:
+                    raise issue from cause
+                errors.append(str(issue))
+                continue
+            for match in matches:
+                action = sync_action_pins.normalized_action_pin_part(match, "action")
+                current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
+                repository = sync_action_pins.action_repository(action)
+                if repository in failed_releases:
+                    continue
+                release = releases.get(repository)
+                if release is None:
+                    try:
+                        release = release_lookup(repository)
+                    except (OSError, ValueError, AuditError) as error:
+                        if errors is None:
+                            raise
+                        failed_releases.add(repository)
+                        errors.append(str(error))
+                        continue
+                    releases[repository] = release
+                if current_sha.casefold() != release.sha:
+                    findings.append(
+                        {
+                            "kind": "action-pin",
+                            "path": path.relative_to(root).as_posix(),
+                            "subject": action,
+                            "current": current_sha,
+                            "latest": release.tag,
+                            "details": f"Expected immutable SHA {release.sha}.",
+                        }
+                    )
     return findings
 
 
 def release_please_findings(
-    root: Path, configs: tuple[Path, ...], latest_tag: str
+    root: Path,
+    configs: tuple[Path, ...],
+    latest_tag: str,
+    errors: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Compare configured schema versions with the latest Release Please release."""
+    """Compare schemas without letting one invalid config hide other drift."""
     findings: list[dict[str, str]] = []
     for relative in configs:
-        path = tracked_path(root, relative, kind="Release Please config")
         try:
-            document = json.loads(
-                path.read_text(encoding="utf-8"),
-                object_pairs_hook=unique_json_object,
+            path = tracked_path(root, relative, kind="Release Please config")
+            try:
+                document = json.loads(
+                    path.read_text(encoding="utf-8"),
+                    object_pairs_hook=unique_json_object,
+                )
+            except (
+                OSError,
+                UnicodeError,
+                ValueError,
+                RecursionError,
+            ) as cause:
+                raise AuditError(
+                    f"could not read Release Please config {relative}: {cause}"
+                ) from cause
+            schema = document.get("$schema") if isinstance(document, dict) else None
+            match = (
+                RELEASE_PLEASE_SCHEMA.fullmatch(schema)
+                if isinstance(schema, str)
+                else None
             )
-        except (
-            OSError,
-            UnicodeError,
-            ValueError,
-            RecursionError,
-        ) as error:
-            raise AuditError(
-                f"could not read Release Please config {relative}: {error}"
-            ) from error
-        schema = document.get("$schema") if isinstance(document, dict) else None
-        match = (
-            RELEASE_PLEASE_SCHEMA.fullmatch(schema) if isinstance(schema, str) else None
-        )
-        if match is None:
-            raise AuditError(
-                f"Release Please config has an unsupported $schema: {relative}"
-            )
+            if match is None:
+                raise AuditError(
+                    f"Release Please config has an unsupported $schema: {relative}"
+                )
+        except AuditError as error:
+            if errors is None:
+                raise
+            errors.append(str(error))
+            continue
         if match.group("version") != latest_tag:
             findings.append(
                 {
@@ -376,9 +480,9 @@ def existing_optional_paths(root: Path, paths: tuple[Path, ...]) -> tuple[Path, 
 
 
 def ci_toolchain_findings(
-    root: Path, policies: tuple[Path, ...]
+    root: Path, policies: tuple[Path, ...], errors: list[str] | None = None
 ) -> list[dict[str, str]]:
-    """Report verified CI-toolchain release drift without treating outages as drift."""
+    """Report CI-toolchain drift without letting one policy outage hide another."""
     if not policies:
         return []
     script = tracked_path(
@@ -386,8 +490,8 @@ def ci_toolchain_findings(
     )
     findings: list[dict[str, str]] = []
     for relative in policies:
-        policy = tracked_path(root, relative, kind="CI toolchain policy")
         try:
+            policy = tracked_path(root, relative, kind="CI toolchain policy")
             result = subprocess.run(
                 [
                     sys.executable,
@@ -402,10 +506,19 @@ def ci_toolchain_findings(
                 text=True,
                 timeout=60,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise AuditError(
-                f"CI toolchain audit could not run for {relative}: {error}"
-            ) from error
+        except (OSError, subprocess.TimeoutExpired) as cause:
+            issue = AuditError(
+                f"CI toolchain audit could not run for {relative}: {cause}"
+            )
+            if errors is None:
+                raise issue
+            errors.append(str(issue))
+            continue
+        except AuditError as error:
+            if errors is None:
+                raise
+            errors.append(str(error))
+            continue
         if result.returncode == 0:
             continue
         details = (result.stderr or result.stdout).strip()
@@ -421,9 +534,150 @@ def ci_toolchain_findings(
                 }
             )
             continue
-        raise AuditError(
+        issue = AuditError(
             f"CI toolchain audit is indeterminate for {relative}: {details}"
         )
+        if errors is None:
+            raise issue
+        errors.append(str(issue))
+    return findings
+
+
+def code_scanning_allowlist_findings(
+    root: Path,
+    allowlists: tuple[Path, ...],
+    today: date,
+    errors: list[str] | None = None,
+) -> list[dict[str, str]]:
+    """Remind maintainers to re-review time-bounded scanning exceptions."""
+    findings: list[dict[str, str]] = []
+    for relative in allowlists:
+        try:
+            path = tracked_path(root, relative, kind="code-scanning allowlist")
+            if path.stat().st_size > MAX_CODE_SCANNING_ALLOWLIST_BYTES:
+                raise AuditError(
+                    f"code-scanning allowlist exceeds the size limit: {relative}"
+                )
+            document = json.loads(
+                path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            )
+            if not isinstance(document, dict):
+                raise AuditError(
+                    f"code-scanning allowlist must be an object: {relative}"
+                )
+            if set(document) != FRESHNESS_CODE_SCANNING_ALLOWLIST_KEYS:
+                raise AuditError(
+                    "code-scanning allowlist contains unsupported top-level fields"
+                )
+            schema_version = document.get("schema-version")
+            entries = document.get("allowlist")
+            if schema_version != 3:
+                if schema_version == 2:
+                    findings.append(
+                        {
+                            "kind": "code-scanning-allowlist-schema",
+                            "path": relative.as_posix(),
+                            "subject": "allowlist schema",
+                            "current": "2",
+                            "latest": "3",
+                            "details": "Add reviewed-on and review-period-days to every exception.",
+                        }
+                    )
+                    continue
+                raise AuditError(
+                    f"code-scanning allowlist must use schema-version 3: {relative}"
+                )
+            if not isinstance(entries, list):
+                raise AuditError(
+                    f"code-scanning allowlist allowlist must be a list: {relative}"
+                )
+            if len(entries) > MAX_CODE_SCANNING_ALLOWLIST_ENTRIES:
+                raise AuditError(
+                    f"code-scanning allowlist exceeds the entry limit: {relative}"
+                )
+            seen_numbers: set[int] = set()
+            for entry in entries:
+                if not isinstance(entry, dict) or set(entry) != {
+                    "number",
+                    "tool",
+                    "rule",
+                    "path",
+                    "reason",
+                    "reviewed-on",
+                    "review-period-days",
+                }:
+                    raise AuditError(
+                        "each code-scanning allowlist entry must include an exact "
+                        "selector and review period"
+                    )
+                number = entry["number"]
+                tool = entry["tool"]
+                rule = entry["rule"]
+                reason = entry["reason"]
+                path_value = entry["path"]
+                reviewed_on = entry["reviewed-on"]
+                review_period_days = entry["review-period-days"]
+                if (
+                    type(number) is not int
+                    or number < 1
+                    or number in seen_numbers
+                    or not all(
+                        isinstance(value, str) and value.strip()
+                        for value in (tool, rule, reason, reviewed_on)
+                    )
+                    or (
+                        path_value is not None
+                        and not is_canonical_allowlist_path(path_value)
+                    )
+                    or not isinstance(review_period_days, int)
+                    or isinstance(review_period_days, bool)
+                    or not 1
+                    <= review_period_days
+                    <= MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS
+                ):
+                    raise AuditError(
+                        "code-scanning allowlist entry has an invalid selector or review period"
+                    )
+                try:
+                    reviewed_date = date.fromisoformat(reviewed_on)
+                except ValueError as cause:
+                    raise AuditError(
+                        "code-scanning allowlist reviewed-on must use ISO date format"
+                    ) from cause
+                if reviewed_date > today:
+                    raise AuditError(
+                        "code-scanning allowlist reviewed-on cannot be in the future"
+                    )
+                seen_numbers.add(number)
+                due_on = reviewed_date + timedelta(days=review_period_days)
+                if due_on <= today:
+                    findings.append(
+                        {
+                            "kind": "code-scanning-allowlist-review",
+                            "path": relative.as_posix(),
+                            "subject": f"alert #{number}: {tool}/{rule}",
+                            "current": reviewed_on,
+                            "latest": due_on.isoformat(),
+                            "details": "Re-review the exception or remove it when the alert is resolved.",
+                        }
+                    )
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            RecursionError,
+            AuditError,
+        ) as cause:
+            issue = (
+                cause
+                if isinstance(cause, AuditError)
+                else AuditError(
+                    f"could not read code-scanning allowlist {relative}: {cause}"
+                )
+            )
+            if errors is None:
+                raise issue
+            errors.append(str(issue))
     return findings
 
 
@@ -431,34 +685,34 @@ def requirement_findings(
     root: Path,
     sources: tuple[RequirementSource, ...],
     latest_lookup: Callable[[str], str],
+    errors: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Compare direct requirements to PyPI and ensure their locks carry the pin."""
+    """Compare direct pins without letting one upstream outage hide other reminders."""
     findings: list[dict[str, str]] = []
     latest_versions: dict[str, str] = {}
+    failed_lookups: set[str] = set()
     for requirement_source in sources:
-        source = tracked_path(root, requirement_source.path, kind="requirements file")
-        pins = pinned_requirements(source)
-        locks = {
-            relative: pinned_requirements(
-                tracked_path(root, relative, kind="requirements lock")
+        try:
+            source = tracked_path(
+                root, requirement_source.path, kind="requirements file"
             )
-            for relative in requirement_source.locks
-        }
-        for key, (name, current) in pins.items():
-            if key not in latest_versions:
-                latest_versions[key] = latest_lookup(name)
-            latest = latest_versions[key]
-            if current != latest:
-                findings.append(
-                    {
-                        "kind": "python-package",
-                        "path": requirement_source.path.as_posix(),
-                        "subject": name,
-                        "current": current,
-                        "latest": latest,
-                        "details": "Direct pin differs from PyPI's current release.",
-                    }
+            pins = pinned_requirements(source)
+        except AuditError as error:
+            if errors is None:
+                raise
+            errors.append(str(error))
+            continue
+        locks: dict[Path, dict[str, tuple[str, str]]] = {}
+        for relative in requirement_source.locks:
+            try:
+                locks[relative] = pinned_requirements(
+                    tracked_path(root, relative, kind="requirements lock")
                 )
+            except AuditError as error:
+                if errors is None:
+                    raise
+                errors.append(str(error))
+        for key, (name, current) in pins.items():
             for lock_relative, lock_pins in locks.items():
                 locked = lock_pins.get(key)
                 if locked is None or locked[1] != current:
@@ -475,6 +729,29 @@ def requirement_findings(
                             ),
                         }
                     )
+            if key in failed_lookups:
+                continue
+            if key not in latest_versions:
+                try:
+                    latest_versions[key] = latest_lookup(name)
+                except AuditError as error:
+                    if errors is None:
+                        raise
+                    failed_lookups.add(key)
+                    errors.append(str(error))
+                    continue
+            latest = latest_versions[key]
+            if current != latest:
+                findings.append(
+                    {
+                        "kind": "python-package",
+                        "path": requirement_source.path.as_posix(),
+                        "subject": name,
+                        "current": current,
+                        "latest": latest,
+                        "details": "Direct pin differs from PyPI's current release.",
+                    }
+                )
     return findings
 
 
@@ -492,11 +769,17 @@ def audit(
     if trackers is not None:
         try:
             client = sync_action_pins.GitHubReleaseClient(token)
-            findings.extend(
-                action_findings(
-                    root, trackers.workflow_directories, client.latest_release
+            try:
+                findings.extend(
+                    action_findings(
+                        root,
+                        trackers.workflow_directories,
+                        client.latest_release,
+                        errors,
+                    )
                 )
-            )
+            except (OSError, ValueError, AuditError) as error:
+                errors.append(str(error))
             release_please_configs = (
                 trackers.release_please_configs
                 + existing_optional_paths(
@@ -509,6 +792,7 @@ def audit(
                         root,
                         release_please_configs,
                         client.latest_release("googleapis/release-please").tag,
+                        errors,
                     )
                 )
         except (OSError, ValueError, AuditError) as error:
@@ -516,13 +800,32 @@ def audit(
         try:
             findings.extend(
                 requirement_findings(
-                    root, trackers.requirement_sources, latest_pypi_release
+                    root,
+                    trackers.requirement_sources,
+                    latest_pypi_release,
+                    errors,
                 )
             )
         except AuditError as error:
             errors.append(str(error))
         try:
-            findings.extend(ci_toolchain_findings(root, trackers.ci_toolchain_policies))
+            findings.extend(
+                ci_toolchain_findings(root, trackers.ci_toolchain_policies, errors)
+            )
+        except AuditError as error:
+            errors.append(str(error))
+        try:
+            findings.extend(
+                code_scanning_allowlist_findings(
+                    root,
+                    trackers.code_scanning_allowlists
+                    + existing_optional_paths(
+                        root, trackers.optional_code_scanning_allowlists
+                    ),
+                    datetime.now(timezone.utc).date(),
+                    errors,
+                )
+            )
         except AuditError as error:
             errors.append(str(error))
     status = "indeterminate" if errors else "attention" if findings else "current"
@@ -537,7 +840,23 @@ def audit(
 
 def markdown_table_cell(value: object) -> str:
     """Render one value without permitting it to add Markdown table cells/rows."""
-    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def markdown_code_span(value: object) -> str:
+    """Render an untrusted value in a code span with a safe delimiter length."""
+    text = markdown_table_cell(value)
+    longest_backtick_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    if longest_backtick_run:
+        delimiter = "`" * (longest_backtick_run + 1)
+        return f"{delimiter} {text} {delimiter}"
+    return f"`{text}`"
 
 
 def markdown_report(report: dict[str, Any]) -> str:
@@ -546,21 +865,28 @@ def markdown_report(report: dict[str, Any]) -> str:
         "<!-- repo-scaffold-freshness-audit -->",
         "# Repository freshness report",
         "",
-        f"- Checked: `{report['checked-at']}`",
-        f"- Overall status: **{report['status']}**",
+        f"- Checked: {markdown_code_span(report['checked-at'])}",
+        f"- Overall status: **{markdown_code_span(report['status'])}**",
         "",
     ]
     findings = report["findings"]
     if findings:
         lines.extend(
             [
-                "| Check | Path | Subject | Current | Latest |",
-                "| --- | --- | --- | --- | --- |",
+                "| Check | Path | Subject | Current | Latest | Details |",
+                "| --- | --- | --- | --- | --- | --- |",
                 *[
-                    "| {kind} | `{path}` | `{subject}` | `{current}` | `{latest}` |".format(
+                    "| {kind} | {path} | {subject} | {current} | {latest} | {details} |".format(
                         **{
-                            key: markdown_table_cell(value)
-                            for key, value in finding.items()
+                            key: markdown_code_span(finding.get(key, ""))
+                            for key in {
+                                "kind",
+                                "path",
+                                "subject",
+                                "current",
+                                "latest",
+                                "details",
+                            }
                         }
                     )
                     for finding in findings
@@ -568,12 +894,17 @@ def markdown_report(report: dict[str, Any]) -> str:
                 "",
             ]
         )
-    else:
+    elif not report["errors"]:
         lines.extend(["No stale versioned inputs were found.", ""])
     errors = report["errors"]
     if errors:
         lines.extend(
-            ["## Indeterminate checks", "", *[f"- {error}" for error in errors], ""]
+            [
+                "## Indeterminate checks",
+                "",
+                *[f"- {markdown_code_span(error)}" for error in errors],
+                "",
+            ]
         )
     return "\n".join(lines)
 
