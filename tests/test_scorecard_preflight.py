@@ -160,6 +160,61 @@ class ScorecardPreflightTests(unittest.TestCase):
                     ):
                         scorecard_preflight.run(arguments())
 
+    def test_standalone_code_security_controls_nonpublic_eligibility(self) -> None:
+        for visibility in ("private", "internal"):
+            for analysis, allowed in (
+                ({"code_security": {"status": "enabled"}}, True),
+                (
+                    {
+                        "code_security": {"status": "enabled"},
+                        "advanced_security": {"status": "disabled"},
+                    },
+                    True,
+                ),
+                (
+                    {
+                        "code_security": {"status": "disabled"},
+                        "advanced_security": {"status": "enabled"},
+                    },
+                    False,
+                ),
+            ):
+                FakeClient.repository_response = repository(
+                    visibility=visibility, security_and_analysis=analysis
+                )
+                with (
+                    self.subTest(visibility=visibility, analysis=analysis),
+                    mock.patch.object(scorecard_preflight, "GitHubClient", FakeClient),
+                ):
+                    result = scorecard_preflight.run(arguments())
+                    self.assertEqual(
+                        result["decision"],
+                        "may-install-scorecard-workflow"
+                        if allowed
+                        else "enable-github-code-security-before-installing-scorecard",
+                    )
+
+    def test_malformed_code_security_cannot_fall_back_to_legacy_entitlement(
+        self,
+    ) -> None:
+        value: object
+        for value in (None, {}, [], {"status": []}, {"status": "unknown"}):
+            FakeClient.repository_response = repository(
+                visibility="private",
+                security_and_analysis={
+                    "code_security": value,
+                    "advanced_security": {"status": "enabled"},
+                },
+            )
+            with (
+                self.subTest(value=value),
+                mock.patch.object(scorecard_preflight, "GitHubClient", FakeClient),
+                self.assertRaisesRegex(
+                    scorecard_preflight.InspectionError, "code_security"
+                ),
+            ):
+                scorecard_preflight.run(arguments())
+
     def test_helpers_cli_and_documentation_fail_closed(self) -> None:
         with self.assertRaisesRegex(
             scorecard_preflight.InspectionError, "invalid 'archived'"

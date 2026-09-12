@@ -161,6 +161,65 @@ class DependencyReviewPreflightTests(unittest.TestCase):
                     ):
                         dependency_review_preflight.run(arguments())
 
+    def test_standalone_code_security_controls_nonpublic_eligibility(self) -> None:
+        for visibility in ("private", "internal"):
+            for analysis, allowed in (
+                ({"code_security": {"status": "enabled"}}, True),
+                (
+                    {
+                        "code_security": {"status": "enabled"},
+                        "advanced_security": {"status": "disabled"},
+                    },
+                    True,
+                ),
+                (
+                    {
+                        "code_security": {"status": "disabled"},
+                        "advanced_security": {"status": "enabled"},
+                    },
+                    False,
+                ),
+            ):
+                FakeClient.repository_response = repository(
+                    visibility=visibility, security_and_analysis=analysis
+                )
+                with (
+                    self.subTest(visibility=visibility, analysis=analysis),
+                    mock.patch.object(
+                        dependency_review_preflight, "GitHubClient", FakeClient
+                    ),
+                ):
+                    result = dependency_review_preflight.run(arguments())
+                    self.assertEqual(
+                        result["decision"],
+                        "may-install-dependency-review-workflow"
+                        if allowed
+                        else "enable-github-code-security-before-installing-dependency-review",
+                    )
+
+    def test_malformed_code_security_cannot_fall_back_to_legacy_entitlement(
+        self,
+    ) -> None:
+        value: object
+        for value in (None, {}, [], {"status": []}, {"status": "unknown"}):
+            FakeClient.repository_response = repository(
+                visibility="private",
+                security_and_analysis={
+                    "code_security": value,
+                    "advanced_security": {"status": "enabled"},
+                },
+            )
+            with (
+                self.subTest(value=value),
+                mock.patch.object(
+                    dependency_review_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    dependency_review_preflight.InspectionError, "code_security"
+                ),
+            ):
+                dependency_review_preflight.run(arguments())
+
     def test_helpers_cli_and_documentation_fail_closed(self) -> None:
         with self.assertRaisesRegex(
             dependency_review_preflight.InspectionError, "invalid 'archived'"

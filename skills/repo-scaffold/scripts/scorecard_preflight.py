@@ -24,12 +24,15 @@ def require_boolean(document: dict[str, Any], field: str) -> bool:
 def code_security_status(document: dict[str, Any]) -> str:
     """Require the published Code Security status for a non-public repository."""
     analysis = document.get("security_and_analysis")
-    value = analysis.get("advanced_security") if isinstance(analysis, dict) else None
+    field = (
+        "code_security"
+        if isinstance(analysis, dict) and "code_security" in analysis
+        else "advanced_security"
+    )
+    value = analysis.get(field) if isinstance(analysis, dict) else None
     status = value.get("status") if isinstance(value, dict) else None
-    if status not in {"enabled", "disabled"}:
-        raise InspectionError(
-            "Repository response has an invalid advanced_security status."
-        )
+    if not isinstance(status, str) or status not in {"enabled", "disabled"}:
+        raise InspectionError(f"Repository response has an invalid {field} status.")
     return status
 
 

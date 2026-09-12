@@ -125,6 +125,11 @@ Security enabled. Install the asset only when it returns
 `may-install-dependency-review-workflow`; also run the workflow-installation
 preflight before copying the asset.
 
+For private/internal CodeQL advanced setup, dependency review, and Scorecard,
+read `security_and_analysis.code_security.status` when present. Use the legacy
+`advanced_security.status` only when `code_security` is absent. A disabled or
+malformed `code_security` value must not be overridden by legacy evidence.
+
 Before changing merge settings or installing an auto-merge workflow, run the
 fail-closed `scripts/merge_settings_preflight.py`. Preserve its required merge
 methods, obtain separate confirmation before disabling any enabled method, and

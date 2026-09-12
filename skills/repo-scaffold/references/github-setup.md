@@ -1345,6 +1345,11 @@ feature.
 
 - **CodeQL advanced setup**: when the user explicitly chooses a repository-managed configuration, run the bundled `advanced_codeql_preflight.py` before installing `assets/workflows/codeql.yml`. It requires GitHub Actions, requires GitHub Code Security for private/internal repositories, and delegates the bounded workflow, analysis, and external-uploader inspection to the existing CodeQL preflight. Render the verified default branch through `{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}` plus a supported detected language, and keep CodeQL default setup not configured. Do not install a second advanced uploader silently. If default setup is already configured, stop and obtain explicit approval before switching modes.
 
+  CodeQL advanced setup, dependency review, and Scorecard inspect
+  `security_and_analysis.code_security.status` for private/internal repositories.
+  They use legacy `advanced_security.status` only when `code_security` is absent;
+  an explicit disabled or malformed value cannot fall back to legacy evidence.
+
   ```powershell
   if (-not (Get-Variable REPO_ROOT -ErrorAction SilentlyContinue)) {
     throw "REPO_ROOT must be the surveyed target repository root before inspecting CodeQL setup."

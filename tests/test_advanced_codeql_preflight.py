@@ -252,6 +252,81 @@ class AdvancedCodeqlPreflightTests(unittest.TestCase):
             ):
                 advanced_codeql_preflight.run(arguments())
 
+    def test_standalone_code_security_controls_nonpublic_eligibility(self) -> None:
+        for visibility in ("private", "internal"):
+            for analysis, allowed in (
+                ({"code_security": {"status": "enabled"}}, True),
+                (
+                    {
+                        "code_security": {"status": "enabled"},
+                        "advanced_security": {"status": "disabled"},
+                    },
+                    True,
+                ),
+                (
+                    {
+                        "code_security": {"status": "disabled"},
+                        "advanced_security": {"status": "enabled"},
+                    },
+                    False,
+                ),
+            ):
+                FakeClient.repository_response = repository(
+                    visibility=visibility, security_and_analysis=analysis
+                )
+                with (
+                    self.subTest(visibility=visibility, analysis=analysis),
+                    mock.patch.object(
+                        advanced_codeql_preflight, "GitHubClient", FakeClient
+                    ),
+                    mock.patch.object(
+                        advanced_codeql_preflight.codeql_preflight,
+                        "run",
+                        return_value={
+                            "inspection_complete": True,
+                            "decision": "may-offer-default-setup",
+                            "github_api_requests": 0,
+                        },
+                    ),
+                ):
+                    result = advanced_codeql_preflight.run(arguments())
+                    self.assertEqual(
+                        result["decision"],
+                        "may-install-advanced-codeql-workflow"
+                        if allowed
+                        else "enable-github-code-security-before-installing-advanced-codeql",
+                    )
+
+    def test_malformed_code_security_cannot_fall_back_to_legacy_entitlement(
+        self,
+    ) -> None:
+        value: object
+        for value in (None, {}, [], {"status": []}, {"status": "unknown"}):
+            FakeClient.repository_response = repository(
+                visibility="private",
+                security_and_analysis={
+                    "code_security": value,
+                    "advanced_security": {"status": "enabled"},
+                },
+            )
+            with (
+                self.subTest(value=value),
+                mock.patch.object(
+                    advanced_codeql_preflight, "GitHubClient", FakeClient
+                ),
+                mock.patch.object(
+                    advanced_codeql_preflight.codeql_preflight,
+                    "run",
+                    side_effect=AssertionError(
+                        "Malformed entitlement reached setup inspection"
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    advanced_codeql_preflight.InspectionError, "code_security"
+                ),
+            ):
+                advanced_codeql_preflight.run(arguments())
+
     def test_helpers_cli_and_documentation_fail_closed(self) -> None:
         with self.assertRaisesRegex(
             advanced_codeql_preflight.InspectionError, "invalid 'archived'"
