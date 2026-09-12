@@ -913,20 +913,24 @@ def freshness_execution_context_is_bash(workflow: object, job: object) -> bool:
 
 
 def freshness_action_steps_are_safe(steps: object) -> bool:
-    """Allow only the reviewed first-party actions in the reminder job."""
+    """Require each reviewed preparation action once before any run step."""
     if not isinstance(steps, list):
         return False
+    prepared: set[str] = set()
     for step in steps:
         if not isinstance(step, dict):
             return False
         uses = step.get("uses")
         if uses is None:
+            if prepared != FRESHNESS_ALLOWED_ACTION_REPOSITORIES:
+                return False
             continue
         if not isinstance(uses, str) or uses.count("@") != 1:
             return False
         repository = uses.partition("@")[0].casefold()
         if (
             repository not in FRESHNESS_ALLOWED_ACTION_REPOSITORIES
+            or repository in prepared
             or FRESHNESS_ACTION_REFERENCE_PATTERN.fullmatch(uses) is None
             or uses.casefold()
             != FRESHNESS_REVIEWED_ACTION_REFERENCES[repository].casefold()
@@ -934,7 +938,8 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
             return False
         if step.get("with") != FRESHNESS_ALLOWED_ACTION_INPUTS[repository]:
             return False
-    return True
+        prepared.add(repository)
+    return prepared == FRESHNESS_ALLOWED_ACTION_REPOSITORIES
 
 
 def freshness_authentication_bindings_are_safe(workflow: object, job: object) -> bool:

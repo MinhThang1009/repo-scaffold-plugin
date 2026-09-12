@@ -75,6 +75,36 @@ def arguments(**overrides: object) -> argparse.Namespace:
 
 
 class WorkflowInstallationPreflightTests(unittest.TestCase):
+    def test_freshness_requires_preparation_before_audit(self) -> None:
+        for relative in (
+            ".github/workflows/freshness.yml",
+            "skills/repo-scaffold/assets/workflows/freshness.yml",
+        ):
+            path = PLUGIN_ROOT / relative
+            original = path.read_text(encoding="utf-8")
+            for order in (
+                (1, 2, 3, 4),
+                (0, 2, 3, 4),
+                (2, 0, 1, 3, 4),
+                (1, 2, 0, 3, 4),
+                (0, 2, 1, 3, 4),
+                (0, 1, 0, 2, 3, 4),
+                (0, 1, 1, 2, 3, 4),
+                (0, 1, 2, 0, 3, 4),
+            ):
+                with self.subTest(workflow=relative, order=order):
+                    document = workflow_installation_preflight.workflow_document(
+                        original, path
+                    )
+                    steps = document["jobs"]["audit"]["steps"]
+                    document["jobs"]["audit"]["steps"] = [steps[i] for i in order]
+                    self.assertFalse(
+                        workflow_installation_preflight.is_freshness_reminder_workflow(
+                            workflow_installation_preflight.yaml.safe_dump(document),
+                            path,
+                        )
+                    )
+
     def test_freshness_expansions_require_complete_variable_names(self) -> None:
         path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
         original = path.read_text(encoding="utf-8")
@@ -570,6 +600,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "    runs-on: ubuntu-latest\n"
                 "    timeout-minutes: 15\n"
                 "    steps:\n"
+                "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
+                "        with:\n"
+                "          persist-credentials: false\n"
+                "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97\n"
+                "        with:\n"
+                "          python-version: 3.x\n"
                 "      - id: audit\n"
                 "        env:\n"
                 "          GITHUB_TOKEN: ${{ github.token }}\n"
@@ -762,6 +798,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "    runs-on: ubuntu-latest\n"
             "    timeout-minutes: 15\n"
             "    steps:\n"
+            "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
+            "        with:\n"
+            "          persist-credentials: false\n"
+            "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97\n"
+            "        with:\n"
+            "          python-version: 3.x\n"
             "      - id: audit\n"
             "        env:\n"
             "          GITHUB_TOKEN: ${{ github.token }}\n"
@@ -1088,12 +1130,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ),
             "create without title": valid.replace(" --title reminder", ""),
             "unbound close in separate step": valid.replace(
-                "    steps:\n"
                 "      - id: audit\n"
                 "        env:\n"
                 "          GITHUB_TOKEN: ${{ github.token }}\n"
                 "        run: |\n",
-                "    steps:\n      - run: gh issue close 1\n"
+                "      - run: gh issue close 1\n"
                 "      - id: audit\n"
                 "        env:\n"
                 "          GITHUB_TOKEN: ${{ github.token }}\n"
@@ -3947,7 +3988,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         steps
                     )
                 )
-        self.assertTrue(
+        self.assertFalse(
             workflow_installation_preflight.freshness_action_steps_are_safe(
                 [{"run": "echo"}]
             )
@@ -3965,7 +4006,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         repository
                     ],
                 }
-                self.assertTrue(
+                self.assertFalse(
                     workflow_installation_preflight.freshness_action_steps_are_safe(
                         [step]
                     )

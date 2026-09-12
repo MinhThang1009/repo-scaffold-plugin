@@ -7804,6 +7804,32 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
 
 
 class FreshnessTrackingContractTests(unittest.TestCase):
+    def test_freshness_requires_preparation_before_audit(self) -> None:
+        for relative in (
+            ".github/workflows/freshness.yml",
+            "skills/repo-scaffold/assets/workflows/freshness.yml",
+        ):
+            original = (PLUGIN_ROOT / relative).read_text(encoding="utf-8")
+            for order in (
+                (1, 2, 3, 4),
+                (0, 2, 3, 4),
+                (2, 0, 1, 3, 4),
+                (1, 2, 0, 3, 4),
+                (0, 2, 1, 3, 4),
+                (0, 1, 0, 2, 3, 4),
+                (0, 1, 1, 2, 3, 4),
+                (0, 1, 2, 0, 3, 4),
+            ):
+                with self.subTest(workflow=relative, order=order):
+                    document = validate_repository.load_yaml_text(original)
+                    steps = document["jobs"]["audit"]["steps"]
+                    document["jobs"]["audit"]["steps"] = [steps[i] for i in order]
+                    self.assertFalse(
+                        validate_repository.has_freshness_job_reconciliation(
+                            document, original
+                        )
+                    )
+
     def copy_contract(self, root: Path) -> None:
         relative_paths = (
             ".github/freshness-trackers.json",
@@ -10403,7 +10429,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 self.assertFalse(
                     validate_repository.freshness_action_steps_are_safe(steps)
                 )
-        self.assertTrue(
+        self.assertFalse(
             validate_repository.freshness_action_steps_are_safe([{"run": "echo"}])
         )
         for (
@@ -10417,7 +10443,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                         repository
                     ],
                 }
-                self.assertTrue(
+                self.assertFalse(
                     validate_repository.freshness_action_steps_are_safe([step])
                 )
                 step["uses"] = f"{repository}@{'a' * 40}"
