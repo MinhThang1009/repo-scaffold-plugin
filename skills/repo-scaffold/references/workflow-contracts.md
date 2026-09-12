@@ -123,7 +123,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   coverage as action pins.
   The checked-in registry must retain every shipped workflow, release, allowlist,
   and requirement input; do not empty a category to suppress a check.
-  Code-scanning allowlist exceptions must also carry a bounded review date and
+  Code-scanning allowlists must use only the `schema-version` and `allowlist`
+  top-level fields. Exceptions must also carry a bounded review date and
   be tracked by freshness; do not install the code-scanning gate without its
   matching allowlist and freshness reminder.
 - CI: create or adapt a stack-valid workflow with real commands and a stable

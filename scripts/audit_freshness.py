@@ -27,6 +27,7 @@ MAX_TRACKER_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
+FRESHNESS_CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PINNED_REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\#]+)"
@@ -563,6 +564,10 @@ def code_scanning_allowlist_findings(
             if not isinstance(document, dict):
                 raise AuditError(
                     f"code-scanning allowlist must be an object: {relative}"
+                )
+            if set(document) != FRESHNESS_CODE_SCANNING_ALLOWLIST_KEYS:
+                raise AuditError(
+                    "code-scanning allowlist contains unsupported top-level fields"
                 )
             schema_version = document.get("schema-version")
             entries = document.get("allowlist")

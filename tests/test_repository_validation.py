@@ -5220,6 +5220,23 @@ class CodeScanningGateContractTests(unittest.TestCase):
             )
 
             allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [],
+                        "unreviewed-inputs": ["ignored.json"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unknown_fields = validate_repository.validate_code_scanning_gate_contract(
+                root
+            )
+            self.assertTrue(
+                any("require schema-version" in item for item in unknown_fields)
+            )
+
+            allowlist.write_text(
                 '{"schema-version": 3, "allowlist": ['
                 '{"number": 0, "tool": "CodeQL", "rule": "x", '
                 '"path": null, "reason": "x", "reviewed-on": "2026-09-09", '

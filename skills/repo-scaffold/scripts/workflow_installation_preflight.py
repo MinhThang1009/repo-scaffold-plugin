@@ -31,6 +31,7 @@ CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION = 3
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
+CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
 CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
 FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
@@ -2532,6 +2533,7 @@ def validate_code_scanning_allowlist(path: Path) -> None:
         ) from exc
     if (
         not isinstance(document, dict)
+        or set(document) != CODE_SCANNING_ALLOWLIST_KEYS
         or document.get("schema-version") != CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION
         or not isinstance(document.get("allowlist"), list)
     ):

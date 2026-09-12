@@ -905,6 +905,14 @@ class FreshnessTests(unittest.TestCase):
             }
             invalid_documents: tuple[tuple[object, str], ...] = (
                 ([], "must be an object"),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [],
+                        "unreviewed-inputs": ["ignored.json"],
+                    },
+                    "unsupported top-level fields",
+                ),
                 ({"schema-version": 1, "allowlist": []}, "schema-version 3"),
                 ({"schema-version": 3, "allowlist": {}}, "must be a list"),
                 (

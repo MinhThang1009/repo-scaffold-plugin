@@ -46,6 +46,7 @@ CACHE_DIRECTORIES = {
 COVERAGE_FAIL_UNDER = 100
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
+CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
 CONTAINER_IMAGE_REFERENCE_PATTERN = re.compile(
     r"(?:docker://)?[^\s@]+@sha256:[0-9a-f]{64}\Z", re.IGNORECASE
 )
@@ -7466,7 +7467,12 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         schema_version = (
             allowlist.get("schema-version") if isinstance(allowlist, dict) else None
         )
-        if schema_version != 3 or not isinstance(entries, list):
+        if (
+            not isinstance(allowlist, dict)
+            or set(allowlist) != CODE_SCANNING_ALLOWLIST_KEYS
+            or schema_version != 3
+            or not isinstance(entries, list)
+        ):
             problems.append(
                 ".github/code-scanning-allowlist.json: require schema-version 3 and an allowlist"
             )

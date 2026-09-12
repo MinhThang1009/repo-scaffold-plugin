@@ -1579,6 +1579,24 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     allowlist
                 )
 
+            allowlist.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 3,
+                        "allowlist": [],
+                        "unreviewed-inputs": ["ignored.json"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "schema-version 3",
+            ):
+                workflow_installation_preflight.validate_code_scanning_allowlist(
+                    allowlist
+                )
+
             metadata = allowlist.stat()
             allowlist.write_text('{"schema-version": 3}\n', encoding="utf-8")
             with (
