@@ -11542,6 +11542,28 @@ class WorkflowScriptCopyContractTests(unittest.TestCase):
             validate_repository.validate_workflow_script_copy_contract(PLUGIN_ROOT), []
         )
 
+    def test_freshness_workflow_copies_its_requirement_source(self) -> None:
+        dependency = (
+            Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+            Path("skills/repo-scaffold/assets/requirements-docs.txt"),
+            "assets/requirements-docs.txt",
+            Path("requirements-docs.txt"),
+            False,
+        )
+        self.assertIn(dependency, validate_repository.WORKFLOW_SCRIPT_COPY_CONTRACT)
+        reference = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "| `assets/workflows/freshness.yml` | `assets/requirements-docs.txt` | "
+            "`requirements-docs.txt` |",
+            reference,
+        )
+
     def test_missing_documented_workflow_script_copy_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -597,6 +597,13 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
     ),
     (
         Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/assets/requirements-docs.txt"),
+        "assets/requirements-docs.txt",
+        Path("requirements-docs.txt"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
         Path("skills/repo-scaffold/scripts/ci_toolchain.py"),
         "../scripts/ci_toolchain.py",
         Path("scripts/ci_toolchain.py"),
