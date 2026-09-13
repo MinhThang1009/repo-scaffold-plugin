@@ -10,7 +10,7 @@ import re
 import stat
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -200,6 +200,23 @@ class ActionRelease:
 def action_repository(action: str) -> str:
     """Return the owner/repository part of an action or sub-action reference."""
     return "/".join(action.split("/")[:2]).casefold()
+
+
+def is_safe_local_action_reference(reference: str) -> bool:
+    """Return whether a local action path stays within the checked-out repository."""
+    if not isinstance(reference, str) or not reference.startswith("./"):
+        return False
+    relative = reference[2:]
+    path = PurePosixPath(relative)
+    return (
+        bool(relative)
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and "\\" not in reference
+        and not any(ord(character) < 0x20 for character in reference)
+        and not any(PureWindowsPath(part).drive for part in path.parts)
+        and path.as_posix() == relative
+    )
 
 
 def _is_link_or_reparse(path: Path) -> bool:
@@ -843,7 +860,14 @@ def auditable_action_repositories(path: Path, content: str) -> set[str]:
         for match in action_pin_matches(content)
     }
     for reference in pins:
-        if reference.startswith(("./", "docker://")):
+        if reference.startswith("./"):
+            if not is_safe_local_action_reference(reference):
+                raise ValueError(
+                    "workflow local action reference must be a safe "
+                    f"repository-relative path: {path}: {reference}"
+                )
+            continue
+        if reference.startswith("docker://"):
             continue
         if reference not in pinned_references:
             raise ValueError(f"workflow action is not pinned to a full SHA: {path}")

@@ -295,6 +295,27 @@ class FreshnessTests(unittest.TestCase):
                     ),
                 )
 
+    def test_action_findings_rejects_unsafe_local_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + "      - uses: ./../outside-action\n",
+                encoding="utf-8",
+            )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            with self.assertRaisesRegex(
+                freshness.AuditError, "safe repository-relative path"
+            ):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
+                )
+
     def test_invalid_workflow_does_not_skip_other_action_pin_reminders(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

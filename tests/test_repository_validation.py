@@ -705,6 +705,14 @@ class ActionReferenceValidationTests(unittest.TestCase):
             (workflow_root / "invalid.yml").write_text(
                 "name: first\nname: second\n", encoding="utf-8"
             )
+            (workflow_root / "local-traversal.yml").write_text(
+                "permissions: {contents: read}\n"
+                "jobs:\n"
+                "  test:\n"
+                "    steps:\n"
+                "      - uses: ./../outside-action\n",
+                encoding="utf-8",
+            )
 
             problems = validate_repository.validate_action_references(root)
 
@@ -714,7 +722,23 @@ class ActionReferenceValidationTests(unittest.TestCase):
             self.assertTrue(
                 any("container reference must use" in item for item in problems)
             )
+            self.assertTrue(
+                any(
+                    "local action reference must be a safe" in item for item in problems
+                )
+            )
             self.assertFalse(any("invalid.yml" in item for item in problems))
+
+        for reference, expected in (
+            ("./local-action", True),
+            ("actions/checkout@" + "a" * 40, False),
+            (None, False),
+        ):
+            with self.subTest(local_action_reference=reference):
+                self.assertEqual(
+                    validate_repository.is_safe_local_action_reference(reference),
+                    expected,
+                )
 
     def test_workflow_aliases_are_walked_once(self) -> None:
         digest = "a" * 64
