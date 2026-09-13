@@ -483,14 +483,25 @@ def release_please_findings(
     return findings
 
 
-def existing_optional_paths(root: Path, paths: tuple[Path, ...]) -> tuple[Path, ...]:
-    """Return opted-in optional paths that exist without hiding unsafe entries."""
-    try:
-        return tuple(path for path in paths if os.path.lexists(root / path))
-    except (OSError, UnicodeError, ValueError) as error:
-        raise AuditError(
-            f"could not inspect optional freshness paths: {error}"
-        ) from error
+def existing_optional_paths(
+    root: Path, paths: tuple[Path, ...], errors: list[str] | None = None
+) -> tuple[Path, ...]:
+    """Return existing optional paths while isolating per-path inspection errors."""
+    existing: list[Path] = []
+    for path in paths:
+        try:
+            present = os.path.lexists(root / path)
+        except (OSError, UnicodeError, RuntimeError, ValueError) as error:
+            issue = AuditError(
+                f"could not inspect optional freshness path {path}: {error}"
+            )
+            if errors is None:
+                raise issue from error
+            errors.append(str(issue))
+            continue
+        if present:
+            existing.append(path)
+    return tuple(existing)
 
 
 def ci_toolchain_findings(
@@ -797,7 +808,7 @@ def audit(
             release_please_configs = (
                 trackers.release_please_configs
                 + existing_optional_paths(
-                    root, trackers.optional_release_please_configs
+                    root, trackers.optional_release_please_configs, errors
                 )
             )
             if release_please_configs:
@@ -834,7 +845,7 @@ def audit(
                     root,
                     trackers.code_scanning_allowlists
                     + existing_optional_paths(
-                        root, trackers.optional_code_scanning_allowlists
+                        root, trackers.optional_code_scanning_allowlists, errors
                     ),
                     datetime.now(timezone.utc).date(),
                     errors,

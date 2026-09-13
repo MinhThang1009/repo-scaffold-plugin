@@ -777,6 +777,35 @@ class FreshnessTests(unittest.TestCase):
                 freshness.existing_optional_paths(
                     root, trackers.optional_release_please_configs
                 )
+            errors: list[str] = []
+            broken = root / "broken-optional.json"
+            existing = root / "existing-optional.json"
+            existing.write_text("{}\n", encoding="utf-8")
+
+            def inspect_optional(path: Path) -> bool:
+                candidate = Path(path)
+                if candidate == broken:
+                    raise OSError("permission denied")
+                return candidate == existing
+
+            with mock.patch.object(
+                freshness.os.path, "lexists", side_effect=inspect_optional
+            ):
+                self.assertEqual(
+                    freshness.existing_optional_paths(
+                        root,
+                        (Path("broken-optional.json"), Path("existing-optional.json")),
+                        errors,
+                    ),
+                    (Path("existing-optional.json"),),
+                )
+            self.assertEqual(
+                errors,
+                [
+                    "could not inspect optional freshness path broken-optional.json: "
+                    "permission denied"
+                ],
+            )
             self.assertEqual(freshness.ci_toolchain_findings(root, ()), [])
             self.assertEqual(
                 freshness.existing_optional_paths(
