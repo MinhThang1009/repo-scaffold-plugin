@@ -7011,6 +7011,24 @@ class WorkflowShellValidationTests(unittest.TestCase):
                 validate_workflows.discover_workflows(root), [yml, yaml_file]
             )
 
+    def test_freshness_authentication_requires_one_audit_step(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow = validate_repository.load_yaml(workflow_path)
+        job = workflow["jobs"]["audit"]
+        steps = job["steps"]
+        audit_index = next(
+            index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict) and step.get("id") == "audit"
+        )
+        malformed_steps = [dict(step) for step in steps]
+        malformed_steps[audit_index]["id"] = "not-audit"
+        self.assertFalse(
+            validate_repository.freshness_authentication_bindings_are_safe(
+                workflow, {**job, "steps": malformed_steps}
+            )
+        )
+
     def test_executable_resolution_skips_unsafe_and_unusable_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -10694,6 +10712,39 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             validate_repository.freshness_action_steps_are_safe(
                 [*contract_steps, {"run": "printf extra"}]
             )
+        )
+        swapped_steps = list(contract_steps)
+        run_indices = [
+            index for index, step in enumerate(swapped_steps) if "run" in step
+        ]
+        swapped_steps[run_indices[0]], swapped_steps[run_indices[1]] = (
+            swapped_steps[run_indices[1]],
+            swapped_steps[run_indices[0]],
+        )
+        self.assertTrue(
+            validate_repository.freshness_run_step_order_is_safe(contract_steps)
+        )
+        self.assertFalse(
+            validate_repository.freshness_run_step_order_is_safe(swapped_steps)
+        )
+        for malformed in (None, [], [None], [*contract_steps, {"run": "extra"}]):
+            with self.subTest(malformed_run_steps=malformed):
+                self.assertFalse(
+                    validate_repository.freshness_run_step_order_is_safe(malformed)
+                )
+        summary_index = next(
+            index
+            for index, step in enumerate(contract_steps)
+            if isinstance(step, dict)
+            and step.get("name") == "Add report to job summary"
+        )
+        malformed_summary = list(contract_steps)
+        malformed_summary[summary_index] = {
+            **malformed_summary[summary_index],
+            "run": None,
+        }
+        self.assertFalse(
+            validate_repository.freshness_run_step_order_is_safe(malformed_summary)
         )
 
         for definition in (

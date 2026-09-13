@@ -988,6 +988,44 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
     )
 
 
+def freshness_run_step_order_is_safe(steps: object) -> bool:
+    """Require audit, summary, and reconciliation in their execution order."""
+    if not isinstance(steps, list):
+        return False
+    run_steps = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if isinstance(step, dict) and "run" in step
+    ]
+    if len(run_steps) != FRESHNESS_CANONICAL_RUN_STEP_COUNT:
+        return False
+    audit_steps = [index for index, step in run_steps if step.get("id") == "audit"]
+    summary_steps = [
+        index
+        for index, step in run_steps
+        if isinstance(step.get("run"), str)
+        and step.get("id") != "audit"
+        and not (
+            isinstance(step.get("env"), dict)
+            and step["env"].get("CHECKER_EXIT")
+            == "${{ steps.audit.outputs.checker_exit }}"
+        )
+        and freshness_summary_output_is_safe(step["run"])
+    ]
+    reconciliation_steps = [
+        index
+        for index, step in run_steps
+        if isinstance(step.get("env"), dict)
+        and step["env"].get("CHECKER_EXIT") == "${{ steps.audit.outputs.checker_exit }}"
+    ]
+    return (
+        len(audit_steps) == 1
+        and len(summary_steps) == 1
+        and len(reconciliation_steps) == 1
+        and audit_steps[0] < summary_steps[0] < reconciliation_steps[0]
+    )
+
+
 def freshness_authentication_bindings_are_safe(workflow: object, job: object) -> bool:
     """Require GitHub CLI authentication to use the workflow token in place."""
     if not isinstance(workflow, dict) or not isinstance(job, dict):
@@ -2655,6 +2693,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
             if (
                 not freshness_job_execution_is_unconditional(job)
                 or not freshness_execution_context_is_bash(document, job)
+                or not freshness_run_step_order_is_safe(steps)
                 or not freshness_authentication_bindings_are_safe(document, job)
                 or not freshness_checker_result_binding_is_safe(document, job)
                 or not freshness_shell_definitions_are_safe(job_text)

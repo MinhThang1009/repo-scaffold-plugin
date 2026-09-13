@@ -88,6 +88,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 (2, 0, 1, 3, 4),
                 (1, 2, 0, 3, 4),
                 (0, 2, 1, 3, 4),
+                (0, 1, 3, 2, 4),
                 (0, 1, 0, 2, 3, 4),
                 (0, 1, 1, 2, 3, 4),
                 (0, 1, 2, 0, 3, 4),
@@ -108,6 +109,61 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             self.assertFalse(
                 workflow_installation_preflight.is_freshness_reminder_workflow(
                     candidate, path
+                )
+            )
+
+    def test_freshness_run_step_order_helper_rejects_malformed_steps(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow = workflow_installation_preflight.workflow_document(
+            workflow_path.read_text(encoding="utf-8"), Path("freshness.yml")
+        )
+        steps = workflow["jobs"]["audit"]["steps"]
+        self.assertTrue(
+            workflow_installation_preflight.freshness_run_step_order_is_safe(steps)
+        )
+        for malformed in (None, [], [None], [*steps, {"run": "extra"}]):
+            with self.subTest(malformed=malformed):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_run_step_order_is_safe(
+                        malformed
+                    )
+                )
+        summary_index = next(
+            index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict)
+            and step.get("name") == "Add report to job summary"
+        )
+        malformed_summary = list(steps)
+        malformed_summary[summary_index] = {
+            **malformed_summary[summary_index],
+            "run": None,
+        }
+        self.assertFalse(
+            workflow_installation_preflight.freshness_run_step_order_is_safe(
+                malformed_summary
+            )
+        )
+        audit_index = next(
+            index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict) and step.get("id") == "audit"
+        )
+        malformed_auth_steps = [dict(step) for step in steps]
+        malformed_auth_steps[audit_index]["id"] = "not-audit"
+        self.assertFalse(
+            workflow_installation_preflight.freshness_authentication_bindings_are_safe(
+                workflow, {**workflow["jobs"]["audit"], "steps": malformed_auth_steps}
+            )
+        )
+        with mock.patch.object(
+            workflow_installation_preflight,
+            "freshness_command_order_is_valid",
+            return_value=False,
+        ):
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    workflow_path.read_text(encoding="utf-8"), workflow_path
                 )
             )
 
@@ -922,6 +978,20 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         valid += repository_lookup_command + body_command
         cases = {
             "valid": valid,
+            "summary before audit": valid.replace(
+                "      - name: Audit versioned maintenance inputs\n",
+                "      - name: Add report to job summary\n"
+                "        shell: bash\n"
+                '        run: cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"\n'
+                "      - name: Audit versioned maintenance inputs\n",
+                1,
+            ).replace(
+                "      - name: Add report to job summary\n"
+                "        shell: bash\n"
+                '        run: cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"\n',
+                "",
+                1,
+            ),
             "extra API option": valid.replace(
                 repository_lookup_command,
                 repository_lookup_command.replace("--paginate ", "--paginate --slurp "),
