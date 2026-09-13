@@ -148,6 +148,35 @@ FRESHNESS_DUPLICATE_ISSUE_GUARD = (
     "exit 1",
     "fi",
 )
+FRESHNESS_DUPLICATE_ISSUE_PRINTF = (
+    "printf",
+    "Found multiple open freshness reminder issues.\\n",
+    ">&",
+    "2",
+)
+FRESHNESS_ALLOWED_PRINTF_COMMANDS = frozenset(
+    {
+        (
+            "printf",
+            "%s\\n",
+            "<!-- repo-scaffold-freshness-audit -->",
+            "# Repository freshness report",
+            "",
+            "The checker failed before it could produce a report. Inspect this workflow run.",
+            ">",
+            "$RUNNER_TEMP/freshness.md",
+        ),
+        (
+            "printf",
+            "%s\\n",
+            "<!-- repo-scaffold-freshness-audit -->",
+            ">",
+            "$RUNNER_TEMP/freshness.md",
+        ),
+        ("printf", "checker_exit=%s\\n", "$checker_exit", ">>", "$GITHUB_OUTPUT"),
+        FRESHNESS_DUPLICATE_ISSUE_PRINTF,
+    }
+)
 FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
     {
         f'if [[ ! -f "{FRESHNESS_AUDIT_MARKDOWN_OUTPUT}" ]]; then',
@@ -1488,6 +1517,31 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
     segments = shell_command_segments(text)
     if segments is None:
         return False
+    printf_commands = [
+        tuple(command)
+        for segment in segments
+        if (command := shell_command_prefix(segment)) and command[0] == "printf"
+    ]
+    if any(
+        command not in FRESHNESS_ALLOWED_PRINTF_COMMANDS for command in printf_commands
+    ):
+        return False
+    reconciliation_start_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if shell_command_prefix(segment) == ["set", "-euo", "pipefail"]
+    ]
+    if len(reconciliation_start_indices) != 1:
+        return False
+    reconciliation_start = reconciliation_start_indices[0]
+    reconciliation_printf_commands = [
+        tuple(shell_command_prefix(segment))
+        for index, segment in enumerate(segments)
+        if index >= reconciliation_start
+        and (shell_command_prefix(segment) or [""])[0] == "printf"
+    ]
+    if reconciliation_printf_commands != [FRESHNESS_DUPLICATE_ISSUE_PRINTF]:
+        return False
     if_ranges = freshness_shell_if_block_ranges(segments)
     if if_ranges is None:
         return False
@@ -2434,6 +2488,8 @@ def freshness_api_result_controls_issue_selection(text: str) -> bool:
             for index_token, token in enumerate(segment)
         )
     ]
+    if len(api_indices) != 1:
+        return False
     collections: list[tuple[int, str]] = []
     for api_index in api_indices:
         for variable in result_variables:

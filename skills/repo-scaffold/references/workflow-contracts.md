@@ -52,7 +52,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   overrides of that variable must fail closed. The lookup must be a paginated
   GET of open Issues, filter non-PR bodies for the freshness marker, and return
   issue numbers so reruns remain idempotent. It must use the canonical
-  marker-filtering JQ expression and no extra `gh api` arguments. The lookup
+  marker-filtering JQ expression, exactly one lookup invocation, and no extra
+  `gh api` arguments. The lookup
   result must be captured and flow into the Issue number passed to a `close` or
   `edit` mutation, directly or through an issue-number array; logging or testing
   the result alone is insufficient. The reconciliation shell must start with
@@ -120,8 +121,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   commands and workflow, job, or step `working-directory` overrides must fail
   closed. Job-level reusable-workflow calls must also fail closed so all
   freshness commands and Issue mutations remain directly inspectable. Freshness
-  permits only the canonical freshness command set in the reconciliation job;
-  unreviewed executables, script interpreters, command substitutions, and
+  permits only the canonical freshness command set in the reconciliation job,
+  including only the reviewed `printf` invocations; unreviewed executables,
+  script interpreters, command substitutions, and
   path-qualified programs must fail closed. Shell parameter expansions may use only
   the canonical report, repository, status, and issue-number references. Issue
   mutations may use only their

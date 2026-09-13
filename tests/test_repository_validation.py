@@ -7847,6 +7847,18 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                     document, candidate
                 )
             )
+            candidate = original.replace(
+                "          marker='<!-- repo-scaffold-freshness-audit -->'\n",
+                "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
+                "          printf 'extra output'\n",
+                1,
+            )
+            document = validate_repository.load_yaml_text(candidate)
+            self.assertFalse(
+                validate_repository.has_freshness_job_reconciliation(
+                    document, candidate
+                )
+            )
 
     def copy_contract(self, root: Path) -> None:
         relative_paths = (
@@ -8911,6 +8923,20 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             + api_lookup
             + '\n)\nmapfile -t issue_numbers <<< "$issue_numbers_output"'
         )
+        malformed_lookup = (
+            "issue_numbers_output=$(\n  gh api\n  printf extra\n)\n"
+            "$issue_numbers_output"
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_lookup_substitution_is_safe(
+                malformed_lookup
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                malformed_lookup
+            )
+        )
         self.assertTrue(
             validate_repository.freshness_api_result_is_consumed(bound_api_lookup)
         )
@@ -8929,6 +8955,17 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             validate_repository.freshness_api_result_controls_issue_selection(
                 extra_lookup_output + '\ngh issue edit "${issue_numbers[0]}" --repo r '
                 "--body-file report.md"
+            )
+        )
+        extra_lookup_api = bound_api_lookup.replace(
+            "\n)\nmapfile",
+            "\n)\n" + api_lookup + "\nmapfile",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                extra_lookup_api
+                + '\ngh issue edit "${issue_numbers[0]}" --repo r --body-file report.md'
             )
         )
         self.assertTrue(
@@ -9344,6 +9381,17 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 contract_workflow, contract_text
             )
         )
+        with mock.patch.object(
+            validate_repository,
+            "freshness_command_order_is_valid",
+            return_value=False,
+        ) as order_check:
+            self.assertFalse(
+                validate_repository.has_freshness_job_reconciliation(
+                    contract_workflow, contract_text
+                )
+            )
+            self.assertEqual(order_check.call_count, 1)
         self.assertTrue(
             validate_repository.freshness_job_execution_is_unconditional(
                 contract_workflow["jobs"]["audit"]
@@ -9652,6 +9700,19 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             )
         )
         checker_flow_cases = (
+            (
+                "missing strict shell setup",
+                contract_job_text.replace("set -euo pipefail\n", "", 1),
+            ),
+            (
+                "extra canonical reconciliation printf",
+                contract_job_text.replace(
+                    "set -euo pipefail\n",
+                    "set -euo pipefail\n"
+                    'printf \'checker_exit=%s\\n\' "$checker_exit" >> "$GITHUB_OUTPUT"\n',
+                    1,
+                ),
+            ),
             (
                 "missing clean status",
                 contract_job_text.replace(
@@ -10728,7 +10789,15 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             mock.patch.object(
                 validate_repository,
                 "shell_command_segments",
-                return_value=[["echo", "ready"]],
+                return_value=[
+                    ["set", "-euo", "pipefail"],
+                    [
+                        "printf",
+                        "Found multiple open freshness reminder issues.\\n",
+                        ">&",
+                        "2",
+                    ],
+                ],
             ),
             mock.patch.object(
                 validate_repository,

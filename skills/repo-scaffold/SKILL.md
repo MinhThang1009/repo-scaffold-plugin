@@ -212,7 +212,8 @@ Every freshness API lookup and Issue mutation must bind directly to the runner's
 hard-coded repositories and overrides of that variable are rejected. The lookup
 must be a paginated GET of open Issues, filter non-PR bodies for the freshness
 marker, and return their issue numbers so reruns remain idempotent. It must use
-the canonical marker-filtering JQ expression and no extra `gh api` arguments.
+the canonical marker-filtering JQ expression, exactly one lookup invocation, and
+no extra `gh api` arguments.
 The lookup result must be captured and flow into the Issue number passed to a
 `close` or `edit` mutation, directly or through an issue-number array; logging
 or testing the result alone is insufficient.
@@ -293,7 +294,8 @@ path-qualified `gh` executables, and shell wrappers or dynamic executors that
 hide GitHub commands are rejected as ambiguous. Shell aliases and function
 definitions that can shadow these executables are also rejected.
 Only the canonical freshness command set is permitted in the reconciliation
-job; unreviewed executables, script interpreters, command substitutions, and
+job, including only the reviewed `printf` invocations; unreviewed executables,
+script interpreters, command substitutions, and
 path-qualified programs are rejected. Shell parameter expansions may use only
 the canonical report, repository, status, and issue-number references. Issue
 mutations may use only their

@@ -877,6 +877,22 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          issue_numbers_output=$(\n            printf '999\\n'\n",
                 1,
             ),
+            "extra reconciliation printf": valid.replace(
+                "          marker='repo-scaffold-freshness-audit'\n",
+                "          marker='repo-scaffold-freshness-audit'\n"
+                "          printf 'extra output'\n",
+                1,
+            ),
+            "extra lookup API": valid.replace(
+                "          )\n          issue_numbers=()\n",
+                "          )\n"
+                "          gh api --hostname github.com --paginate "
+                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+                "--jq '.[] | select(.pull_request == null) | "
+                'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
+                "          issue_numbers=()\n",
+                1,
+            ),
             "API result ignored": valid.replace(
                 '          if [[ -n "$issue_numbers_output" ]]; then\n'
                 '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
@@ -2191,6 +2207,19 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         checker_flow_cases = (
             (
+                "missing strict shell setup",
+                contract_job_text.replace("set -euo pipefail\n", "", 1),
+            ),
+            (
+                "extra canonical reconciliation printf",
+                contract_job_text.replace(
+                    "set -euo pipefail\n",
+                    "set -euo pipefail\n"
+                    'printf \'checker_exit=%s\\n\' "$checker_exit" >> "$GITHUB_OUTPUT"\n',
+                    1,
+                ),
+            ),
+            (
                 "missing clean status",
                 contract_job_text.replace(
                     "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
@@ -2645,6 +2674,20 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             + api_lookup
             + '\n)\nmapfile -t issue_numbers <<< "$issue_numbers_output"'
         )
+        malformed_lookup = (
+            "issue_numbers_output=$(\n  gh api\n  printf extra\n)\n"
+            "$issue_numbers_output"
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_issue_lookup_substitution_is_safe(
+                malformed_lookup
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                malformed_lookup
+            )
+        )
         self.assertTrue(
             workflow_installation_preflight.freshness_api_result_is_consumed(
                 bound_api_lookup
@@ -2654,6 +2697,17 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             workflow_installation_preflight.freshness_api_result_controls_issue_selection(
                 bound_api_lookup + '\ngh issue edit "${issue_numbers[0]}" --repo r '
                 "--body-file report.md"
+            )
+        )
+        extra_lookup_api = bound_api_lookup.replace(
+            "\n)\nmapfile",
+            "\n)\n" + api_lookup + "\nmapfile",
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                extra_lookup_api
+                + '\ngh issue edit "${issue_numbers[0]}" --repo r --body-file report.md'
             )
         )
         self.assertTrue(
@@ -4295,7 +4349,15 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             mock.patch.object(
                 workflow_installation_preflight,
                 "shell_command_segments",
-                return_value=[["echo", "ready"]],
+                return_value=[
+                    ["set", "-euo", "pipefail"],
+                    [
+                        "printf",
+                        "Found multiple open freshness reminder issues.\\n",
+                        ">&",
+                        "2",
+                    ],
+                ],
             ),
             mock.patch.object(
                 workflow_installation_preflight,

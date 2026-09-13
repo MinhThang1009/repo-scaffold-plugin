@@ -369,7 +369,8 @@ Every freshness API lookup and Issue mutation must bind directly to the runner's
 hard-coded repositories and overrides of that variable are rejected. The lookup
 must be a paginated GET of open Issues, filter non-PR bodies for the freshness
 marker, and return their issue numbers so reruns remain idempotent. It must use
-the canonical marker-filtering JQ expression and no extra `gh api` arguments.
+the canonical marker-filtering JQ expression, exactly one lookup invocation,
+and no extra `gh api` arguments.
 The lookup result must be captured and flow into the Issue number passed to a
 `close` or `edit` mutation, directly or through an issue-number array; logging
 or testing the result alone is insufficient.
@@ -427,7 +428,8 @@ job, or step `working-directory` overrides are rejected.
 Job-level reusable-workflow calls are also rejected so every freshness command
 and Issue mutation remains directly inspectable in the supplied workflow.
   Only the canonical freshness command set is permitted in the reconciliation
-  job; unreviewed executables, script interpreters, command substitutions, and
+  job, including only the reviewed `printf` invocations; unreviewed executables,
+  script interpreters, command substitutions, and
   path-qualified programs are rejected. Issue mutations may use only their
   reviewed `--repo`, `--comment`, `--title`, and `--body-file` options; extra
   mutation flags and unreviewed exit statuses are rejected. `printf` formats
