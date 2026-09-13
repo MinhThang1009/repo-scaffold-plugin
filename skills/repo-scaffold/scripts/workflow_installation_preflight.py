@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import stat
@@ -2936,10 +2937,19 @@ def workflow_capabilities(
         document = workflow_document(text, workflow)
         validate_container_references(document, workflow)
         for local_name in local_reusable_workflow_names(document, workflow):
-            if local_name not in workflow_inputs:
+            called_workflow = workflow_inputs.get(local_name)
+            if called_workflow is None:
                 raise InspectionError(
                     f"Workflow {workflow} calls local reusable workflow {local_name!r}; "
                     "pass it as another --workflow input."
+                )
+            caller_directory = os.path.normcase(os.path.abspath(workflow.parent))
+            called_directory = os.path.normcase(os.path.abspath(called_workflow.parent))
+            if caller_directory != called_directory:
+                raise InspectionError(
+                    f"Workflow {workflow} calls local reusable workflow "
+                    f"{local_name!r}; pass the called workflow from the same "
+                    "workflow directory as another --workflow input."
                 )
         try:
             # This rejects aliases, unpinned actions, and non-action `uses:` forms

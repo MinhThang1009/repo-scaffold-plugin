@@ -288,7 +288,9 @@ shipped issue-workflow requirements. `--require-issues` remains an explicit
 assertion for an issue-writing workflow outside the shipped asset names.
 If a supplied workflow calls a local reusable workflow, pass the called
 workflow as another `--workflow` input in the same invocation; unresolved local
-calls are rejected before the action policy can be approved.
+calls are rejected before the action policy can be approved. The called input
+must come from the same workflow directory as its caller; a matching basename
+from another directory is ambiguous and is rejected.
 For any supplied `pull_request` workflow with a write permission, it also
 requires `--confirm-pull-request-write-tokens`. Before passing that flag,
 verify the repository Actions setting **Send write tokens to workflows from

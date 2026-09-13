@@ -10,6 +10,8 @@ valid for `pull_request` and `merge_group` whenever their check can be required.
 Use `cancel-in-progress: false` for required-check concurrency.
 External `docker://` workflow references must use a full SHA-256 digest; the
 workflow-installation preflight rejects mutable container tags.
+Local reusable-workflow calls must be supplied from the same workflow directory
+as their caller; a matching basename from another directory is ambiguous.
 Local `./...` action references must use canonical repository-relative paths;
 traversal, backslash, and control-character forms are rejected.
 

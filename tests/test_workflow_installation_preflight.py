@@ -4721,6 +4721,31 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ):
                 workflow_installation_preflight.workflow_capabilities([caller])
 
+    def test_local_reusable_workflow_inputs_bind_to_callers_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            caller = root / "candidate" / "release-please.yml"
+            wrong_directory = root / "other" / "release.yml"
+            caller.parent.mkdir(parents=True)
+            wrong_directory.parent.mkdir(parents=True)
+            caller.write_text(
+                "jobs:\n  publish:\n    uses: ./.github/workflows/release.yml\n",
+                encoding="utf-8",
+            )
+            wrong_directory.write_text(
+                "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@"
+                + "a" * 40
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "same workflow directory",
+            ):
+                workflow_installation_preflight.workflow_capabilities(
+                    [caller, wrong_directory]
+                )
+
     def test_unsafe_local_action_references_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

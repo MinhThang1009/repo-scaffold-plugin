@@ -186,7 +186,8 @@ because it does not infer Enterprise Cloud eligibility. Do not treat Marketplace
 verified-creator access as proof for a specific action when it has no exact
 matching pattern. If a supplied workflow calls a local reusable workflow, pass
 that called workflow in the same invocation as well; the preflight fails closed
-when the local call cannot be resolved to one supplied input. Local `./...`
+when the local call cannot be resolved to one supplied input, or when the
+matching basename comes from another workflow directory. Local `./...`
 action references must also be canonical repository-relative paths; traversal,
 backslash, and control-character forms are rejected.
 
