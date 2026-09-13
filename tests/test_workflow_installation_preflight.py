@@ -392,6 +392,54 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ["octo/allowed@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
         )
 
+    def test_selected_policy_honors_blocks_and_all_github_owned_actions(self) -> None:
+        sha = "a" * 40
+        policy = {
+            "github_owned_allowed": True,
+            "verified_allowed": False,
+            "patterns_allowed": ["*, !evil/action@*"],
+        }
+
+        self.assertTrue(
+            workflow_installation_preflight.selected_policy_allows(
+                f"actions/checkout@{sha}", policy, public_repository=True
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.selected_policy_allows(
+                f"github/codeql-action/init@{sha}", policy, public_repository=True
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.selected_policy_allows(
+                f"evil/action@{sha}", policy, public_repository=True
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.selected_policy_allows(
+                f"evil/action@{sha}",
+                {
+                    **policy,
+                    "github_owned_allowed": False,
+                    "patterns_allowed": ["owner/*, !owner/blocked@*"],
+                },
+                public_repository=True,
+            )
+        )
+
+    def test_selected_policy_rejects_empty_comma_pattern_entries(self) -> None:
+        with self.assertRaisesRegex(
+            workflow_installation_preflight.InspectionError,
+            "invalid allowed patterns",
+        ):
+            workflow_installation_preflight.selected_actions_policy(
+                {
+                    "github_owned_allowed": False,
+                    "verified_allowed": False,
+                    "patterns_allowed": ["owner/*, !"],
+                }
+            )
+
     def test_selected_policy_rejects_invalid_api_response_and_visibility(self) -> None:
         for response, message in (
             ([], "response is invalid"),

@@ -278,8 +278,9 @@ repositories, and checks whether GitHub Actions is enabled. Pass
 forbids those assets. For a `selected` policy, pass each candidate asset with
 `--workflow`; the preflight reads the effective selected-actions policy and
 checks every exact pinned action reference. It fails closed unless each reference
-matches an explicit allowlist pattern or is covered by GitHub's `actions/*`
-allowance. This preflight accepts pattern matches only for public repositories,
+matches an explicit allowlist pattern or is covered by GitHub's `actions/*` or
+`github/*` allowance. Negative allowlist patterns remain blocking. This preflight
+accepts pattern matches only for public repositories,
 because it does not infer Enterprise Cloud eligibility. Marketplace verified-creator
 access alone is not treated as proof for a specific action. When an asset is
 provided through `--workflow`, the preflight derives its external-action and

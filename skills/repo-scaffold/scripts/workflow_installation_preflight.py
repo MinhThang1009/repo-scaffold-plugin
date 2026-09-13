@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import re
 import shlex
@@ -150,6 +149,7 @@ FRESHNESS_AUDIT_TRACKER_REGISTRY = ".github/freshness-trackers.json"
 FRESHNESS_ALLOWED_ACTION_REPOSITORIES = frozenset(
     {"actions/checkout", "actions/setup-python"}
 )
+GITHUB_OWNED_ACTION_PREFIXES = ("actions/", "github/")
 FRESHNESS_CANONICAL_RUN_STEP_COUNT = 3
 FRESHNESS_ACTION_REFERENCE_PATTERN = re.compile(
     r"(?:actions/checkout|actions/setup-python)@[0-9a-f]{40}\Z", re.IGNORECASE
@@ -2842,8 +2842,9 @@ def selected_actions_policy(document: Any) -> dict[str, bool | list[str]]:
         raise InspectionError("Selected Actions policy has invalid boolean settings.")
     if not isinstance(patterns, list) or any(
         not isinstance(pattern, str)
-        or not pattern
+        or not pattern.strip()
         or any(character in pattern for character in "\r\n\x00")
+        or any(not part.strip() or part.strip() == "!" for part in pattern.split(","))
         for pattern in patterns
     ):
         raise InspectionError("Selected Actions policy has invalid allowed patterns.")
@@ -2946,9 +2947,24 @@ def selected_policy_allows(
 ) -> bool:
     """Apply GitHub's selected-actions allowlist to one exact action reference."""
     action = reference.rsplit("@", 1)[0]
-    # GitHub documents this setting for actions in the `actions` organization.
+    patterns = policy["patterns_allowed"]
+    assert isinstance(patterns, list)
+    pattern_match = False
+    for configured_pattern in patterns:
+        for raw_pattern in configured_pattern.split(","):
+            pattern = raw_pattern.strip()
+            blocked = pattern.startswith("!")
+            candidate = pattern[1:] if blocked else pattern
+            escaped = re.escape(candidate.casefold()).replace(r"\*", ".*")
+            if re.fullmatch(escaped, reference.casefold()) is None:
+                continue
+            if blocked:
+                return False
+            pattern_match = True
+    # GitHub documents GitHub-owned actions in both the `actions` and `github`
+    # organizations. Explicit negative patterns remain blocking in either case.
     if policy["github_owned_allowed"] is True and action.casefold().startswith(
-        "actions/"
+        GITHUB_OWNED_ACTION_PREFIXES
     ):
         return True
     # GitHub does not expose a stable REST attribute proving a Marketplace creator
@@ -2957,12 +2973,7 @@ def selected_policy_allows(
     # Enterprise Cloud eligibility for a private or internal repository.
     if not public_repository:
         return False
-    patterns = policy["patterns_allowed"]
-    assert isinstance(patterns, list)
-    return any(
-        fnmatch.fnmatchcase(reference.casefold(), pattern.casefold())
-        for pattern in patterns
-    )
+    return pattern_match
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
