@@ -190,6 +190,8 @@ when the local call cannot be resolved to one supplied input, or when the
 matching basename comes from another workflow directory. Local `./...`
 action references must also be canonical repository-relative paths; traversal,
 backslash, and control-character forms are rejected.
+Every supplied local reusable workflow must declare `workflow_call`, and loops
+in the supplied local workflow graph are rejected.
 
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
 only scheduled and manual triggers. Each schedule entry must use a five-field

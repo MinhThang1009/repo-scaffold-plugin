@@ -2577,6 +2577,39 @@ def local_reusable_workflow_names(document: dict[str, Any], source: Path) -> lis
     return names
 
 
+def workflow_is_reusable(document: dict[str, Any]) -> bool:
+    """Return whether a workflow declares the reusable-workflow trigger."""
+    triggers = document.get("on")
+    if isinstance(triggers, dict):
+        return "workflow_call" in triggers
+    if isinstance(triggers, list):
+        return "workflow_call" in triggers
+    return triggers == "workflow_call"
+
+
+def local_reusable_workflow_graph_is_acyclic(
+    edges: dict[Path, tuple[Path, ...]],
+) -> bool:
+    """Return whether supplied local reusable workflows contain no call loops."""
+    visiting: set[Path] = set()
+    visited: set[Path] = set()
+
+    def visit(workflow: Path) -> bool:
+        if workflow in visiting:
+            return False
+        if workflow in visited:
+            return True
+        visiting.add(workflow)
+        for called_workflow in edges.get(workflow, ()):
+            if not visit(called_workflow):
+                return False
+        visiting.remove(workflow)
+        visited.add(workflow)
+        return True
+
+    return all(visit(workflow) for workflow in edges)
+
+
 def requires_issue_write(text: str, source: Path) -> bool:
     """Inspect YAML permission fields without treating comments or scripts as policy."""
     document = workflow_document(text, source)
@@ -2920,6 +2953,8 @@ def workflow_capabilities(
         raise InspectionError(
             "Workflow inputs must have unique filenames for local reusable-workflow resolution."
         )
+    workflow_texts: dict[Path, str] = {}
+    workflow_documents: dict[Path, dict[str, Any]] = {}
     for workflow in workflows:
         try:
             metadata = workflow.lstat()
@@ -2943,6 +2978,12 @@ def workflow_capabilities(
             ) from exc
         document = workflow_document(text, workflow)
         validate_container_references(document, workflow)
+        workflow_texts[workflow] = text
+        workflow_documents[workflow] = document
+    local_workflow_edges: dict[Path, tuple[Path, ...]] = {}
+    for workflow in workflows:
+        document = workflow_documents[workflow]
+        called_workflows: list[Path] = []
         for local_name in local_reusable_workflow_names(document, workflow):
             called_workflow = workflow_inputs.get(local_name)
             if called_workflow is None:
@@ -2958,6 +2999,17 @@ def workflow_capabilities(
                     f"{local_name!r}; pass the called workflow from the same "
                     "workflow directory as another --workflow input."
                 )
+            if not workflow_is_reusable(workflow_documents[called_workflow]):
+                raise InspectionError(
+                    f"Workflow {workflow} calls local workflow {local_name!r}; "
+                    "the supplied workflow must declare workflow_call."
+                )
+            called_workflows.append(called_workflow)
+        local_workflow_edges[workflow] = tuple(called_workflows)
+    if not local_reusable_workflow_graph_is_acyclic(local_workflow_edges):
+        raise InspectionError("Local reusable workflow calls must not contain cycles.")
+    for workflow in workflows:
+        text = workflow_texts[workflow]
         try:
             # This rejects aliases, unpinned actions, and non-action `uses:` forms
             # before the exact references below are compared with GitHub's policy.

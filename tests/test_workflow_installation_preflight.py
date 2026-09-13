@@ -4746,6 +4746,67 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     [caller, wrong_directory]
                 )
 
+    def test_local_reusable_workflows_require_workflow_call_and_no_cycles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            caller = root / "caller.yml"
+            called = root / "called.yml"
+            caller.write_text(
+                "on: push\njobs:\n  call:\n    uses: ./.github/workflows/called.yml\n",
+                encoding="utf-8",
+            )
+            called.write_text("on: push\njobs: {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "declare workflow_call",
+            ):
+                workflow_installation_preflight.workflow_capabilities([caller, called])
+
+            caller.write_text(
+                "on: workflow_call\njobs:\n  call:\n    uses: ./.github/workflows/called.yml\n",
+                encoding="utf-8",
+            )
+            called.write_text(
+                "on: workflow_call\njobs:\n  call:\n    uses: ./.github/workflows/caller.yml\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "must not contain cycles",
+            ):
+                workflow_installation_preflight.workflow_capabilities([caller, called])
+
+    def test_reusable_workflow_and_graph_helpers_cover_supported_shapes(self) -> None:
+        for document, expected in (
+            ({"on": {"workflow_call": None}}, True),
+            ({"on": ["workflow_call"]}, True),
+            ({"on": "workflow_call"}, True),
+            ({"on": {"push": None}}, False),
+            ({"on": None}, False),
+            ({}, False),
+        ):
+            with self.subTest(document=document):
+                self.assertEqual(
+                    workflow_installation_preflight.workflow_is_reusable(document),
+                    expected,
+                )
+        first, second, shared = (Path("first"), Path("second"), Path("shared"))
+        self.assertTrue(
+            workflow_installation_preflight.local_reusable_workflow_graph_is_acyclic(
+                {first: (second, shared), second: (shared,), shared: ()}
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.local_reusable_workflow_graph_is_acyclic(
+                {first: (first,)}
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.local_reusable_workflow_graph_is_acyclic(
+                {first: (second,), second: (first,)}
+            )
+        )
+
     def test_unsafe_local_action_references_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
