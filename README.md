@@ -46,8 +46,9 @@ project-specific content generated from the repository itself. External GitHub
 Actions are pinned to immutable commit SHAs. Dependabot keeps installed
 workflows current; a weekly PR-only synchronizer mirrors reviewed releases to
 scaffold workflow assets. A separate scheduled freshness audit compares action
-pins, Release Please schemas, and direct Python pins with their authoritative
-upstreams, then maintains one reminder issue until the drift is resolved.
+pins, Release Please schemas, direct Python pins, and time-bounded code-scanning
+allowlist exceptions with their authoritative or recorded review inputs, then
+maintains one reminder issue until the drift is resolved.
 An independent weekly official-documentation review validates the allowlisted
 GitHub, OpenAI, and Claude Code source pages, their claim markers, and the
 review interval recorded for each affected plugin document. It opens one
@@ -62,7 +63,7 @@ repository policy.
 - [`gh`](https://cli.github.com/) (GitHub CLI), authenticated to GitHub.com (`gh auth status --active --hostname github.com`) — used for every GitHub API call and configuration step.
 - `git`.
 - `actionlint` and ShellCheck are required for local workflow validation. CI obtains their reviewed versions, release metadata, archive layout, and asset digests from the centralized [CI toolchain policy](.github/ci-toolchain.json).
-- Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with the hash-locked development dependencies, for deterministic tests, branch coverage, scaffold validation, and fail-closed preflights. The CodeQL preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime, and requires separate confirmation that no external or indirect process uploads CodeQL results. The classic branch-protection preflight binds the repository/default branch, proves an exact remote workflow producer, event coverage, recent successful Check Runs on both representative PR SHAs, a stable GitHub App ID, and no Commit Status collision before it permits a required context. It rejects inactive targets and requires current administration permission. The merge-settings preflight preserves methods required by effective rules, requires separate confirmation before disabling an enabled method, and rejects auto-merge assets when a merge queue applies. The security-features preflight binds the exact requested features to an active repository with administration permission, enforces the secret-scanning prerequisite for push protection, limits private vulnerability reporting to public non-forks, and proves Dependabot alerts are enabled before automated security fixes unless alerts were approved for prior enablement. Without the applicable proof, the plugin skips that mutation and reports the verification gap.
+- Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with the hash-locked development dependencies, for deterministic tests, branch coverage, scaffold validation, and fail-closed preflights. The CodeQL preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime, and requires separate confirmation that no external or indirect process uploads CodeQL results. The classic branch-protection preflight binds the repository/default branch, proves an exact remote workflow producer, event coverage, recent successful Check Runs on both representative PR SHAs, a stable GitHub App ID, and no Commit Status collision before it permits a required context. It rejects inactive targets and requires current administration permission. The merge-settings preflight preserves methods required by effective rules, requires separate confirmation before disabling an enabled method, and rejects auto-merge assets when a merge queue applies or no effective required status-check gate can be verified. The security-features preflight binds the exact requested features to an active repository with administration permission, enforces the secret-scanning prerequisite for push protection, limits private vulnerability reporting to public non-forks, and proves Dependabot alerts are enabled before automated security fixes unless alerts were approved for prior enablement. The workflow-installation preflight compares each supplied, SHA-pinned `uses:` reference with the effective selected-actions policy before allowing a restricted workflow asset. Without the applicable proof, the plugin skips that mutation and reports the verification gap.
 - The repository-settings preflight independently binds description/topics, Issues/Discussions, and label creation to the exact GitHub.com repository, rejects archived or disabled targets, and requires current administration permission before `gh repo edit` or `gh label create` can run.
 - Node.js with `npx` is required only to reproduce the markdownlint package pinned by the [CI toolchain policy](.github/ci-toolchain.json).
 - Remote automation supports GitHub.com only. GitHub Enterprise Server and GHE.com repositories receive host-independent local community files, but bundled workflows, GitHub.com badges, and remote configuration are skipped.
@@ -244,6 +245,7 @@ repo-scaffold/
         │   ├── pr_template_preflight.py # PR template selection and validation
         │   ├── release_preflight.py # release and attestation eligibility inspection
         │   ├── security_features_preflight.py # security-feature mutation eligibility inspection
+        │   ├── scorecard_preflight.py # Scorecard SARIF upload eligibility inspection
         │   ├── workflow_installation_preflight.py # GitHub Actions and issue-workflow capability inspection
         │   ├── sync_action_pins.py  # immutable action-release resolver
         │   └── validate_scaffold.py # rendered Markdown and template contract
@@ -268,7 +270,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -327,13 +329,16 @@ two mirrored documentation packages are grouped explicitly.
 The non-required weekly [freshness workflow](.github/workflows/freshness.yml)
 reads the reviewed [freshness tracker registry](.github/freshness-trackers.json)
 and independently reports direct-PyPI-pin and lock-consistency drift, plus any
-versioned input the PR synchronizer could not make current. It opens or updates
-one marker Issue when attention is required and closes it only after a clean
-scheduled/manual result. The
+versioned input the PR synchronizer could not make current. It serializes
+scheduled and manual runs per repository, opens or updates one marker Issue
+when attention is required, and closes it only after a clean scheduled/manual
+result. The
 scaffold ships the same registry-driven checker and workflow to generated
 repositories when Issues are available. Track only sources with an
-authoritative owner and deterministic version resolver; community-health policy
-tracking remains in its separate registry.
+authoritative owner and deterministic version resolver. Its version-1 registry
+rejects unknown fields and direct-source lock paths so newly declared inputs
+cannot be silently ignored;
+community-health policy tracking remains in its separate registry.
 The non-required weekly [official-documentation workflow](.github/workflows/official-docs.yml)
 uses [its explicit tracker registry](.github/official-docs-trackers.json) to
 revalidate the authoritative source URLs and stable claim markers, then requires

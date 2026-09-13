@@ -4181,6 +4181,9 @@ class PlaceholderContractTests(unittest.TestCase):
             setup,
         )
         self.assertIn("$installAutoMergeWorkflows", setup)
+        self.assertIn(
+            "require-status-checks-before-installing-auto-merge-workflows", setup
+        )
         self.assertNotIn("--enable-merge-commit=false `", setup)
 
         merge_settings = setup.split("## Merge settings", 1)[1].split("\n## ", 1)[0]

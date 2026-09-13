@@ -382,6 +382,11 @@ class InventoryTests(unittest.TestCase):
                 self.assertRaisesRegex(community_health.AuditError, "linked"),
             ):
                 community_health._directory_files(root, path)
+            with (
+                mock.patch.object(Path, "rglob", side_effect=OSError("denied")),
+                self.assertRaisesRegex(community_health.AuditError, "enumerate"),
+            ):
+                community_health._directory_files(root, path)
 
     def test_reparse_attribute_detection(self) -> None:
         path = mock.Mock()
@@ -481,6 +486,56 @@ class CovenantTests(unittest.TestCase):
 
 
 class AuditAndCliTests(unittest.TestCase):
+    def test_inventory_error_does_not_skip_profile_or_other_entries(self) -> None:
+        entries = [
+            community_health.RegistryEntry(
+                "broken",
+                "Broken entry",
+                "github-community-health",
+                "file",
+                ("broken.md",),
+                "none",
+            ),
+            community_health.RegistryEntry(
+                "code_of_conduct",
+                "Code of Conduct",
+                "github-community-health",
+                "file",
+                ("CODE_OF_CONDUCT.md",),
+                "contributor-covenant",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CODE_OF_CONDUCT.md").write_text(
+                covenant_text("3.0"), encoding="utf-8"
+            )
+            original_inventory = community_health.inventory_entry
+
+            def inventory(root: Path, entry: Any) -> dict[str, Any]:
+                if entry.identifier == "broken":
+                    raise community_health.AuditError("broken entry unavailable")
+                return original_inventory(root, entry)
+
+            with mock.patch.object(
+                community_health, "inventory_entry", side_effect=inventory
+            ):
+                report = community_health.audit(
+                    root,
+                    entries,
+                    "owner/repository",
+                    FakeClient(upstream_responses()),
+                    "now",
+                )
+
+            self.assertEqual(report["summary"]["status"], "indeterminate")
+            self.assertEqual(report["community-profile"]["status"], "current")
+            self.assertEqual(report["errors"], ["broken entry unavailable"])
+            self.assertEqual(
+                [(item["id"], item["status"]) for item in report["files"]],
+                [("broken", "indeterminate"), ("code_of_conduct", "current")],
+            )
+
     def test_audit_reports_current_attention_and_indeterminate(self) -> None:
         entries = community_health.parse_registry(registry_document())
         with tempfile.TemporaryDirectory() as directory:

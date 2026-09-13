@@ -5,7 +5,7 @@ import importlib.util
 import runpy
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
@@ -300,11 +300,14 @@ jobs:
         FakeClient.responses = {
             f"repos/{OWNER}/{REPOSITORY}": {
                 "full_name": f"{OWNER}/{REPOSITORY}",
+                "default_branch": "main",
                 "archived": False,
                 "disabled": False,
                 "permissions": {"admin": True},
             },
             f"repos/{OWNER}/{REPOSITORY}/pulls/7": {
+                "state": "open",
+                "base": {"ref": "main", "repo": {"full_name": f"{OWNER}/{REPOSITORY}"}},
                 "head": {"sha": HEAD_SHA},
                 "merge_commit_sha": MERGE_SHA,
                 "mergeable": True,
@@ -350,6 +353,88 @@ jobs:
                 }
             ],
         )
+
+    def test_run_rejects_stale_or_missing_default_branch(self) -> None:
+        for branch in (None, "develop", "Main", 7):
+            self.configure()
+            repository = cast(
+                dict[str, Any], FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}"]
+            )
+            repository["default_branch"] = branch
+            with (
+                self.subTest(branch=branch),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "current default branch",
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_rejects_pull_request_for_unverified_target(self) -> None:
+        for base in (
+            None,
+            {},
+            {"ref": "develop"},
+            {"ref": "Main"},
+            {"ref": "main", "repo": None},
+            {"ref": "main", "repo": {}},
+            {"ref": "main", "repo": {"full_name": 7}},
+            {"ref": "main", "repo": {"full_name": "octo/other"}},
+        ):
+            self.configure()
+            pr = cast(
+                dict[str, Any],
+                FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/pulls/7"],
+            )
+            pr["base"] = base
+            with (
+                self.subTest(base=base),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "target repository and branch",
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_rejects_non_open_representative_pull_request(self) -> None:
+        for state in (None, "closed", "all", True):
+            with self.subTest(state=state):
+                self.configure()
+                pr = cast(
+                    dict[str, Any],
+                    FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/pulls/7"],
+                )
+                pr["state"] = state
+                with (
+                    mock.patch.object(
+                        branch_protection_preflight, "GitHubClient", FakeClient
+                    ),
+                    self.assertRaisesRegex(
+                        branch_protection_preflight.InspectionError, "not open"
+                    ),
+                ):
+                    branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_accepts_fork_head_with_matching_base_repository(self) -> None:
+        self.configure()
+        pr = cast(
+            dict[str, Any], FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/pulls/7"]
+        )
+        pr["base"]["repo"]["full_name"] = "OCTO/EXAMPLE"
+        pr["head"]["repo"] = {"full_name": "contributor/example"}
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            self.assertEqual(
+                branch_protection_preflight.run(preflight_args("ci-success"))[
+                    "decision"
+                ],
+                "may-configure-classic-protection",
+            )
 
     def test_run_rejects_ineligible_repository_or_default_branch(self) -> None:
         self.configure()
@@ -494,6 +579,54 @@ jobs:
             ):
                 branch_protection_preflight.run(preflight_args("ci-success"))
 
+    def test_check_run_freshness_has_both_time_boundaries(self) -> None:
+        now = datetime(2026, 9, 8, tzinfo=timezone.utc)
+        for offset, accepted in (
+            (timedelta(days=-7), True),
+            (timedelta(0), True),
+            (timedelta(days=-7, microseconds=-1), False),
+            (timedelta(microseconds=1), False),
+        ):
+            payload = check_runs("ci-success")
+            payload["check_runs"][0]["completed_at"] = (now + offset).isoformat()
+            with self.subTest(offset=offset):
+                if accepted:
+                    self.assertEqual(
+                        branch_protection_preflight.app_id_for_check(
+                            payload, "ci-success", now
+                        ),
+                        15368,
+                    )
+                else:
+                    with self.assertRaises(branch_protection_preflight.InspectionError):
+                        branch_protection_preflight.app_id_for_check(
+                            payload, "ci-success", now
+                        )
+
+    def test_run_rejects_malformed_effective_rule_entries(self) -> None:
+        for rule in (
+            None,
+            "merge_queue",
+            {},
+            {"type": None},
+            {"type": 7},
+            {"type": ""},
+        ):
+            self.configure()
+            FakeClient.responses[
+                f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+            ] = [rule]
+            with (
+                self.subTest(rule=rule),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError, "Effective rule"
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
     def test_evidence_validation_rejects_ambiguous_or_stale_data(self) -> None:
         now = datetime.now(timezone.utc)
         valid = check_runs("ci-success")
@@ -514,6 +647,11 @@ jobs:
         base = cast(dict[str, Any], valid["check_runs"][0])
         evidence_updates: list[tuple[dict[str, Any], str]] = [
             ({"app": {}}, "incomplete"),
+            ({"app": {"id": True}}, "incomplete"),
+            ({"app": {"id": False}}, "incomplete"),
+            ({"app": {"id": "15368"}}, "incomplete"),
+            ({"app": {"id": 0}}, "incomplete"),
+            ({"app": {"id": -1}}, "incomplete"),
             ({"completed_at": "not-a-time"}, "invalid completion"),
             ({"completed_at": "2026-01-01T00:00:00"}, "timezone-less"),
         ]
@@ -599,9 +737,10 @@ jobs:
         pull_endpoint = f"repos/{OWNER}/{REPOSITORY}/pulls/7"
         for payload, message in [
             ([], "response is invalid"),
-            ({"head": {}, "merge_commit_sha": MERGE_SHA}, "no head"),
+            ({"state": "open", "head": {}, "merge_commit_sha": MERGE_SHA}, "no head"),
             (
                 {
+                    "state": "open",
                     "head": {"sha": HEAD_SHA},
                     "merge_commit_sha": MERGE_SHA,
                     "mergeable": False,
@@ -646,6 +785,30 @@ jobs:
                 branch_protection_preflight.InspectionError, "unconditional executable"
             ):
                 branch_protection_preflight.run(preflight_args("ci-success"))
+
+        for workflow in (
+            self.WORKFLOW.replace(
+                "      - run: echo checked",
+                "      - if: false\n        run: echo checked",
+            ),
+            self.WORKFLOW.replace(
+                "    runs-on: ubuntu-latest",
+                "    runs-on: ubuntu-latest\n    continue-on-error: true",
+            ),
+            self.WORKFLOW.replace(
+                "      - run: echo checked",
+                "      - continue-on-error: true\n        run: echo checked",
+            ),
+        ):
+            self.configure(workflow)
+            with mock.patch.object(
+                branch_protection_preflight, "GitHubClient", FakeClient
+            ):
+                with self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "unconditional executable",
+                ):
+                    branch_protection_preflight.run(preflight_args("ci-success"))
 
         self.configure()
         FakeClient.responses[

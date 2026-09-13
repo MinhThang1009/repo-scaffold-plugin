@@ -138,7 +138,10 @@ jobs:
           skills/repo-scaffold/scripts/check_community_health.py
           skills/repo-scaffold/scripts/audit_freshness.py
           skills/repo-scaffold/scripts/branch_protection_preflight.py
+          skills/repo-scaffold/scripts/advanced_codeql_preflight.py
           skills/repo-scaffold/scripts/codeql_preflight.py
+          skills/repo-scaffold/scripts/dependency_review_preflight.py
+          skills/repo-scaffold/scripts/scorecard_preflight.py
           skills/repo-scaffold/scripts/ci_toolchain.py
           skills/repo-scaffold/scripts/pr_template_preflight.py
           skills/repo-scaffold/scripts/release_preflight.py
@@ -313,6 +316,9 @@ jobs:
     permissions:
       contents: read
       issues: write
+    concurrency:
+      group: ${{ github.workflow }}-policy-drift-${{ github.repository }}
+      cancel-in-progress: false
     steps:
       - name: Reconcile policy-drift reminder issue
         env:
@@ -326,11 +332,15 @@ jobs:
           set -euo pipefail
           marker='<!-- repo-scaffold-ci-policy-drift -->'
           title='CI policy review required'
-          mapfile -t issue_numbers < <(
+          issue_numbers_output=$(
             gh api --hostname github.com --paginate \
               "repos/${REPOSITORY}/issues?state=open&per_page=100" \
               --jq '.[] | select(.pull_request == null) | select((.body // "") | contains("<!-- repo-scaffold-ci-policy-drift -->")) | .number'
           )
+          issue_numbers=()
+          if [[ -n "$issue_numbers_output" ]]; then
+            mapfile -t issue_numbers <<< "$issue_numbers_output"
+          fi
           if (( ${#issue_numbers[@]} > 1 )); then
             printf 'Found multiple open CI policy reminder issues.\n' >&2
             exit 1
