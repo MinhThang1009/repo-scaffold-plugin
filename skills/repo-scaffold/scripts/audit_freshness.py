@@ -487,7 +487,7 @@ def existing_optional_paths(root: Path, paths: tuple[Path, ...]) -> tuple[Path, 
     """Return opted-in optional paths that exist without hiding unsafe entries."""
     try:
         return tuple(path for path in paths if os.path.lexists(root / path))
-    except (OSError, ValueError) as error:
+    except (OSError, UnicodeError, ValueError) as error:
         raise AuditError(
             f"could not inspect optional freshness paths: {error}"
         ) from error

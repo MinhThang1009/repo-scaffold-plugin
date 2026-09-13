@@ -7092,6 +7092,24 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         (root_resolver, asset_resolver, "action-pin resolver"),
     ):
         try:
+            unsafe_paths = [
+                path
+                for path in (current, scaffolded)
+                if path_has_link_or_reparse(path, repository_root)
+            ]
+        except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+            problems.append(
+                f"freshness tracking: {label} path could not be inspected: {error}"
+            )
+            continue
+        if unsafe_paths:
+            problems.append(
+                "freshness tracking: "
+                f"{label} contains a linked or reparse-point path: "
+                f"{unsafe_paths[0].relative_to(repository_root).as_posix()}"
+            )
+            continue
+        try:
             current_text = current.read_text(encoding="utf-8")
             scaffolded_text = scaffolded.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
@@ -7158,6 +7176,18 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
     ):
         relative = path.relative_to(repository_root).as_posix()
         try:
+            unsafe_path = path_has_link_or_reparse(path, repository_root)
+        except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+            problems.append(
+                f"{relative}: freshness registry path could not be inspected: {error}"
+            )
+            continue
+        if unsafe_path:
+            problems.append(
+                f"{relative}: freshness registry path is linked or a reparse point"
+            )
+            continue
+        try:
             registry = load_json(path)
         except (OSError, UnicodeError, ValueError) as error:
             problems.append(f"{relative}: could not verify freshness registry: {error}")
@@ -7188,6 +7218,18 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
     texts: list[str] = []
     for path in workflows:
         relative = path.relative_to(repository_root).as_posix()
+        try:
+            unsafe_path = path_has_link_or_reparse(path, repository_root)
+        except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+            problems.append(
+                f"{relative}: freshness workflow path could not be inspected: {error}"
+            )
+            continue
+        if unsafe_path:
+            problems.append(
+                f"{relative}: freshness workflow path is linked or a reparse point"
+            )
+            continue
         try:
             workflow = load_yaml(path)
             text = path.read_text(encoding="utf-8")

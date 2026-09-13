@@ -11018,6 +11018,45 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             any("workflow must match" in problem for problem in workflow_drift)
         )
 
+    def test_freshness_contract_rejects_linked_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            linked_workflow = root / ".github/workflows/freshness.yml"
+            linked_paths = {
+                linked_workflow,
+                root / "scripts/audit_freshness.py",
+                root / ".github/freshness-trackers.json",
+            }
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _repository_root: path in linked_paths,
+            ):
+                problems = validate_repository.validate_freshness_tracking_contract(
+                    root
+                )
+
+        self.assertIn(
+            ".github/workflows/freshness.yml: freshness workflow path is linked or a reparse point",
+            problems,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=OSError("permission denied"),
+            ):
+                problems = validate_repository.validate_freshness_tracking_contract(
+                    root
+                )
+
+        self.assertTrue(
+            any("path could not be inspected" in problem for problem in problems)
+        )
+
 
 class OfficialDocumentationTrackingContractTests(unittest.TestCase):
     def copy_contract(self, root: Path) -> None:

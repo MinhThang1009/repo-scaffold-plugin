@@ -692,6 +692,21 @@ class FreshnessTests(unittest.TestCase):
                 freshness.existing_optional_paths(
                     root, trackers.optional_release_please_configs
                 )
+            with (
+                mock.patch.object(
+                    freshness.os.path,
+                    "lexists",
+                    side_effect=UnicodeDecodeError(
+                        "utf-8", b"\\xff", 0, 1, "invalid path"
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    freshness.AuditError, "could not inspect optional"
+                ),
+            ):
+                freshness.existing_optional_paths(
+                    root, trackers.optional_release_please_configs
+                )
             self.assertEqual(freshness.ci_toolchain_findings(root, ()), [])
             self.assertEqual(
                 freshness.existing_optional_paths(
