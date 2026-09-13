@@ -2288,6 +2288,40 @@ def freshness_api_result_assignments(
     return tokens, assignments
 
 
+def freshness_issue_lookup_substitution_is_safe(text: str) -> bool:
+    """Require the issue-number lookup output to come directly from ``gh api``."""
+    physical_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    lines: list[str] = []
+    index = 0
+    while index < len(physical_lines):
+        parts = [physical_lines[index].rstrip()]
+        cursor = index
+        while parts[-1].endswith("\\") and cursor + 1 < len(physical_lines):
+            parts[-1] = parts[-1][:-1].rstrip()
+            cursor += 1
+            parts.append(physical_lines[cursor])
+        lines.append(" ".join(parts))
+        index = cursor + 1
+    opening_indices = [
+        index for index, line in enumerate(lines) if line == "issue_numbers_output=$("
+    ]
+    closing_indices = [index for index, line in enumerate(lines) if line == ")"]
+    if (
+        len(opening_indices) != 1
+        or len(closing_indices) != 1
+        or closing_indices[0] != opening_indices[0] + 2
+    ):
+        return False
+    segments = shell_command_segments(lines[opening_indices[0] + 1])
+    return (
+        segments is not None and len(segments) == 1 and segments[0][:2] == ["gh", "api"]
+    )
+
+
 def freshness_api_result_is_consumed(text: str) -> bool:
     """Require the freshness API result to be assigned and consumed later."""
     parsed = freshness_api_result_assignments(text)
@@ -2381,6 +2415,11 @@ def freshness_api_result_controls_issue_selection(text: str) -> bool:
     if not freshness_api_result_is_consumed(text):
         return False
     _, api_result_assignments = parsed
+    if any(
+        variable == "issue_numbers_output" for variable, _ in api_result_assignments
+    ):
+        if not freshness_issue_lookup_substitution_is_safe(text):
+            return False
     segments = shell_command_segments(text)
     if segments is None:
         return False

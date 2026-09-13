@@ -2043,6 +2043,25 @@ def freshness_api_result_assignments(
     return tokens, assignments
 
 
+def freshness_issue_lookup_substitution_is_safe(command: str) -> bool:
+    """Require the issue-number lookup output to come directly from ``gh api``."""
+    lines = list(shell_logical_lines(command))
+    opening_indices = [
+        index for index, line in enumerate(lines) if line == "issue_numbers_output=$("
+    ]
+    closing_indices = [index for index, line in enumerate(lines) if line == ")"]
+    if (
+        len(opening_indices) != 1
+        or len(closing_indices) != 1
+        or closing_indices[0] != opening_indices[0] + 2
+    ):
+        return False
+    segments = shell_command_segments(lines[opening_indices[0] + 1])
+    return (
+        segments is not None and len(segments) == 1 and segments[0][:2] == ["gh", "api"]
+    )
+
+
 def freshness_api_result_is_consumed(command: str) -> bool:
     """Require the freshness API result to be assigned and consumed later."""
     parsed = freshness_api_result_assignments(command)
@@ -2136,6 +2155,11 @@ def freshness_api_result_controls_issue_selection(command: str) -> bool:
     if not freshness_api_result_is_consumed(command):
         return False
     _, api_result_assignments = parsed
+    if any(
+        variable == "issue_numbers_output" for variable, _ in api_result_assignments
+    ):
+        if not freshness_issue_lookup_substitution_is_safe(command):
+            return False
     segments: list[list[str]] = []
     for logical_line in shell_logical_lines(command):
         line_segments = shell_command_segments(logical_line)

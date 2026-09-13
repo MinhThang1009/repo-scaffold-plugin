@@ -7836,6 +7836,17 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                     document, candidate
                 )
             )
+            candidate = original.replace(
+                "          issue_numbers_output=$(\n",
+                "          issue_numbers_output=$(\n            printf '999\\n'\n",
+                1,
+            )
+            document = validate_repository.load_yaml_text(candidate)
+            self.assertFalse(
+                validate_repository.has_freshness_job_reconciliation(
+                    document, candidate
+                )
+            )
 
     def copy_contract(self, root: Path) -> None:
         relative_paths = (
@@ -8906,6 +8917,17 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             validate_repository.freshness_api_result_controls_issue_selection(
                 bound_api_lookup + '\ngh issue edit "${issue_numbers[0]}" --repo r '
+                "--body-file report.md"
+            )
+        )
+        extra_lookup_output = bound_api_lookup.replace(
+            "  " + api_lookup,
+            "  printf '999\\n'\n  " + api_lookup,
+            1,
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                extra_lookup_output + '\ngh issue edit "${issue_numbers[0]}" --repo r '
                 "--body-file report.md"
             )
         )

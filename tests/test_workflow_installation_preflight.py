@@ -872,6 +872,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 repository_lookup_command,
                 repository_lookup_command.replace("| .number'\n", "| .number, 999'\n"),
             ),
+            "extra lookup output": valid.replace(
+                "          issue_numbers_output=$(\n",
+                "          issue_numbers_output=$(\n            printf '999\\n'\n",
+                1,
+            ),
             "API result ignored": valid.replace(
                 '          if [[ -n "$issue_numbers_output" ]]; then\n'
                 '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
