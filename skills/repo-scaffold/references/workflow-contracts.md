@@ -5,7 +5,8 @@ Read this reference before installing or modifying GitHub Actions workflows.
 Install workflows only for a verified GitHub.com repository. Give every job the
 least privilege, set `persist-credentials: false` for checkout unless needed,
 pin every external action to a verified full SHA and job/service container images
-to a verified full SHA-256 digest, and keep generated workflows
+to a verified full SHA-256 digest, bound supplied workflow input count and total
+bytes, and keep generated workflows
 valid for `pull_request` and `merge_group` whenever their check can be required.
 Use `cancel-in-progress: false` for required-check concurrency.
 External `docker://` workflow references must use a full SHA-256 digest; the

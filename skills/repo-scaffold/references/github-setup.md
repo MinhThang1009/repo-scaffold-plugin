@@ -273,7 +273,8 @@ Use only `$hasIssuesEnabled` and `$hasDiscussionsEnabled` from that final query 
 
 Before copying a GitHub Actions asset, run the bundled read-only preflight. It
 binds the response to the exact repository, rejects archived or disabled
-repositories, and checks whether GitHub Actions is enabled. Pass
+repositories, bounds the workflow input count and total bytes, and checks
+whether GitHub Actions is enabled. Pass
 `--require-external-actions` for any asset with `uses:`. A `local_only` policy
 forbids those assets. For a `selected` policy, pass each candidate asset with
 `--workflow`; the preflight reads the effective selected-actions policy and

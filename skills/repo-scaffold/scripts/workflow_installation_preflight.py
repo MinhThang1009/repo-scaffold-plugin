@@ -27,6 +27,8 @@ import sync_action_pins
 
 
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
+MAX_WORKFLOW_INPUTS = 500
+MAX_TOTAL_WORKFLOW_BYTES = 64 * 1024 * 1024
 MAX_LOCAL_REUSABLE_WORKFLOW_LEVELS = 10
 MAX_LOCAL_REUSABLE_WORKFLOWS_PER_CALLER = 50
 CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION = 3
@@ -2978,6 +2980,10 @@ def workflow_capabilities(
         raise InspectionError(
             "Selected Actions policy requires at least one --workflow input."
         )
+    if len(workflows) > MAX_WORKFLOW_INPUTS:
+        raise InspectionError(
+            f"Workflow inputs exceed the {MAX_WORKFLOW_INPUTS}-file safety cap."
+        )
     references: set[str] = set()
     issue_workflows: set[str] = set()
     pull_request_write_workflows: set[str] = set()
@@ -2990,6 +2996,7 @@ def workflow_capabilities(
         )
     workflow_texts: dict[Path, str] = {}
     workflow_documents: dict[Path, dict[str, Any]] = {}
+    total_workflow_bytes = 0
     for workflow in workflows:
         try:
             metadata = workflow.lstat()
@@ -3006,6 +3013,11 @@ def workflow_capabilities(
                 raw = stream.read(MAX_WORKFLOW_BYTES + 1)
             if len(raw) > MAX_WORKFLOW_BYTES:
                 raise OSError("workflow exceeds the byte safety cap")
+            total_workflow_bytes += len(raw)
+            if total_workflow_bytes > MAX_TOTAL_WORKFLOW_BYTES:
+                raise InspectionError(
+                    "Workflow inputs exceed the total byte safety cap."
+                )
             text = raw.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise InspectionError(

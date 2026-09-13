@@ -417,6 +417,32 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         arguments(require_external_actions=True, workflow=[unpinned])
                     )
 
+    def test_workflow_inputs_have_count_and_total_byte_safety_caps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.yml"
+            second = root / "second.yml"
+            for path in (first, second):
+                path.write_text("jobs: {}\n", encoding="utf-8")
+            with mock.patch.object(
+                workflow_installation_preflight, "MAX_WORKFLOW_INPUTS", 1
+            ):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError,
+                    "file safety cap",
+                ):
+                    workflow_installation_preflight.workflow_capabilities(
+                        [first, second]
+                    )
+            with mock.patch.object(
+                workflow_installation_preflight, "MAX_TOTAL_WORKFLOW_BYTES", 1
+            ):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError,
+                    "total byte safety cap",
+                ):
+                    workflow_installation_preflight.workflow_capabilities([first])
+
     def test_selected_policy_does_not_assume_private_pattern_eligibility(self) -> None:
         self.configure(allowed_actions="selected")
         repository_response = FakeClient.responses["repos/octo/example"]
