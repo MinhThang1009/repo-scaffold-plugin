@@ -9176,6 +9176,27 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 }
             )
         )
+        for execution_field, execution_value in (
+            ("container", "evil@sha256:" + "a" * 64),
+            (
+                "services",
+                {"database": {"image": "evil@sha256:" + "b" * 64}},
+            ),
+        ):
+            with self.subTest(hidden_execution_field=execution_field):
+                self.assertFalse(
+                    validate_repository.has_direct_freshness_jobs(
+                        {
+                            "jobs": {
+                                "audit": {"steps": []},
+                                "hidden": {
+                                    execution_field: execution_value,
+                                    "steps": [],
+                                },
+                            }
+                        }
+                    )
+                )
         self.assertTrue(
             validate_repository.has_freshness_repository_context(
                 {"jobs": {"audit": {"steps": []}}}
@@ -9863,6 +9884,26 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 workflow_with_noop, contract_text
             )
         )
+        for execution_field, execution_value in (
+            ("container", "evil@sha256:" + "a" * 64),
+            (
+                "services",
+                {"database": {"image": "evil@sha256:" + "b" * 64}},
+            ),
+        ):
+            with self.subTest(hidden_execution_field=execution_field):
+                workflow_with_execution = validate_repository.load_yaml_text(
+                    contract_text
+                )
+                workflow_with_execution["jobs"]["hidden"] = {
+                    execution_field: execution_value,
+                    "steps": [],
+                }
+                self.assertFalse(
+                    validate_repository.has_freshness_job_reconciliation(
+                        workflow_with_execution, contract_text
+                    )
+                )
         global_api_workflow_text = (
             contract_text
             + "\n"

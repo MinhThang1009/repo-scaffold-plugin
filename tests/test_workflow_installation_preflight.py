@@ -2965,6 +2965,27 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 }
             )
         )
+        for execution_field, execution_value in (
+            ("container", "evil@sha256:" + "a" * 64),
+            (
+                "services",
+                {"database": {"image": "evil@sha256:" + "b" * 64}},
+            ),
+        ):
+            with self.subTest(hidden_execution_field=execution_field):
+                self.assertFalse(
+                    workflow_installation_preflight.has_direct_freshness_jobs(
+                        {
+                            "jobs": {
+                                "audit": {"steps": []},
+                                "hidden": {
+                                    execution_field: execution_value,
+                                    "steps": [],
+                                },
+                            }
+                        }
+                    )
+                )
         self.assertTrue(
             workflow_installation_preflight.has_freshness_repository_context(
                 {"jobs": {"audit": {"steps": []}}}
@@ -3854,6 +3875,19 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 hidden_job_text, workflow_path
             )
         )
+        for execution_text in (
+            "    container: evil@sha256:" + "a" * 64 + "\n    steps: []\n",
+            "    services:\n      database:\n        image: evil@sha256:"
+            + "b" * 64
+            + "\n    steps: []\n",
+        ):
+            with self.subTest(hidden_execution=execution_text):
+                self.assertFalse(
+                    workflow_installation_preflight.is_freshness_reminder_workflow(
+                        contract_text + "\n  hidden:\n" + execution_text,
+                        workflow_path,
+                    )
+                )
         duplicate_guard = (
             "          if (( ${#issue_numbers[@]} > 1 )); then\n"
             "            printf 'Found multiple open freshness reminder issues.\\n' >&2\n"

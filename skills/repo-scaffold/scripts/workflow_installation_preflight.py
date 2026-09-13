@@ -1718,12 +1718,18 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
 
 
 def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
-    """Require freshness jobs to expose their run commands for inspection."""
+    """Require direct, container-free freshness jobs for inspection."""
     jobs = document.get("jobs", {})
     return (
         isinstance(jobs, dict)
         and bool(jobs)
-        and all(isinstance(job, dict) and "uses" not in job for job in jobs.values())
+        and all(
+            isinstance(job, dict)
+            and "uses" not in job
+            and "container" not in job
+            and "services" not in job
+            for job in jobs.values()
+        )
     )
 
 
