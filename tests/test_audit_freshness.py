@@ -556,6 +556,55 @@ class FreshnessTests(unittest.TestCase):
                     lambda _repository: release("v2.0.0", "b" * 40),
                 )
 
+    def test_action_directory_inspection_errors_do_not_hide_other_directories(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            errors: list[str] = []
+            asset_workflow = root / "skills/repo-scaffold/assets/workflows/ci.yml"
+
+            def inspect_workflows(
+                _root: Path, directories: tuple[Path, ...]
+            ) -> list[Path]:
+                if directories == (Path(".github/workflows"),):
+                    raise OSError("permission denied")
+                self.assertEqual(
+                    directories, (Path("skills/repo-scaffold/assets/workflows"),)
+                )
+                return [asset_workflow]
+
+            with mock.patch.object(
+                freshness.sync_action_pins,
+                "workflow_paths",
+                side_effect=inspect_workflows,
+            ):
+                findings = freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
+                    errors,
+                )
+
+        self.assertEqual(
+            errors,
+            [
+                "could not inspect workflow action pins in .github/workflows: "
+                "permission denied"
+            ],
+        )
+        self.assertEqual(
+            [(item["path"], item["subject"]) for item in findings],
+            [
+                (
+                    "skills/repo-scaffold/assets/workflows/ci.yml",
+                    "actions/checkout",
+                )
+            ],
+        )
+
     def test_release_please_and_requirement_findings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -375,7 +375,7 @@ def action_findings(
             workflow_paths = sync_action_pins.workflow_paths(
                 root, (workflow_directory,)
             )
-        except ValueError as cause:
+        except (OSError, UnicodeError, RuntimeError, ValueError) as cause:
             issue = AuditError(
                 "could not inspect workflow action pins in "
                 f"{workflow_directory.as_posix()}: {cause}"
