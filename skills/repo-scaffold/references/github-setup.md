@@ -276,7 +276,8 @@ binds the response to the exact repository, rejects archived or disabled
 repositories, bounds the workflow input count and total bytes, and checks
 whether GitHub Actions is enabled. Pass
 `--require-external-actions` for any asset with `uses:`. A `local_only` policy
-forbids those assets. For a `selected` policy, pass each candidate asset with
+forbids those assets, including Docker container actions. For a `selected`
+policy, pass each candidate asset with
 `--workflow`; the preflight reads the effective selected-actions policy and
 checks every exact pinned action reference. It fails closed unless each reference
 matches an explicit allowlist pattern or is covered by GitHub's `actions/*` or

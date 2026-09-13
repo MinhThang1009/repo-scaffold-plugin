@@ -508,6 +508,41 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 public_repository=True,
             )
         )
+        self.assertFalse(
+            workflow_installation_preflight.selected_policy_allows(
+                "docker://alpine@sha256:" + "a" * 64,
+                policy,
+                public_repository=True,
+            )
+        )
+
+    def test_docker_container_actions_require_external_capability(self) -> None:
+        self.configure(allowed_actions="local_only")
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "docker.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  build:\n"
+                "    steps:\n"
+                "      - uses: docker://alpine@sha256:" + "a" * 64 + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(workflow=[workflow])
+                )
+        self.assertEqual(
+            result["decision"],
+            "allow-external-actions-before-installing-workflows",
+        )
+        self.assertTrue(result["requires_external_actions"])
+        self.assertFalse(result["external_actions_verified"])
+        self.assertEqual(
+            result["external_action_references"],
+            ["docker://alpine@sha256:" + "a" * 64],
+        )
 
     def test_selected_policy_rejects_empty_comma_pattern_entries(self) -> None:
         with self.assertRaisesRegex(
@@ -1752,7 +1787,13 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 workflow_installation_preflight.workflow_capabilities([workflow]),
-                ([], [], [], [], False),
+                (
+                    ["docker://alpine@sha256:" + "a" * 64],
+                    [],
+                    [],
+                    [],
+                    False,
+                ),
             )
 
             for content in (

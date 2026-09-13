@@ -3090,7 +3090,7 @@ def workflow_capabilities(
         references.update(
             reference
             for reference in direct_references
-            if not reference.startswith(("./", "docker://"))
+            if not reference.startswith("./")
         )
     return (
         sorted(references, key=str.casefold),
@@ -3105,6 +3105,8 @@ def selected_policy_allows(
     reference: str, policy: dict[str, bool | list[str]], *, public_repository: bool
 ) -> bool:
     """Apply GitHub's selected-actions allowlist to one exact action reference."""
+    if reference.casefold().startswith("docker://"):
+        return False
     action = reference.rsplit("@", 1)[0]
     patterns = policy["patterns_allowed"]
     assert isinstance(patterns, list)

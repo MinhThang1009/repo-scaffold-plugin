@@ -175,7 +175,9 @@ Before copying any GitHub Actions asset, run the fail-closed
 `scripts/workflow_installation_preflight.py`. Require external actions for an
 asset with `uses:` and require Issues for an asset that declares `issues: write`
 or `permissions: write-all`. The preflight bounds the workflow input count and
-total bytes. Do not install an asset while Actions is disabled,
+total bytes. Docker container actions count as external actions; a selected
+policy cannot approve an unlisted container reference. Do not install an asset
+while Actions is disabled,
 while its policy forbids external actions, or until a selected-actions policy has
 been verified against every exact action reference. When the policy is
 `selected`, pass every candidate asset with `--workflow`; the preflight retrieves
