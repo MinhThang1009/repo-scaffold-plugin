@@ -2637,10 +2637,17 @@ def requires_pull_request_write_tokens(text: str, source: Path) -> bool:
 
 def is_code_scanning_gate(text: str, source: Path) -> bool:
     """Identify a gate that requires the shipped allowlist freshness reminder."""
-    return any(
-        CODE_SCANNING_GATE_COMMAND in command
-        for command in workflow_run_commands(workflow_document(text, source))
-    )
+    for command in workflow_run_commands(workflow_document(text, source)):
+        if CODE_SCANNING_GATE_COMMAND in command:
+            return True
+        try:
+            tokens = shlex.split(command, comments=True, posix=True)
+        except ValueError:
+            # An ambiguous shell command must not bypass the companion gate.
+            return True
+        if CODE_SCANNING_GATE_COMMAND in tokens:
+            return True
+    return False
 
 
 def is_freshness_reminder_workflow(text: str, source: Path) -> bool:

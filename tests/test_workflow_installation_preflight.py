@@ -4807,6 +4807,30 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(result["freshness_reminder_supplied"])
         self.assertTrue(result["code_scanning_companions_verified"])
 
+    def test_code_scanning_gate_detection_handles_shell_tokenization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gate = root / "code-scanning-gate.yml"
+            gate.write_text(
+                "jobs:\n"
+                "  gate:\n"
+                "    steps:\n"
+                "      - run: >-\n"
+                '          python "scripts/check_code_scanning_""alerts.py"\n',
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                workflow_installation_preflight.is_code_scanning_gate(
+                    gate.read_text(encoding="utf-8"), gate
+                )
+            )
+            malformed = (
+                'jobs:\n  gate:\n    steps:\n      - run: python "unterminated\n'
+            )
+            self.assertTrue(
+                workflow_installation_preflight.is_code_scanning_gate(malformed, gate)
+            )
+
     def test_pull_request_write_scopes_require_explicit_confirmation(self) -> None:
         self.configure()
         with tempfile.TemporaryDirectory() as directory:
