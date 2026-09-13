@@ -9368,6 +9368,10 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "permissions": {"contents": "read", "issues": "write"},
                 "jobs": {"audit": {"permissions": {"actions": "read"}}},
             },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"contents": []}}},
+            },
         )
         for document in permission_documents:
             with self.subTest(document=document):

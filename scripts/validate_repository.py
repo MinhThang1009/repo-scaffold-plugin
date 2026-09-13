@@ -807,6 +807,7 @@ def has_least_privileged_freshness_permissions(workflow: object) -> bool:
             return False
         if any(
             scope not in {"contents", "issues"}
+            or not isinstance(value, str)
             or value not in {"none", "read", "write"}
             or value == "write"
             and scope != "issues"

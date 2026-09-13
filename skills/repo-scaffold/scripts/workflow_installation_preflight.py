@@ -886,10 +886,13 @@ def freshness_workflow_dispatch_is_valid(value: object) -> bool:
         ):
             return False
         required = definition.get("required", "false")
-        if required not in {"true", "false"}:
+        if not isinstance(required, str) or required not in {"true", "false"}:
             return False
         input_type = definition.get("type", "string")
-        if input_type not in FRESHNESS_WORKFLOW_DISPATCH_INPUT_TYPES:
+        if (
+            not isinstance(input_type, str)
+            or input_type not in FRESHNESS_WORKFLOW_DISPATCH_INPUT_TYPES
+        ):
             return False
         for key in ("description", "default"):
             if key in definition and not isinstance(definition[key], str):
@@ -2428,6 +2431,7 @@ def has_least_privileged_freshness_permissions(document: dict[str, Any]) -> bool
             return False
         if any(
             scope not in {"contents", "issues"}
+            or not isinstance(value, str)
             or value not in {"none", "read", "write"}
             or value == "write"
             and scope != "issues"
@@ -2807,7 +2811,10 @@ def actions_permissions(document: Any) -> tuple[bool, str]:
         raise InspectionError(
             "GitHub Actions permissions response has an invalid 'enabled' value."
         )
-    if allowed_actions not in ALLOWED_ACTION_POLICIES:
+    if (
+        not isinstance(allowed_actions, str)
+        or allowed_actions not in ALLOWED_ACTION_POLICIES
+    ):
         raise InspectionError(
             "GitHub Actions permissions response has an invalid 'allowed_actions' value."
         )
@@ -2997,7 +3004,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         selected_policy = selected_actions_policy(
             client.json(f"repos/{owner}/{repo}/actions/permissions/selected-actions")
         )
-        if visibility not in {"public", "private", "internal"}:
+        if not isinstance(visibility, str) or visibility not in {
+            "public",
+            "private",
+            "internal",
+        }:
             raise InspectionError(
                 "Repository response has an invalid visibility value."
             )

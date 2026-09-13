@@ -438,6 +438,16 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 workflow_installation_preflight.run(
                     arguments(require_external_actions=True)
                 )
+        repository_response["visibility"] = []
+        with mock.patch.object(
+            workflow_installation_preflight, "GitHubClient", FakeClient
+        ):
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError, "invalid visibility"
+            ):
+                workflow_installation_preflight.run(
+                    arguments(require_external_actions=True)
+                )
 
     def test_blocks_issue_dependent_assets_when_issues_are_disabled(self) -> None:
         self.configure(issues_enabled=False)
@@ -1553,8 +1563,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ({"inputs": {"mode": {"unknown": "value"}}}, False),
             ({"inputs": {"mode": {"description": []}}}, False),
             ({"inputs": {"mode": {"required": True}}}, False),
+            ({"inputs": {"mode": {"required": []}}}, False),
             ({"inputs": {"mode": {"required": "maybe"}}}, False),
             ({"inputs": {"mode": {"type": "invalid"}}}, False),
+            ({"inputs": {"mode": {"type": []}}}, False),
             ({"inputs": {"mode": {"default": []}}}, False),
             ({"inputs": {"mode": {"type": "choice"}}}, False),
             ({"inputs": {"mode": {"type": "choice", "options": []}}}, False),
@@ -3187,6 +3199,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "permissions": {"contents": "read", "issues": "write"},
                 "jobs": {"audit": {"permissions": {"actions": "read"}}},
             },
+            {
+                "permissions": {"contents": "read", "issues": "write"},
+                "jobs": {"audit": {"permissions": {"contents": []}}},
+            },
         )
         for document in permission_documents:
             with self.subTest(document=document):
@@ -4791,6 +4807,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ([], "permissions response is invalid"),
             ({"enabled": "yes", "allowed_actions": "all"}, "'enabled'"),
             ({"enabled": True, "allowed_actions": "unknown"}, "'allowed_actions'"),
+            ({"enabled": True, "allowed_actions": []}, "'allowed_actions'"),
+            ({"enabled": True, "allowed_actions": {}}, "'allowed_actions'"),
         ]:
             with self.subTest(permissions=permissions):
                 FakeClient.responses["repos/octo/example/actions/permissions"] = (
