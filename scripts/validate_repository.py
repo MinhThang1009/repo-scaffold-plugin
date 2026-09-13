@@ -1734,17 +1734,22 @@ def has_repository_root_working_directory(document: dict[str, Any]) -> bool:
 def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
     """Require direct, container-free freshness jobs for inspection."""
     jobs = document.get("jobs", {})
-    return (
-        isinstance(jobs, dict)
-        and bool(jobs)
-        and all(
-            isinstance(job, dict)
-            and "uses" not in job
-            and "container" not in job
-            and "services" not in job
-            for job in jobs.values()
-        )
-    )
+    if not isinstance(jobs, dict) or not jobs:
+        return False
+    for job in jobs.values():
+        if (
+            not isinstance(job, dict)
+            or "uses" in job
+            or "container" in job
+            or "services" in job
+        ):
+            return False
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            return False
+        if not steps and set(job) != {"steps"}:
+            return False
+    return True
 
 
 def has_freshness_repository_context(document: dict[str, Any]) -> bool:

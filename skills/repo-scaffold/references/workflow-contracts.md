@@ -96,6 +96,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   `python-version: 3.x`. Both preparation actions must appear exactly once,
   before exactly three canonical run steps (audit, summary, and
   reconciliation), so the checker has its repository files and Python runtime.
+  Any auxiliary direct job must be an inert `steps: []` mapping with no execution
+  configuration.
   Any
   repository, ref, path, token, cache, or other input override must fail closed.
   The job summary must publish only the checked Markdown report with

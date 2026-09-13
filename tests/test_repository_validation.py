@@ -9176,12 +9176,26 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 }
             )
         )
+        for document in (
+            {},
+            {"jobs": []},
+            {"jobs": {"audit": {}}},
+            {"jobs": {"audit": {"steps": {}}}},
+        ):
+            with self.subTest(invalid_direct_jobs=document):
+                self.assertFalse(
+                    validate_repository.has_direct_freshness_jobs(document)
+                )
         for execution_field, execution_value in (
             ("container", "evil@sha256:" + "a" * 64),
             (
                 "services",
                 {"database": {"image": "evil@sha256:" + "b" * 64}},
             ),
+            ("runs-on", "self-hosted"),
+            ("strategy", {"matrix": {"item": ["one", "two"]}}),
+            ("environment", "production"),
+            ("name", "hidden"),
         ):
             with self.subTest(hidden_execution_field=execution_field):
                 self.assertFalse(
@@ -9890,6 +9904,10 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "services",
                 {"database": {"image": "evil@sha256:" + "b" * 64}},
             ),
+            ("runs-on", "self-hosted"),
+            ("strategy", {"matrix": {"item": ["one", "two"]}}),
+            ("environment", "production"),
+            ("name", "hidden"),
         ):
             with self.subTest(hidden_execution_field=execution_field):
                 workflow_with_execution = validate_repository.load_yaml_text(

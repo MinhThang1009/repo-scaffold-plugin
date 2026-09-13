@@ -2965,12 +2965,26 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 }
             )
         )
+        for document in (
+            {},
+            {"jobs": []},
+            {"jobs": {"audit": {}}},
+            {"jobs": {"audit": {"steps": {}}}},
+        ):
+            with self.subTest(invalid_direct_jobs=document):
+                self.assertFalse(
+                    workflow_installation_preflight.has_direct_freshness_jobs(document)
+                )
         for execution_field, execution_value in (
             ("container", "evil@sha256:" + "a" * 64),
             (
                 "services",
                 {"database": {"image": "evil@sha256:" + "b" * 64}},
             ),
+            ("runs-on", "self-hosted"),
+            ("strategy", {"matrix": {"item": ["one", "two"]}}),
+            ("environment", "production"),
+            ("name", "hidden"),
         ):
             with self.subTest(hidden_execution_field=execution_field):
                 self.assertFalse(
@@ -3880,6 +3894,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "    services:\n      database:\n        image: evil@sha256:"
             + "b" * 64
             + "\n    steps: []\n",
+            "    runs-on: self-hosted\n    steps: []\n",
+            "    strategy:\n      matrix:\n        item: [one, two]\n    steps: []\n",
         ):
             with self.subTest(hidden_execution=execution_text):
                 self.assertFalse(
