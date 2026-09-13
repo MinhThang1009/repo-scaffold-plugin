@@ -691,6 +691,23 @@ def is_project_path(path: Path, repository_root: Path) -> bool:
     return not any(part in CACHE_DIRECTORIES for part in relative.parts)
 
 
+def is_safe_local_action_reference(reference: object) -> bool:
+    """Return whether a local action path stays within the checked-out repository."""
+    if not isinstance(reference, str) or not reference.startswith("./"):
+        return False
+    relative = reference[2:]
+    path = PurePosixPath(relative)
+    return (
+        bool(relative)
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and "\\" not in reference
+        and not any(ord(character) < 0x20 for character in reference)
+        and not any(PureWindowsPath(part).drive for part in path.parts)
+        and path.as_posix() == relative
+    )
+
+
 def is_link_or_reparse(path: Path) -> bool:
     """Return whether an existing path is a symlink or Windows reparse point."""
     try:
@@ -3218,6 +3235,11 @@ def validate_action_references(repository_root: Path) -> list[str]:
                 problems.append(f"{relative}: uses must be a nonempty string")
                 continue
             if reference.startswith("./"):
+                if not is_safe_local_action_reference(reference):
+                    problems.append(
+                        f"{relative}: local action reference must be a safe "
+                        f"repository-relative path: {reference}"
+                    )
                 continue
             if reference.startswith("docker://"):
                 if CONTAINER_IMAGE_REFERENCE_PATTERN.fullmatch(reference):

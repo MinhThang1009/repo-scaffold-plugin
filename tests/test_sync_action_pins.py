@@ -1332,6 +1332,34 @@ class ActionPinSyncTests(unittest.TestCase):
             ),
             set(),
         )
+        for reference in ("./../outside-action", "./nested/../outside-action", "./"):
+            with self.subTest(reference=reference):
+                with self.assertRaisesRegex(
+                    ValueError, "safe repository-relative path"
+                ):
+                    sync_action_pins.auditable_action_repositories(
+                        path, f"  - uses: {reference}\n"
+                    )
+        with self.assertRaisesRegex(ValueError, "safe repository-relative path"):
+            sync_action_pins.auditable_action_repositories(
+                path, "  - uses: ./nested\\outside-action\n"
+            )
+
+    def test_local_action_reference_validation_is_canonical(self) -> None:
+        for reference, expected in (
+            ("./local-action", True),
+            ("./nested/action", True),
+            ("actions/checkout@" + "a" * 40, False),
+            ("./../outside-action", False),
+            ("./nested/../outside-action", False),
+            ("./nested\\outside-action", False),
+            ("./nested\x00outside-action", False),
+        ):
+            with self.subTest(reference=reference):
+                self.assertEqual(
+                    sync_action_pins.is_safe_local_action_reference(reference),
+                    expected,
+                )
 
     def test_action_repositories_reject_alias_mapping_keys(self) -> None:
         path = Path("workflow.yml")

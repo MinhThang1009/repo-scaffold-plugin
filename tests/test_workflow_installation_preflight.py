@@ -4603,6 +4603,20 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ):
                 workflow_installation_preflight.workflow_capabilities([caller])
 
+    def test_unsafe_local_action_references_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            caller = root / "caller.yml"
+            caller.write_text(
+                "jobs:\n  test:\n    steps:\n      - uses: ./../outside-action\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "safe repository-relative path",
+            ):
+                workflow_installation_preflight.workflow_capabilities([caller])
+
     def test_duplicate_workflow_input_names_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
