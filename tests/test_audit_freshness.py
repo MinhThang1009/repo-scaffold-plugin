@@ -1034,6 +1034,9 @@ class FreshnessTests(unittest.TestCase):
                 "docs//README.md",
                 "C:/README.md",
                 "docs/C:README.md",
+                "docs/\x00README.md",
+                "docs/\nREADME.md",
+                "docs/\tREADME.md",
             ):
                 with (
                     self.subTest(value=value),
@@ -1175,6 +1178,22 @@ class FreshnessTests(unittest.TestCase):
                         freshness.load_trackers(
                             root, freshness.DEFAULT_TRACKER_REGISTRY
                         )
+
+    def test_control_character_tracker_path_is_indeterminate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            registry = root / freshness.DEFAULT_TRACKER_REGISTRY
+            document = json.loads(registry.read_text(encoding="utf-8"))
+            document["requirement-sources"][0]["path"] = "requirements-\x00.in"
+            registry.write_text(json.dumps(document), encoding="utf-8")
+
+            report = freshness.audit(root, "synthetic-token")
+
+        self.assertEqual(report["status"], "indeterminate")
+        self.assertTrue(
+            any("safe relative path" in error for error in report["errors"])
+        )
 
     def test_action_and_audit_registry_error_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
