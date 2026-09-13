@@ -649,6 +649,19 @@ class FreshnessTests(unittest.TestCase):
                 ),
                 (),
             )
+            with (
+                mock.patch.object(
+                    freshness.os.path,
+                    "lexists",
+                    side_effect=OSError("permission denied"),
+                ),
+                self.assertRaisesRegex(
+                    freshness.AuditError, "could not inspect optional"
+                ),
+            ):
+                freshness.existing_optional_paths(
+                    root, trackers.optional_release_please_configs
+                )
             self.assertEqual(freshness.ci_toolchain_findings(root, ()), [])
             self.assertEqual(
                 freshness.existing_optional_paths(
@@ -737,6 +750,17 @@ class FreshnessTests(unittest.TestCase):
                     freshness.subprocess,
                     "run",
                     side_effect=subprocess.TimeoutExpired("checker", 60),
+                ),
+                self.assertRaisesRegex(freshness.AuditError, "could not run"),
+            ):
+                freshness.ci_toolchain_findings(root, trackers.ci_toolchain_policies)
+            with (
+                mock.patch.object(
+                    freshness.subprocess,
+                    "run",
+                    side_effect=UnicodeDecodeError(
+                        "utf-8", b"\xff", 0, 1, "invalid output"
+                    ),
                 ),
                 self.assertRaisesRegex(freshness.AuditError, "could not run"),
             ):

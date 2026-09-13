@@ -477,7 +477,12 @@ def release_please_findings(
 
 def existing_optional_paths(root: Path, paths: tuple[Path, ...]) -> tuple[Path, ...]:
     """Return opted-in optional paths that exist without hiding unsafe entries."""
-    return tuple(path for path in paths if os.path.lexists(root / path))
+    try:
+        return tuple(path for path in paths if os.path.lexists(root / path))
+    except (OSError, ValueError) as error:
+        raise AuditError(
+            f"could not inspect optional freshness paths: {error}"
+        ) from error
 
 
 def ci_toolchain_findings(
@@ -507,7 +512,7 @@ def ci_toolchain_findings(
                 text=True,
                 timeout=60,
             )
-        except (OSError, subprocess.TimeoutExpired) as cause:
+        except (OSError, UnicodeError, subprocess.TimeoutExpired) as cause:
             issue = AuditError(
                 f"CI toolchain audit could not run for {relative}: {cause}"
             )
