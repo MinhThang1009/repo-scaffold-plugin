@@ -9200,7 +9200,10 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 }
             )
         )
-        working_directory_documents: tuple[dict[str, Any], ...] = (
+        working_directory_documents: tuple[object, ...] = (
+            None,
+            [],
+            False,
             {},
             {"jobs": []},
             {"jobs": {"audit": []}},
@@ -9236,6 +9239,9 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             )
         )
         for document in (
+            None,
+            [],
+            False,
             {},
             {"jobs": []},
             {"jobs": {"audit": {}}},
@@ -9281,6 +9287,9 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             )
         )
         for document in (
+            None,
+            [],
+            False,
             {"jobs": []},
             {"jobs": {"audit": []}},
             {"jobs": {"audit": {"env": []}}},

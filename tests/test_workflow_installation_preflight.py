@@ -2999,7 +2999,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 }
             )
         )
-        working_directory_documents: tuple[dict[str, Any], ...] = (
+        working_directory_documents: tuple[object, ...] = (
+            None,
+            [],
+            False,
             {},
             {"jobs": []},
             {"jobs": {"audit": []}},
@@ -3037,6 +3040,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
         )
         for document in (
+            None,
+            [],
+            False,
             {},
             {"jobs": []},
             {"jobs": {"audit": {}}},
@@ -3082,6 +3088,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
         )
         for document in (
+            None,
+            [],
+            False,
             {"jobs": []},
             {"jobs": {"audit": []}},
             {"jobs": {"audit": {"env": []}}},
@@ -3115,6 +3124,18 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "gh issue create -- --repo r --title t --body-file report.md"
             )
         )
+        for document in (None, [], False):
+            with self.subTest(invalid_freshness_document=document):
+                self.assertFalse(
+                    workflow_installation_preflight.has_repository_scoped_concurrency(
+                        document
+                    )
+                )
+                self.assertFalse(
+                    workflow_installation_preflight.has_least_privileged_freshness_permissions(
+                        document
+                    )
+                )
         for tokens, expected in (
             (["gh", "api", "repos/example/issues"], False),
             (["/usr/bin/gh", "api", "repos/example/issues", "-f", "title=x"], True),

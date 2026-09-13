@@ -363,6 +363,10 @@ def action_findings(
     errors: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Compare action pins without letting one upstream outage hide other drift."""
+    # ``sync_action_pins.workflow_paths`` normalizes its root before returning
+    # absolute workflow paths. Keep the display root in the same form so a
+    # library caller using ``Path('.')`` cannot trigger ``relative_to`` errors.
+    root = Path(os.path.abspath(root))
     findings: list[dict[str, str]] = []
     releases: dict[str, sync_action_pins.ActionRelease] = {}
     failed_releases: set[str] = set()

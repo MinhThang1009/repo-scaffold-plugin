@@ -1752,6 +1752,8 @@ def has_directory_change_command(tokens: list[str]) -> bool:
 
 def has_repository_root_working_directory(document: dict[str, Any]) -> bool:
     """Require every freshness run step to inherit the repository root directory."""
+    if not isinstance(document, dict):
+        return False
     scopes: list[Any] = [document]
     jobs = document.get("jobs", {})
     if not isinstance(jobs, dict) or not jobs:
@@ -1788,6 +1790,8 @@ def has_repository_root_working_directory(document: dict[str, Any]) -> bool:
 
 def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
     """Require direct, container-free freshness jobs for inspection."""
+    if not isinstance(document, dict):
+        return False
     jobs = document.get("jobs", {})
     if not isinstance(jobs, dict) or not jobs:
         return False
@@ -1809,6 +1813,8 @@ def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
 
 def has_freshness_repository_context(document: dict[str, Any]) -> bool:
     """Reject workflow overrides of the runner's current repository variable."""
+    if not isinstance(document, dict):
+        return False
     jobs = document.get("jobs", {})
     if not isinstance(jobs, dict) or not jobs:
         return False

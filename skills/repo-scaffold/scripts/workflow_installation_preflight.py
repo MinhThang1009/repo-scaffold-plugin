@@ -792,6 +792,8 @@ def has_directory_change_command(tokens: list[str]) -> bool:
 
 def has_repository_root_working_directory(document: dict[str, Any]) -> bool:
     """Require every freshness run step to inherit the repository root directory."""
+    if not isinstance(document, dict):
+        return False
     scopes: list[Any] = [document]
     jobs = document.get("jobs", {})
     if not isinstance(jobs, dict) or not jobs:
@@ -1778,6 +1780,8 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
 
 def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
     """Require direct, container-free freshness jobs for inspection."""
+    if not isinstance(document, dict):
+        return False
     jobs = document.get("jobs", {})
     if not isinstance(jobs, dict) or not jobs:
         return False
@@ -1799,6 +1803,8 @@ def has_direct_freshness_jobs(document: dict[str, Any]) -> bool:
 
 def has_freshness_repository_context(document: dict[str, Any]) -> bool:
     """Reject workflow overrides of the runner's current repository variable."""
+    if not isinstance(document, dict):
+        return False
     jobs = document.get("jobs", {})
     if not isinstance(jobs, dict) or not jobs:
         return False
@@ -2406,6 +2412,8 @@ def has_freshness_audit_invocation(command: str) -> bool:
 
 def has_repository_scoped_concurrency(document: dict[str, Any]) -> bool:
     """Require reminder runs to serialize shared repository Issue state."""
+    if not isinstance(document, dict):
+        return False
     concurrency = document.get("concurrency")
     return (
         isinstance(concurrency, dict)
@@ -2416,6 +2424,8 @@ def has_repository_scoped_concurrency(document: dict[str, Any]) -> bool:
 
 def has_least_privileged_freshness_permissions(document: dict[str, Any]) -> bool:
     """Allow only read-only contents and Issue-write permissions for reminders."""
+    if not isinstance(document, dict):
+        return False
     if document.get("permissions") != {"contents": "read", "issues": "write"}:
         return False
     jobs = document.get("jobs", {})

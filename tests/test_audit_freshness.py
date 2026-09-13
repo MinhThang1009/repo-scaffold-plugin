@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import runpy
 import subprocess
 import sys
@@ -221,6 +222,31 @@ class FreshnessTests(unittest.TestCase):
                 ),
                 [],
             )
+
+    def test_action_findings_normalizes_relative_repository_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            relative_root = Path(os.path.relpath(root, Path.cwd()))
+
+            findings = freshness.action_findings(
+                relative_root,
+                trackers.workflow_directories,
+                lambda _repository: release("v2.0.0", "b" * 40),
+            )
+
+        self.assertEqual(
+            {
+                finding["path"]
+                for finding in findings
+                if finding["kind"] == "action-pin"
+            },
+            {
+                ".github/workflows/ci.yml",
+                "skills/repo-scaffold/assets/workflows/ci.yml",
+            },
+        )
 
     def test_action_findings_accepts_project_actions_outside_sync_allowlist(
         self,
