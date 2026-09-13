@@ -7829,6 +7829,13 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                             document, original
                         )
                     )
+            candidate = original + "\n      - name: Extra\n        run: printf extra\n"
+            document = validate_repository.load_yaml_text(candidate)
+            self.assertFalse(
+                validate_repository.has_freshness_job_reconciliation(
+                    document, candidate
+                )
+            )
 
     def copy_contract(self, root: Path) -> None:
         relative_paths = (
@@ -10425,6 +10432,10 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
 
     def test_freshness_defensive_helpers_and_workflow_shapes_fail_closed(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        contract_workflow = validate_repository.load_yaml_text(
+            workflow_path.read_text(encoding="utf-8")
+        )
         action_step_cases: tuple[object, ...] = (
             None,
             {},
@@ -10484,6 +10495,25 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertFalse(
             validate_repository.freshness_action_steps_are_safe(
                 [{"uses": None, "run": "printf x"}]
+            )
+        )
+        preparation_with_noop = preparation_with_run[:2] + [{"name": "noop"}]
+        self.assertFalse(
+            validate_repository.freshness_action_steps_are_safe(preparation_with_noop)
+        )
+        preparation_with_null_run = preparation_with_run[:2] + [{"run": None}]
+        self.assertFalse(
+            validate_repository.freshness_action_steps_are_safe(
+                preparation_with_null_run
+            )
+        )
+        contract_steps = contract_workflow["jobs"]["audit"]["steps"]
+        self.assertTrue(
+            validate_repository.freshness_action_steps_are_safe(contract_steps)
+        )
+        self.assertFalse(
+            validate_repository.freshness_action_steps_are_safe(
+                [*contract_steps, {"run": "printf extra"}]
             )
         )
 

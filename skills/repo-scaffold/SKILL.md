@@ -255,7 +255,8 @@ non-Bash runner or shell overrides, workflow/job containers, and services are
 rejected. Its reviewed checkout and Python setup actions must retain the
 canonical full-SHA references and inputs, `persist-credentials: false` and
 `python-version: 3.x`. Both preparation actions must appear exactly once,
-before any run step, so the checker has its repository files and Python runtime.
+before exactly three canonical run steps (audit, summary, and
+reconciliation), so the checker has its repository files and Python runtime.
 Any
 repository, ref, path, token, cache, or other input override is rejected.
 The job summary must publish only the checked Markdown report with

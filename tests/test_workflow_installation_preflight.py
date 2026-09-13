@@ -104,6 +104,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                             path,
                         )
                     )
+            candidate = original + "\n      - name: Extra\n        run: printf extra\n"
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    candidate, path
+                )
+            )
 
     def test_freshness_expansions_require_complete_variable_names(self) -> None:
         path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
@@ -3982,6 +3988,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
 
     def test_freshness_defensive_helpers_and_workflow_shapes_fail_closed(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        contract_workflow = workflow_installation_preflight.workflow_document(
+            workflow_path.read_text(encoding="utf-8"), workflow_path
+        )
         action_step_cases: tuple[object, ...] = (
             None,
             {},
@@ -4053,6 +4063,29 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertFalse(
             workflow_installation_preflight.freshness_action_steps_are_safe(
                 [{"uses": None, "run": "printf x"}]
+            )
+        )
+        preparation_with_noop = preparation_with_run[:2] + [{"name": "noop"}]
+        self.assertFalse(
+            workflow_installation_preflight.freshness_action_steps_are_safe(
+                preparation_with_noop
+            )
+        )
+        preparation_with_null_run = preparation_with_run[:2] + [{"run": None}]
+        self.assertFalse(
+            workflow_installation_preflight.freshness_action_steps_are_safe(
+                preparation_with_null_run
+            )
+        )
+        contract_steps = contract_workflow["jobs"]["audit"]["steps"]
+        self.assertTrue(
+            workflow_installation_preflight.freshness_action_steps_are_safe(
+                contract_steps
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_action_steps_are_safe(
+                [*contract_steps, {"run": "printf extra"}]
             )
         )
 

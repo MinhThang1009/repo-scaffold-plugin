@@ -150,6 +150,7 @@ FRESHNESS_AUDIT_TRACKER_REGISTRY = ".github/freshness-trackers.json"
 FRESHNESS_ALLOWED_ACTION_REPOSITORIES = frozenset(
     {"actions/checkout", "actions/setup-python"}
 )
+FRESHNESS_CANONICAL_RUN_STEP_COUNT = 3
 FRESHNESS_ACTION_REFERENCE_PATTERN = re.compile(
     r"(?:actions/checkout|actions/setup-python)@[0-9a-f]{40}\Z", re.IGNORECASE
 )
@@ -913,17 +914,23 @@ def freshness_execution_context_is_bash(workflow: object, job: object) -> bool:
 
 
 def freshness_action_steps_are_safe(steps: object) -> bool:
-    """Require each reviewed preparation action once before any run step."""
+    """Require reviewed preparation actions and the canonical run-step count."""
     if not isinstance(steps, list):
         return False
     prepared: set[str] = set()
+    run_step_count = 0
     for step in steps:
         if not isinstance(step, dict):
             return False
         uses = step.get("uses")
         if uses is None:
-            if "uses" in step or prepared != FRESHNESS_ALLOWED_ACTION_REPOSITORIES:
+            if (
+                "uses" in step
+                or not isinstance(step.get("run"), str)
+                or prepared != FRESHNESS_ALLOWED_ACTION_REPOSITORIES
+            ):
                 return False
+            run_step_count += 1
             continue
         if "run" in step:
             return False
@@ -941,7 +948,10 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
         if step.get("with") != FRESHNESS_ALLOWED_ACTION_INPUTS[repository]:
             return False
         prepared.add(repository)
-    return prepared == FRESHNESS_ALLOWED_ACTION_REPOSITORIES
+    return (
+        prepared == FRESHNESS_ALLOWED_ACTION_REPOSITORIES
+        and run_step_count == FRESHNESS_CANONICAL_RUN_STEP_COUNT
+    )
 
 
 def freshness_authentication_bindings_are_safe(workflow: object, job: object) -> bool:
