@@ -22,6 +22,7 @@ import sync_action_pins
 
 PYPI_ROOT = "https://pypi.org/pypi"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
@@ -386,7 +387,13 @@ def action_findings(
             continue
         for path in workflow_paths:
             try:
-                text = path.read_text(encoding="utf-8")
+                with path.open("rb") as stream:
+                    raw = stream.read(MAX_WORKFLOW_BYTES + 1)
+                if len(raw) > MAX_WORKFLOW_BYTES:
+                    raise OSError(
+                        f"workflow exceeds the {MAX_WORKFLOW_BYTES}-byte safety cap"
+                    )
+                text = raw.decode("utf-8")
                 sync_action_pins.auditable_action_repositories(path, text)
                 matches = sync_action_pins.action_pin_matches(text)
             except (OSError, UnicodeError, ValueError) as cause:

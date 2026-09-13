@@ -223,6 +223,19 @@ class FreshnessTests(unittest.TestCase):
                 [],
             )
 
+    def test_action_findings_bound_workflow_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with mock.patch.object(freshness, "MAX_WORKFLOW_BYTES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "safety cap"):
+                    freshness.action_findings(
+                        root,
+                        trackers.workflow_directories,
+                        lambda _repository: release("v1.0.0", "a" * 40),
+                    )
+
     def test_action_findings_normalizes_relative_repository_roots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
