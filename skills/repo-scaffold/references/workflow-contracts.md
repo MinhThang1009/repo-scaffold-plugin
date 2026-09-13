@@ -14,6 +14,9 @@ workflow-installation preflight rejects mutable container tags.
 Docker container actions are external action requirements, and selected policy
 approval fails closed unless the reference is explicitly representable and
 allowed.
+Selected-actions preflight must follow GitHub's validated `selected_actions_url`
+so organization and enterprise policy overrides cannot be replaced by a more
+permissive repository endpoint.
 Local reusable-workflow calls must be supplied from the same workflow directory
 as their caller; a matching basename from another directory is ambiguous.
 Each supplied called workflow must declare `workflow_call`, and local call loops

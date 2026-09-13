@@ -2948,6 +2948,30 @@ def actions_permissions(document: Any) -> tuple[bool, str]:
     return enabled, allowed_actions
 
 
+SELECTED_ACTIONS_URL_PATTERN = re.compile(
+    r"https://api\.github\.com/(?P<endpoint>"
+    r"(?:repositories/[1-9][0-9]*|organizations/[1-9][0-9]*|"
+    r"enterprises/[A-Za-z0-9_.-]+)/actions/permissions/selected-actions)\Z"
+)
+
+
+def selected_actions_endpoint(document: Any) -> str:
+    """Return the trusted selected-actions endpoint advertised by GitHub."""
+    if not isinstance(document, dict):
+        raise InspectionError("Selected Actions policy response is invalid.")
+    value = document.get("selected_actions_url")
+    match = (
+        SELECTED_ACTIONS_URL_PATTERN.fullmatch(value)
+        if isinstance(value, str)
+        else None
+    )
+    if match is None:
+        raise InspectionError(
+            "Selected Actions policy response has an invalid selected-actions URL."
+        )
+    return match.group("endpoint")
+
+
 def selected_actions_policy(document: Any) -> dict[str, bool | list[str]]:
     """Validate the effective selected-actions response from GitHub."""
     if not isinstance(document, dict):
@@ -3177,14 +3201,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     requires_issues = args.require_issues or bool(detected_issue_workflows)
 
-    actions_enabled, allowed_actions = actions_permissions(
-        client.json(f"repos/{owner}/{repo}/actions/permissions")
+    actions_permissions_response = client.json(
+        f"repos/{owner}/{repo}/actions/permissions"
     )
+    actions_enabled, allowed_actions = actions_permissions(actions_permissions_response)
     selected_policy: dict[str, bool | list[str]] | None = None
     unapproved_action_references: list[str] = []
     if actions_enabled and requires_external_actions and allowed_actions == "selected":
         selected_policy = selected_actions_policy(
-            client.json(f"repos/{owner}/{repo}/actions/permissions/selected-actions")
+            client.json(selected_actions_endpoint(actions_permissions_response))
         )
         if not isinstance(visibility, str) or visibility not in {
             "public",

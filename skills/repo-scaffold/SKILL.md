@@ -180,8 +180,9 @@ policy cannot approve an unlisted container reference. Do not install an asset
 while Actions is disabled,
 while its policy forbids external actions, or until a selected-actions policy has
 been verified against every exact action reference. When the policy is
-`selected`, pass every candidate asset with `--workflow`; the preflight retrieves
-the effective allowlist and fails closed unless each pinned `uses:` reference is
+`selected`, pass every candidate asset with `--workflow`; the preflight follows
+GitHub's advertised selected-actions endpoint, including organization or
+enterprise overrides, and fails closed unless each pinned `uses:` reference is
 allowed. It also derives external-action and issue-workflow requirements from
 every `--workflow` input, so a missing flag cannot bypass those checks. This
 preflight accepts pattern matches only for public repositories,

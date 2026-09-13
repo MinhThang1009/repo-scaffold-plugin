@@ -57,6 +57,8 @@ class FakeClient:
 
     def json(self, endpoint: str) -> object:
         self.request_count += 1
+        if endpoint == "repositories/42/actions/permissions/selected-actions":
+            endpoint = "repos/octo/example/actions/permissions/selected-actions"
         return self.responses[endpoint]
 
 
@@ -205,6 +207,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "repos/octo/example/actions/permissions": {
                 "enabled": actions_enabled,
                 "allowed_actions": allowed_actions,
+                "selected_actions_url": (
+                    "https://api.github.com/repositories/42/actions/permissions/"
+                    "selected-actions"
+                ),
             },
         }
 
@@ -292,6 +298,86 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ["octo/unapproved@cccccccccccccccccccccccccccccccccccccccc"],
         )
         self.assertEqual(result["github_api_requests"], 3)
+
+    def test_uses_selected_actions_endpoint_advertised_by_github(self) -> None:
+        self.configure(allowed_actions="selected")
+        repository_permissions = FakeClient.responses[
+            "repos/octo/example/actions/permissions"
+        ]
+        assert isinstance(repository_permissions, dict)
+        repository_permissions["selected_actions_url"] = (
+            "https://api.github.com/organizations/42/actions/permissions/"
+            "selected-actions"
+        )
+        FakeClient.responses[
+            "repos/octo/example/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": False,
+            "verified_allowed": False,
+            "patterns_allowed": ["octo/allowed@*"],
+        }
+        FakeClient.responses[
+            "organizations/42/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": False,
+            "verified_allowed": False,
+            "patterns_allowed": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text(
+                "steps:\n"
+                "  - uses: octo/allowed@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(require_external_actions=True, workflow=[workflow])
+                )
+        self.assertEqual(
+            result["decision"], "allow-selected-actions-before-installing-workflows"
+        )
+        self.assertFalse(result["external_actions_verified"])
+        self.assertEqual(
+            result["unapproved_action_references"],
+            ["octo/allowed@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        )
+        self.assertEqual(result["github_api_requests"], 3)
+
+    def test_selected_actions_endpoint_rejects_untrusted_urls(self) -> None:
+        with self.assertRaisesRegex(
+            workflow_installation_preflight.InspectionError,
+            "policy response is invalid",
+        ):
+            workflow_installation_preflight.selected_actions_endpoint([])
+        for value in (
+            None,
+            "https://evil.example/organizations/42/actions/permissions/selected-actions",
+            "https://api.github.com/organizations/42/actions/permissions/selected-actions?x=1",
+            "https://api.github.com/organizations/0/actions/permissions/selected-actions",
+            "https://api.github.com/repos/octo/example/actions/permissions/selected-actions",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError,
+                    "selected-actions URL",
+                ):
+                    workflow_installation_preflight.selected_actions_endpoint(
+                        {"selected_actions_url": value}
+                    )
+        self.assertEqual(
+            workflow_installation_preflight.selected_actions_endpoint(
+                {
+                    "selected_actions_url": (
+                        "https://api.github.com/enterprises/acme-1/actions/permissions/"
+                        "selected-actions"
+                    )
+                }
+            ),
+            "enterprises/acme-1/actions/permissions/selected-actions",
+        )
 
     def test_approves_selected_policy_only_after_exact_workflow_comparison(
         self,
