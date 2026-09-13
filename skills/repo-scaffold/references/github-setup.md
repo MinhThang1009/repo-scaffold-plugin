@@ -292,6 +292,8 @@ calls are rejected before the action policy can be approved. The called input
 must come from the same workflow directory as its caller; a matching basename
 from another directory is ambiguous and is rejected. The supplied called
 workflow must declare `workflow_call`, and local call loops are rejected.
+The supplied local call graph must also stay within GitHub's 10 workflow levels
+and 50 unique nested workflows per top-level caller.
 For any supplied `pull_request` workflow with a write permission, it also
 requires `--confirm-pull-request-write-tokens`. Before passing that flag,
 verify the repository Actions setting **Send write tokens to workflows from

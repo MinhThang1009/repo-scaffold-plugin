@@ -27,6 +27,8 @@ import sync_action_pins
 
 
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
+MAX_LOCAL_REUSABLE_WORKFLOW_LEVELS = 10
+MAX_LOCAL_REUSABLE_WORKFLOWS_PER_CALLER = 50
 CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION = 3
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
@@ -2610,6 +2612,39 @@ def local_reusable_workflow_graph_is_acyclic(
     return all(visit(workflow) for workflow in edges)
 
 
+def local_reusable_workflow_limits_are_safe(
+    edges: dict[Path, tuple[Path, ...]],
+) -> bool:
+    """Enforce GitHub's local reusable-workflow depth and fan-out limits."""
+    if not local_reusable_workflow_graph_is_acyclic(edges):
+        return False
+    incoming = {
+        called_workflow
+        for called_workflows in edges.values()
+        for called_workflow in called_workflows
+    }
+    roots = [workflow for workflow in edges if workflow not in incoming]
+    for root in roots:
+        best_depth: dict[Path, int] = {root: 1}
+        reachable: set[Path] = {root}
+        pending: list[tuple[Path, int]] = [(root, 1)]
+        while pending:
+            workflow, depth = pending.pop()
+            if depth > MAX_LOCAL_REUSABLE_WORKFLOW_LEVELS:
+                return False
+            if depth < best_depth.get(workflow, 0):
+                continue
+            for called_workflow in edges.get(workflow, ()):
+                reachable.add(called_workflow)
+                if len(reachable) - 1 > MAX_LOCAL_REUSABLE_WORKFLOWS_PER_CALLER:
+                    return False
+                next_depth = depth + 1
+                if next_depth > best_depth.get(called_workflow, 0):
+                    best_depth[called_workflow] = next_depth
+                    pending.append((called_workflow, next_depth))
+    return True
+
+
 def requires_issue_write(text: str, source: Path) -> bool:
     """Inspect YAML permission fields without treating comments or scripts as policy."""
     document = workflow_document(text, source)
@@ -3008,6 +3043,10 @@ def workflow_capabilities(
         local_workflow_edges[workflow] = tuple(called_workflows)
     if not local_reusable_workflow_graph_is_acyclic(local_workflow_edges):
         raise InspectionError("Local reusable workflow calls must not contain cycles.")
+    if not local_reusable_workflow_limits_are_safe(local_workflow_edges):
+        raise InspectionError(
+            "Local reusable workflow calls exceed GitHub's depth or count limits."
+        )
     for workflow in workflows:
         text = workflow_texts[workflow]
         try:

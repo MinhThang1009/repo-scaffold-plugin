@@ -4806,6 +4806,79 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 {first: (second,), second: (first,)}
             )
         )
+        self.assertTrue(
+            workflow_installation_preflight.local_reusable_workflow_limits_are_safe(
+                {first: (second,), second: ()}
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.local_reusable_workflow_limits_are_safe(
+                {first: (shared, second), second: (shared,), shared: ()}
+            )
+        )
+        third = Path("third")
+        self.assertTrue(
+            workflow_installation_preflight.local_reusable_workflow_limits_are_safe(
+                {
+                    first: (second, third),
+                    second: (shared,),
+                    third: (shared,),
+                    shared: (),
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.local_reusable_workflow_limits_are_safe(
+                {first: (first,)}
+            )
+        )
+
+    def test_local_reusable_workflow_limits_reject_deep_and_wide_graphs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            depth = workflow_installation_preflight.MAX_LOCAL_REUSABLE_WORKFLOW_LEVELS
+            files = [root / f"depth-{index}.yml" for index in range(depth + 1)]
+            for index, path in enumerate(files):
+                next_job = (
+                    f"  call:\n    uses: ./.github/workflows/{files[index + 1].name}\n"
+                    if index + 1 < len(files)
+                    else "  done:\n    runs-on: ubuntu-latest\n    steps: []\n"
+                )
+                path.write_text(
+                    f"on: workflow_call\njobs:\n{next_job}", encoding="utf-8"
+                )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "depth or count limits",
+            ):
+                workflow_installation_preflight.workflow_capabilities(files)
+
+            count = (
+                workflow_installation_preflight.MAX_LOCAL_REUSABLE_WORKFLOWS_PER_CALLER
+                + 1
+            )
+            root_workflow = root / "wide-root.yml"
+            children = [root / f"wide-{index}.yml" for index in range(count)]
+            uses = "".join(
+                f"  call-{index}:\n    uses: ./.github/workflows/{child.name}\n"
+                for index, child in enumerate(children)
+            )
+            root_workflow.write_text(
+                f"on: workflow_call\njobs:\n{uses}", encoding="utf-8"
+            )
+            for child in children:
+                child.write_text(
+                    "on: workflow_call\njobs:\n"
+                    "  done:\n    runs-on: ubuntu-latest\n    steps: []\n",
+                    encoding="utf-8",
+                )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "depth or count limits",
+            ):
+                workflow_installation_preflight.workflow_capabilities(
+                    [root_workflow, *children]
+                )
 
     def test_unsafe_local_action_references_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
