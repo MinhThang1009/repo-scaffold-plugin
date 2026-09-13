@@ -146,12 +146,16 @@ def is_canonical_allowlist_path(value: object) -> bool:
 def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
     """Resolve a configured path only when it remains inside the repository."""
     path = root / relative
-    if sync_action_pins._path_has_link_or_reparse(path, root):
+    try:
+        unsafe_boundary = sync_action_pins._path_has_link_or_reparse(path, root)
+    except (OSError, UnicodeError, RuntimeError, ValueError) as error:
+        raise AuditError(f"{kind} is missing or unsafe: {relative}") from error
+    if unsafe_boundary:
         raise AuditError(f"{kind} is missing or unsafe: {relative}")
     try:
         resolved = path.resolve(strict=True)
         resolved.relative_to(root.resolve())
-    except (OSError, RuntimeError, ValueError) as error:
+    except (OSError, UnicodeError, RuntimeError, ValueError) as error:
         raise AuditError(f"{kind} is missing or unsafe: {relative}") from error
     return path
 

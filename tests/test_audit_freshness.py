@@ -1083,6 +1083,17 @@ class FreshnessTests(unittest.TestCase):
                     freshness.tracked_path(
                         root, freshness.DEFAULT_TRACKER_REGISTRY, kind="test path"
                     )
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "_path_has_link_or_reparse",
+                    side_effect=OSError("permission denied"),
+                ),
+                self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"),
+            ):
+                freshness.tracked_path(
+                    root, freshness.DEFAULT_TRACKER_REGISTRY, kind="test path"
+                )
             registry.write_text("{", encoding="utf-8")
             with self.assertRaisesRegex(freshness.AuditError, "could not read"):
                 freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
