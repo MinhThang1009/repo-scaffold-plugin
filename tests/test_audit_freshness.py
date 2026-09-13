@@ -228,13 +228,17 @@ class FreshnessTests(unittest.TestCase):
             root = Path(directory)
             self.write_repository(root)
             trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
-            relative_root = Path(os.path.relpath(root, Path.cwd()))
 
-            findings = freshness.action_findings(
-                relative_root,
-                trackers.workflow_directories,
-                lambda _repository: release("v2.0.0", "b" * 40),
-            )
+            previous_directory = Path.cwd()
+            try:
+                os.chdir(root)
+                findings = freshness.action_findings(
+                    Path("."),
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
+                )
+            finally:
+                os.chdir(previous_directory)
 
         self.assertEqual(
             {
