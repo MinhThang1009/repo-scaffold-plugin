@@ -65,8 +65,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   distinct action repositories it resolves at 500, so large or hostile
   repositories cannot force unbounded local reads or upstream lookups.
   The tracker registry is also capped at 500 tracked input paths, including
-  requirement locks. Requirements and tracked JSON policy inputs are bounded
-  to 1 MiB before parsing.
+  requirement locks. Each requirements file may contain at most 512 unique
+  direct pins. Requirements and tracked JSON policy inputs are bounded to 1 MiB
+  before parsing.
   Every reminder mutation must use an explicit repository binding, and every
   freshness `create` or `edit` mutation must use a durable `--body-file` (with a
   non-empty `--title` for `create`). The reconciliation job must have effective

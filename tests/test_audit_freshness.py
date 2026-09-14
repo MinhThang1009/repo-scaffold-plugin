@@ -202,6 +202,10 @@ class FreshnessTests(unittest.TestCase):
             path.write_bytes(b"ruff==1.0.0\n\xff")
             with self.assertRaisesRegex(freshness.AuditError, "valid UTF-8"):
                 freshness.pinned_requirements(path)
+            path.write_text("ruff==1.0.0\nblack==1.0.0\n", encoding="utf-8")
+            with mock.patch.object(freshness, "MAX_REQUIREMENT_PINS", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "pin safety cap"):
+                    freshness.pinned_requirements(path)
 
     def test_action_findings_are_semantic_and_cache_upstream_releases(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

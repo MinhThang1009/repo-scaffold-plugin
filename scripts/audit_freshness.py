@@ -27,6 +27,7 @@ MAX_TRACKED_WORKFLOW_FILES = 500
 MAX_TRACKED_WORKFLOW_BYTES = 64 * 1024 * 1024
 MAX_TRACKED_ACTION_REPOSITORIES = 500
 MAX_REQUIREMENTS_BYTES = 1024 * 1024
+MAX_REQUIREMENT_PINS = 512
 MAX_RELEASE_PLEASE_CONFIG_BYTES = 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
@@ -400,6 +401,11 @@ def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
         previous = pins.get(key)
         if previous is not None and previous[1] != version:
             raise AuditError(f"conflicting direct pins for {name} in {path}")
+        if previous is None and len(pins) >= MAX_REQUIREMENT_PINS:
+            raise AuditError(
+                "requirements file exceeds the "
+                f"{MAX_REQUIREMENT_PINS}-pin safety cap: {path}"
+            )
         pins[key] = (name, version)
     if not pins:
         raise AuditError(f"requirements file has no direct pins: {path}")
