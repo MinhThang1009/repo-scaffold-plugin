@@ -349,8 +349,8 @@ Codex, Claude Code, GitHub Actions, Agent Skills, Conventional Commits, and
 Keep a Changelog claims. Generated repositories do not inherit those
 plugin-specific claims.
 Mutation testing extends that toolchain through the separate, hash-verified
-`requirements-mutation.txt`. Mutmut versions are not duplicated in validators
-or tests; a compatible Dependabot bump passes the runner integration tests,
+`requirements-mutation.txt`. The runner's reviewed `MUTMUT_VERSION` is checked
+against the direct pin, and a compatible Dependabot bump passes the runner integration tests,
 while an incompatible internal API change fails those behavioral checks. Its
 daily and manually dispatched workflow plans every mutant on Linux, executes
 each exact assignment in a 32-way matrix, then rejects missing, duplicate, or

@@ -4899,6 +4899,24 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             problems.append(
                 f"{runner_relative}: must retain the reviewed mutmut generation hook"
             )
+        runner_assignments = {
+            node.targets[0].id: node.value
+            for node in runner_tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        }
+        mutmut_version = runner_assignments.get("MUTMUT_VERSION")
+        expected_mutmut_version = mutation_direct_pins.get("mutmut")
+        if expected_mutmut_version is not None and not (
+            isinstance(mutmut_version, ast.Constant)
+            and isinstance(mutmut_version.value, str)
+            and mutmut_version.value == expected_mutmut_version
+        ):
+            problems.append(
+                f"{runner_relative}: MUTMUT_VERSION must match the "
+                "requirements-mutation.in mutmut pin"
+            )
     prepare_cache_steps = [
         step
         for step in steps

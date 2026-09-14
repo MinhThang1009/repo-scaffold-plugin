@@ -2060,11 +2060,57 @@ class MutationTestingContractTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            runner_path = root / "scripts" / "run_mutation_testing.py"
+            runner_path.write_text(
+                runner_path.read_text(encoding="utf-8").replace(
+                    f'MUTMUT_VERSION = "{current_version}"',
+                    f'MUTMUT_VERSION = "{replacement_version}"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
 
             self.assertEqual(
                 validate_repository.validate_mutation_testing_contract(root),
                 [],
             )
+
+    def test_mutation_runner_version_must_match_direct_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            direct_path = root / "requirements-mutation.in"
+            direct_text = direct_path.read_text(encoding="utf-8")
+            match = re.search(r"(?m)^mutmut==([^\s;\\]+)$", direct_text)
+            self.assertIsNotNone(match)
+            assert match is not None
+            current_version = match.group(1)
+            replacement_version = "999.0.0"
+            direct_path.write_text(
+                direct_text.replace(
+                    f"mutmut=={current_version}",
+                    f"mutmut=={replacement_version}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            lock_path = root / "requirements-mutation.txt"
+            lock_path.write_text(
+                lock_path.read_text(encoding="utf-8").replace(
+                    f"mutmut=={current_version} \\",
+                    f"mutmut=={replacement_version} \\",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            "scripts/run_mutation_testing.py: MUTMUT_VERSION must match the "
+            "requirements-mutation.in mutmut pin",
+            problems,
+        )
 
     def test_duplicate_mutation_pin_and_lock_mismatch_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

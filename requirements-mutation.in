@@ -2,5 +2,5 @@
 # separate because mutmut requires fork support and does not run natively on
 # Windows.
 -r requirements-dev.in
-mutmut==3.7.0
+mutmut==3.8.0
 toml==0.10.2
