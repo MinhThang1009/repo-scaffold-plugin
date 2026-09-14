@@ -30,6 +30,7 @@ MAX_REQUIREMENTS_BYTES = 1024 * 1024
 MAX_RELEASE_PLEASE_CONFIG_BYTES = 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
+MAX_TRACKED_INPUT_PATHS = 500
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
@@ -266,6 +267,10 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
             raise AuditError(
                 "freshness tracker registry requirement locks must be a list"
             )
+        if len(locks) > MAX_TRACKER_ENTRIES:
+            raise AuditError(
+                "freshness tracker registry requirement locks exceeds the entry limit"
+            )
         parsed_locks = tuple(
             safe_relative_path(
                 lock, field="freshness tracker registry requirement lock"
@@ -289,7 +294,7 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         raise AuditError(
             "freshness tracker registry requirement lock paths must not reference requirement source paths"
         )
-    return FreshnessTrackers(
+    trackers = FreshnessTrackers(
         workflow_directories=paths("workflow-directories", allow_empty=False),
         release_please_configs=paths("release-please-configs", allow_empty=True),
         optional_release_please_configs=paths(
@@ -308,6 +313,24 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         ),
         requirement_sources=tuple(requirement_sources),
     )
+    tracked_path_count = (
+        len(trackers.workflow_directories)
+        + len(trackers.release_please_configs)
+        + len(trackers.optional_release_please_configs)
+        + len(trackers.ci_toolchain_policies)
+        + len(trackers.code_scanning_allowlists)
+        + len(trackers.optional_code_scanning_allowlists)
+        + sum(
+            1 + len(requirement_source.locks)
+            for requirement_source in requirement_sources
+        )
+    )
+    if tracked_path_count > MAX_TRACKED_INPUT_PATHS:
+        raise AuditError(
+            "freshness tracker registry exceeds the "
+            f"{MAX_TRACKED_INPUT_PATHS}-path safety cap"
+        )
+    return trackers
 
 
 def normalized_name(name: str) -> str:

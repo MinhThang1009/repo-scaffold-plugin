@@ -1376,6 +1376,37 @@ class FreshnessTests(unittest.TestCase):
                         "requirement-sources": [
                             {
                                 "path": "requirements.in",
+                                "locks": [
+                                    f"requirements-{index}.txt"
+                                    for index in range(
+                                        freshness.MAX_TRACKER_ENTRIES + 1
+                                    )
+                                ],
+                            }
+                        ],
+                    },
+                    "locks exceeds the entry limit",
+                ),
+                (
+                    {
+                        **valid,
+                        "release-please-configs": [
+                            f"release-{index}.json"
+                            for index in range(freshness.MAX_TRACKER_ENTRIES)
+                        ],
+                        "optional-release-please-configs": [
+                            f"optional-release-{index}.json"
+                            for index in range(freshness.MAX_TRACKER_ENTRIES)
+                        ],
+                    },
+                    "path safety cap",
+                ),
+                (
+                    {
+                        **valid,
+                        "requirement-sources": [
+                            {
+                                "path": "requirements.in",
                                 "locks": [],
                                 "unreviewed-inputs": ["important.in"],
                             }

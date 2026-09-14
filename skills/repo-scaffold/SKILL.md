@@ -299,8 +299,9 @@ tracked workflow read to 5 MiB and records an indeterminate check when a file
 exceeds that cap. It also caps the tracked workflow inventory at 500 files and
 64 MiB, and the distinct action repositories it resolves at 500, so a large
 or hostile repository cannot force unbounded local reads or upstream lookups.
-Requirements and tracked JSON policy inputs are bounded to 1 MiB before
-parsing.
+The tracker registry is also capped at 500 tracked input paths, including
+requirement locks. Requirements and tracked JSON policy inputs are bounded to
+1 MiB before parsing.
 The reconciliation job itself must inherit or declare `issues: write`; granting
 that permission only to a different job does not satisfy the companion contract.
 It must be named `freshness-audit` and set `timeout-minutes: 15`.
