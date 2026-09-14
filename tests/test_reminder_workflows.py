@@ -41,7 +41,11 @@ class ReminderWorkflowTests(unittest.TestCase):
                 )
             else:
                 concurrency = document["concurrency"]
-                expected_group = "${{ github.workflow }}-${{ github.repository }}"
+                expected_group = (
+                    "repo-scaffold-freshness-${{ github.repository }}"
+                    if relative.endswith("/freshness.yml")
+                    else "${{ github.workflow }}-${{ github.repository }}"
+                )
             self.assertEqual(
                 concurrency,
                 {"group": expected_group, "cancel-in-progress": "false"},

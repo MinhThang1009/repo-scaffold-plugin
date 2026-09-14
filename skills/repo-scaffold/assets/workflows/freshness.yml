@@ -10,7 +10,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.repository }}
+  group: repo-scaffold-freshness-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:

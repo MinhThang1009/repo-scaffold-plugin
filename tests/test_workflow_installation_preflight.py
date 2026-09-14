@@ -77,6 +77,34 @@ def arguments(**overrides: object) -> argparse.Namespace:
 
 
 class WorkflowInstallationPreflightTests(unittest.TestCase):
+    def test_freshness_concurrency_group_is_stable_across_branch_names(self) -> None:
+        for relative in (
+            ".github/workflows/freshness.yml",
+            "skills/repo-scaffold/assets/workflows/freshness.yml",
+        ):
+            path = PLUGIN_ROOT / relative
+            original = path.read_text(encoding="utf-8")
+            renamed = workflow_installation_preflight.workflow_document(original, path)
+            renamed["name"] = "Renamed on a manually dispatched branch"
+            self.assertTrue(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    workflow_installation_preflight.yaml.safe_dump(renamed), path
+                ),
+                relative,
+            )
+            dynamic_group = workflow_installation_preflight.workflow_document(
+                original, path
+            )
+            concurrency = dynamic_group["concurrency"]
+            assert isinstance(concurrency, dict)
+            concurrency["group"] = "${{ github.workflow }}-${{ github.repository }}"
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    workflow_installation_preflight.yaml.safe_dump(dynamic_group), path
+                ),
+                relative,
+            )
+
     def test_freshness_requires_preparation_before_audit(self) -> None:
         for relative in (
             ".github/workflows/freshness.yml",
@@ -859,7 +887,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  contents: read\n"
                 "  issues: write\n"
                 "concurrency:\n"
-                "  group: ${{ github.workflow }}-${{ github.repository }}\n"
+                "  group: repo-scaffold-freshness-${{ github.repository }}\n"
                 "  cancel-in-progress: false\n"
                 "jobs:\n"
                 "  audit:\n"
@@ -987,7 +1015,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "permissions:\n"
                 "  issues: write\n"
                 "concurrency:\n"
-                "  group: ${{ github.workflow }}-${{ github.repository }}\n"
+                "  group: repo-scaffold-freshness-${{ github.repository }}\n"
                 "  cancel-in-progress: false\n"
                 "jobs:\n"
                 "  audit:\n"
@@ -1057,7 +1085,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "  contents: read\n"
             "  issues: write\n"
             "concurrency:\n"
-            "  group: ${{ github.workflow }}-${{ github.repository }}\n"
+            "  group: repo-scaffold-freshness-${{ github.repository }}\n"
             "  cancel-in-progress: false\n"
             "jobs:\n"
             "  audit:\n"

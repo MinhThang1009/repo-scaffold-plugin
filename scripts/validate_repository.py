@@ -72,6 +72,9 @@ REMINDER_ISSUE_BODY_MUTATIONS = frozenset({"create", "edit"})
 REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "view"})
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
 REMINDER_WORKFLOW_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.repository }}"
+FRESHNESS_REMINDER_CONCURRENCY_GROUP = (
+    "repo-scaffold-freshness-${{ github.repository }}"
+)
 FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
 FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
 FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
@@ -7322,7 +7325,7 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         concurrency = workflow.get("concurrency")
         if (
             not isinstance(concurrency, dict)
-            or concurrency.get("group") != REMINDER_WORKFLOW_CONCURRENCY_GROUP
+            or concurrency.get("group") != FRESHNESS_REMINDER_CONCURRENCY_GROUP
             or concurrency.get("cancel-in-progress") != "false"
         ):
             problems.append(

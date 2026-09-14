@@ -211,9 +211,10 @@ issues through real `gh issue create` or `gh issue edit --repo ... --body-file`
 commands. Every
 `create` or `edit` mutation must use `--body-file`, `create` must provide a
 non-empty `--title`, and any `gh issue close` mutation must also use an
-explicit `--repo` binding. The reminder must use a repository-scoped
-non-cancelling concurrency group so manual runs on another ref cannot race
-the scheduled run. The preflight rejects untrusted-trigger, comment-only,
+explicit `--repo` binding. The reminder must use the stable
+`repo-scaffold-freshness-${{ github.repository }}` repository-scoped,
+non-cancelling concurrency group so manual runs on another ref cannot race the
+scheduled run. The preflight rejects untrusted-trigger, comment-only,
 shell-ambiguous, or otherwise incomplete reminder scaffolds. If the
 reconciliation job declares job-level permissions, it must retain effective
 `contents: read` and `issues: write` access so it can check out and reconcile

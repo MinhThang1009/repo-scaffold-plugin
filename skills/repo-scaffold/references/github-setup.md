@@ -359,8 +359,9 @@ through a real repo-bound `gh issue create` or `gh issue edit --repo ...
 --body-file` command. Every `create` or `edit` mutation must use
 `--body-file`, `create` must provide a non-empty `--title`, and any `gh issue
 close` mutation must also use an explicit `--repo` binding. Its concurrency
-group must be repository-scoped and non-cancelling so a manual run on another
-ref cannot race the scheduled run. Untrusted triggers, comments, shell-
+group must be the stable `repo-scaffold-freshness-${{ github.repository }}`
+repository-scoped, non-cancelling group so a manual run on another ref cannot
+race the scheduled run. Untrusted triggers, comments, shell-
 ambiguous commands, or an incomplete reminder do not satisfy the companion
 requirement. If the reconciliation job declares job-level permissions, it must
 retain effective `contents: read` and `issues: write` access so it can check
