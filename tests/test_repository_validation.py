@@ -4672,6 +4672,9 @@ jobs:
         self.assertIn("update each existing release PR title", generation)
 
     def test_skill_resolves_one_language_per_project(self) -> None:
+        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
         generation = (
             PLUGIN_ROOT
             / "skills"
@@ -4682,17 +4685,54 @@ jobs:
         setup = (
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
         ).read_text(encoding="utf-8")
+        compatibility = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.md"
+        ).read_text(encoding="utf-8")
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        skill_flat = " ".join(skill.split())
+        generation_flat = " ".join(generation.split())
+        compatibility_flat = " ".join(compatibility.split())
+        readme_flat = " ".join(readme.split())
 
-        self.assertIn("`SCAFFOLD_LANGUAGE`, either `en` or `vi`", generation)
-        self.assertIn("the user's explicit language request", generation)
-        self.assertIn("active project instructions", generation)
-        self.assertIn("then `en` as the", generation)
-        self.assertIn("Never leave an", generation)
-        self.assertIn("English/Vietnamese hybrid", generation)
-        self.assertIn("commit, pull-request,", generation)
+        self.assertIn("Before generation, ask the user", skill_flat)
+        self.assertIn("A valid `en` or `vi` answer is required", skill_flat)
         self.assertIn(
-            "or release text created as part of an authorized scaffold", generation
+            "reviewed assets currently support only `en` and `vi`", skill_flat
         )
+        self.assertIn("do not silently fall back, mix languages", skill_flat)
+        self.assertIn("Set `SCAFFOLD_LANGUAGE` from the confirmed answer", skill_flat)
+        self.assertIn(
+            "Which project-output language should I use, en or vi?", skill_flat
+        )
+        self.assertIn("Before generation, ask", generation_flat)
+        self.assertIn("`SCAFFOLD_LANGUAGE`, either `en` or `vi`", generation_flat)
+        self.assertIn("A valid answer is required", generation_flat)
+        self.assertIn(
+            "reviewed assets currently support only `en` and `vi`", generation_flat
+        )
+        self.assertIn("do not silently fall", generation_flat)
+        self.assertIn(
+            "Project instructions and existing documentation", generation_flat
+        )
+        self.assertIn("Never leave an", generation_flat)
+        self.assertIn("English/Vietnamese hybrid", generation_flat)
+        self.assertIn("commit, pull-request,", generation_flat)
+        self.assertIn(
+            "or release text created as part of an authorized scaffold", generation_flat
+        )
+        self.assertIn(
+            "ask the user to choose exactly one project-output language",
+            compatibility_flat,
+        )
+        self.assertIn(
+            "reviewed assets currently support only `en` and `vi`",
+            compatibility_flat,
+        )
+        self.assertIn("does not silently fall back or mix languages", readme_flat)
         self.assertIn("chore${scope}: release${component} ${version}", setup)
         self.assertIn("chore${scope}: phát hành${component} ${version}", setup)
         self.assertIn("Performance Improvements", setup)

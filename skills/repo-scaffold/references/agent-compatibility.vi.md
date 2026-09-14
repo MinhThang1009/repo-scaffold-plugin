@@ -100,6 +100,8 @@ hoặc tạo biến thể ngôn ngữ riêng cho từng agent.
 
 ## Chính sách ngôn ngữ
 
-Tài liệu tương thích agent có cả tiếng Anh và tiếng Việt. Với từng repository
-đích, luôn chọn đúng một ngôn ngữ đầu ra dự án, `en` hoặc `vi`; lựa chọn này
-ảnh hưởng file hướng tới người dùng của dự án, không ảnh hưởng adapter agent.
+Với mỗi repository đích, hãy hỏi user chọn đúng một ngôn ngữ đầu ra trước khi
+dựng. Các asset đã review hiện chỉ hỗ trợ `en` và `vi`; nếu user yêu cầu ngôn
+ngữ khác, hãy giải thích giới hạn và chờ user chọn `en` hoặc `vi`, hoặc dừng.
+Không tự động fallback hoặc trộn ngôn ngữ. Lựa chọn đã xác nhận ảnh hưởng file
+hướng tới người dùng của dự án, không ảnh hưởng adapter agent.

@@ -55,12 +55,16 @@ the language-neutral `CLAUDE.md` adapter unchanged so it imports `AGENTS.md`.
 Render every project-authored, human-facing surface in one
 `SCAFFOLD_LANGUAGE`, either `en` or `vi`: documentation, templates, workflow
 messages, labels, changelog headings, release notes, and commit, pull-request,
-or release text created as part of an authorized scaffold. Resolve the language
-from the user's explicit language request, then active project instructions,
-then the dominant first-party human-facing documentation, then `en` as the
-fallback. Ask when higher-priority signals conflict. Never leave an
-English/Vietnamese hybrid, and do not infer English from identifiers or
-technical literals.
+or release text created as part of an authorized scaffold. Before generation, ask
+the user to choose exactly one supported language with: "Which project-output
+language should I use, en or vi?" A valid answer is required even when project
+evidence suggests a language. If the user requests another language, explain that
+the reviewed assets currently support only `en` and `vi`; do not silently fall
+back, mix languages, or generate until the user chooses a supported language or
+stops. Set `SCAFFOLD_LANGUAGE` from the confirmed answer. Project instructions
+and existing documentation may inform the recommendation but may not replace this
+confirmation. Never leave an English/Vietnamese hybrid, and do not infer English
+from identifiers or technical literals.
 
 The Vietnamese mappings are:
 

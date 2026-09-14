@@ -99,6 +99,9 @@ the scaffold workflow or create agent-specific language variants.
 ## Language policy
 
 Agent-facing compatibility documentation is available in English and Vietnamese.
-For every target repository, resolve exactly one project-output language,
-`en` or `vi`; this affects generated project-facing files, not the selected
-agent adapter.
+For every target repository, ask the user to choose exactly one project-output
+language before generation. The reviewed assets currently support only `en` and
+`vi`; if another language is requested, explain the limitation and wait for an
+`en` or `vi` choice, or stop. Do not silently fall back or mix languages. The
+confirmed choice affects generated project-facing files, not the selected agent
+adapter.

@@ -11,8 +11,9 @@ repository only when the user authorizes outward-facing changes.
 
 Follow the active host, system, developer, and project instructions. Codex can use
 `AGENTS.md`; Claude Code reads `CLAUDE.md` and can import it. Read
-`references/agent-compatibility.md` for host-specific guidance. Resolve one
-scaffold language, `en` or `vi`, before generation and use it consistently.
+`references/agent-compatibility.md` for host-specific guidance. Before generation,
+ask the user to choose exactly one supported scaffold language, `en` or `vi`, and
+use it consistently.
 
 ## Core principles
 
@@ -51,10 +52,15 @@ CODEOWNERS owner, release/citation metadata, artifact basename, funding,
 security-policy commitments, and optional community features. Preserve existing
 settings and confirm a default branch when the remote does not establish one.
 
-Resolve `SCAFFOLD_LANGUAGE` in this order: explicit user request, active
-project instructions, dominant first-party human-facing documentation, then
-`en`. Ask when higher-priority signals conflict. Do not infer English from
-identifiers or technical literals.
+Before making any generation decision, ask the user: "Which project-output
+language should I use, en or vi?" A valid `en` or `vi` answer is required before
+generation, even when project evidence suggests a language. If the user requests
+another language, explain that the reviewed assets currently support only `en` and
+`vi`; do not silently fall back, mix languages, or generate until the user chooses
+a supported language or stops. Set `SCAFFOLD_LANGUAGE` from the confirmed answer.
+Project instructions and existing documentation may inform the recommendation but
+may not replace this confirmation. Do not infer English from identifiers or
+technical literals.
 
 ### 3. Generate files
 

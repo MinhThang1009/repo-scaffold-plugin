@@ -83,7 +83,7 @@ agent:
 - "set up the repo to production standard"
 - "dựng repo chuẩn GitHub bằng tiếng Việt"
 
-The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. It resolves one project language (`en` or `vi`) before generation and applies it consistently to documentation, templates, and release metadata. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
+The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. Before generation, it asks the user to confirm one supported project language (`en` or `vi`) and applies that choice consistently to documentation, templates, and release metadata. Requests for another language are reported as unsupported by the reviewed assets; the skill does not silently fall back or mix languages. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
 
 For supported adapters, invocation, and generic Agent Skills use, read the
 [agent compatibility guidance](skills/repo-scaffold/references/agent-compatibility.md)
