@@ -82,6 +82,7 @@ jobs:
             printf 'Found multiple open community-health reminder issues.\n' >&2
             exit 1
           fi
+          grep -Fq "$marker" "$RUNNER_TEMP/community-health.md"
           if [[ "$CHECKER_EXIT" == '0' ]]; then
             if (( ${#issue_numbers[@]} == 1 )); then
               gh issue close "${issue_numbers[0]}" \
@@ -90,7 +91,6 @@ jobs:
             fi
             exit 0
           fi
-          grep -Fq "$marker" "$RUNNER_TEMP/community-health.md"
           if (( ${#issue_numbers[@]} == 1 )); then
             gh issue edit "${issue_numbers[0]}" \
               --repo "github.com/${REPOSITORY}" \

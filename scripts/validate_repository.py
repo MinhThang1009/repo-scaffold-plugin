@@ -145,12 +145,6 @@ FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
     "actions/checkout": {"persist-credentials": "false"},
     "actions/setup-python": {"python-version": "3.x"},
 }
-FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
-    {
-        f"marker={FRESHNESS_REMINDER_MARKER}",
-        f"marker=<!-- {FRESHNESS_REMINDER_MARKER} -->",
-    }
-)
 FRESHNESS_TITLE_ASSIGNMENT = "title=Repository freshness update required"
 FRESHNESS_ISSUE_NUMBERS_INITIALIZATION = "issue_numbers="
 FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS = (
@@ -1544,11 +1538,17 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     )
 
 
-def freshness_marker_check_is_safe(text: str) -> bool:
-    """Require the report marker before status branching and Issue mutations."""
+def reminder_report_marker_check_is_safe(
+    text: str, *, marker: str, report_path: str
+) -> bool:
+    """Require a reminder report marker before clean-status reconciliation."""
     segments = shell_command_segments(text)
     if segments is None:
         return False
+    marker_assignments = {
+        f"marker={marker}",
+        f"marker=<!-- {marker} -->",
+    }
     marker_assignment_indices = [
         index
         for index, segment in enumerate(segments)
@@ -1557,12 +1557,12 @@ def freshness_marker_check_is_safe(text: str) -> bool:
     marker_indices = [
         index
         for index, segment in enumerate(segments)
-        if len(segment) == 1 and segment[0] in FRESHNESS_MARKER_ASSIGNMENTS
+        if len(segment) == 1 and segment[0] in marker_assignments
     ]
     grep_indices = [
         index
         for index, segment in enumerate(segments)
-        if segment == ["grep", "-Fq", "$marker", FRESHNESS_AUDIT_MARKDOWN_OUTPUT]
+        if segment == ["grep", "-Fq", "$marker", report_path]
     ]
     clean_indices = [
         index
@@ -1576,6 +1576,15 @@ def freshness_marker_check_is_safe(text: str) -> bool:
         and len(grep_indices) == 1
         and len(clean_indices) == 1
         and marker_indices[0] < grep_indices[0] < clean_indices[0]
+    )
+
+
+def freshness_marker_check_is_safe(text: str) -> bool:
+    """Require the report marker before status branching and Issue mutations."""
+    return reminder_report_marker_check_is_safe(
+        text,
+        marker=FRESHNESS_REMINDER_MARKER,
+        report_path=FRESHNESS_AUDIT_MARKDOWN_OUTPUT,
     )
 
 
@@ -7219,6 +7228,14 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
             problems.append(
                 f"{relative}: workflow must run the checker and reconcile one marker issue"
             )
+        if not reminder_report_marker_check_is_safe(
+            text,
+            marker="repo-scaffold-community-health-drift",
+            report_path="$RUNNER_TEMP/community-health.md",
+        ):
+            problems.append(
+                f"{relative}: reminder must verify its report marker before clean reconciliation"
+            )
         if not has_repo_bound_issue_reconciliation(text):
             problems.append(
                 f"{relative}: reminder mutations must bind an explicit repository"
@@ -7817,6 +7834,14 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 ".github/workflows/official-docs.yml: must run the checker and reconcile one marker issue"
             )
             break
+    if not reminder_report_marker_check_is_safe(
+        workflow_text,
+        marker="repo-scaffold-official-docs-audit",
+        report_path="$RUNNER_TEMP/official-docs.md",
+    ):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder must verify its report marker before clean reconciliation"
+        )
     if not has_repo_bound_issue_reconciliation(workflow_text):
         problems.append(
             ".github/workflows/official-docs.yml: reminder mutations must bind an explicit repository"

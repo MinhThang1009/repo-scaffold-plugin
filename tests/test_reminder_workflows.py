@@ -79,6 +79,51 @@ class ReminderWorkflowTests(unittest.TestCase):
             self.assertNotIn("--paginate", script, relative)
 
     @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
+    def test_clean_status_requires_report_marker_before_close(self) -> None:
+        for relative, report in (
+            (".github/workflows/community-health.yml", "community-health.md"),
+            (".github/workflows/official-docs.yml", "official-docs.md"),
+        ):
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            script = next(
+                step["run"]
+                for job in document["jobs"].values()
+                for step in job["steps"]
+                if "Reconcile" in step.get("name", "") and "issue" in step["name"]
+            )
+            with self.subTest(workflow=relative):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    (root / report).write_text("wrong-marker\n", encoding="utf-8")
+                    environment = {
+                        **os.environ,
+                        "REPOSITORY": "synthetic/example",
+                        "GITHUB_REPOSITORY": "synthetic/example",
+                        "RUNNER_TEMP": ".",
+                        "CHECKER_EXIT": "0",
+                    }
+                    stub = """gh() {
+  if [[ "$1" == api ]]; then printf '41\\n'; return 0; fi
+  printf 'MUTATION:%s\\n' "$2"
+}
+"""
+                    result = subprocess.run(
+                        [str(BASH), "--noprofile", "--norc", "-s"],
+                        input=stub + script,
+                        cwd=root,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=15,
+                        check=False,
+                    )
+                    self.assertNotIn("MUTATION:close", result.stdout)
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
     def test_issue_lookup_must_succeed_before_any_reminder_mutation(self) -> None:
         for relative in WORKFLOWS:
             document = yaml.load(

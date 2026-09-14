@@ -7958,6 +7958,30 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
             any("effective issues: write permission" in problem for problem in problems)
         )
 
+    def test_report_marker_must_precede_clean_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/community-health.yml"
+            installed.write_text(
+                installed.read_text(encoding="utf-8").replace(
+                    '          grep -Fq "$marker" "$RUNNER_TEMP/community-health.md"\n',
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "report marker before clean reconciliation" in problem
+                for problem in problems
+            )
+        )
+
 
 class FreshnessTrackingContractTests(unittest.TestCase):
     def test_freshness_requires_preparation_before_audit(self) -> None:
@@ -11328,6 +11352,30 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "audit job must have effective issues: write permission" in problem
+                for problem in problems
+            )
+        )
+
+    def test_report_marker_must_precede_clean_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/official-docs.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8").replace(
+                    '          grep -Fq "$marker" "$RUNNER_TEMP/official-docs.md"\n',
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "report marker before clean reconciliation" in problem
                 for problem in problems
             )
         )
