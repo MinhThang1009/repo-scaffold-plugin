@@ -254,8 +254,12 @@ def _path_has_link_or_reparse(path: Path, repository_root: Path) -> bool:
 def workflow_paths(
     repository_root: Path,
     workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
+    *,
+    max_files: int | None = None,
 ) -> list[Path]:
     """Return every tracked workflow that carries a synchronized action pin."""
+    if max_files is not None and max_files < 0:
+        raise ValueError("workflow file safety cap must not be negative")
     repository_root = Path(os.path.abspath(repository_root))
     if not repository_root.is_dir() or _path_has_link_or_reparse(
         repository_root, repository_root
@@ -284,6 +288,11 @@ def workflow_paths(
                 if _path_has_link_or_reparse(path, repository_root):
                     raise ValueError(f"workflow file is unsafe: {path}")
                 if path.is_file():
+                    if max_files is not None and len(paths) >= max_files:
+                        raise ValueError(
+                            "workflow inventory exceeds the "
+                            f"{max_files}-file safety cap"
+                        )
                     paths.append(path)
     if not paths:
         raise ValueError("no workflow files were found for action-pin synchronization")

@@ -402,7 +402,9 @@ def action_findings(
     for workflow_directory in workflow_directories:
         try:
             workflow_paths = sync_action_pins.workflow_paths(
-                root, (workflow_directory,)
+                root,
+                (workflow_directory,),
+                max_files=MAX_TRACKED_WORKFLOW_FILES,
             )
         except (OSError, UnicodeError, RuntimeError, ValueError) as cause:
             issue = AuditError(

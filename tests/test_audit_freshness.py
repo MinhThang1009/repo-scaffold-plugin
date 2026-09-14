@@ -619,7 +619,7 @@ class FreshnessTests(unittest.TestCase):
             asset_workflow = root / "skills/repo-scaffold/assets/workflows/ci.yml"
 
             def inspect_workflows(
-                _root: Path, directories: tuple[Path, ...]
+                _root: Path, directories: tuple[Path, ...], **_options: object
             ) -> list[Path]:
                 if directories == (Path(".github/workflows"),):
                     raise OSError("permission denied")

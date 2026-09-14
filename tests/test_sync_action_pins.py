@@ -1407,6 +1407,10 @@ class ActionPinSyncTests(unittest.TestCase):
                 sync_action_pins.workflow_paths(root)
             workflow = root / sync_action_pins.WORKFLOW_DIRECTORIES[0] / "workflow.yml"
             workflow.write_text("jobs: {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "file safety cap"):
+                sync_action_pins.workflow_paths(root, max_files=0)
+            with self.assertRaisesRegex(ValueError, "must not be negative"):
+                sync_action_pins.workflow_paths(root, max_files=-1)
             original_is_symlink = Path.is_symlink
             with mock.patch.object(
                 Path,
