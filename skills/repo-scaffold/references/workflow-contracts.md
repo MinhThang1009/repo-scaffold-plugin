@@ -44,6 +44,9 @@ the download must use HTTPS, verify the policy digest, and use bounded retries
 so transient release-service failures do not turn into avoidable gate failures.
 The link checker must also use bounded retries with backoff for transient
 upstream HTTP failures while continuing to fail on unresolved links.
+Maintenance readers must bound repository-controlled workflow, release-config,
+and claim-source files before decoding them, then fail closed on oversized or
+invalid UTF-8 input.
 
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.

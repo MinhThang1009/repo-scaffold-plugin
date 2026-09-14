@@ -102,6 +102,10 @@ jobs:
               --title "$title" \
               --body-file "$RUNNER_TEMP/community-health.md"
           fi
+          if [[ "$CHECKER_EXIT" != '1' && "$CHECKER_EXIT" != '2' ]]; then
+            printf 'Community-health checker returned an unexpected exit status: %s\n' "$CHECKER_EXIT" >&2
+            exit 1
+          fi
           if [[ "$CHECKER_EXIT" == '2' ]]; then
             printf 'One or more upstream checks were indeterminate.\n' >&2
             exit 1

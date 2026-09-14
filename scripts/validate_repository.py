@@ -7287,6 +7287,13 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
             problems.append(
                 f"{relative}: reminder must verify its report marker before clean reconciliation"
             )
+        if (
+            "if [[ \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then"
+            not in text
+        ):
+            problems.append(
+                f"{relative}: reminder must reject unexpected checker exit statuses"
+            )
         if not has_repo_bound_issue_reconciliation(text):
             problems.append(
                 f"{relative}: reminder mutations must bind an explicit repository"

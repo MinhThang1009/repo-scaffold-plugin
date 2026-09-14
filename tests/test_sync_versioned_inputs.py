@@ -211,9 +211,12 @@ class VersionedInputSyncTests(unittest.TestCase):
             config.write_text(original, encoding="utf-8")
 
             with mock.patch.object(
-                Path,
-                "read_bytes",
-                side_effect=(original.encode("utf-8"), OSError("denied")),
+                versioned_inputs.audit_freshness,
+                "read_bounded_utf8",
+                side_effect=(
+                    original,
+                    versioned_inputs.audit_freshness.AuditError("denied"),
+                ),
             ):
                 with self.assertRaisesRegex(
                     ValueError, "could not reread Release Please config"
@@ -303,7 +306,11 @@ class VersionedInputSyncTests(unittest.TestCase):
             root = Path(directory)
             self.write_repository(root)
             config = root / "release-please-config.json"
-            with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
+            with mock.patch.object(
+                versioned_inputs.audit_freshness,
+                "read_bounded_utf8",
+                side_effect=versioned_inputs.audit_freshness.AuditError("denied"),
+            ):
                 with self.assertRaisesRegex(ValueError, "could not read"):
                     versioned_inputs.synchronize_release_please_schemas(
                         root,
@@ -324,6 +331,23 @@ class VersionedInputSyncTests(unittest.TestCase):
                         "v17.11.2",
                         write=False,
                     )
+
+    def test_schema_synchronizer_rejects_oversized_config_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            config.write_bytes(
+                b"x"
+                * (versioned_inputs.audit_freshness.MAX_RELEASE_PLEASE_CONFIG_BYTES + 1)
+            )
+
+            with self.assertRaisesRegex(ValueError, "exceeds the .* limit"):
+                versioned_inputs.synchronize_release_please_schemas(
+                    root,
+                    (config.relative_to(root),),
+                    "v17.11.2",
+                    write=False,
+                )
 
     def test_synchronizes_action_pins_when_schema_configs_are_not_tracked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

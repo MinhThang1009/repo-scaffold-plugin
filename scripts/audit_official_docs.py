@@ -20,6 +20,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_REGISTRY_BYTES = 512 * 1024
+MAX_LOCAL_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_CLAIMS = 64
 MAX_MARKERS_PER_CLAIM = 8
 MAX_REVIEW_PERIOD_DAYS = 366
@@ -321,6 +322,23 @@ def read_document(url: str, allowed_hosts: tuple[str, ...]) -> tuple[str, str]:
         ) from error
 
 
+def read_local_source(path: Path) -> str:
+    """Read one claim source with a bounded UTF-8 payload."""
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_LOCAL_SOURCE_BYTES + 1)
+    except OSError as error:
+        raise AuditError(f"could not read claim source {path}: {error}") from error
+    if len(payload) > MAX_LOCAL_SOURCE_BYTES:
+        raise AuditError(
+            f"claim source exceeds the {MAX_LOCAL_SOURCE_BYTES}-byte safety cap: {path}"
+        )
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError as error:
+        raise AuditError(f"claim source is not valid UTF-8: {path}") from error
+
+
 def claim_findings(
     root: Path, claim: DocumentationClaim, today: date
 ) -> list[dict[str, str]]:
@@ -332,7 +350,7 @@ def claim_findings(
                 raise AuditError(f"claim source path is missing or unsafe: {relative}")
             resolved = path.resolve(strict=True)
             resolved.relative_to(root.resolve())
-            path.read_text(encoding="utf-8")
+            read_local_source(path)
         except (OSError, UnicodeError, ValueError) as error:
             raise AuditError(
                 f"claim source path is missing, unsafe, or unreadable: {relative}"

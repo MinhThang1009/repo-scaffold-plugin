@@ -282,6 +282,23 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 "https://docs.example.test/guide", ("docs.example.test",)
             )
 
+    def test_local_claim_sources_are_bounded_and_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "README.md"
+            path.write_bytes(b"x" * (official_docs.MAX_LOCAL_SOURCE_BYTES + 1))
+            with self.assertRaisesRegex(official_docs.AuditError, "safety cap"):
+                official_docs.read_local_source(path)
+
+            path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(official_docs.AuditError, "UTF-8"):
+                official_docs.read_local_source(path)
+
+            with (
+                mock.patch.object(Path, "open", side_effect=OSError("denied")),
+                self.assertRaisesRegex(official_docs.AuditError, "could not read"),
+            ):
+                official_docs.read_local_source(path)
+
     def test_github_rest_fetch_preserves_html_only_contract_markers(self) -> None:
         url = "https://docs.github.com/en/rest/git/refs"
         payload = b"<p>&quot;Contents&quot; permissions; tags/&lt;tag name&gt;</p>"

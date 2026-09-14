@@ -14,6 +14,26 @@ from typing import Any
 import yaml
 
 
+MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
+
+
+def read_workflow_text(path: Path) -> str:
+    """Read one workflow with a bounded UTF-8 payload."""
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_WORKFLOW_BYTES + 1)
+    except OSError as error:
+        raise ValueError(f"could not read workflow file: {path}: {error}") from error
+    if len(payload) > MAX_WORKFLOW_BYTES:
+        raise ValueError(
+            f"workflow file exceeds the {MAX_WORKFLOW_BYTES}-byte safety cap: {path}"
+        )
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError(f"workflow file is not valid UTF-8: {path}") from error
+
+
 def resolve_path_executable(name: str, *, forbidden_root: Path) -> str | None:
     """Resolve a tool only from absolute PATH entries outside the repository."""
     forbidden = forbidden_root.resolve(strict=True)
@@ -68,9 +88,7 @@ def discover_workflows(directory: Path) -> list[Path]:
 def workflow_shell_blocks(path: Path) -> list[tuple[str, str, bytes]]:
     """Extract statically identifiable Bash and POSIX shell run blocks."""
     try:
-        document: Any = yaml.load(
-            path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
-        )
+        document: Any = yaml.load(read_workflow_text(path), Loader=yaml.BaseLoader)
     except RecursionError as error:
         raise yaml.YAMLError("YAML nesting exceeds parser limit") from error
     if not isinstance(document, dict):

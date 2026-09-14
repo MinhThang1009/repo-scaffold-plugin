@@ -209,7 +209,11 @@ class ActionPinSyncTests(unittest.TestCase):
                 root, ".github/workflows/ci.yml", "name: validated\n"
             )
 
-            with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
+            with mock.patch.object(
+                sync_action_pins,
+                "read_workflow_text",
+                side_effect=ValueError("denied"),
+            ):
                 with self.assertRaisesRegex(
                     ValueError, "could not reread workflow file before writing"
                 ):
@@ -218,6 +222,37 @@ class ActionPinSyncTests(unittest.TestCase):
                     )
 
             self.assertEqual(workflow.read_text(encoding="utf-8"), "name: validated\n")
+
+    def test_read_workflow_text_bounds_size_and_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ci.yml"
+            path.write_bytes(b"x" * (sync_action_pins.MAX_WORKFLOW_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, "exceeds the .* safety cap"):
+                sync_action_pins.read_workflow_text(path)
+
+            path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(ValueError, "not valid UTF-8"):
+                sync_action_pins.read_workflow_text(path)
+
+            with (
+                mock.patch.object(Path, "open", side_effect=OSError("denied")),
+                self.assertRaisesRegex(ValueError, "could not read workflow file"),
+            ):
+                sync_action_pins.read_workflow_text(path)
+
+    def test_synchronizer_rejects_oversized_workflows_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.write_workflow(root, ".github/workflows/ci.yml", "name: CI\n")
+            path.write_bytes(b"x" * (sync_action_pins.MAX_WORKFLOW_BYTES + 1))
+
+            with self.assertRaisesRegex(ValueError, "exceeds the .* safety cap"):
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=False,
+                    workflow_directories=(Path(".github/workflows"),),
+                )
 
     def test_synchronize_preserves_current_pin_comment_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

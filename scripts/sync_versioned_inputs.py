@@ -40,8 +40,12 @@ def synchronize_release_please_schemas(
             repository_root, relative, kind="Release Please config"
         )
         try:
-            content = path.read_bytes().decode("utf-8")
-        except (OSError, UnicodeError) as error:
+            content = audit_freshness.read_bounded_utf8(
+                path,
+                audit_freshness.MAX_RELEASE_PLEASE_CONFIG_BYTES,
+                kind="Release Please config",
+            )
+        except audit_freshness.AuditError as error:
             raise ValueError(
                 f"could not read Release Please config {relative}: {error}"
             ) from error
@@ -79,8 +83,12 @@ def synchronize_release_please_schemas(
                 repository_root, relative, kind="Release Please config"
             )
             try:
-                current_content = path.read_bytes().decode("utf-8")
-            except (OSError, UnicodeError) as error:
+                current_content = audit_freshness.read_bounded_utf8(
+                    path,
+                    audit_freshness.MAX_RELEASE_PLEASE_CONFIG_BYTES,
+                    kind="Release Please config",
+                )
+            except audit_freshness.AuditError as error:
                 raise ValueError(
                     f"could not reread Release Please config {relative}: {error}"
                 ) from error

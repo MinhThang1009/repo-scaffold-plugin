@@ -7413,12 +7413,18 @@ class WorkflowShellValidationTests(unittest.TestCase):
 
     def test_workflow_parser_converts_recursive_yaml_failures(self) -> None:
         path = mock.Mock(spec=Path)
-        path.read_text.return_value = "jobs: {}\n"
 
-        with mock.patch.object(
-            validate_workflows.yaml,
-            "load",
-            side_effect=RecursionError("too deep"),
+        with (
+            mock.patch.object(
+                validate_workflows,
+                "read_workflow_text",
+                return_value="jobs: {}\n",
+            ),
+            mock.patch.object(
+                validate_workflows.yaml,
+                "load",
+                side_effect=RecursionError("too deep"),
+            ),
         ):
             with self.assertRaisesRegex(yaml.YAMLError, "nesting exceeds"):
                 validate_workflows.workflow_shell_blocks(path)
@@ -7465,12 +7471,30 @@ jobs:
 
     def test_workflow_parser_reads_utf8_and_ignores_jobs_without_steps(self) -> None:
         path = mock.Mock(spec=Path)
-        path.read_text.return_value = (
-            "jobs:\n  scalar: 7\n  empty:\n    runs-on: ubuntu-latest\n"
-        )
+        workflow = "jobs:\n  scalar: 7\n  empty:\n    runs-on: ubuntu-latest\n"
 
-        self.assertEqual(validate_workflows.workflow_shell_blocks(path), [])
-        path.read_text.assert_called_once_with(encoding="utf-8")
+        with mock.patch.object(
+            validate_workflows, "read_workflow_text", return_value=workflow
+        ) as read_workflow:
+            self.assertEqual(validate_workflows.workflow_shell_blocks(path), [])
+        read_workflow.assert_called_once_with(path)
+
+    def test_workflow_parser_bounds_size_and_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ci.yml"
+            path.write_bytes(b"x" * (validate_workflows.MAX_WORKFLOW_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, "exceeds the .* safety cap"):
+                validate_workflows.workflow_shell_blocks(path)
+
+            path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(ValueError, "not valid UTF-8"):
+                validate_workflows.workflow_shell_blocks(path)
+
+            with (
+                mock.patch.object(Path, "open", side_effect=OSError("denied")),
+                self.assertRaisesRegex(ValueError, "could not read workflow file"),
+            ):
+                validate_workflows.workflow_shell_blocks(path)
 
     def test_workflow_parser_errors_are_exact(self) -> None:
         cases = (
@@ -8117,6 +8141,34 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "report marker before clean reconciliation" in problem
+                for problem in problems
+            )
+        )
+
+    def test_unexpected_checker_exit_statuses_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/community-health.yml"
+            installed.write_text(
+                installed.read_text(encoding="utf-8").replace(
+                    "          if [[ \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then\n"
+                    "            printf 'Community-health checker returned an unexpected exit status: %s\\n' \"$CHECKER_EXIT\" >&2\n"
+                    "            exit 1\n"
+                    "          fi\n",
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "reject unexpected checker exit statuses" in problem
                 for problem in problems
             )
         )

@@ -18,6 +18,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 GITHUB_API_URL = "https://api.github.com"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
 MAX_ACTION_TAG_PAGES = 20
 MAX_ANNOTATED_TAG_DEPTH = 10
 YAML_TAG_PATTERN = r"!(?:<[^>\r\n]+>|[^\s\[\]{},#&*|>@]*)"
@@ -313,8 +314,8 @@ def write_workflow_bytes(
     if _path_has_link_or_reparse(path, repository_root):
         raise ValueError(f"workflow file is unsafe: {path}")
     try:
-        current_content = path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeError) as error:
+        current_content = read_workflow_text(path)
+    except ValueError as error:
         raise ValueError(
             f"could not reread workflow file before writing: {path}"
         ) from error
@@ -323,6 +324,23 @@ def write_workflow_bytes(
     if _path_has_link_or_reparse(path, repository_root):
         raise ValueError(f"workflow file is unsafe: {path}")
     path.write_bytes(content.encode("utf-8"))
+
+
+def read_workflow_text(path: Path) -> str:
+    """Read one workflow with a bounded UTF-8 payload."""
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_WORKFLOW_BYTES + 1)
+    except OSError as error:
+        raise ValueError(f"could not read workflow file: {path}: {error}") from error
+    if len(payload) > MAX_WORKFLOW_BYTES:
+        raise ValueError(
+            f"workflow file exceeds the {MAX_WORKFLOW_BYTES}-byte safety cap: {path}"
+        )
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError(f"workflow file is not valid UTF-8: {path}") from error
 
 
 def block_scalar_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
@@ -1082,7 +1100,7 @@ def synchronize_action_pins(
 ) -> list[Path]:
     """Update all allowed action pins after resolving every release."""
     contents = {
-        path: path.read_bytes().decode("utf-8")
+        path: read_workflow_text(path)
         for path in workflow_paths(repository_root, workflow_directories)
     }
     repositories = sorted(

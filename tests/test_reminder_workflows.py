@@ -210,3 +210,47 @@ class ReminderWorkflowTests(unittest.TestCase):
                             self.assertNotEqual(result.returncode, 0)
                         elif clean:
                             self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
+    def test_community_health_rejects_unexpected_checker_status(self) -> None:
+        relative = ".github/workflows/community-health.yml"
+        document = yaml.load(
+            (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+        )
+        script = next(
+            step["run"]
+            for job in document["jobs"].values()
+            for step in job["steps"]
+            if "Reconcile" in step.get("name", "") and "issue" in step["name"]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "community-health.md").write_text(
+                "<!-- repo-scaffold-community-health-drift -->\n", encoding="utf-8"
+            )
+            environment = {
+                **os.environ,
+                "REPOSITORY": "synthetic/example",
+                "GITHUB_REPOSITORY": "synthetic/example",
+                "RUNNER_TEMP": ".",
+                "CHECKER_EXIT": "127",
+            }
+            stub = """gh() {
+  if [[ "$1" == api ]]; then return 0; fi
+  printf 'MUTATION:%s\\n' "$2"
+}
+"""
+            result = subprocess.run(
+                [str(BASH), "--noprofile", "--norc", "-s"],
+                input=stub + script,
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=15,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("unexpected exit status", result.stderr)
