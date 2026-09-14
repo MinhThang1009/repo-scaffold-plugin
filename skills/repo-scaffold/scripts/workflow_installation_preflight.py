@@ -56,7 +56,11 @@ FRESHNESS_REMINDER_API_ENDPOINT = (
     "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+"
     "%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"
 )
-FRESHNESS_REMINDER_API_JQ = ".items[].number"
+FRESHNESS_REMINDER_API_JQ = '[.items[].number] | join(" ")'
+FRESHNESS_REMINDER_API_JQ_LEGACY = ".items[].number"
+FRESHNESS_REMINDER_API_JQ_VALUES = frozenset(
+    {FRESHNESS_REMINDER_API_JQ, FRESHNESS_REMINDER_API_JQ_LEGACY}
+)
 FRESHNESS_REMINDER_API_ALLOWED_ARGUMENTS = frozenset(
     {
         "--hostname",
@@ -65,7 +69,9 @@ FRESHNESS_REMINDER_API_ALLOWED_ARGUMENTS = frozenset(
         FRESHNESS_REMINDER_API_ENDPOINT,
         "--jq",
         FRESHNESS_REMINDER_API_JQ,
+        FRESHNESS_REMINDER_API_JQ_LEGACY,
         f"--jq={FRESHNESS_REMINDER_API_JQ}",
+        f"--jq={FRESHNESS_REMINDER_API_JQ_LEGACY}",
         "--method",
         "--method=GET",
         "-X",
@@ -250,6 +256,10 @@ FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
 )
 FRESHNESS_TITLE_ASSIGNMENT = "title=Repository freshness update required"
 FRESHNESS_ISSUE_NUMBERS_INITIALIZATION = "issue_numbers="
+FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS = (
+    ("mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"),
+    ("read", "-r", "-a", "issue_numbers", "<<<", "$issue_numbers_output"),
+)
 FRESHNESS_DUPLICATE_ISSUE_GUARD = (
     "if (( ${#issue_numbers[@]} > 1 )); then",
     "printf 'Found multiple open freshness reminder issues.\\n' >&2",
@@ -296,7 +306,19 @@ FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
     }
 )
 FRESHNESS_ALLOWED_SHELL_COMMANDS = frozenset(
-    {"${", "cat", "exit", "fi", "gh", "grep", "if", "mapfile", "printf", "set"}
+    {
+        "${",
+        "cat",
+        "exit",
+        "fi",
+        "gh",
+        "grep",
+        "if",
+        "mapfile",
+        "printf",
+        "read",
+        "set",
+    }
 )
 FRESHNESS_ALLOWED_ISSUE_OPTIONS: dict[str, frozenset[str]] = {
     "close": frozenset({"--comment", "--repo"}),
@@ -1432,13 +1454,10 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
                 FRESHNESS_AUDIT_MARKDOWN_OUTPUT,
             ]:
                 return False
-            elif executable == "mapfile" and command_body != [
+            elif executable in {
                 "mapfile",
-                "-t",
-                "issue_numbers",
-                "<<<",
-                "$issue_numbers_output",
-            ]:
+                "read",
+            } and not is_freshness_issue_numbers_collection_command(command_body):
                 return False
             elif executable == "exit" and command_body not in (
                 ["exit", "0"],
@@ -1728,8 +1747,9 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         if freshness_variable_is_reassigned(
             shell_command_prefix(segment), "issue_numbers"
         )
-        and shell_command_prefix(segment)
-        != ["mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"]
+        and not is_freshness_issue_numbers_collection_command(
+            shell_command_prefix(segment)
+        )
     ]
     if issue_numbers_reassignments != [[FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]]:
         return False
@@ -1783,16 +1803,15 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         for index, segment in enumerate(segments)
         if shell_command_prefix(segment) == [FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]
     ]
-    mapfile_indices = [
+    collection_indices = [
         index
         for index, segment in enumerate(segments)
-        if shell_command_prefix(segment)
-        == ["mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"]
+        if is_freshness_issue_numbers_collection_command(shell_command_prefix(segment))
     ]
     if (
         len(issue_numbers_initialization_indices) != 1
-        or len(mapfile_indices) != 1
-        or issue_numbers_initialization_indices[0] >= mapfile_indices[0]
+        or len(collection_indices) != 1
+        or issue_numbers_initialization_indices[0] >= collection_indices[0]
     ):
         return False
     clean_test = clean_tests[0]
@@ -2027,7 +2046,11 @@ def has_freshness_repository_api_reads(
                 if hostname != ("github.com",):
                     return False
                 jq_values = option_values(api_arguments, "--jq")
-                if jq_values is None or jq_values != (FRESHNESS_REMINDER_API_JQ,):
+                if (
+                    jq_values is None
+                    or len(jq_values) != 1
+                    or jq_values[0] not in FRESHNESS_REMINDER_API_JQ_VALUES
+                ):
                     return False
                 endpoints = [
                     token for token in api_arguments if token.startswith("search/")
@@ -2251,6 +2274,11 @@ def freshness_variable_is_reassigned(tokens: list[str], variable: str) -> bool:
     )
 
 
+def is_freshness_issue_numbers_collection_command(tokens: list[str]) -> bool:
+    """Return whether a reviewed command captures bounded Issue numbers."""
+    return tuple(tokens) in FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS
+
+
 def freshness_api_result_controls_issue_selection(command: str) -> bool:
     """Require lookup output to identify the Issue passed to a mutation."""
     parsed = freshness_api_result_assignments(command)
@@ -2294,7 +2322,11 @@ def freshness_api_result_controls_issue_selection(command: str) -> bool:
 
     for collection_index, segment in enumerate(segments):
         command_tokens = shell_command_prefix(segment)
-        if not command_tokens or command_tokens[0] not in {"mapfile", "readarray"}:
+        if not command_tokens or command_tokens[0] not in {
+            "mapfile",
+            "read",
+            "readarray",
+        }:
             continue
         redirect_indices = [
             index for index, token in enumerate(command_tokens) if token == "<<<"

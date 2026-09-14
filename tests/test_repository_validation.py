@@ -10051,7 +10051,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 )
         ignored_api_output_text = contract_text.replace(
             '          if [[ -n "$issue_numbers_output" ]]; then\n'
-            '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
+            '            read -r -a issue_numbers <<< "$issue_numbers_output"\n'
             "          fi\n",
             "",
             1,
@@ -10063,7 +10063,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             )
         )
         logged_api_output_text = contract_text.replace(
-            '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n',
+            '            read -r -a issue_numbers <<< "$issue_numbers_output"\n',
             '            echo "$issue_numbers_output"\n',
             1,
         )
@@ -10927,7 +10927,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             "\n".join(
                 (
                     'if [[ -n "$issue_numbers_output" ]]; then',
-                    '  mapfile -t issue_numbers <<< "$issue_numbers_output"',
+                    '  read -r -a issue_numbers <<< "$issue_numbers_output"',
                     "fi",
                 )
             )

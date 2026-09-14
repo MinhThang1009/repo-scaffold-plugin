@@ -2724,6 +2724,40 @@ class WorkflowDiscoveryTests(unittest.TestCase):
             ):
                 codeql_preflight.require_safe_root(root)
 
+    def test_macos_temp_alias_is_allowed_only_for_its_private_target(self) -> None:
+        with mock.patch.object(codeql_preflight.sys, "platform", "darwin"):
+            with mock.patch.object(
+                codeql_preflight.Path, "is_symlink", autospec=True, return_value=True
+            ):
+                with mock.patch.object(
+                    codeql_preflight.os.path,
+                    "realpath",
+                    return_value="/private/var",
+                ):
+                    self.assertTrue(
+                        codeql_preflight.is_macos_system_alias(Path("/var"))
+                    )
+                    self.assertFalse(
+                        codeql_preflight.is_macos_system_alias(Path("/etc"))
+                    )
+            with mock.patch.object(codeql_preflight.sys, "platform", "linux"):
+                self.assertFalse(codeql_preflight.is_macos_system_alias(Path("/var")))
+
+    def test_allowed_system_alias_root_is_not_rejected(self) -> None:
+        root = (
+            Path("C:/repository") if os.name == "nt" else Path("/var/folders/project")
+        )
+        with (
+            mock.patch.object(codeql_preflight.os.path, "lexists", return_value=True),
+            mock.patch.object(codeql_preflight.Path, "is_symlink", return_value=True),
+            mock.patch.object(codeql_preflight, "is_reparse_point", return_value=False),
+            mock.patch.object(codeql_preflight.os.path, "ismount", return_value=True),
+            mock.patch.object(
+                codeql_preflight, "is_macos_system_alias", return_value=True
+            ),
+        ):
+            self.assertIsNone(codeql_preflight.require_safe_root(root))
+
     def test_missing_workflow_root_is_safety_checked_before_skip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

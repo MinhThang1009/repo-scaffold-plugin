@@ -335,11 +335,11 @@ jobs:
           issue_numbers_output=$(
             gh api --hostname github.com \
               "search/issues?q=repo:${REPOSITORY}+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-ci-policy-drift+--%3E%22&per_page=2" \
-              --jq '.items[].number'
+              --jq '[.items[].number] | join(" ")'
           )
           issue_numbers=()
           if [[ -n "$issue_numbers_output" ]]; then
-            mapfile -t issue_numbers <<< "$issue_numbers_output"
+            read -r -a issue_numbers <<< "$issue_numbers_output"
           fi
           if (( ${#issue_numbers[@]} > 1 )); then
             printf 'Found multiple open CI policy reminder issues.\n' >&2

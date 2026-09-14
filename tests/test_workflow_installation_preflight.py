@@ -4628,7 +4628,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "\n".join(
                 (
                     'if [[ -n "$issue_numbers_output" ]]; then',
-                    '  mapfile -t issue_numbers <<< "$issue_numbers_output"',
+                    '  read -r -a issue_numbers <<< "$issue_numbers_output"',
                     "fi",
                 )
             )

@@ -75,7 +75,7 @@ class ReminderWorkflowTests(unittest.TestCase):
             self.assertIn("%22%3C%21--+", script, relative)
             self.assertIn("+--%3E%22&per_page=2", script, relative)
             self.assertIn("per_page=2", script, relative)
-            self.assertIn("--jq '.items[].number'", script, relative)
+            self.assertIn("--jq '[.items[].number] | join(\" \")'", script, relative)
             self.assertNotIn("--paginate", script, relative)
 
     @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
@@ -132,7 +132,7 @@ class ReminderWorkflowTests(unittest.TestCase):
                         }
                         stub = """gh() {
   if [[ "$1" == api ]]; then
-    if [[ -n "$TEST_NUMBERS" ]]; then printf '%s\\n' "$TEST_NUMBERS"; fi
+    if [[ -n "$TEST_NUMBERS" ]]; then printf '%s\\n' "${TEST_NUMBERS//$'\\n'/ }"; fi
     return "$TEST_API_EXIT"
   fi
   printf 'MUTATION:%s\\n' "$2"

@@ -11,6 +11,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -2645,6 +2646,20 @@ def is_reparse_point(path: Path) -> bool:
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
+def is_macos_system_alias(path: Path) -> bool:
+    """Allow Apple's stable system aliases when they resolve in place."""
+    if sys.platform != "darwin":
+        return False
+    expected_targets = {
+        Path("/var"): Path("/private/var"),
+        Path("/tmp"): Path("/private/tmp"),
+    }
+    target = expected_targets.get(path)
+    if target is None:
+        return False
+    return path.is_symlink() and Path(os.path.realpath(path)) == target
+
+
 def require_safe_root(root: Path) -> None:
     if not root.is_absolute():
         raise InspectionError("Repository root must be an absolute path.")
@@ -2658,10 +2673,11 @@ def require_safe_root(root: Path) -> None:
         current = current / component
         if not os.path.lexists(current):
             raise InspectionError(f"Repository root does not exist: {root}")
+        is_system_alias = is_macos_system_alias(current)
         if (
-            current.is_symlink()
+            (current.is_symlink() and not is_system_alias)
             or is_reparse_point(current)
-            or os.path.ismount(current)
+            or (os.path.ismount(current) and not is_system_alias)
         ):
             raise InspectionError(
                 f"Refusing to inspect linked, mounted, or reparse-point "
