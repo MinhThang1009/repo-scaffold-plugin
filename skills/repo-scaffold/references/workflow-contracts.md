@@ -60,7 +60,10 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   and exact `path`/`locks` requirement-source fields; lock paths cannot
   reference requirement sources, and unknown fields must fail closed instead of
   being ignored. The freshness checker bounds each tracked workflow read to
-  5 MiB and reports an indeterminate check when a file exceeds that cap.
+  5 MiB and reports an indeterminate check when a file exceeds that cap. It
+  also caps the tracked workflow inventory at 500 files and 64 MiB, and the
+  distinct action repositories it resolves at 500, so large or hostile
+  repositories cannot force unbounded local reads or upstream lookups.
   Requirements and tracked JSON policy inputs are bounded to 1 MiB before
   parsing.
   Every reminder mutation must use an explicit repository binding, and every

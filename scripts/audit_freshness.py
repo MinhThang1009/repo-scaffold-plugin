@@ -23,6 +23,9 @@ import sync_action_pins
 PYPI_ROOT = "https://pypi.org/pypi"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
+MAX_TRACKED_WORKFLOW_FILES = 500
+MAX_TRACKED_WORKFLOW_BYTES = 64 * 1024 * 1024
+MAX_TRACKED_ACTION_REPOSITORIES = 500
 MAX_REQUIREMENTS_BYTES = 1024 * 1024
 MAX_RELEASE_PLEASE_CONFIG_BYTES = 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
@@ -394,6 +397,8 @@ def action_findings(
     findings: list[dict[str, str]] = []
     releases: dict[str, sync_action_pins.ActionRelease] = {}
     failed_releases: set[str] = set()
+    workflow_file_count = 0
+    workflow_byte_count = 0
     for workflow_directory in workflow_directories:
         try:
             workflow_paths = sync_action_pins.workflow_paths(
@@ -408,6 +413,12 @@ def action_findings(
                 raise issue from cause
             errors.append(str(issue))
             continue
+        workflow_file_count += len(workflow_paths)
+        if workflow_file_count > MAX_TRACKED_WORKFLOW_FILES:
+            raise AuditError(
+                "tracked workflow inventory exceeds the "
+                f"{MAX_TRACKED_WORKFLOW_FILES}-file safety cap"
+            )
         for path in workflow_paths:
             try:
                 text = read_bounded_utf8(
@@ -427,6 +438,12 @@ def action_findings(
                     raise issue from cause
                 errors.append(str(issue))
                 continue
+            workflow_byte_count += len(text.encode("utf-8"))
+            if workflow_byte_count > MAX_TRACKED_WORKFLOW_BYTES:
+                raise AuditError(
+                    "tracked workflow inventory exceeds the "
+                    f"{MAX_TRACKED_WORKFLOW_BYTES}-byte safety cap"
+                )
             for match in matches:
                 action = sync_action_pins.normalized_action_pin_part(match, "action")
                 current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
@@ -435,6 +452,14 @@ def action_findings(
                     continue
                 release = releases.get(repository)
                 if release is None:
+                    if (
+                        len(releases) + len(failed_releases)
+                        >= MAX_TRACKED_ACTION_REPOSITORIES
+                    ):
+                        raise AuditError(
+                            "tracked action repository inventory exceeds the "
+                            f"{MAX_TRACKED_ACTION_REPOSITORIES}-repository safety cap"
+                        )
                     try:
                         release = release_lookup(repository)
                     except (OSError, ValueError, AuditError) as error:
