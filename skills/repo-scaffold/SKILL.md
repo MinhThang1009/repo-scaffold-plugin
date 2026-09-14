@@ -83,10 +83,23 @@ required verified capability exists.
 Only for a verified GitHub.com repository, read
 `references/workflow-contracts.md` before installing or changing a workflow.
 Use only workflows applicable to the detected stack and user-approved features.
+Every GitHub.com project with a runnable test or lint command must finish this
+phase with a configured CI workflow, or an explicit user decision to defer it;
+do not silently leave the generic CI sentinel in a finished scaffold. Treat
+the workflow set as an explicit install plan: for each applicable approved
+asset, run the workflow-installation preflight with its exact `--workflow`
+inputs, copy every documented companion, and verify the final files. Optional
+feature workflows remain opt-in, but their omission must be recorded as
+not-applicable or deferred.
 Pin external actions to verified full SHAs and job/service container images to
 verified full SHA-256 digests, give permissions explicitly, and
 verify a real event-compatible producer before making a check required. Keep
 external-network checks advisory.
+
+The generic CI asset binds its test job to `matrix.os`. A rendered runtime
+policy may select the supported GitHub-hosted labels `ubuntu-latest`,
+`windows-latest`, and `macos-latest`; keep the policy and matrix as the single
+source of truth instead of hard-coding a runner in the test job.
 
 For CodeQL default setup, run the fail-closed `scripts/codeql_preflight.py` and
 require explicit confirmation that no external or indirect uploader exists.

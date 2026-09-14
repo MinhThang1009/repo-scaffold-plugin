@@ -297,6 +297,12 @@ from another directory is ambiguous and is rejected. The supplied called
 workflow must declare `workflow_call`, and local call loops are rejected.
 The supplied local call graph must also stay within GitHub's 10 workflow levels
 and 50 unique nested workflows per top-level caller.
+For a project with a runnable test or lint command, the workflow phase must
+install a configured CI workflow or record an explicit user decision to defer
+it before the scaffold is declared complete. For every applicable approved
+asset, pass the exact asset paths through `--workflow`, copy the required
+companion files, and verify the installed files. Optional assets remain
+feature-specific, but omission must be recorded as not applicable or deferred.
 For any supplied `pull_request` workflow with a write permission, it also
 requires `--confirm-pull-request-write-tokens`. Before passing that flag,
 verify the repository Actions setting **Send write tokens to workflows from

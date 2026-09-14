@@ -346,6 +346,25 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             problems,
         )
 
+    def test_scaffold_ci_asset_runs_the_declared_os_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            asset_path = root / "skills/repo-scaffold/assets/workflows/ci.yml"
+            asset = asset_path.read_text(encoding="utf-8").replace(
+                "runs-on: ${{ matrix.os }}", "runs-on: ubuntu-latest", 1
+            )
+            asset_path.write_text(asset, encoding="utf-8")
+
+            problems = validate_repository.validate_python_support_contract(root)
+
+        self.assertIn(
+            "skills/repo-scaffold/assets/workflows/ci.yml: scaffold CI must "
+            "load a runtime policy dynamically, run the test matrix on its "
+            "selected OS, and retain a scheduled canary",
+            problems,
+        )
+
     def test_ruff_target_must_match_the_policy_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4737,6 +4756,48 @@ jobs:
         self.assertIn("chore${scope}: phát hành${component} ${version}", setup)
         self.assertIn("Performance Improvements", setup)
         self.assertIn("Cải thiện hiệu năng", setup)
+
+    def test_workflow_setup_requires_an_explicit_installation_plan(self) -> None:
+        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        generation = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        ).read_text(encoding="utf-8")
+        contracts = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "workflow-contracts.md"
+        ).read_text(encoding="utf-8")
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        generation_flat = " ".join(generation.split())
+        contracts_flat = " ".join(contracts.split())
+        setup_flat = " ".join(setup.split())
+
+        self.assertIn(
+            "Every GitHub.com project with a runnable test or lint command must "
+            "finish this phase with a configured CI workflow",
+            " ".join(skill.split()),
+        )
+        self.assertIn("workflow-installation preflight", " ".join(skill.split()))
+        self.assertIn(
+            "Workflow installation is an explicit generation decision", generation_flat
+        )
+        self.assertIn("copy the companion files in the table", generation_flat)
+        self.assertIn("test job must run on `matrix.os`", contracts_flat)
+        self.assertIn(
+            "workflow phase must install a configured CI workflow", setup_flat
+        )
+        self.assertIn("test job uses `matrix.os`", readme)
 
     def test_accepts_intentional_semver_build_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

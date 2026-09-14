@@ -33,6 +33,16 @@ destination:
 | `assets/workflows/labeler.yml` | `assets/labeler.yml` | `.github/labeler.yml` |
 | Pull-request preflight | `../scripts/pr_template_preflight.py` | `scripts/pr_template_preflight.py` |
 
+Workflow installation is an explicit generation decision. For a verified
+GitHub.com project with a runnable test or lint command, install a configured CI
+workflow before declaring the scaffold complete, unless the user explicitly
+defers it. For every applicable approved asset, run the read-only
+`workflow_installation_preflight.py` with the exact `--workflow` inputs, copy
+the companion files in the table, and verify the installed files. Record each
+optional asset as installed, not applicable, or explicitly deferred; never
+silently omit an applicable workflow or leave the generic CI sentinel in the
+finished project.
+
 When installing the CodeQL or code-scanning gate asset, also copy
 `assets/code-scanning-allowlist.json` to
 `.github/code-scanning-allowlist.json`. Keep the scaffold allowlist empty unless

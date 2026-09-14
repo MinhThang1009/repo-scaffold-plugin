@@ -9,6 +9,14 @@ to a verified full SHA-256 digest, bound supplied workflow input count and total
 bytes, and keep generated workflows
 valid for `pull_request` and `merge_group` whenever their check can be required.
 Use `cancel-in-progress: false` for required-check concurrency.
+For a GitHub.com project with a runnable test or lint command, workflow setup
+must end with a configured CI workflow or an explicit user decision to defer it.
+Every applicable approved asset must pass the workflow-installation preflight
+with its exact `--workflow` inputs, and every documented companion must be
+installed and verified. Optional assets may remain not applicable, but their
+omission must be recorded rather than silently skipped. The generic CI asset's
+test job must run on `matrix.os`, whose reviewed policy may include
+`ubuntu-latest`, `windows-latest`, and `macos-latest`.
 External `docker://` workflow references must use a full SHA-256 digest; the
 workflow-installation preflight rejects mutable container tags.
 Docker container actions are external action requirements, and selected policy

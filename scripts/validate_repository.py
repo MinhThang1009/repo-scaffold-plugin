@@ -3116,12 +3116,14 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         if (
             "prepare_runtime:" not in asset_text
             or "fromJSON(needs.prepare_runtime.outputs.matrix)" not in asset_text
+            or "runs-on: ${{ matrix.os }}" not in asset_text
             or "latest-runtime-canary:" not in asset_text
             or "schedule:" not in asset_text
         ):
             problems.append(
                 "skills/repo-scaffold/assets/workflows/ci.yml: scaffold CI must "
-                "load a runtime policy dynamically and retain a scheduled canary"
+                "load a runtime policy dynamically, run the test matrix on its "
+                "selected OS, and retain a scheduled canary"
             )
     workflow_reference_path = (
         repository_root

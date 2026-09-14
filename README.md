@@ -293,11 +293,13 @@ repositories during release audits.
 
 The [Python support policy](.github/python-support.json) is the single source of
 truth for CI. GitHub Actions tests every declared feature release on Ubuntu and
-the minimum/latest boundaries on Windows. The quality job consumes the policy's
-latest value. A non-required weekly `3.x` canary tests the latest stable Python,
+the minimum/latest boundaries on Windows and macOS. The quality job consumes the
+policy's latest value. A non-required weekly `3.x` canary tests the latest stable Python,
 then fails on undeclared-version drift so support changes require a reviewed
-policy update. Repository validation rejects policy, workflow, scaffold, and
-documentation drift. Scheduled/manual canaries maintain one reminder Issue when
+policy update. The test job uses `matrix.os`, so the policy can exercise all
+declared hosted platforms without duplicating runner lists in workflow YAML.
+Repository validation rejects policy, workflow, scaffold, and documentation drift.
+Scheduled/manual canaries maintain one reminder Issue when
 either reviewed policy needs attention. The quality job also runs formatting, lint, type, compile,
 workflow, metadata, link, and release-archive checks.
 The [CI toolchain policy](.github/ci-toolchain.json) separately centralizes the
@@ -313,7 +315,7 @@ resolves every transitive dependency and records PyPI SHA-256 hashes used by CI.
 The conventional `.in` to `.txt` pairing lets Dependabot run `pip-compile` and
 update both files in one PR. Platform-conditional packages required by the
 supported matrix are pinned directly so a lock regenerated on Linux remains
-installable with hashes on Windows. A weekly PR-only version-maintenance
+installable with hashes on Windows and macOS. A weekly PR-only version-maintenance
 synchronizer creates one draft PR with immutable GitHub Action pins and Release
 Please schema URLs updated in lockstep across repository workflows,
 configuration, and scaffold assets. It uses a dedicated fine-grained PAT stored

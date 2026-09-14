@@ -57,6 +57,25 @@ class PythonSupportPolicyTests(unittest.TestCase):
             },
         )
 
+    def test_matrix_accepts_all_supported_github_hosted_os_labels(self) -> None:
+        document = policy_document()
+        document["boundary-coverage-os"] = ["windows-latest", "macos-latest"]
+        policy = python_support.parse_policy(document)
+
+        matrix = python_support.build_matrix(policy)["include"]
+        self.assertEqual(
+            [entry["os"] for entry in matrix],
+            [
+                "ubuntu-latest",
+                "ubuntu-latest",
+                "ubuntu-latest",
+                "windows-latest",
+                "windows-latest",
+                "macos-latest",
+                "macos-latest",
+            ],
+        )
+
     def test_policy_rejects_version_gaps(self) -> None:
         document = policy_document()
         document["versions"] = ["3.10", "3.12"]
