@@ -153,6 +153,7 @@ def _safe_relative_path(value: object, location: str) -> str:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or any(ord(character) < 0x20 for character in value)
         or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
     ):
@@ -274,6 +275,7 @@ def checked_registry_path(root: Path, configured: Path) -> Path:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in relative_text
+        or any(ord(character) < 0x20 for character in relative_text)
         or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != relative_text
     ):

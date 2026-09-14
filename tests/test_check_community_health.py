@@ -145,6 +145,7 @@ class RegistryTests(unittest.TestCase):
             ("candidates", [r"docs\file.md"]),
             ("candidates", ["C:/README.md"]),
             ("candidates", ["docs/C:README.md"]),
+            ("candidates", ["docs/\nREADME.md"]),
             ("candidates", ["README.md", "README.md"]),
             ("allow_multiple", "true"),
         ]
@@ -410,6 +411,10 @@ class InventoryTests(unittest.TestCase):
                 community_health.AuditError, "safe repository-relative path"
             ):
                 community_health.checked_registry_path(root, Path("../outside.json"))
+            with self.assertRaisesRegex(
+                community_health.AuditError, "safe repository-relative path"
+            ):
+                community_health.checked_registry_path(root, Path("registry\n.json"))
             with self.assertRaisesRegex(
                 community_health.AuditError, "within the repository root"
             ):

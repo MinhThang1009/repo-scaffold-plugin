@@ -219,9 +219,9 @@ stay within GitHub's 10 workflow levels and 50 unique nested workflows per
 top-level caller.
 
 The community-health tracker registry must stay inside the repository and reject
-links or reparse points before it is read. Directory inventories are bounded to
-10,000 entries so large repositories fail closed instead of exhausting the
-runner.
+traversal, control characters, links, or reparse points before it is read.
+Directory inventories are bounded to 10,000 entries so large repositories fail
+closed instead of exhausting the runner.
 
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
 only scheduled and manual triggers. Each schedule entry must use a five-field
