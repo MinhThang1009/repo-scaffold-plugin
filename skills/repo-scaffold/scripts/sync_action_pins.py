@@ -202,6 +202,13 @@ def action_repository(action: str) -> str:
     return "/".join(action.split("/")[:2]).casefold()
 
 
+def is_valid_action_repository(repository: str) -> bool:
+    """Return whether an action repository is a GitHub-style owner/repository path."""
+    return REPOSITORY_PATTERN.fullmatch(repository) is not None and not any(
+        component in {".", ".."} for component in repository.split("/")
+    )
+
+
 def is_safe_local_action_reference(reference: str) -> bool:
     """Return whether a local action path stays within the checked-out repository."""
     if not isinstance(reference, str) or not reference.startswith("./"):
@@ -882,6 +889,8 @@ def auditable_action_repositories(path: Path, content: str) -> set[str]:
             raise ValueError(f"workflow action is not pinned to a full SHA: {path}")
         action = reference.rsplit("@", 1)[0]
         repository = action_repository(action)
+        if not is_valid_action_repository(repository):
+            raise ValueError(f"workflow action has an invalid repository: {path}")
         repositories.add(repository)
     return repositories
 
@@ -1021,7 +1030,7 @@ class GitHubReleaseClient:
 
     def latest_release(self, repository: str) -> ActionRelease:
         """Resolve the stable latest release tag to its immutable commit SHA."""
-        if REPOSITORY_PATTERN.fullmatch(repository) is None:
+        if not is_valid_action_repository(repository):
             raise ValueError(f"invalid action repository: {repository}")
         if repository in TAG_LIST_ACTION_REPOSITORIES:
             return self.latest_action_tag(repository)

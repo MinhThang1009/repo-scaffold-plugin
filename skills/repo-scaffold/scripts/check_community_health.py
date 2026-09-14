@@ -159,7 +159,11 @@ def _safe_relative_path(value: object, location: str) -> str:
 
 
 def parse_registry(document: object) -> list[RegistryEntry]:
-    if not isinstance(document, dict) or document.get("schema-version") != 1:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schema-version")) is not int
+        or document.get("schema-version") != 1
+    ):
         raise AuditError("tracker registry must use schema-version 1")
     raw_files = document.get("files")
     if not isinstance(raw_files, list) or not raw_files:

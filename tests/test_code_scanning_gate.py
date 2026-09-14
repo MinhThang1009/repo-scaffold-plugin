@@ -229,6 +229,8 @@ class CodeScanningGateTests(unittest.TestCase):
                 gate.load_allowlist(root / "missing.json")
             for document, message in (
                 ({"schema-version": 1, "allowlist": []}, "schema-version"),
+                ({"schema-version": 3.0, "allowlist": []}, "schema-version"),
+                ({"schema-version": True, "allowlist": []}, "schema-version"),
                 ({"schema-version": 2, "allowlist": {}}, "must be a list"),
             ):
                 path = root / "allowlist.json"

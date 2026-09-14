@@ -1184,6 +1184,8 @@ class FreshnessTests(unittest.TestCase):
                     "unsupported top-level fields",
                 ),
                 ({"schema-version": 1, "allowlist": []}, "schema-version 3"),
+                ({"schema-version": 3.0, "allowlist": []}, "schema-version 3"),
+                ({"schema-version": True, "allowlist": []}, "schema-version 3"),
                 ({"schema-version": 3, "allowlist": {}}, "must be a list"),
                 (
                     {"schema-version": 3, "allowlist": [{**valid, "number": True}]},
@@ -1315,6 +1317,11 @@ class FreshnessTests(unittest.TestCase):
                     freshness.safe_relative_path(value, field="test")
             with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
                 freshness.tracked_path(root, Path("missing"), kind="test path")
+            with mock.patch.object(Path, "is_file", return_value=False):
+                with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
+                    freshness.tracked_path(
+                        root, freshness.DEFAULT_TRACKER_REGISTRY, kind="test path"
+                    )
             with mock.patch.object(Path, "is_symlink", return_value=True):
                 with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
                     freshness.tracked_path(
@@ -1355,6 +1362,8 @@ class FreshnessTests(unittest.TestCase):
                 freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
             for document, message in (
                 ({"schema-version": 2}, "schema-version"),
+                ({**valid, "schema-version": True}, "schema-version"),
+                ({**valid, "schema-version": 1.0}, "schema-version"),
                 ({**valid, "unreviewed-inputs": []}, "unsupported schema fields"),
                 (
                     {

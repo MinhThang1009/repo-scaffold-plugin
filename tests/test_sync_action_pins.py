@@ -1389,6 +1389,12 @@ class ActionPinSyncTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "mapping keys"):
                     sync_action_pins.auditable_action_repositories(path, content)
 
+    def test_action_repositories_reject_traversal_components(self) -> None:
+        path = Path("workflow.yml")
+        content = "jobs:\n  test:\n    steps:\n      - uses: ../evil@" + "a" * 40 + "\n"
+        with self.assertRaisesRegex(ValueError, "invalid repository"):
+            sync_action_pins.auditable_action_repositories(path, content)
+
     def test_workflow_paths_rejects_missing_unsafe_and_empty_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1628,6 +1634,10 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "invalid action repository"):
             client.latest_release("invalid")
+        for repository in ("../evil", "./evil", "evil/.."):
+            with self.subTest(repository=repository):
+                with self.assertRaisesRegex(ValueError, "invalid action repository"):
+                    client.latest_release(repository)
         with self.assertRaisesRegex(ValueError, "not an object"):
             client.get_json("/test")
         with self.assertRaisesRegex(ValueError, "bounded object list"):

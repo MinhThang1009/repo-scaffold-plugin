@@ -110,7 +110,13 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(community_health.load_registry(path), parsed)
 
     def test_registry_rejects_invalid_top_level_documents(self) -> None:
-        invalid = [None, {}, {"schema-version": 1, "files": []}]
+        invalid = [
+            None,
+            {},
+            {"schema-version": 1, "files": []},
+            {"schema-version": 1.0, "files": []},
+            {"schema-version": True, "files": []},
+        ]
         for document in invalid:
             with (
                 self.subTest(document=document),

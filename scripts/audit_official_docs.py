@@ -194,7 +194,11 @@ def load_trackers(
         raise AuditError(
             f"could not read official-docs tracker registry {relative}: {error}"
         ) from error
-    if not isinstance(document, dict) or document.get("schema-version") != 1:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schema-version")) is not int
+        or document.get("schema-version") != 1
+    ):
         raise AuditError("official-docs tracker registry must use schema-version 1")
     values = document.get("claims")
     if not isinstance(values, list) or not values or len(values) > MAX_CLAIMS:

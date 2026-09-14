@@ -5394,6 +5394,19 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("require schema-version" in item for item in unknown_fields)
             )
 
+            for schema_version in (3.0, True):
+                allowlist.write_text(
+                    json.dumps({"schema-version": schema_version, "allowlist": []}),
+                    encoding="utf-8",
+                )
+                with self.subTest(schema_version=schema_version):
+                    invalid_schema = (
+                        validate_repository.validate_code_scanning_gate_contract(root)
+                    )
+                    self.assertTrue(
+                        any("require schema-version" in item for item in invalid_schema)
+                    )
+
             allowlist.write_text(
                 '{"schema-version": 3, "allowlist": ['
                 '{"number": 0, "tool": "CodeQL", "rule": "x", '
@@ -8026,6 +8039,24 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             [],
         )
 
+    def test_freshness_registry_schema_versions_must_be_integers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            for relative in (
+                ".github/freshness-trackers.json",
+                "skills/repo-scaffold/assets/freshness-trackers.json",
+            ):
+                path = root / relative
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document["schema-version"] = True
+                path.write_text(json.dumps(document), encoding="utf-8")
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+
+        self.assertEqual(
+            sum("must use schema-version 1" in problem for problem in problems), 2
+        )
+
     def test_freshness_job_runtime_contract_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -9060,6 +9091,29 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             + api_lookup
             + '\n)\nmapfile -t issue_numbers <<< "$issue_numbers_output"'
         )
+        legacy_api_with_single_line_reader = bound_api_lookup.replace(
+            "\n)\nmapfile -t issue_numbers",
+            "\n)\nread -r -a issue_numbers",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                legacy_api_with_single_line_reader
+                + '\ngh issue edit "${issue_numbers[0]}" --repo r '
+                "--body-file report.md"
+            )
+        )
+        for malformed_collection in (
+            "issue_numbers_output=$(\n  gh api 'unterminated\n)\n"
+            'mapfile -t issue_numbers <<< "$issue_numbers_output"',
+            bound_api_lookup.replace(f"--jq '{jq_expression}'", "--jq", 1),
+        ):
+            with self.subTest(malformed_collection=malformed_collection):
+                self.assertFalse(
+                    validate_repository.freshness_issue_numbers_collection_matches_api(
+                        malformed_collection
+                    )
+                )
         malformed_lookup = (
             "issue_numbers_output=$(\n  gh api\n  printf extra\n)\n"
             "$issue_numbers_output"
@@ -9103,6 +9157,12 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             validate_repository.freshness_api_result_controls_issue_selection(
                 extra_lookup_api
                 + '\ngh issue edit "${issue_numbers[0]}" --repo r --body-file report.md'
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                "output=$(gh api)\ngh api\n"
+                'gh issue edit "$output" --repo r --body-file report.md'
             )
         )
         self.assertTrue(

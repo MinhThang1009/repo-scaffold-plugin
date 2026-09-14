@@ -137,7 +137,11 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
         raise GateError(
             f"could not read code-scanning allowlist {path}: {error}"
         ) from error
-    if not isinstance(document, dict) or document.get("schema-version") not in {2, 3}:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schema-version")) is not int
+        or document.get("schema-version") not in {2, 3}
+    ):
         raise GateError("code-scanning allowlist must use schema-version 2 or 3")
     schema_version = document["schema-version"]
     entries = document.get("allowlist")

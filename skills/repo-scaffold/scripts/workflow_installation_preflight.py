@@ -260,6 +260,23 @@ FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS = (
     ("mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"),
     ("read", "-r", "-a", "issue_numbers", "<<<", "$issue_numbers_output"),
 )
+FRESHNESS_ISSUE_NUMBERS_COLLECTION_BY_JQ = {
+    FRESHNESS_REMINDER_API_JQ: (
+        "read",
+        "-r",
+        "-a",
+        "issue_numbers",
+        "<<<",
+        "$issue_numbers_output",
+    ),
+    FRESHNESS_REMINDER_API_JQ_LEGACY: (
+        "mapfile",
+        "-t",
+        "issue_numbers",
+        "<<<",
+        "$issue_numbers_output",
+    ),
+}
 FRESHNESS_DUPLICATE_ISSUE_GUARD = (
     "if (( ${#issue_numbers[@]} > 1 )); then",
     "printf 'Found multiple open freshness reminder issues.\\n' >&2",
@@ -2279,6 +2296,37 @@ def is_freshness_issue_numbers_collection_command(tokens: list[str]) -> bool:
     return tuple(tokens) in FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS
 
 
+def freshness_issue_numbers_collection_matches_api(command: str) -> bool:
+    """Require the collector to preserve every number emitted by the API query."""
+    jq_values: list[str] = []
+    collection_commands: list[tuple[str, ...]] = []
+    for logical_line in shell_logical_lines(command):
+        line_segments = shell_command_segments(logical_line)
+        if line_segments is None:
+            return False
+        for segment in line_segments:
+            command_tokens = shell_command_prefix(segment)
+            api_positions = [
+                index
+                for index in range(len(command_tokens) - 1)
+                if is_github_cli_executable(command_tokens[index])
+                and command_tokens[index + 1] == "api"
+            ]
+            for position in api_positions:
+                values = option_values(command_tokens[position + 2 :], "--jq")
+                if values is None or len(values) != 1:
+                    return False
+                jq_values.append(values[0])
+            if is_freshness_issue_numbers_collection_command(command_tokens):
+                collection_commands.append(tuple(command_tokens))
+    if len(jq_values) != 1 or len(collection_commands) != 1:
+        return False
+    return (
+        FRESHNESS_ISSUE_NUMBERS_COLLECTION_BY_JQ.get(jq_values[0])
+        == collection_commands[0]
+    )
+
+
 def freshness_api_result_controls_issue_selection(command: str) -> bool:
     """Require lookup output to identify the Issue passed to a mutation."""
     parsed = freshness_api_result_assignments(command)
@@ -2291,6 +2339,8 @@ def freshness_api_result_controls_issue_selection(command: str) -> bool:
         variable == "issue_numbers_output" for variable, _ in api_result_assignments
     ):
         if not freshness_issue_lookup_substitution_is_safe(command):
+            return False
+        if not freshness_issue_numbers_collection_matches_api(command):
             return False
     segments: list[list[str]] = []
     for logical_line in shell_logical_lines(command):
@@ -2613,7 +2663,14 @@ def workflow_is_reusable(document: dict[str, Any]) -> bool:
     """Return whether a workflow declares the reusable-workflow trigger."""
     triggers = document.get("on")
     if isinstance(triggers, dict):
-        return "workflow_call" in triggers
+        if "workflow_call" not in triggers:
+            return False
+        configuration = triggers["workflow_call"]
+        # GitHub accepts an empty event configuration or a mapping of inputs,
+        # secrets, and outputs. Treating arbitrary scalars (for example,
+        # ``workflow_call: false``) as enabled would approve an invalid caller
+        # relationship before actionlint or GitHub can reject it.
+        return configuration in (None, "", "null") or isinstance(configuration, dict)
     if isinstance(triggers, list):
         return "workflow_call" in triggers
     return triggers == "workflow_call"
@@ -2858,6 +2915,7 @@ def validate_code_scanning_allowlist(path: Path) -> None:
     if (
         not isinstance(document, dict)
         or set(document) != CODE_SCANNING_ALLOWLIST_KEYS
+        or type(document.get("schema-version")) is not int
         or document.get("schema-version") != CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION
         or not isinstance(document.get("allowlist"), list)
     ):
@@ -2997,7 +3055,13 @@ def selected_actions_endpoint(document: Any) -> str:
         raise InspectionError(
             "Selected Actions policy response has an invalid selected-actions URL."
         )
-    return match.group("endpoint")
+    endpoint = match.group("endpoint")
+    identifier = endpoint.split("/", 2)[1]
+    if identifier in {".", ".."}:
+        raise InspectionError(
+            "Selected Actions policy response has an invalid selected-actions URL."
+        )
+    return endpoint
 
 
 def selected_actions_policy(document: Any) -> dict[str, bool | list[str]]:
@@ -3076,6 +3140,12 @@ def workflow_capabilities(
                 f"Workflow input is missing or unsafe: {workflow}"
             ) from exc
         document = workflow_document(text, workflow)
+        for reference in workflow_uses_values(document):
+            if not isinstance(reference, str) or not reference.strip():
+                raise InspectionError(
+                    f"Workflow {workflow} has a uses reference that is not a "
+                    "non-empty string."
+                )
         validate_container_references(document, workflow)
         workflow_texts[workflow] = text
         workflow_documents[workflow] = document

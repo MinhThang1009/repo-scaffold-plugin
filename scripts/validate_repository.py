@@ -157,6 +157,23 @@ FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS = (
     ("mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"),
     ("read", "-r", "-a", "issue_numbers", "<<<", "$issue_numbers_output"),
 )
+FRESHNESS_ISSUE_NUMBERS_COLLECTION_BY_JQ = {
+    FRESHNESS_REMINDER_API_JQ: (
+        "read",
+        "-r",
+        "-a",
+        "issue_numbers",
+        "<<<",
+        "$issue_numbers_output",
+    ),
+    FRESHNESS_REMINDER_API_JQ_LEGACY: (
+        "mapfile",
+        "-t",
+        "issue_numbers",
+        "<<<",
+        "$issue_numbers_output",
+    ),
+}
 FRESHNESS_DUPLICATE_ISSUE_GUARD = (
     "if (( ${#issue_numbers[@]} > 1 )); then",
     "printf 'Found multiple open freshness reminder issues.\\n' >&2",
@@ -2562,6 +2579,35 @@ def is_freshness_issue_numbers_collection_command(tokens: list[str]) -> bool:
     return tuple(tokens) in FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS
 
 
+def freshness_issue_numbers_collection_matches_api(text: str) -> bool:
+    """Require the collector to preserve every number emitted by the API query."""
+    segments = shell_command_segments(text)
+    if segments is None:
+        return False
+    jq_values: list[str] = []
+    collection_commands: list[tuple[str, ...]] = []
+    for segment in segments:
+        command = shell_command_prefix(segment)
+        api_positions = [
+            index
+            for index in range(len(command) - 1)
+            if is_github_cli_executable(command[index]) and command[index + 1] == "api"
+        ]
+        for position in api_positions:
+            values = option_values(command[position + 2 :], "--jq")
+            if values is None or len(values) != 1:
+                return False
+            jq_values.append(values[0])
+        if is_freshness_issue_numbers_collection_command(command):
+            collection_commands.append(tuple(command))
+    if len(jq_values) != 1 or len(collection_commands) != 1:
+        return False
+    return (
+        FRESHNESS_ISSUE_NUMBERS_COLLECTION_BY_JQ.get(jq_values[0])
+        == collection_commands[0]
+    )
+
+
 def freshness_api_result_controls_issue_selection(text: str) -> bool:
     """Require lookup output to identify the Issue passed to a mutation."""
     parsed = freshness_api_result_assignments(text)
@@ -2574,6 +2620,8 @@ def freshness_api_result_controls_issue_selection(text: str) -> bool:
         variable == "issue_numbers_output" for variable, _ in api_result_assignments
     ):
         if not freshness_issue_lookup_substitution_is_safe(text):
+            return False
+        if not freshness_issue_numbers_collection_matches_api(text):
             return False
     segments = shell_command_segments(text)
     if segments is None:
@@ -2858,6 +2906,15 @@ def load_json(path: Path) -> Any:
 def nonempty_string(value: Any) -> bool:
     """Return whether a value is a nonempty string."""
     return isinstance(value, str) and bool(value.strip())
+
+
+def schema_version_is(document: object, expected: int) -> bool:
+    """Require a JSON schema version to be an actual integer, not a numeric alias."""
+    return (
+        isinstance(document, dict)
+        and type(document.get("schema-version")) is int
+        and document.get("schema-version") == expected
+    )
 
 
 def child_process_environment() -> dict[str, str]:
@@ -7075,8 +7132,7 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
             if isinstance(entry, dict) and isinstance(entry.get("id"), str)
         }
         if (
-            not isinstance(document, dict)
-            or document.get("schema-version") != 1
+            not schema_version_is(document, 1)
             or not isinstance(raw_files, list)
             or identifiers != expected_identifiers
         ):
@@ -7306,7 +7362,7 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             problems.append(
                 f"{relative}: must track code-scanning allowlist review dates"
             )
-        if not isinstance(registry, dict) or registry.get("schema-version") != 1:
+        if not schema_version_is(registry, 1):
             problems.append(f"{relative}: freshness registry must use schema-version 1")
     workflows = (
         repository_root / ".github" / "workflows" / "freshness.yml",
@@ -7420,8 +7476,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
     else:
         claims = registry.get("claims") if isinstance(registry, dict) else None
         if (
-            not isinstance(registry, dict)
-            or registry.get("schema-version") != 1
+            not schema_version_is(registry, 1)
             or not isinstance(claims, list)
             or not claims
         ):
@@ -7797,6 +7852,7 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
         if (
             not isinstance(allowlist, dict)
             or set(allowlist) != CODE_SCANNING_ALLOWLIST_KEYS
+            or type(schema_version) is not int
             or schema_version != 3
             or not isinstance(entries, list)
         ):

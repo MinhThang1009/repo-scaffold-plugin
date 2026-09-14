@@ -164,6 +164,8 @@ def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
     try:
         resolved = path.resolve(strict=True)
         resolved.relative_to(root.resolve())
+        if not path.is_file():
+            raise OSError("not a regular file")
     except (OSError, UnicodeError, RuntimeError, ValueError) as error:
         raise AuditError(f"{kind} is missing or unsafe: {relative}") from error
     return path
@@ -221,7 +223,11 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         raise AuditError(
             f"could not read freshness tracker registry {relative}: {error}"
         ) from error
-    if not isinstance(document, dict) or document.get("schema-version") != 1:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schema-version")) is not int
+        or document.get("schema-version") != 1
+    ):
         raise AuditError("freshness tracker registry must use schema-version 1")
     if not set(document).issubset(FRESHNESS_TRACKER_REGISTRY_KEYS):
         raise AuditError(
@@ -711,8 +717,8 @@ def code_scanning_allowlist_findings(
                 )
             schema_version = document.get("schema-version")
             entries = document.get("allowlist")
-            if schema_version != 3:
-                if schema_version == 2:
+            if type(schema_version) is not int or schema_version != 3:
+                if type(schema_version) is int and schema_version == 2:
                     findings.append(
                         {
                             "kind": "code-scanning-allowlist-schema",

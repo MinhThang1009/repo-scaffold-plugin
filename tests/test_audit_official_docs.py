@@ -141,6 +141,8 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                     official_docs.load_trackers(root)
             for document, fragment in (
                 ({"schema-version": 2, "claims": []}, "schema-version"),
+                ({"schema-version": 1.0, "claims": []}, "schema-version"),
+                ({"schema-version": True, "claims": []}, "schema-version"),
                 ({"schema-version": 1, "claims": []}, "non-empty"),
                 ({"schema-version": 1, "claims": [None]}, "object"),
                 (

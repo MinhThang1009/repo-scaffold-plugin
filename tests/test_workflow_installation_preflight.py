@@ -105,6 +105,20 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 relative,
             )
 
+    def test_freshness_legacy_query_requires_line_preserving_collector(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        legacy_query_with_read = workflow_text.replace(
+            "--jq '[.items[].number] | join(\" \")'",
+            "--jq '.items[].number'",
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.is_freshness_reminder_workflow(
+                legacy_query_with_read, workflow_path
+            )
+        )
+
     def test_freshness_requires_preparation_before_audit(self) -> None:
         for relative in (
             ".github/workflows/freshness.yml",
@@ -386,6 +400,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "https://api.github.com/organizations/42/actions/permissions/selected-actions?x=1",
             "https://api.github.com/organizations/0/actions/permissions/selected-actions",
             "https://api.github.com/repos/octo/example/actions/permissions/selected-actions",
+            "https://api.github.com/enterprises/./actions/permissions/selected-actions",
+            "https://api.github.com/enterprises/../actions/permissions/selected-actions",
         ):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(
@@ -2010,6 +2026,19 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 workflow_installation_preflight.validate_code_scanning_allowlist(
                     allowlist
                 )
+            for schema_version in (3.0, True):
+                allowlist.write_text(
+                    json.dumps({"schema-version": schema_version, "allowlist": []}),
+                    encoding="utf-8",
+                )
+                with self.subTest(schema_version=schema_version):
+                    with self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError,
+                        "schema-version 3",
+                    ):
+                        workflow_installation_preflight.validate_code_scanning_allowlist(
+                            allowlist
+                        )
 
             metadata = allowlist.stat()
             allowlist.write_text('{"schema-version": 3}\n', encoding="utf-8")
@@ -2979,6 +3008,29 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             + api_lookup
             + '\n)\nmapfile -t issue_numbers <<< "$issue_numbers_output"'
         )
+        legacy_api_with_single_line_reader = bound_api_lookup.replace(
+            "\n)\nmapfile -t issue_numbers",
+            "\n)\nread -r -a issue_numbers",
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                legacy_api_with_single_line_reader
+                + '\ngh issue edit "${issue_numbers[0]}" --repo r '
+                "--body-file report.md"
+            )
+        )
+        for malformed_collection in (
+            "issue_numbers_output=$(\n  gh api 'unterminated\n)\n"
+            'mapfile -t issue_numbers <<< "$issue_numbers_output"',
+            bound_api_lookup.replace(f"--jq '{jq_expression}'", "--jq", 1),
+        ):
+            with self.subTest(malformed_collection=malformed_collection):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_issue_numbers_collection_matches_api(
+                        malformed_collection
+                    )
+                )
         malformed_lookup = (
             "issue_numbers_output=$(\n  gh api\n  printf extra\n)\n"
             "$issue_numbers_output"
@@ -3013,6 +3065,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             workflow_installation_preflight.freshness_api_result_controls_issue_selection(
                 extra_lookup_api
                 + '\ngh issue edit "${issue_numbers[0]}" --repo r --body-file report.md'
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                "output=$(gh api)\ngh api\n"
+                'gh issue edit "$output" --repo r --body-file report.md'
             )
         )
         self.assertTrue(
@@ -4954,9 +5012,17 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
     def test_reusable_workflow_and_graph_helpers_cover_supported_shapes(self) -> None:
         for document, expected in (
             ({"on": {"workflow_call": None}}, True),
+            ({"on": {"workflow_call": {}}}, True),
+            ({"on": {"workflow_call": ""}}, True),
+            ({"on": {"workflow_call": "null"}}, True),
             ({"on": ["workflow_call"]}, True),
             ({"on": "workflow_call"}, True),
             ({"on": {"push": None}}, False),
+            ({"on": {"workflow_call": False}}, False),
+            ({"on": {"workflow_call": True}}, False),
+            ({"on": {"workflow_call": "false"}}, False),
+            ({"on": {"workflow_call": []}}, False),
+            ({"on": {"workflow_call": 0}}, False),
             ({"on": None}, False),
             ({}, False),
         ):
@@ -5068,6 +5134,40 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "safe repository-relative path",
             ):
                 workflow_installation_preflight.workflow_capabilities([caller])
+
+    def test_empty_uses_references_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "empty-uses.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses:\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "non-empty string",
+            ):
+                workflow_installation_preflight.workflow_capabilities([workflow])
+
+    def test_external_action_repository_traversal_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "traversal.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: ../evil@" + "a" * 40 + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "invalid repository",
+            ):
+                workflow_installation_preflight.workflow_capabilities([workflow])
 
     def test_duplicate_workflow_input_names_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
