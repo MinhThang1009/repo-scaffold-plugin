@@ -600,7 +600,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.repository_root.resolve()
     try:
-        registry_path = checked_registry_path(root, args.registry)
+        # Keep the caller's lexical root for registry containment.  On macOS,
+        # temporary directories can be exposed through a symlink such as
+        # ``/var`` -> ``/private/var``; resolving only the repository root
+        # would make an otherwise in-root absolute ``--registry`` path appear
+        # outside the root.
+        registry_path = checked_registry_path(
+            args.repository_root.absolute(), args.registry
+        )
         entries = load_registry(registry_path)
         report = audit(
             root,
