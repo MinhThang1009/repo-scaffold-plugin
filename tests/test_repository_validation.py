@@ -1336,6 +1336,24 @@ class CiToolchainContractValidationTests(unittest.TestCase):
             self.assertFalse(any("found '7'" in item for item in problems))
 
 
+class LinkWorkflowContractTests(unittest.TestCase):
+    def test_link_workflows_retry_transient_upstream_failures(self) -> None:
+        workflow_paths = (
+            PLUGIN_ROOT / ".github" / "workflows" / "links.yml",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "links.yml",
+        )
+        for path in workflow_paths:
+            with self.subTest(path=path):
+                workflow = path.read_text(encoding="utf-8")
+                self.assertIn("--max-retries 5", workflow)
+                self.assertIn("--retry-wait-time 2", workflow)
+
+
 class MirroredDependencyMetadataTests(unittest.TestCase):
     def test_repository_mirrored_metadata_is_synchronized(self) -> None:
         self.assertEqual(

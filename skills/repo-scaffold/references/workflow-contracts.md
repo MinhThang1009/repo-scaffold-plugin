@@ -42,6 +42,8 @@ detects drift, and must not install an unreviewed release automatically.
 When CI downloads the reviewed standalone ShellCheck or actionlint archive,
 the download must use HTTPS, verify the policy digest, and use bounded retries
 so transient release-service failures do not turn into avoidable gate failures.
+The link checker must also use bounded retries with backoff for transient
+upstream HTTP failures while continuing to fail on unresolved links.
 
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.
