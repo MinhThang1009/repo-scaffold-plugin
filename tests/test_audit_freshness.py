@@ -195,6 +195,13 @@ class FreshnessTests(unittest.TestCase):
                         freshness.pinned_requirements(path)
             with self.assertRaisesRegex(freshness.AuditError, "could not read"):
                 freshness.pinned_requirements(path.with_name("missing.in"))
+            path.write_text("ruff==1.0.0\n", encoding="utf-8")
+            with mock.patch.object(freshness, "MAX_REQUIREMENTS_BYTES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "size limit"):
+                    freshness.pinned_requirements(path)
+            path.write_bytes(b"ruff==1.0.0\n\xff")
+            with self.assertRaisesRegex(freshness.AuditError, "valid UTF-8"):
+                freshness.pinned_requirements(path)
 
     def test_action_findings_are_semantic_and_cache_upstream_releases(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -654,6 +661,11 @@ class FreshnessTests(unittest.TestCase):
                 freshness.release_please_findings(
                     root, trackers.release_please_configs, "v17.6.0"
                 )
+            with mock.patch.object(freshness, "MAX_RELEASE_PLEASE_CONFIG_BYTES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "size limit"):
+                    freshness.release_please_findings(
+                        root, trackers.release_please_configs, "v17.6.0"
+                    )
             config.write_text(
                 json.dumps(
                     {

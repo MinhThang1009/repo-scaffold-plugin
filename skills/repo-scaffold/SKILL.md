@@ -295,7 +295,8 @@ invalid. Its version-1 schema supports only known top-level fields and known
 requirement-source fields; lock paths cannot reference requirement sources, so
 new inputs cannot be silently ignored. The freshness checker bounds each
 tracked workflow read to 5 MiB and records an indeterminate check when a file
-exceeds that cap.
+exceeds that cap. Requirements and tracked JSON policy inputs are bounded to
+1 MiB before parsing.
 The reconciliation job itself must inherit or declare `issues: write`; granting
 that permission only to a different job does not satisfy the companion contract.
 It must be named `freshness-audit` and set `timeout-minutes: 15`.

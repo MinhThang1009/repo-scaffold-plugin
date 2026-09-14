@@ -55,6 +55,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   reference requirement sources, and unknown fields must fail closed instead of
   being ignored. The freshness checker bounds each tracked workflow read to
   5 MiB and reports an indeterminate check when a file exceeds that cap.
+  Requirements and tracked JSON policy inputs are bounded to 1 MiB before
+  parsing.
   Every reminder mutation must use an explicit repository binding, and every
   freshness `create` or `edit` mutation must use a durable `--body-file` (with a
   non-empty `--title` for `create`). The reconciliation job must have effective

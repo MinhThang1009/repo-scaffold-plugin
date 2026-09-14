@@ -23,6 +23,8 @@ import sync_action_pins
 PYPI_ROOT = "https://pypi.org/pypi"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
+MAX_REQUIREMENTS_BYTES = 1024 * 1024
+MAX_RELEASE_PLEASE_CONFIG_BYTES = 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
@@ -161,6 +163,27 @@ def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
     return path
 
 
+def read_bounded_utf8(
+    path: Path,
+    max_bytes: int,
+    *,
+    kind: str,
+    limit_name: str = "size limit",
+) -> str:
+    """Read one trusted repository file with a bounded UTF-8 payload."""
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(max_bytes + 1)
+    except OSError as error:
+        raise AuditError(f"could not read {kind} {path}: {error}") from error
+    if len(payload) > max_bytes:
+        raise AuditError(f"{kind} exceeds the {max_bytes}-byte {limit_name}: {path}")
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError as error:
+        raise AuditError(f"{kind} is not valid UTF-8: {path}") from error
+
+
 def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
     """Load the reviewed freshness registry from within the repository root."""
     registry_path = tracked_path(
@@ -169,15 +192,16 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         kind="freshness tracker registry",
     )
     try:
-        if registry_path.stat().st_size > MAX_TRACKER_REGISTRY_BYTES:
-            raise AuditError(
-                f"freshness tracker registry exceeds the size limit: {relative}"
-            )
         document = json.loads(
-            registry_path.read_text(encoding="utf-8"),
+            read_bounded_utf8(
+                registry_path,
+                MAX_TRACKER_REGISTRY_BYTES,
+                kind="freshness tracker registry",
+            ),
             object_pairs_hook=unique_json_object,
         )
     except (
+        AuditError,
         OSError,
         UnicodeError,
         ValueError,
@@ -333,10 +357,9 @@ def latest_pypi_release(package: str) -> str:
 
 def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
     """Read exact direct pins, ignoring comments and include directives."""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as error:
-        raise AuditError(f"could not read requirements file {path}: {error}") from error
+    lines = read_bounded_utf8(
+        path, MAX_REQUIREMENTS_BYTES, kind="requirements file"
+    ).splitlines()
     pins: dict[str, tuple[str, str]] = {}
     for line in lines:
         stripped = line.strip()
@@ -387,16 +410,15 @@ def action_findings(
             continue
         for path in workflow_paths:
             try:
-                with path.open("rb") as stream:
-                    raw = stream.read(MAX_WORKFLOW_BYTES + 1)
-                if len(raw) > MAX_WORKFLOW_BYTES:
-                    raise OSError(
-                        f"workflow exceeds the {MAX_WORKFLOW_BYTES}-byte safety cap"
-                    )
-                text = raw.decode("utf-8")
+                text = read_bounded_utf8(
+                    path,
+                    MAX_WORKFLOW_BYTES,
+                    kind="workflow",
+                    limit_name="safety cap",
+                )
                 sync_action_pins.auditable_action_repositories(path, text)
                 matches = sync_action_pins.action_pin_matches(text)
-            except (OSError, UnicodeError, ValueError) as cause:
+            except (AuditError, OSError, UnicodeError, ValueError) as cause:
                 issue = AuditError(
                     "could not inspect workflow action pins "
                     f"{path.relative_to(root).as_posix()}: {cause}"
@@ -449,10 +471,15 @@ def release_please_findings(
             path = tracked_path(root, relative, kind="Release Please config")
             try:
                 document = json.loads(
-                    path.read_text(encoding="utf-8"),
+                    read_bounded_utf8(
+                        path,
+                        MAX_RELEASE_PLEASE_CONFIG_BYTES,
+                        kind="Release Please config",
+                    ),
                     object_pairs_hook=unique_json_object,
                 )
             except (
+                AuditError,
                 OSError,
                 UnicodeError,
                 ValueError,
@@ -586,12 +613,13 @@ def code_scanning_allowlist_findings(
     for relative in allowlists:
         try:
             path = tracked_path(root, relative, kind="code-scanning allowlist")
-            if path.stat().st_size > MAX_CODE_SCANNING_ALLOWLIST_BYTES:
-                raise AuditError(
-                    f"code-scanning allowlist exceeds the size limit: {relative}"
-                )
             document = json.loads(
-                path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+                read_bounded_utf8(
+                    path,
+                    MAX_CODE_SCANNING_ALLOWLIST_BYTES,
+                    kind="code-scanning allowlist",
+                ),
+                object_pairs_hook=unique_json_object,
             )
             if not isinstance(document, dict):
                 raise AuditError(
