@@ -245,6 +245,7 @@ class MutationRunnerTests(unittest.TestCase):
                 "scripts\\alpha.py",
                 "./scripts/alpha.py",
                 "scripts/C:alpha.py",
+                "scripts/\nalpha.py",
             ):
                 with self.subTest(source=source):
                     marker.write_text(

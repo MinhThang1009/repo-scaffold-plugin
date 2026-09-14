@@ -100,6 +100,7 @@ def safe_relative_path(value: object, *, field: str) -> Path:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or any(ord(character) < 0x20 for character in value)
         or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
     ):

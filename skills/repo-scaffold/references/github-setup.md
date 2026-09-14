@@ -350,7 +350,8 @@ pass `assets/code-scanning-allowlist.json` with `--code-scanning-allowlist`.
 The preflight rejects a gate plan without both companions, so copy all three
 verified inputs only after it returns `may-install-workflow-assets`. The supplied
 allowlist must contain only schema-v3 entries with exact selector fields, unique
-positive alert numbers, canonical POSIX paths, non-future ISO review dates, and
+positive alert numbers, canonical POSIX paths without traversal or control
+characters, non-future ISO review dates, and
 review periods from 1 to 366 days. Its top-level fields must be exactly
 `schema-version` and `allowlist`; malformed entries fail before approval. The
 freshness workflow must use only scheduled and manual triggers. Each schedule

@@ -147,6 +147,7 @@ def is_canonical_allowlist_path(value: object) -> bool:
         and not path.is_absolute()
         and ".." not in path.parts
         and "\\" not in value
+        and not any(ord(character) < 0x20 for character in value)
         and not any(PureWindowsPath(part).drive for part in path.parts)
         and path.as_posix() == value
     )

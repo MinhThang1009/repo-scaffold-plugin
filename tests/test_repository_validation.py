@@ -5524,6 +5524,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 "../escape",
                 "C:/example.py",
                 "scripts//example.py",
+                "scripts/\nexample.py",
             ):
                 with self.subTest(invalid_path=invalid_path):
                     allowlist.write_text(

@@ -172,6 +172,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 r"scripts\example.py",
                 "scripts/./example.py",
                 "scripts//example.py",
+                "scripts/\nexample.py",
                 "C:/example.py",
                 "scripts/C:example.py",
             ):
@@ -634,6 +635,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 ],
                 "path must be text",
             ),
+            ([alert(1, path="scripts/\nexample.py")], "canonical POSIX"),
             ([{**alert(1), "number": "one"}], "number must be an integer"),
             ([{**alert(1), "number": True}], "number must be an integer"),
         ):

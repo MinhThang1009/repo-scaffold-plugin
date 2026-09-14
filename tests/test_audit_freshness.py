@@ -1219,6 +1219,13 @@ class FreshnessTests(unittest.TestCase):
                 (
                     {
                         "schema-version": 3,
+                        "allowlist": [{**valid, "path": "scripts/\nexample.py"}],
+                    },
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
                         "allowlist": [{**valid, "reviewed-on": "not-a-date"}],
                     },
                     "ISO date",

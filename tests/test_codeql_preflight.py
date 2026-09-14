@@ -2685,6 +2685,9 @@ class WorkflowDiscoveryTests(unittest.TestCase):
         self.assertFalse(
             codeql_preflight.is_direct_workflow_path(".github/workflows/nested/ci.yml")
         )
+        self.assertFalse(
+            codeql_preflight.is_direct_workflow_path(".github/workflows/a\n.yml")
+        )
 
     def test_safe_path_rejects_a_dangling_link_component(self) -> None:
         root = Path("C:/repository")

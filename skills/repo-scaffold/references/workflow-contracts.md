@@ -25,8 +25,10 @@ allowed.
 Selected-actions preflight must follow GitHub's validated `selected_actions_url`
 so organization and enterprise policy overrides cannot be replaced by a more
 permissive repository endpoint.
-Local reusable-workflow calls must be supplied from the same workflow directory
-as their caller; a matching basename from another directory is ambiguous.
+Local reusable-workflow call paths must use canonical repository-relative POSIX
+paths without traversal, backslash, or control characters. Calls must be
+supplied from the same workflow directory as their caller; a matching basename
+from another directory is ambiguous.
 Each supplied called workflow must declare `workflow_call`, and local call loops
 are rejected. The supplied graph must stay within GitHub's 10 workflow levels
 and 50 unique nested workflows per top-level caller.
@@ -191,7 +193,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   The checked-in registry must retain every shipped workflow, release, allowlist,
   and requirement input; do not empty a category to suppress a check.
   Code-scanning allowlists must use only the `schema-version` and `allowlist`
-  top-level fields. Exceptions must also carry a bounded review date and
+  top-level fields. Exception paths must be canonical POSIX paths without
+  traversal or control characters. Exceptions must also carry a bounded review date and
   be tracked by freshness; do not install the code-scanning gate without its
   matching allowlist and freshness reminder.
 - CI: create or adapt a stack-valid workflow with real commands and a stable

@@ -116,6 +116,7 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
             r"docs\README.md",
             "docs/./README.md",
             "docs//README.md",
+            "docs/\nREADME.md",
             "C:/README.md",
             "docs/C:README.md",
         ):

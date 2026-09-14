@@ -2555,9 +2555,13 @@ def contains_codeql_cli(
 
 def is_direct_workflow_path(path: str) -> bool:
     workflow_path = PurePosixPath(path)
-    return workflow_path.parent == PurePosixPath(
-        ".github/workflows"
-    ) and workflow_path.suffix.lower() in {".yml", ".yaml"}
+    return (
+        not any(ord(character) < 0x20 for character in path)
+        and "\\" not in path
+        and workflow_path.as_posix() == path
+        and workflow_path.parent == PurePosixPath(".github/workflows")
+        and workflow_path.suffix.lower() in {".yml", ".yaml"}
+    )
 
 
 def parse_workflow(

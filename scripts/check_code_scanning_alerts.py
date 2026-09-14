@@ -107,6 +107,7 @@ def safe_alert_path(value: str) -> str:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or any(ord(character) < 0x20 for character in value)
         or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
     ):
@@ -406,6 +407,8 @@ def open_alerts(repository: str, ref: str, token: str) -> tuple[Alert, ...]:
             path = location.get("path") if isinstance(location, dict) else None
             if path is not None and not isinstance(path, str):
                 raise GateError("GitHub alert path must be text or null")
+            if path is not None:
+                path = safe_alert_path(path)
             number = item.get("number")
             if type(number) is not int:
                 raise GateError("GitHub alert number must be an integer")

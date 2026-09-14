@@ -2139,6 +2139,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     "canonical POSIX",
                 ),
                 (
+                    "control-character path",
+                    [{**valid_entry, "path": "scripts/\nexample.py"}],
+                    "canonical POSIX",
+                ),
+                (
                     "invalid review date",
                     [{**valid_entry, "reviewed-on": "not-a-date"}],
                     "ISO date",
@@ -4944,15 +4949,20 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             caller = root / "caller.yml"
-            caller.write_text(
-                "jobs:\n  publish:\n    uses: ./.github/workflows/../release.yml\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(
-                workflow_installation_preflight.InspectionError,
-                "unsafe local reusable-workflow reference",
+            for call in (
+                "./.github/workflows/../release.yml",
+                "./.github/workflows/a\n.yml",
             ):
-                workflow_installation_preflight.workflow_capabilities([caller])
+                with self.subTest(call=call):
+                    caller.write_text(
+                        f"jobs:\n  publish:\n    uses: {json.dumps(call)}\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError,
+                        "unsafe local reusable-workflow reference",
+                    ):
+                        workflow_installation_preflight.workflow_capabilities([caller])
 
     def test_local_reusable_workflow_inputs_bind_to_callers_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

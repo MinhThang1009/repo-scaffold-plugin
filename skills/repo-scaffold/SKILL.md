@@ -119,7 +119,8 @@ preflight in one invocation with both the gate and `freshness.yml` passed as
 `--workflow`, plus its matching `code-scanning-allowlist.json` passed as
 `--code-scanning-allowlist`. The preflight refuses an incomplete companion set.
 It also validates every schema-v3 exception before approval: exact selector
-fields, unique positive alert numbers, canonical POSIX paths, non-future ISO
+fields, unique positive alert numbers, canonical POSIX paths without traversal or
+control characters, non-future ISO
 review dates, review periods from 1 to 366 days, and only the
 `schema-version`/`allowlist` top-level fields.
 The gate is only a fail-closed enforcement layer for a verified CodeQL producer;
@@ -211,8 +212,9 @@ matching pattern. If a supplied workflow calls a local reusable workflow, pass
 that called workflow in the same invocation as well; the preflight fails closed
 when the local call cannot be resolved to one supplied input, or when the
 matching basename comes from another workflow directory. Local `./...`
-action references must also be canonical repository-relative paths; traversal,
-backslash, and control-character forms are rejected.
+action references and local reusable-workflow call paths must use canonical
+repository-relative POSIX paths; traversal, backslash, and control-character
+forms are rejected.
 Every supplied local reusable workflow must declare `workflow_call`, and loops
 in the supplied local workflow graph are rejected. The supplied graph must also
 stay within GitHub's 10 workflow levels and 50 unique nested workflows per

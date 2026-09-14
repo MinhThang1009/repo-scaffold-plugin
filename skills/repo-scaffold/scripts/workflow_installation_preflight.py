@@ -2646,7 +2646,7 @@ def local_reusable_workflow_names(document: dict[str, Any], source: Path) -> lis
         if (
             not relative
             or "\\" in relative
-            or "\x00" in relative
+            or any(ord(character) < 0x20 for character in relative)
             or path.as_posix() != relative
             or path.parts[:2] != (".github", "workflows")
             or len(path.parts) != 3
@@ -2972,6 +2972,7 @@ def validate_code_scanning_allowlist(path: Path) -> None:
                 or path_value_as_posix.is_absolute()
                 or ".." in path_value_as_posix.parts
                 or "\\" in path_value
+                or any(ord(character) < 0x20 for character in path_value)
                 or any(
                     PureWindowsPath(part).drive for part in path_value_as_posix.parts
                 )
