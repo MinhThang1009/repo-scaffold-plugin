@@ -39,6 +39,9 @@ canary, load `.github/ci-toolchain.json` through the bundled
 `ci_toolchain.py run-markdownlint` tooling, retain the scheduled/manual drift
 canary, reconcile one durable reminder issue when a concrete policy canary
 detects drift, and must not install an unreviewed release automatically.
+When CI downloads the reviewed standalone ShellCheck or actionlint archive,
+the download must use HTTPS, verify the policy digest, and use bounded retries
+so transient release-service failures do not turn into avoidable gate failures.
 
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.

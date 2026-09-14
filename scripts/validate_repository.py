@@ -3656,6 +3656,18 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
             '"$RUNNER_TEMP/actionlint"',
         ),
     }
+    expected_download_fragments = {
+        "Install ShellCheck": (
+            "--retry 5",
+            "--retry-delay 2",
+            "--retry-max-time 120",
+        ),
+        "Install actionlint": (
+            "--retry 5",
+            "--retry-delay 2",
+            "--retry-max-time 120",
+        ),
+    }
     for step_name, expected_environment in expected_environments.items():
         matching = [
             step
@@ -3674,6 +3686,13 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         ):
             problems.append(
                 f".github/workflows/ci.yml: {step_name} must extract before install"
+            )
+        if not isinstance(run_script, str) or any(
+            fragment not in run_script
+            for fragment in expected_download_fragments[step_name]
+        ):
+            problems.append(
+                f".github/workflows/ci.yml: {step_name} must use bounded download retries"
             )
     if isinstance(installed_tools, dict):
         forbidden_workflow_literals: set[str] = set()

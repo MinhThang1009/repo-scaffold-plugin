@@ -1118,6 +1118,24 @@ class CiToolchainContractValidationTests(unittest.TestCase):
                 problems,
             )
 
+    def test_standalone_tool_downloads_require_bounded_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "            --retry 5 --retry-delay 2 --retry-max-time 120 \\\n",
+                "",
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+        self.assertEqual(
+            sum("must use bounded download retries" in item for item in problems),
+            2,
+        )
+
     def test_missing_script_and_policies_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
