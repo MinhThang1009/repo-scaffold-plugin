@@ -458,7 +458,8 @@ it resolves at 500, so large or hostile repositories cannot force unbounded
 local reads or upstream lookups. Requirements and tracked JSON policy inputs
 are bounded to 1 MiB before parsing. The tracker registry is also capped at
 500 tracked input paths, including requirement locks. Each requirements file
-may contain at most 512 unique direct pins.
+may contain at most 512 unique direct pins, and all tracked requirement sources
+and locks together at most 4096 pins.
 The reconciliation job itself
 must inherit or declare
 `issues: write`, be named `freshness-audit`, and use `timeout-minutes: 15`; a

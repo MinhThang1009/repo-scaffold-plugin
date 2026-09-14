@@ -748,6 +748,26 @@ class FreshnessTests(unittest.TestCase):
                 freshness.requirement_findings(root, sources, latest_lookup), []
             )
             self.assertEqual(calls, ["ruff"])
+            with mock.patch.object(freshness, "MAX_TOTAL_REQUIREMENT_PINS", 1):
+                with self.assertRaisesRegex(
+                    freshness.AuditError, "tracked requirements.*pin safety cap"
+                ):
+                    freshness.requirement_findings(root, sources, latest_lookup)
+
+            lock = root / "lock.txt"
+            lock.write_text("black==0.1.0\n", encoding="utf-8")
+            source_with_lock = (
+                freshness.RequirementSource(
+                    first.relative_to(root), (lock.relative_to(root),)
+                ),
+            )
+            with mock.patch.object(freshness, "MAX_TOTAL_REQUIREMENT_PINS", 1):
+                with self.assertRaisesRegex(
+                    freshness.AuditError, "tracked requirements.*pin safety cap"
+                ):
+                    freshness.requirement_findings(
+                        root, source_with_lock, latest_lookup
+                    )
 
     def test_requirement_findings_records_one_lookup_error_per_package(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -301,6 +301,7 @@ exceeds that cap. It also caps the tracked workflow inventory at 500 files and
 or hostile repository cannot force unbounded local reads or upstream lookups.
 The tracker registry is also capped at 500 tracked input paths, including
 requirement locks. Each requirements file may contain at most 512 unique direct
+pins, and all tracked requirement sources and locks together at most 4096
 pins. Requirements and tracked JSON policy inputs are bounded to 1 MiB before
 parsing.
 The reconciliation job itself must inherit or declare `issues: write`; granting

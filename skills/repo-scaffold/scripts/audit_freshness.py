@@ -28,6 +28,7 @@ MAX_TRACKED_WORKFLOW_BYTES = 64 * 1024 * 1024
 MAX_TRACKED_ACTION_REPOSITORIES = 500
 MAX_REQUIREMENTS_BYTES = 1024 * 1024
 MAX_REQUIREMENT_PINS = 512
+MAX_TOTAL_REQUIREMENT_PINS = 4096
 MAX_RELEASE_PLEASE_CONFIG_BYTES = 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
@@ -807,6 +808,7 @@ def requirement_findings(
     findings: list[dict[str, str]] = []
     latest_versions: dict[str, str] = {}
     failed_lookups: set[str] = set()
+    total_pin_count = 0
     for requirement_source in sources:
         try:
             source = tracked_path(
@@ -818,16 +820,30 @@ def requirement_findings(
                 raise
             errors.append(str(error))
             continue
+        total_pin_count += len(pins)
+        if total_pin_count > MAX_TOTAL_REQUIREMENT_PINS:
+            raise AuditError(
+                "tracked requirements exceed the "
+                f"{MAX_TOTAL_REQUIREMENT_PINS}-pin safety cap"
+            )
         locks: dict[Path, dict[str, tuple[str, str]]] = {}
         for relative in requirement_source.locks:
             try:
-                locks[relative] = pinned_requirements(
+                lock_pins = pinned_requirements(
                     tracked_path(root, relative, kind="requirements lock")
                 )
             except AuditError as error:
                 if errors is None:
                     raise
                 errors.append(str(error))
+            else:
+                total_pin_count += len(lock_pins)
+                if total_pin_count > MAX_TOTAL_REQUIREMENT_PINS:
+                    raise AuditError(
+                        "tracked requirements exceed the "
+                        f"{MAX_TOTAL_REQUIREMENT_PINS}-pin safety cap"
+                    )
+                locks[relative] = lock_pins
         for key, (name, current) in pins.items():
             for lock_relative, lock_pins in locks.items():
                 locked = lock_pins.get(key)
