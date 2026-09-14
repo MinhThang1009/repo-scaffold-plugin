@@ -11975,7 +11975,7 @@ class PolicyDriftReminderContractTests(unittest.TestCase):
                 PLUGIN_ROOT / ".github" / "workflows" / "ci.yml"
             ).read_text(encoding="utf-8")
             workflow_text = workflow_text.replace(
-                "${{ github.workflow }}-policy-drift-${{ github.repository }}",
+                "repo-scaffold-ci-policy-drift-${{ github.repository }}",
                 "${{ github.workflow }}-policy-drift-${{ github.ref }}",
             )
             (workflow_directory / "ci.yml").write_text(workflow_text, encoding="utf-8")

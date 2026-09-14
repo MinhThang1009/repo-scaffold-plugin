@@ -50,9 +50,12 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   only supported fields and input types. Maintain one idempotent issue when
   Issues are enabled. Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
-  The freshness reminder uses the stable
-  `repo-scaffold-freshness-${{ github.repository }}` group so a renamed manual
-  branch workflow cannot race the scheduled run.
+  Shipped reminders use stable, distinct repository prefixes:
+  `repo-scaffold-community-health-${{ github.repository }}`,
+  `repo-scaffold-official-docs-${{ github.repository }}`,
+  `repo-scaffold-freshness-${{ github.repository }}`, and
+  `repo-scaffold-ci-policy-drift-${{ github.repository }}`. A renamed manual
+  branch workflow therefore cannot race its scheduled run.
   The version-1 freshness tracker registry supports only known top-level fields
   and exact `path`/`locks` requirement-source fields; lock paths cannot
   reference requirement sources, and unknown fields must fail closed instead of

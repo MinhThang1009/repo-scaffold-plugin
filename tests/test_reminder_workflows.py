@@ -37,20 +37,25 @@ class ReminderWorkflowTests(unittest.TestCase):
             if relative == ".github/workflows/ci.yml":
                 concurrency = document["jobs"]["policy-drift-reminder"]["concurrency"]
                 expected_group = (
-                    "${{ github.workflow }}-policy-drift-${{ github.repository }}"
+                    "repo-scaffold-ci-policy-drift-${{ github.repository }}"
                 )
             else:
                 concurrency = document["concurrency"]
                 expected_group = (
-                    "repo-scaffold-freshness-${{ github.repository }}"
-                    if relative.endswith("/freshness.yml")
-                    else "${{ github.workflow }}-${{ github.repository }}"
+                    "repo-scaffold-community-health-${{ github.repository }}"
+                    if relative.endswith("/community-health.yml")
+                    else (
+                        "repo-scaffold-official-docs-${{ github.repository }}"
+                        if relative.endswith("/official-docs.yml")
+                        else "repo-scaffold-freshness-${{ github.repository }}"
+                    )
                 )
             self.assertEqual(
                 concurrency,
                 {"group": expected_group, "cancel-in-progress": "false"},
                 relative,
             )
+            self.assertNotIn("github.workflow", concurrency["group"], relative)
 
     @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
     def test_issue_lookup_must_succeed_before_any_reminder_mutation(self) -> None:

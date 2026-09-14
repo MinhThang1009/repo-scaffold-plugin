@@ -71,7 +71,12 @@ REMINDER_ISSUE_ALLOWED_MUTATIONS = frozenset({"create", "edit", "close"})
 REMINDER_ISSUE_BODY_MUTATIONS = frozenset({"create", "edit"})
 REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "view"})
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
-REMINDER_WORKFLOW_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.repository }}"
+COMMUNITY_HEALTH_REMINDER_CONCURRENCY_GROUP = (
+    "repo-scaffold-community-health-${{ github.repository }}"
+)
+OFFICIAL_DOCS_REMINDER_CONCURRENCY_GROUP = (
+    "repo-scaffold-official-docs-${{ github.repository }}"
+)
 FRESHNESS_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-freshness-${{ github.repository }}"
 )
@@ -104,7 +109,7 @@ FRESHNESS_REMINDER_API_ALLOWED_ARGUMENTS = frozenset(
     }
 )
 POLICY_REMINDER_CONCURRENCY_GROUP = (
-    "${{ github.workflow }}-policy-drift-${{ github.repository }}"
+    "repo-scaffold-ci-policy-drift-${{ github.repository }}"
 )
 FRESHNESS_AUDIT_COMMAND = ("python", "scripts/audit_freshness.py")
 FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
@@ -7104,7 +7109,7 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
             problems.append(f"{relative}: concurrent reminder runs must not cancel")
         if (
             not isinstance(concurrency, dict)
-            or concurrency.get("group") != REMINDER_WORKFLOW_CONCURRENCY_GROUP
+            or concurrency.get("group") != COMMUNITY_HEALTH_REMINDER_CONCURRENCY_GROUP
         ):
             problems.append(
                 f"{relative}: concurrent reminder runs must serialize repository issue state"
@@ -7711,7 +7716,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
         )
     if (
         not isinstance(concurrency, dict)
-        or concurrency.get("group") != REMINDER_WORKFLOW_CONCURRENCY_GROUP
+        or concurrency.get("group") != OFFICIAL_DOCS_REMINDER_CONCURRENCY_GROUP
     ):
         problems.append(
             ".github/workflows/official-docs.yml: reminder runs must serialize "
