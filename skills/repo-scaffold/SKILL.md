@@ -325,6 +325,8 @@ tracked workflow read to 5 MiB and records an indeterminate check when a file
 exceeds that cap. It also caps the tracked workflow inventory at 500 files and
 64 MiB, and the distinct action repositories it resolves at 500, so a large
 or hostile repository cannot force unbounded local reads or upstream lookups.
+The action-pin synchronizer applies the same 500-file and 64 MiB aggregate
+workflow budget before preparing maintenance changes.
 The tracker registry is also capped at 500 tracked input paths, including
 requirement locks. Each requirements file may contain at most 512 unique direct
 pins, and all tracked requirement sources and locks together at most 4096

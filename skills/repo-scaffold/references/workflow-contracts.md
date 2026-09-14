@@ -46,7 +46,9 @@ The link checker must also use bounded retries with backoff for transient
 upstream HTTP failures while continuing to fail on unresolved links.
 Maintenance readers must bound repository-controlled workflow, release-config,
 and claim-source files before decoding them, then fail closed on oversized or
-invalid UTF-8 input.
+invalid UTF-8 input. The action-pin synchronizer also caps its workflow inventory
+at 500 files and 64 MiB in total, so a large repository cannot exhaust the
+maintenance runner while preparing a PR.
 
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.

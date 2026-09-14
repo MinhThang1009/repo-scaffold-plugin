@@ -254,6 +254,24 @@ class ActionPinSyncTests(unittest.TestCase):
                     workflow_directories=(Path(".github/workflows"),),
                 )
 
+    def test_synchronizer_bounds_total_workflow_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_workflow(root, ".github/workflows/ci.yml", "name: CI\n")
+
+            with mock.patch.object(
+                sync_action_pins, "MAX_TOTAL_WORKFLOW_BYTES", len("name: CI\n") - 1
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "workflow inventory exceeds the .* safety cap"
+                ):
+                    sync_action_pins.synchronize_action_pins(
+                        root,
+                        self.releases,
+                        write=False,
+                        workflow_directories=(Path(".github/workflows"),),
+                    )
+
     def test_synchronize_preserves_current_pin_comment_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -19,6 +19,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 GITHUB_API_URL = "https://api.github.com"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
+MAX_WORKFLOW_FILES = 500
+MAX_TOTAL_WORKFLOW_BYTES = 64 * 1024 * 1024
 MAX_ACTION_TAG_PAGES = 20
 MAX_ANNOTATED_TAG_DEPTH = 10
 YAML_TAG_PATTERN = r"!(?:<[^>\r\n]+>|[^\s\[\]{},#&*|>@]*)"
@@ -263,7 +265,7 @@ def workflow_paths(
     repository_root: Path,
     workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
     *,
-    max_files: int | None = None,
+    max_files: int | None = MAX_WORKFLOW_FILES,
 ) -> list[Path]:
     """Return every tracked workflow that carries a synchronized action pin."""
     if max_files is not None and max_files < 0:
@@ -326,8 +328,10 @@ def write_workflow_bytes(
     path.write_bytes(content.encode("utf-8"))
 
 
-def read_workflow_text(path: Path) -> str:
+def read_workflow_text(path: Path, *, byte_count: list[int] | None = None) -> str:
     """Read one workflow with a bounded UTF-8 payload."""
+    if byte_count is not None:
+        byte_count[:] = [0]
     try:
         with path.open("rb") as stream:
             payload = stream.read(MAX_WORKFLOW_BYTES + 1)
@@ -337,6 +341,8 @@ def read_workflow_text(path: Path) -> str:
         raise ValueError(
             f"workflow file exceeds the {MAX_WORKFLOW_BYTES}-byte safety cap: {path}"
         )
+    if byte_count is not None:
+        byte_count[:] = [len(payload)]
     try:
         return payload.decode("utf-8")
     except UnicodeError as error:
@@ -1099,10 +1105,18 @@ def synchronize_action_pins(
     workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
 ) -> list[Path]:
     """Update all allowed action pins after resolving every release."""
-    contents = {
-        path: read_workflow_text(path)
-        for path in workflow_paths(repository_root, workflow_directories)
-    }
+    contents: dict[Path, str] = {}
+    total_workflow_bytes = 0
+    for path in workflow_paths(repository_root, workflow_directories):
+        bytes_read: list[int] = []
+        content = read_workflow_text(path, byte_count=bytes_read)
+        total_workflow_bytes += bytes_read[0]
+        if total_workflow_bytes > MAX_TOTAL_WORKFLOW_BYTES:
+            raise ValueError(
+                "workflow inventory exceeds the "
+                f"{MAX_TOTAL_WORKFLOW_BYTES}-byte safety cap"
+            )
+        contents[path] = content
     repositories = sorted(
         {
             repository
