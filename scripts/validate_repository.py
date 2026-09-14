@@ -7126,13 +7126,23 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
         )
     registries: list[object] = []
     for path in (installed_registry, asset_registry):
+        relative = path.relative_to(repository_root).as_posix()
+        try:
+            unsafe_path = path_has_link_or_reparse(path, repository_root)
+        except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+            problems.append(
+                f"{relative}: community-health registry path could not be inspected: {error}"
+            )
+            continue
+        if unsafe_path:
+            problems.append(
+                f"{relative}: community-health registry path is linked or a reparse point"
+            )
+            continue
         try:
             registries.append(load_json(path))
         except (OSError, UnicodeError, ValueError) as error:
-            problems.append(
-                f"{path.relative_to(repository_root).as_posix()}: "
-                f"could not verify tracker registry: {error}"
-            )
+            problems.append(f"{relative}: could not verify tracker registry: {error}")
     expected_identifiers = {
         "readme",
         "license",

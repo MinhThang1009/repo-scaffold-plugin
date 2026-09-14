@@ -58,6 +58,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   only supported fields and input types. Maintain one idempotent issue when
   Issues are enabled. Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
+  Community-health tracker registry paths must stay inside the repository and
+  reject links or reparse points before they are read. Directory inventories
+  are bounded to 10,000 entries so large repositories fail closed.
   Shipped reminders use stable, distinct repository prefixes:
   `repo-scaffold-community-health-${{ github.repository }}`,
   `repo-scaffold-official-docs-${{ github.repository }}`,

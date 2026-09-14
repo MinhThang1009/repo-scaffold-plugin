@@ -7934,6 +7934,48 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
             any("every supported surface" in problem for problem in problems)
         )
 
+    def test_registry_rejects_linked_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github" / "community-health-trackers.json"
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _repository_root: path == installed,
+            ):
+                problems = (
+                    validate_repository.validate_community_health_tracking_contract(
+                        root
+                    )
+                )
+        self.assertIn(
+            ".github/community-health-trackers.json: community-health registry path is linked or a reparse point",
+            problems,
+        )
+
+    def test_registry_path_inspection_errors_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=OSError("permission denied"),
+            ):
+                problems = (
+                    validate_repository.validate_community_health_tracking_contract(
+                        root
+                    )
+                )
+        self.assertEqual(
+            sum(
+                "community-health registry path could not be inspected" in problem
+                for problem in problems
+            ),
+            2,
+        )
+
     def test_nonmapping_registry_and_workflow_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

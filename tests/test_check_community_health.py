@@ -195,6 +195,18 @@ class RegistryTests(unittest.TestCase):
             with self.assertRaisesRegex(community_health.AuditError, "size limit"):
                 community_health.load_registry(oversized)
 
+            linked = Path(directory) / "linked.json"
+            linked.write_text(json.dumps(registry_document()), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    community_health, "is_link_or_reparse", return_value=True
+                ),
+                self.assertRaisesRegex(
+                    community_health.AuditError, "linked or a reparse point"
+                ),
+            ):
+                community_health.load_registry(linked)
+
 
 class GitHubClientTests(unittest.TestCase):
     def test_get_json_uses_bounded_authenticated_request(self) -> None:
@@ -393,9 +405,50 @@ class InventoryTests(unittest.TestCase):
                 self.assertRaisesRegex(community_health.AuditError, "linked"),
             ):
                 community_health._directory_files(root, path)
+
+            with self.assertRaisesRegex(
+                community_health.AuditError, "safe repository-relative path"
+            ):
+                community_health.checked_registry_path(root, Path("../outside.json"))
+            with self.assertRaisesRegex(
+                community_health.AuditError, "within the repository root"
+            ):
+                community_health.checked_registry_path(
+                    root, root.parent / "outside.json"
+                )
+            with (
+                mock.patch.object(
+                    community_health.os.path, "lexists", return_value=True
+                ),
+                mock.patch.object(
+                    community_health, "is_link_or_reparse", return_value=True
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    community_health.AuditError, "linked or reparse-point"
+                ):
+                    community_health.checked_registry_path(
+                        root, Path(".github/community-health-trackers.json")
+                    )
             with (
                 mock.patch.object(Path, "rglob", side_effect=OSError("denied")),
                 self.assertRaisesRegex(community_health.AuditError, "enumerate"),
+            ):
+                community_health._directory_files(root, path)
+            with (
+                mock.patch.object(
+                    Path,
+                    "rglob",
+                    return_value=(
+                        path / str(index)
+                        for index in range(community_health.MAX_DIRECTORY_ENTRIES + 1)
+                    ),
+                ),
+                mock.patch.object(
+                    community_health, "is_link_or_reparse", return_value=False
+                ),
+                mock.patch.object(Path, "is_file", return_value=False),
+                self.assertRaisesRegex(community_health.AuditError, "entry safety cap"),
             ):
                 community_health._directory_files(root, path)
 

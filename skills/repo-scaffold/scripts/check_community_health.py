@@ -23,6 +23,7 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_POLICY_BYTES = 1024 * 1024
 MAX_REGISTRY_BYTES = 1024 * 1024
 MAX_REGISTRY_ENTRIES = 256
+MAX_DIRECTORY_ENTRIES = 10_000
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 VERSION_PATTERN = re.compile(r"\d+(?:\.\d+){1,2}\Z")
 CONTRIBUTOR_COVENANT_PATH = re.compile(
@@ -221,6 +222,8 @@ def parse_registry(document: object) -> list[RegistryEntry]:
 
 def load_registry(path: Path) -> list[RegistryEntry]:
     try:
+        if is_link_or_reparse(path):
+            raise AuditError(f"tracker registry is linked or a reparse point: {path}")
         if path.stat().st_size > MAX_REGISTRY_BYTES:
             raise AuditError(f"tracker registry exceeds the size limit: {path}")
         document = json.loads(
@@ -253,21 +256,54 @@ def checked_repository_path(root: Path, relative: str) -> Path:
     return candidate
 
 
-def _directory_files(root: Path, directory: Path) -> list[str]:
-    try:
-        candidates = sorted(directory.rglob("*"))
-    except OSError as error:
+def checked_registry_path(root: Path, configured: Path) -> Path:
+    """Resolve a registry path only when it stays inside the repository."""
+    if configured.is_absolute():
+        try:
+            relative = configured.relative_to(root)
+        except ValueError as error:
+            raise AuditError(
+                f"tracker registry must stay within the repository root: {configured}"
+            ) from error
+    else:
+        relative = configured
+    relative_text = relative.as_posix()
+    path = PurePosixPath(relative_text)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in relative_text
+        or any(PureWindowsPath(part).drive for part in path.parts)
+        or path.as_posix() != relative_text
+    ):
         raise AuditError(
-            f"could not enumerate community-health directory: {directory}"
-        ) from error
+            f"tracker registry must be a safe repository-relative path: {configured}"
+        )
+    return checked_repository_path(root, relative_text)
+
+
+def _directory_files(root: Path, directory: Path) -> list[str]:
     files: list[str] = []
-    for path in candidates:
-        relative = path.relative_to(root).as_posix()
-        if is_link_or_reparse(path):
-            raise AuditError(f"refusing linked or reparse-point path: {relative}")
-        if path.is_file():
-            files.append(relative)
-    return files
+    try:
+        for entry_count, path in enumerate(directory.rglob("*"), start=1):
+            if entry_count > MAX_DIRECTORY_ENTRIES:
+                raise AuditError(
+                    "community-health directory exceeds the "
+                    f"{MAX_DIRECTORY_ENTRIES}-entry safety cap: {directory}"
+                )
+            relative = path.relative_to(root).as_posix()
+            if is_link_or_reparse(path):
+                raise AuditError(f"refusing linked or reparse-point path: {relative}")
+            if path.is_file():
+                files.append(relative)
+    except AuditError:
+        raise
+    except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+        raise AuditError(
+            f"could not enumerate community-health directory: {directory}: {error}"
+        ) from error
+    return sorted(files)
 
 
 def inventory_entry(root: Path, entry: RegistryEntry) -> dict[str, Any]:
@@ -563,10 +599,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.repository_root.resolve()
-    registry_path = (
-        args.registry if args.registry.is_absolute() else root / args.registry
-    )
     try:
+        registry_path = checked_registry_path(root, args.registry)
         entries = load_registry(registry_path)
         report = audit(
             root,
