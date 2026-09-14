@@ -47,6 +47,8 @@ COVERAGE_FAIL_UNDER = 100
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
+COMMUNITY_HEALTH_TRACKER_KEYS = frozenset({"schema-version", "files"})
+OFFICIAL_DOCS_TRACKER_KEYS = frozenset({"schema-version", "claims"})
 CONTAINER_IMAGE_REFERENCE_PATTERN = re.compile(
     r"(?:docker://)?[^\s@]+@sha256:[0-9a-f]{64}\Z", re.IGNORECASE
 )
@@ -7160,6 +7162,8 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
         }
         if (
             not schema_version_is(document, 1)
+            or not isinstance(document, dict)
+            or set(document) != COMMUNITY_HEALTH_TRACKER_KEYS
             or not isinstance(raw_files, list)
             or identifiers != expected_identifiers
         ):
@@ -7512,11 +7516,13 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
         claims = registry.get("claims") if isinstance(registry, dict) else None
         if (
             not schema_version_is(registry, 1)
+            or not isinstance(registry, dict)
+            or set(registry) != OFFICIAL_DOCS_TRACKER_KEYS
             or not isinstance(claims, list)
             or not claims
         ):
             problems.append(
-                ".github/official-docs-trackers.json: must keep a versioned non-empty official-documentation claim registry"
+                ".github/official-docs-trackers.json: must keep a versioned non-empty official-documentation claim registry with only schema-version and claims fields"
             )
         else:
             tracked_paths_by_url: dict[str, set[str]] = {}

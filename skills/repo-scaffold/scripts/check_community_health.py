@@ -39,6 +39,7 @@ ALLOWED_SCOPES = {
     "github-community-profile",
     "repo-scaffold-extension",
 }
+COMMUNITY_HEALTH_TRACKER_KEYS = frozenset({"schema-version", "files"})
 
 
 class AuditError(RuntimeError):
@@ -165,6 +166,8 @@ def parse_registry(document: object) -> list[RegistryEntry]:
         or document.get("schema-version") != 1
     ):
         raise AuditError("tracker registry must use schema-version 1")
+    if set(document) != COMMUNITY_HEALTH_TRACKER_KEYS:
+        raise AuditError("tracker registry contains unsupported top-level fields")
     raw_files = document.get("files")
     if not isinstance(raw_files, list) or not raw_files:
         raise AuditError("tracker registry files must be a non-empty list")

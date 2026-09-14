@@ -124,6 +124,11 @@ class RegistryTests(unittest.TestCase):
             ):
                 community_health.parse_registry(document)
 
+        unsupported = registry_document()
+        unsupported["unexpected"] = True
+        with self.assertRaisesRegex(community_health.AuditError, "unsupported"):
+            community_health.parse_registry(unsupported)
+
     def test_registry_rejects_invalid_entries(self) -> None:
         mutations = [
             ("entry", None),

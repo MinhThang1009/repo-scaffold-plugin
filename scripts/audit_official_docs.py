@@ -26,6 +26,7 @@ MAX_REVIEW_PERIOD_DAYS = 366
 CLAIM_IDENTIFIER = re.compile(r"[a-z][a-z0-9-]*\Z")
 HOSTNAME = re.compile(r"[a-z0-9][a-z0-9.-]*[a-z0-9]\Z")
 DEFAULT_TRACKER_REGISTRY = Path(".github/official-docs-trackers.json")
+OFFICIAL_DOCS_TRACKER_KEYS = frozenset({"schema-version", "claims"})
 
 
 class AuditError(RuntimeError):
@@ -200,6 +201,10 @@ def load_trackers(
         or document.get("schema-version") != 1
     ):
         raise AuditError("official-docs tracker registry must use schema-version 1")
+    if set(document) != OFFICIAL_DOCS_TRACKER_KEYS:
+        raise AuditError(
+            "official-docs tracker registry contains unsupported top-level fields"
+        )
     values = document.get("claims")
     if not isinstance(values, list) or not values or len(values) > MAX_CLAIMS:
         raise AuditError(

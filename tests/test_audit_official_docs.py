@@ -143,6 +143,7 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 ({"schema-version": 2, "claims": []}, "schema-version"),
                 ({"schema-version": 1.0, "claims": []}, "schema-version"),
                 ({"schema-version": True, "claims": []}, "schema-version"),
+                ({**valid, "unexpected": True}, "unsupported"),
                 ({"schema-version": 1, "claims": []}, "non-empty"),
                 ({"schema-version": 1, "claims": [None]}, "object"),
                 (

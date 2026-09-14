@@ -7919,6 +7919,21 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
             any("every supported surface" in problem for problem in problems)
         )
 
+    def test_registry_rejects_unknown_top_level_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github" / "community-health-trackers.json"
+            document = validate_repository.load_json(installed)
+            document["unexpected"] = True
+            installed.write_text(json.dumps(document), encoding="utf-8")
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any("every supported surface" in problem for problem in problems)
+        )
+
     def test_nonmapping_registry_and_workflow_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -11375,6 +11390,24 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
         self.assertEqual(
             validate_repository.validate_official_docs_tracking_contract(PLUGIN_ROOT),
             [],
+        )
+
+    def test_registry_rejects_unknown_top_level_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            registry_path = root / ".github" / "official-docs-trackers.json"
+            document = validate_repository.load_json(registry_path)
+            document["unexpected"] = True
+            registry_path.write_text(json.dumps(document), encoding="utf-8")
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any(
+                "versioned non-empty official-documentation claim registry" in problem
+                for problem in problems
+            )
         )
 
     def test_reconciliation_job_must_keep_effective_issue_write(self) -> None:
