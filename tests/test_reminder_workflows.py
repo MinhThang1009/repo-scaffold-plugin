@@ -57,6 +57,27 @@ class ReminderWorkflowTests(unittest.TestCase):
             )
             self.assertNotIn("github.workflow", concurrency["group"], relative)
 
+    def test_issue_lookup_is_bounded_search(self) -> None:
+        for relative in WORKFLOWS:
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            scripts = [
+                step["run"]
+                for job in document["jobs"].values()
+                for step in job["steps"]
+                if "Reconcile" in step.get("name", "") and "issue" in step["name"]
+            ]
+            self.assertEqual(len(scripts), 1, relative)
+            script = scripts[0]
+            self.assertIn("search/issues?q=repo:", script, relative)
+            self.assertIn("is:issue+is:open+in:body+", script, relative)
+            self.assertIn("%22%3C%21--+", script, relative)
+            self.assertIn("+--%3E%22&per_page=2", script, relative)
+            self.assertIn("per_page=2", script, relative)
+            self.assertIn("--jq '.items[].number'", script, relative)
+            self.assertNotIn("--paginate", script, relative)
+
     @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
     def test_issue_lookup_must_succeed_before_any_reminder_mutation(self) -> None:
         for relative in WORKFLOWS:

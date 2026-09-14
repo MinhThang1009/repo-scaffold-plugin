@@ -67,9 +67,9 @@ jobs:
           marker='<!-- repo-scaffold-freshness-audit -->'
           title='Repository freshness update required'
           issue_numbers_output=$(
-            gh api --hostname github.com --paginate \
-              "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
-              --jq '.[] | select(.pull_request == null) | select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
+            gh api --hostname github.com \
+              "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" \
+              --jq '.items[].number'
           )
           issue_numbers=()
           if [[ -n "$issue_numbers_output" ]]; then

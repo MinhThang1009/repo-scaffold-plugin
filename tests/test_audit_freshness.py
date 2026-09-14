@@ -247,6 +247,27 @@ class FreshnessTests(unittest.TestCase):
                         lambda _repository: release("v1.0.0", "a" * 40),
                     )
 
+    def test_action_findings_counts_failed_workflow_reads_toward_aggregate_cap(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            errors: list[str] = []
+            with (
+                mock.patch.object(freshness, "MAX_WORKFLOW_BYTES", 10),
+                mock.patch.object(freshness, "MAX_TRACKED_WORKFLOW_BYTES", 20),
+                self.assertRaisesRegex(freshness.AuditError, "byte safety cap"),
+            ):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                    errors,
+                )
+            self.assertEqual(len(errors), 1)
+
     def test_action_findings_bound_inventory_and_upstream_repositories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1814,6 +1835,27 @@ class FreshnessTests(unittest.TestCase):
                 report = freshness.audit(root, "synthetic-token")
             self.assertEqual(report["status"], "indeterminate")
             self.assertIn("workflow input unavailable", report["errors"])
+            client.latest_release.assert_called_with("googleapis/release-please")
+
+            client.latest_release.side_effect = freshness.AuditError(
+                "release-please unavailable"
+            )
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(freshness, "action_findings", return_value=[]),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("release-please unavailable", report["errors"])
+            client.latest_release.side_effect = None
+            client.latest_release.return_value = release("v17.6.0", "a" * 40)
 
             with (
                 mock.patch.object(

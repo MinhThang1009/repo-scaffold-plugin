@@ -70,9 +70,9 @@ jobs:
           marker='<!-- repo-scaffold-community-health-drift -->'
           title='Community-health upstream update required'
           issue_numbers_output=$(
-            gh api --hostname github.com --paginate \
-              "repos/${REPOSITORY}/issues?state=open&per_page=100" \
-              --jq '.[] | select(.pull_request == null) | select((.body // "") | contains("<!-- repo-scaffold-community-health-drift -->")) | .number'
+            gh api --hostname github.com \
+              "search/issues?q=repo:${REPOSITORY}+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-community-health-drift+--%3E%22&per_page=2" \
+              --jq '.items[].number'
           )
           issue_numbers=()
           if [[ -n "$issue_numbers_output" ]]; then

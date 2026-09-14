@@ -377,10 +377,11 @@ command hash are also rejected.
 Every freshness API lookup and Issue mutation must bind directly to the runner's
 `$GITHUB_REPOSITORY` value, with `github.com/` explicit for `gh issue --repo`;
 hard-coded repositories and overrides of that variable are rejected. The lookup
-must be a paginated GET of open Issues, filter non-PR bodies for the freshness
-marker, and return their issue numbers so reruns remain idempotent. It must use
-the canonical marker-filtering JQ expression, exactly one lookup invocation,
-and no extra `gh api` arguments.
+must use the GitHub Issue Search API as a bounded GET for open Issues, with
+`is:issue`, `in:body`, the freshness marker, and `per_page=2`; it returns at most
+the first two matching issue numbers so reruns remain idempotent without an
+unbounded pagination loop. It must use `.items[].number`, exactly one lookup
+invocation, and no extra `gh api` arguments.
 The lookup result must be captured and flow into the Issue number passed to a
 `close` or `edit` mutation, directly or through an issue-number array; logging
 or testing the result alone is insufficient.

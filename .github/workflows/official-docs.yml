@@ -61,9 +61,9 @@ jobs:
           marker='<!-- repo-scaffold-official-docs-audit -->'
           title='Official documentation review required'
           issue_numbers_output=$(
-            gh api --hostname github.com --paginate \
-              "repos/${REPOSITORY}/issues?state=open&per_page=100" \
-              --jq '.[] | select(.pull_request == null) | select((.body // "") | contains("<!-- repo-scaffold-official-docs-audit -->")) | .number'
+            gh api --hostname github.com \
+              "search/issues?q=repo:${REPOSITORY}+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-official-docs-audit+--%3E%22&per_page=2" \
+              --jq '.items[].number'
           )
           issue_numbers=()
           if [[ -n "$issue_numbers_output" ]]; then

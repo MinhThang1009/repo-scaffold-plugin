@@ -53,18 +53,15 @@ FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
 FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
 FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
 FRESHNESS_REMINDER_API_ENDPOINT = (
-    "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"
+    "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+"
+    "%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"
 )
-FRESHNESS_REMINDER_API_JQ = (
-    ".[] | select(.pull_request == null) | "
-    f'select((.body // "") | contains("<!-- {FRESHNESS_REMINDER_MARKER} -->")) | .number'
-)
+FRESHNESS_REMINDER_API_JQ = ".items[].number"
 FRESHNESS_REMINDER_API_ALLOWED_ARGUMENTS = frozenset(
     {
         "--hostname",
         "github.com",
         "--hostname=github.com",
-        "--paginate",
         FRESHNESS_REMINDER_API_ENDPOINT,
         "--jq",
         FRESHNESS_REMINDER_API_JQ,
@@ -2005,9 +2002,7 @@ def has_freshness_repository_api_reads(
                 api_arguments = tokens[position + 2 :]
                 if "--" in api_arguments:
                     return False
-                if tuple(token for token in api_arguments if token == "--paginate") != (
-                    "--paginate",
-                ):
+                if "--paginate" in api_arguments:
                     return False
                 methods = [
                     api_arguments[index + 1]
@@ -2035,7 +2030,7 @@ def has_freshness_repository_api_reads(
                 if jq_values is None or jq_values != (FRESHNESS_REMINDER_API_JQ,):
                     return False
                 endpoints = [
-                    token for token in api_arguments if token.startswith("repos/")
+                    token for token in api_arguments if token.startswith("search/")
                 ]
                 if endpoints != [FRESHNESS_REMINDER_API_ENDPOINT]:
                     return False
@@ -2051,7 +2046,6 @@ def has_freshness_repository_api_reads(
                 )
                 expected_argument_count = (
                     1
-                    + 1
                     + (2 if "--hostname" in api_arguments else 1)
                     + (2 if "--jq" in api_arguments else 1)
                     + (

@@ -175,13 +175,18 @@ def read_bounded_utf8(
     *,
     kind: str,
     limit_name: str = "size limit",
+    byte_count: list[int] | None = None,
 ) -> str:
     """Read one trusted repository file with a bounded UTF-8 payload."""
+    if byte_count is not None:
+        byte_count[:] = [0]
     try:
         with path.open("rb") as stream:
             payload = stream.read(max_bytes + 1)
     except OSError as error:
         raise AuditError(f"could not read {kind} {path}: {error}") from error
+    if byte_count is not None:
+        byte_count[:] = [len(payload)]
     if len(payload) > max_bytes:
         raise AuditError(f"{kind} exceeds the {max_bytes}-byte {limit_name}: {path}")
     try:
@@ -452,13 +457,37 @@ def action_findings(
                 f"{MAX_TRACKED_WORKFLOW_FILES}-file safety cap"
             )
         for path in workflow_paths:
+            bytes_read: list[int] = []
             try:
                 text = read_bounded_utf8(
                     path,
                     MAX_WORKFLOW_BYTES,
                     kind="workflow",
                     limit_name="safety cap",
+                    byte_count=bytes_read,
                 )
+            except (AuditError, OSError, UnicodeError, ValueError) as cause:
+                workflow_byte_count += bytes_read[0] if bytes_read else 0
+                if workflow_byte_count > MAX_TRACKED_WORKFLOW_BYTES:
+                    raise AuditError(
+                        "tracked workflow inventory exceeds the "
+                        f"{MAX_TRACKED_WORKFLOW_BYTES}-byte safety cap"
+                    ) from cause
+                issue = AuditError(
+                    "could not inspect workflow action pins "
+                    f"{path.relative_to(root).as_posix()}: {cause}"
+                )
+                if errors is None:
+                    raise issue from cause
+                errors.append(str(issue))
+                continue
+            workflow_byte_count += bytes_read[0]
+            if workflow_byte_count > MAX_TRACKED_WORKFLOW_BYTES:
+                raise AuditError(
+                    "tracked workflow inventory exceeds the "
+                    f"{MAX_TRACKED_WORKFLOW_BYTES}-byte safety cap"
+                )
+            try:
                 sync_action_pins.auditable_action_repositories(path, text)
                 matches = sync_action_pins.action_pin_matches(text)
             except (AuditError, OSError, UnicodeError, ValueError) as cause:
@@ -470,12 +499,6 @@ def action_findings(
                     raise issue from cause
                 errors.append(str(issue))
                 continue
-            workflow_byte_count += len(text.encode("utf-8"))
-            if workflow_byte_count > MAX_TRACKED_WORKFLOW_BYTES:
-                raise AuditError(
-                    "tracked workflow inventory exceeds the "
-                    f"{MAX_TRACKED_WORKFLOW_BYTES}-byte safety cap"
-                )
             for match in matches:
                 action = sync_action_pins.normalized_action_pin_part(match, "action")
                 current_sha = sync_action_pins.normalized_action_pin_part(match, "sha")
@@ -901,6 +924,9 @@ def audit(
     if trackers is not None:
         try:
             client = sync_action_pins.GitHubReleaseClient(token)
+        except (OSError, ValueError, AuditError) as error:
+            errors.append(str(error))
+        else:
             try:
                 findings.extend(
                     action_findings(
@@ -919,16 +945,20 @@ def audit(
                 )
             )
             if release_please_configs:
-                findings.extend(
-                    release_please_findings(
-                        root,
-                        release_please_configs,
-                        client.latest_release("googleapis/release-please").tag,
-                        errors,
+                try:
+                    latest_release_please_tag = client.latest_release(
+                        "googleapis/release-please"
+                    ).tag
+                    findings.extend(
+                        release_please_findings(
+                            root,
+                            release_please_configs,
+                            latest_release_please_tag,
+                            errors,
+                        )
                     )
-                )
-        except (OSError, ValueError, AuditError) as error:
-            errors.append(str(error))
+                except (OSError, ValueError, AuditError) as error:
+                    errors.append(str(error))
         try:
             findings.extend(
                 requirement_findings(

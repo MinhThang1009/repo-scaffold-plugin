@@ -8868,13 +8868,10 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "--json-output report.json --markdown-output report.md"
             )
         )
-        jq_expression = (
-            '.[] | select(.pull_request == null) | select((.body // "") | '
-            'contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
-        )
+        jq_expression = ".items[].number"
         api_lookup = (
-            "gh api --hostname github.com --paginate "
-            '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+            "gh api --hostname github.com "
+            '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" '
             f"--jq '{jq_expression}'"
         )
         self.assertTrue(
@@ -8883,7 +8880,8 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
                 api_lookup.replace(
-                    "repos/$GITHUB_REPOSITORY", "repos/attacker/repository"
+                    "search/issues?q=repo:$GITHUB_REPOSITORY",
+                    "search/issues?q=repo:attacker/repository",
                 )
             )
         )
@@ -8914,14 +8912,12 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
-                api_lookup.replace("--paginate ", "")
+                api_lookup + " --paginate"
             )
         )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
-                api_lookup.replace(
-                    "state=open&per_page=100", "state=closed&per_page=100"
-                )
+                api_lookup.replace("is:open", "is:closed")
             )
         )
         self.assertFalse(
@@ -8940,12 +8936,12 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             with self.subTest(option=option):
                 self.assertFalse(
                     validate_repository.has_freshness_repository_api_reads(
-                        api_lookup.replace("--paginate ", f"--paginate {option} ")
+                        api_lookup.replace("gh api ", f"gh api {option} ", 1)
                     )
                 )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
-                api_lookup.replace("--paginate ", "-- ")
+                api_lookup.replace("gh api ", "gh api -- ", 1)
             )
         )
         self.assertFalse(
@@ -8962,21 +8958,19 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             with self.subTest(method=method):
                 self.assertFalse(
                     validate_repository.has_freshness_repository_api_reads(
-                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                        api_lookup.replace("gh api ", f"gh api {method} ", 1)
                     )
                 )
         for method in ("--method GET", "--method=GET", "-XGET", "-X GET"):
             with self.subTest(method=method):
                 self.assertTrue(
                     validate_repository.has_freshness_repository_api_reads(
-                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                        api_lookup.replace("gh api ", f"gh api {method} ", 1)
                     )
                 )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
-                api_lookup.replace(
-                    "--paginate ", "--paginate --method GET --method GET "
-                )
+                api_lookup.replace("gh api ", "gh api --method GET --method GET ", 1)
             )
         )
         audit_command = (
@@ -9253,8 +9247,8 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
                 "GITHUB_REPOSITORY=attacker/repository "
-                "gh api --hostname github.com --paginate "
-                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"'
+                "gh api --hostname github.com "
+                '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"'
             )
         )
         self.assertFalse(
