@@ -2984,6 +2984,8 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         )
     except subprocess.TimeoutExpired:
         return ["Python support contract: policy validation timed out"]
+    except OSError:
+        return ["Python support contract: policy validation could not be executed"]
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "validation failed"
         return [f"Python support contract: {line}" for line in detail.splitlines()]
@@ -3471,6 +3473,11 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
             )
         except subprocess.TimeoutExpired:
             problems.append(f"CI toolchain contract: {relative} validation timed out")
+            continue
+        except OSError:
+            problems.append(
+                f"CI toolchain contract: {relative} validation could not be executed"
+            )
             continue
         if result.returncode != 0:
             detail = (
@@ -8189,6 +8196,8 @@ def validate_scaffold_contract(repository_root: Path) -> list[str]:
         )
     except subprocess.TimeoutExpired:
         return ["scaffold contract: validation timed out"]
+    except OSError:
+        return ["scaffold contract: validation could not be executed"]
     if result.returncode == 0:
         return []
     detail = result.stderr.strip() or result.stdout.strip() or "validation failed"
@@ -8253,6 +8262,8 @@ def validate_release_archive(repository_root: Path) -> list[str]:
             )
         except subprocess.TimeoutExpired:
             return ["release archive: git archive timed out"]
+        except OSError:
+            return ["release archive: git archive could not be executed"]
         if result.returncode != 0:
             detail = result.stderr.strip() or "git archive failed"
             return [f"release archive: {detail}"]
@@ -8301,6 +8312,8 @@ def validate_release_archive(repository_root: Path) -> list[str]:
             )
         except subprocess.TimeoutExpired:
             return ["release archive: source enumeration timed out"]
+        except OSError:
+            return ["release archive: source enumeration could not be executed"]
         if source_result.returncode != 0:
             detail = source_result.stderr.strip() or "git ls-tree failed"
             return [f"release archive: source enumeration failed: {detail}"]

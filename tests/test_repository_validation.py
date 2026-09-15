@@ -412,6 +412,18 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                     ["Python support contract: policy validation timed out"],
                 )
 
+            with mock.patch.object(
+                validate_repository.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_python_support_contract(root),
+                    [
+                        "Python support contract: policy validation could not be executed"
+                    ],
+                )
+
             failed = mock.Mock(returncode=1, stderr="line one\nline two\n", stdout="")
             with mock.patch.object(
                 validate_repository.subprocess, "run", return_value=failed
@@ -1200,6 +1212,18 @@ class CiToolchainContractValidationTests(unittest.TestCase):
 
             self.assertTrue(any("validation timed out" in item for item in problems))
             self.assertTrue(any("invalid policy" in item for item in problems))
+
+            with mock.patch.object(
+                validate_repository.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ):
+                problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertEqual(
+                sum("validation could not be executed" in item for item in problems),
+                2,
+            )
 
     def test_policy_sync_and_workflow_structure_regressions_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3245,6 +3269,16 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                     ["scaffold contract: validation timed out"],
                 )
 
+            with mock.patch.object(
+                validate_repository.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_scaffold_contract(root),
+                    ["scaffold contract: validation could not be executed"],
+                )
+
             failed = mock.Mock(returncode=1, stderr="first\nsecond\n", stdout="")
             with mock.patch.object(
                 validate_repository.subprocess, "run", return_value=failed
@@ -3291,6 +3325,21 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 self.assertEqual(
                     validate_repository.validate_release_archive(root),
                     ["release archive: git archive timed out"],
+                )
+
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess,
+                    "run",
+                    side_effect=PermissionError("blocked"),
+                ),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_release_archive(root),
+                    ["release archive: git archive could not be executed"],
                 )
 
             with (
@@ -3354,6 +3403,22 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 self.assertEqual(
                     validate_repository.validate_release_archive(root),
                     ["release archive: source enumeration timed out"],
+                )
+
+            source_outcome = PermissionError("blocked")
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess,
+                    "run",
+                    side_effect=archive_then_source,
+                ),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_release_archive(root),
+                    ["release archive: source enumeration could not be executed"],
                 )
 
             for stderr, expected in (
