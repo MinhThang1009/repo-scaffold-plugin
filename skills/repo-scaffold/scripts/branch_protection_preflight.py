@@ -60,14 +60,18 @@ def event_covers(document: dict[str, Any], event: str) -> bool:
     types = value.get("types")
     if types is None:
         return True
+    if not isinstance(types, list) or not all(
+        isinstance(event_type, str) for event_type in types
+    ):
+        return False
     if event == "pull_request":
-        return isinstance(types, list) and {
+        return {
             "opened",
             "edited",
             "reopened",
             "synchronize",
         }.issubset(set(types))
-    return isinstance(types, list) and "checks_requested" in types
+    return "checks_requested" in types
 
 
 @dataclass(frozen=True)

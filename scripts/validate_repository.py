@@ -3196,6 +3196,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         )
         if (
             not isinstance(ci_success_needs, list)
+            or not all(isinstance(need, str) for need in ci_success_needs)
             or set(ci_success_needs)
             != {"test", "quality", "mutation-cache-integration"}
             or not ci_success_checks_results
@@ -3873,6 +3874,7 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
         not isinstance(job, dict)
         or job.get("name") != "policy-drift-reminder"
         or not isinstance(job.get("needs"), list)
+        or not all(isinstance(need, str) for need in job["needs"])
         or set(job["needs"]) != expected_needs
         or job.get("if")
         != "${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}"

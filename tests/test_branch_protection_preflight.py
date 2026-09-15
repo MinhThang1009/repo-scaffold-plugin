@@ -176,6 +176,11 @@ jobs: {}
                 False,
             ),
             (
+                {"on": {"pull_request": {"types": [["opened"]]}}},
+                "pull_request",
+                False,
+            ),
+            (
                 {"on": {"merge_group": {"types": ["queued"]}}},
                 "merge_group",
                 False,

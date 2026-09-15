@@ -2990,6 +2990,7 @@ class WorkflowResolverTests(unittest.TestCase):
             )
         for call, message in (
             ("./.github/workflows/../escape.yml", "traversal"),
+            ("./.github/workflows/./reusable.yml", "not a direct"),
             ("./.github/workflows/nested/reusable.yml", "not a direct"),
         ):
             with self.subTest(call=call):
@@ -3036,6 +3037,7 @@ class WorkflowResolverTests(unittest.TestCase):
 
         for invalid_call, message in (
             ("owner/repo/.github/workflows/../escape.yml@main", "traversal"),
+            ("owner/repo/.github/workflows/./reusable.yml@main", "not a direct"),
             ("owner/repo/.github/workflows/nested/file.yml@main", "not a direct"),
             ("unsupported", "Unsupported"),
         ):

@@ -553,6 +553,26 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             problems,
         )
 
+    def test_ci_success_rejects_unhashable_needs_entries_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "needs: [test, quality, mutation-cache-integration]",
+                "needs: [[test], quality, mutation-cache-integration]",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_python_support_contract(root)
+
+        self.assertIn(
+            ".github/workflows/ci.yml: ci-success must require tests, quality, "
+            "and mutation integration while keeping canaries outside the gate",
+            problems,
+        )
+
 
 class ActionReferenceValidationTests(unittest.TestCase):
     def test_freshness_expansions_require_complete_variable_names(self) -> None:
@@ -12422,6 +12442,34 @@ class PolicyDriftReminderContractTests(unittest.TestCase):
             [
                 ".github/workflows/ci.yml: policy drift reminder must use a "
                 "repository-scoped non-cancelling concurrency group"
+            ],
+        )
+
+    def test_policy_drift_reminder_rejects_unhashable_needs_entries_without_crashing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            workflow_text = (
+                (PLUGIN_ROOT / ".github" / "workflows" / "ci.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    "needs: [python-latest-canary, toolchain-drift-canary]",
+                    "needs: [[python-latest-canary], toolchain-drift-canary]",
+                    1,
+                )
+            )
+            (workflow_directory / "ci.yml").write_text(workflow_text, encoding="utf-8")
+
+            problems = validate_repository.validate_policy_drift_reminder_contract(root)
+
+        self.assertEqual(
+            problems,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must depend on both "
+                "scheduled canaries with least-privilege issue access"
             ],
         )
 

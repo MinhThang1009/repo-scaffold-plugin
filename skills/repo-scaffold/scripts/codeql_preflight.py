@@ -2805,7 +2805,7 @@ class WorkflowResolver:
     def resolve(self, call: str, context: WorkflowContext) -> WorkflowNode:
         local_match = LOCAL_CALL.fullmatch(call)
         if local_match:
-            path = str(PurePosixPath(local_match.group("path")))
+            path = local_match.group("path")
             if ".." in PurePosixPath(path).parts:
                 raise InspectionError(
                     f"Reusable workflow path contains traversal: {call}"
@@ -2847,7 +2847,7 @@ class WorkflowResolver:
             raise InspectionError(
                 f"Reusable workflow has an invalid repository identifier: {call}"
             )
-        path = str(PurePosixPath(external_match.group("path")))
+        path = external_match.group("path")
         reference = external_match.group("ref")
         if ".." in PurePosixPath(path).parts:
             raise InspectionError(f"Reusable workflow path contains traversal: {call}")
