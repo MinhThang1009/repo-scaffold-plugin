@@ -123,6 +123,7 @@ class ScorecardPreflightTests(unittest.TestCase):
             (arguments(), repository(archived=True), "Archived"),
             (arguments(), repository(disabled=True), "Disabled"),
             (arguments(), repository(visibility="unknown"), "invalid visibility"),
+            (arguments(), repository(visibility=[]), "invalid visibility"),
             (
                 arguments(),
                 repository(visibility="private", owner={"type": "User"}),

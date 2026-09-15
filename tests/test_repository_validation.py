@@ -5093,6 +5093,7 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
                 "jobs": {"release_please": {}},
             }
             codeql = {
+                "on": [],
                 "permissions": {
                     "actions": "read",
                     "contents": "read",
@@ -5359,6 +5360,7 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (asset_root / "commitlint.yml").write_text(
+                "on: []\n"
                 "concurrency:\n"
                 "  group: required-${{ github.ref }}\n"
                 "  cancel-in-progress: false\n",
@@ -6321,6 +6323,25 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
 
             self.assertEqual(validate_repository.validate_release_attestation(root), [])
 
+    def test_release_attestation_reports_malformed_build_step_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            engine_path = root / ".github" / "workflows" / "release.yml"
+            engine = yaml.safe_load(engine_path.read_text(encoding="utf-8"))
+            engine["jobs"]["build"]["steps"][0]["name"] = []
+            engine_path.write_text(
+                yaml.safe_dump(engine, sort_keys=False), encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_release_attestation(root)
+
+        self.assertIn(
+            ".github/workflows/release.yml: archive build must use git archive "
+            "with --worktree-attributes",
+            problems,
+        )
+
     def test_rejects_privilege_and_publish_gate_regressions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -6748,6 +6769,7 @@ body:
                     "options": [{"label": "Duplicate label"}],
                 },
             },
+            {"type": []},
         ]
 
         problems = validate_repository.validate_issue_form_body(relative, body)
@@ -6769,6 +6791,7 @@ body:
             "body[11] contains unsupported keys",
             "body[12].attributes.label must be unique",
             "body[13].attributes.options labels must be unique among form inputs",
+            "body[14] has invalid type",
         )
         for expected in expected_fragments:
             self.assertTrue(any(expected in item for item in problems), expected)
@@ -6839,7 +6862,7 @@ body:
                 "name: Bug\ndescription: ''\nbody: []\n", encoding="utf-8"
             )
             (template_root / "config.yml").write_text(
-                "blank_issues_enabled: maybe\ncontact_links: invalid\n",
+                "blank_issues_enabled: []\ncontact_links: invalid\n",
                 encoding="utf-8",
             )
 
@@ -7040,7 +7063,7 @@ class DependabotValidationTests(unittest.TestCase):
                 "  - package-ecosystem: pip\n"
                 "    directory: /\n"
                 "    schedule:\n"
-                "      interval: sometimes\n"
+                "      interval: []\n"
                 "  - package-ecosystem: pip\n"
                 "    schedule:\n"
                 "      interval: weekly\n",

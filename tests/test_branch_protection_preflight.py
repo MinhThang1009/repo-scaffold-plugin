@@ -288,6 +288,22 @@ jobs: {}
             )
         FakeClient.responses[blob_endpoint] = """on: pull_request
 jobs:
+  malformed:
+    name: malformed
+    if: [evil]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo checked
+"""
+        malformed_producers = branch_protection_preflight.workflow_producers(
+            client, OWNER, REPOSITORY, HEAD_SHA
+        )
+        self.assertEqual(
+            [producer.context for producer in malformed_producers], ["malformed"]
+        )
+        self.assertFalse(malformed_producers[0].unconditional)
+        FakeClient.responses[blob_endpoint] = """on: pull_request
+jobs:
   dynamic:
     name: ${{ github.job }}
   reusable:

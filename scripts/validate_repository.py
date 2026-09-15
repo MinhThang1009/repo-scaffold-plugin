@@ -5950,7 +5950,7 @@ def validate_release_attestation(repository_root: Path) -> list[str]:
                     step
                     for step in build_steps
                     if isinstance(step, dict)
-                    and step.get("name") in {"Build artifact", "Build plugin archive"}
+                    and step.get("name") in ("Build artifact", "Build plugin archive")
                 ]
                 if isinstance(build_steps, list)
                 else []
@@ -6125,7 +6125,9 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
         if document.get("permissions") != workflow_permissions:
             problems.append(f"{relative}: top-level permissions must be read-only")
         if job_name == "analyze":
-            pull_request = document.get("on", {}).get("pull_request")
+            triggers = document.get("on")
+            trigger_mapping = triggers if isinstance(triggers, dict) else {}
+            pull_request = trigger_mapping.get("pull_request")
             if not isinstance(pull_request, dict) or pull_request.get("types") != [
                 "opened",
                 "edited",
@@ -6135,12 +6137,12 @@ def validate_privileged_workflow_permissions(repository_root: Path) -> list[str]
                 problems.append(
                     f"{relative}: CodeQL pull_request trigger must include edited"
                 )
-            merge_group = document.get("on", {}).get("merge_group")
+            merge_group = trigger_mapping.get("merge_group")
             if merge_group != {"types": ["checks_requested"]}:
                 problems.append(
                     f"{relative}: CodeQL merge_group trigger must request checks"
                 )
-            if document.get("on", {}).get("workflow_dispatch") != "":
+            if trigger_mapping.get("workflow_dispatch") != "":
                 problems.append(
                     f"{relative}: CodeQL must support manual security scans"
                 )
@@ -6428,7 +6430,9 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                 f"{relative}: required-check runs must serialize with "
                 "cancel-in-progress: false"
             )
-        merge_group = document.get("on", {}).get("merge_group")
+        triggers = document.get("on")
+        trigger_mapping = triggers if isinstance(triggers, dict) else {}
+        merge_group = trigger_mapping.get("merge_group")
         if merge_group != {"types": ["checks_requested"]}:
             problems.append(
                 f"{relative}: required-check workflow must run for merge_group"
@@ -6465,7 +6469,7 @@ def validate_issue_form_body(relative: Path, form_body: list[Any]) -> list[str]:
         if unsupported_keys:
             problems.append(f"{prefix} contains unsupported keys")
         item_type = item.get("type")
-        if item_type not in ISSUE_FORM_INPUT_TYPES:
+        if item_type not in tuple(ISSUE_FORM_INPUT_TYPES):
             problems.append(f"{prefix} has invalid type")
             continue
         if item_type != "markdown":
@@ -6527,7 +6531,7 @@ def validate_issue_form_body(relative: Path, form_body: list[Any]) -> list[str]:
                         continue
                     labels.append(option["label"])
                     required = option.get("required")
-                    if required is not None and required not in {"true", "false"}:
+                    if required is not None and required not in ("true", "false"):
                         problems.append(
                             f"{prefix}.attributes.options[{option_index}].required "
                             "must be a boolean"
@@ -6551,7 +6555,7 @@ def validate_issue_form_body(relative: Path, form_body: list[Any]) -> list[str]:
                 problems.append(f"{prefix}.validations must be a mapping")
             else:
                 required = validations.get("required")
-                if required is not None and required not in {"true", "false"}:
+                if required is not None and required not in ("true", "false"):
                     problems.append(f"{prefix}.validations.required must be a boolean")
                 accept = validations.get("accept")
                 if item_type == "upload" and accept is not None:
@@ -6643,7 +6647,7 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
         if not isinstance(document, dict):
             problems.append(f"{relative}: root must be a mapping")
             continue
-        if document.get("blank_issues_enabled") not in {"true", "false"}:
+        if document.get("blank_issues_enabled") not in ("true", "false"):
             problems.append(f"{relative}: blank_issues_enabled must be a boolean")
         contact_links = document.get("contact_links", [])
         if not isinstance(contact_links, list):
@@ -6752,14 +6756,14 @@ def validate_dependabot(repository_root: Path) -> list[str]:
         repository_root / ".github" / "dependabot.yml",
         repository_root / "skills" / "repo-scaffold" / "assets" / "dependabot.yml",
     )
-    allowed_intervals = {
+    allowed_intervals = (
         "daily",
         "weekly",
         "monthly",
         "quarterly",
         "semiannually",
         "yearly",
-    }
+    )
     for path in paths:
         relative = path.relative_to(repository_root)
         try:

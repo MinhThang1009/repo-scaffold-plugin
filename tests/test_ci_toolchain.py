@@ -184,6 +184,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
             ("tool", {**valid, "tag-template": "release"}, "tag-template"),
             ("tool", {**valid, "tag-template": "../{version}"}, "tag-template"),
             ("tool", {**valid, "archive-format": "zip"}, "archive-format"),
+            ("tool", {**valid, "archive-format": []}, "archive-format"),
             (
                 "tool",
                 {**valid, "executable-path-template": 7},

@@ -158,7 +158,7 @@ def workflow_producers(
                     pull_request_coverage=pull_request_coverage,
                     merge_group_coverage=merge_group_coverage,
                     unconditional=job.get("if")
-                    in {None, "${{ always() }}", "always()"},
+                    in (None, "${{ always() }}", "always()"),
                     executable=executable and "continue-on-error" not in job,
                 )
             )
