@@ -6,6 +6,7 @@ import os
 import re
 import runpy
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -7311,10 +7312,60 @@ class WorkflowShellValidationTests(unittest.TestCase):
             ignored.write_text("ignored\n", encoding="utf-8")
             nested.mkdir()
             (nested / "nested.yml").write_text("jobs: {}\n", encoding="utf-8")
+            (root / "directory.yml").mkdir()
 
             self.assertEqual(
                 validate_workflows.discover_workflows(root), [yml, yaml_file]
             )
+
+    def test_workflow_discovery_rejects_linked_directories_and_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / "ci.yml"
+            workflow.write_text("jobs: {}\n", encoding="utf-8")
+
+            with mock.patch.object(
+                validate_workflows, "is_link_or_reparse", return_value=True
+            ):
+                with self.assertRaisesRegex(ValueError, "linked or a reparse point"):
+                    validate_workflows.discover_workflows(root)
+
+            with mock.patch.object(
+                validate_workflows,
+                "is_link_or_reparse",
+                side_effect=lambda path: path == workflow,
+            ):
+                with self.assertRaisesRegex(ValueError, "linked or a reparse point"):
+                    validate_workflows.discover_workflows(root)
+
+    def test_workflow_path_safety_handles_missing_errors_and_reparse_points(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.yml"
+            self.assertFalse(validate_workflows.is_link_or_reparse(missing))
+
+            path = mock.Mock(spec=Path)
+            path.lstat.side_effect = OSError("denied")
+            with self.assertRaisesRegex(ValueError, "could not inspect workflow path"):
+                validate_workflows.is_link_or_reparse(path)
+
+            path.lstat.side_effect = None
+            path.lstat.return_value = mock.Mock(
+                st_mode=stat.S_IFLNK, st_file_attributes=0
+            )
+            self.assertTrue(validate_workflows.is_link_or_reparse(path))
+            path.lstat.return_value = mock.Mock(
+                st_mode=stat.S_IFREG, st_file_attributes=0x400
+            )
+            self.assertTrue(validate_workflows.is_link_or_reparse(path))
+
+    def test_workflow_reader_rejects_linked_path(self) -> None:
+        with mock.patch.object(
+            validate_workflows, "is_link_or_reparse", return_value=True
+        ):
+            with self.assertRaisesRegex(ValueError, "linked or a reparse point"):
+                validate_workflows.read_workflow_text(Path("ci.yml"))
 
     def test_freshness_authentication_requires_one_audit_step(self) -> None:
         workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
@@ -7857,6 +7908,26 @@ jobs:
                 "actionlint is required" in call.args[0]
                 for call in stderr.write.call_args_list
             )
+        )
+
+        discovery_stderr = StringIO()
+        with (
+            mock.patch.object(
+                validate_workflows,
+                "resolve_path_executable",
+                side_effect=["actionlint", "shellcheck"],
+            ),
+            mock.patch.object(
+                validate_workflows,
+                "discover_workflows",
+                side_effect=ValueError("workflow path is linked"),
+            ),
+            redirect_stderr(discovery_stderr),
+        ):
+            self.assertEqual(validate_workflows.main(), 2)
+        self.assertEqual(
+            discovery_stderr.getvalue(),
+            "Could not discover workflow files: workflow path is linked\n",
         )
 
     def test_main_uses_exact_tool_names_roots_and_diagnostics(self) -> None:

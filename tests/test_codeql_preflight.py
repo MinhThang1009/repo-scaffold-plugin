@@ -3058,6 +3058,7 @@ class WorkflowResolverTests(unittest.TestCase):
             {
                 "truncated": False,
                 "tree": [
+                    None,
                     {"type": "tree", "path": ".github/workflows"},
                     {"type": "blob", "path": "README.md", "sha": "c" * 40},
                     {
@@ -3118,6 +3119,42 @@ class WorkflowResolverTests(unittest.TestCase):
                     },
                 ],
                 "not canonical",
+            ),
+            (
+                [
+                    {"sha": commit},
+                    {
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "type": "tree",
+                                "path": ".github/workflows/ci.yml",
+                            }
+                        ],
+                    },
+                ],
+                "not a blob",
+            ),
+            (
+                [
+                    {"sha": commit},
+                    {
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "type": "blob",
+                                "path": ".github/workflows/ci.yml",
+                                "sha": blob,
+                            },
+                            {
+                                "type": "blob",
+                                "path": ".github/workflows/ci.yml",
+                                "sha": "c" * 40,
+                            },
+                        ],
+                    },
+                ],
+                "appears more than once",
             ),
         ]
         for responses, message in invalid_responses:

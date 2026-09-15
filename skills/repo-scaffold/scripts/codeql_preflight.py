@@ -2900,12 +2900,9 @@ def load_remote_default_branch(
     if not isinstance(items, list):
         raise InspectionError("Default-branch tree has no tree array.")
     workflow_items: list[dict[str, Any]] = []
+    seen_workflow_paths: set[str] = set()
     for item in items:
-        if (
-            not isinstance(item, dict)
-            or item.get("type") != "blob"
-            or not isinstance(item.get("path"), str)
-        ):
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
             continue
         path = item["path"]
         pure_path = PurePosixPath(path)
@@ -2913,10 +2910,19 @@ def load_remote_default_branch(
             continue
         if pure_path.suffix.lower() not in {".yml", ".yaml"}:
             continue
+        if item.get("type") != "blob":
+            raise InspectionError(
+                f"Default-branch workflow entry is not a blob: {path!r}"
+            )
         if not is_direct_workflow_path(path):
             raise InspectionError(
                 f"Default-branch workflow path is not canonical: {path!r}"
             )
+        if path in seen_workflow_paths:
+            raise InspectionError(
+                f"Default-branch workflow path appears more than once: {path!r}"
+            )
+        seen_workflow_paths.add(path)
         workflow_items.append(item)
     if len(workflow_items) > MAX_REMOTE_WORKFLOWS:
         raise InspectionError(

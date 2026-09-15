@@ -94,12 +94,9 @@ def workflow_producers(
     if not isinstance(entries, list):
         raise InspectionError("Workflow tree has no tree array.")
     workflows: list[dict[str, Any]] = []
+    seen_workflow_paths: set[str] = set()
     for entry in entries:
-        if (
-            not isinstance(entry, dict)
-            or entry.get("type") != "blob"
-            or not isinstance(entry.get("path"), str)
-        ):
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
             continue
         path = entry["path"]
         pure_path = PurePosixPath(path)
@@ -107,8 +104,13 @@ def workflow_producers(
             continue
         if pure_path.suffix.lower() not in {".yml", ".yaml"}:
             continue
+        if entry.get("type") != "blob":
+            raise InspectionError(f"Workflow entry is not a blob: {path!r}")
         if not is_direct_workflow_path(path):
             raise InspectionError(f"Workflow path is not canonical: {path!r}")
+        if path in seen_workflow_paths:
+            raise InspectionError(f"Workflow path appears more than once: {path!r}")
+        seen_workflow_paths.add(path)
         workflows.append(entry)
     if len(workflows) > MAX_WORKFLOWS:
         raise InspectionError("Workflow count exceeds the safety cap.")
@@ -172,19 +174,23 @@ def workflow_producers(
 def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
     if not isinstance(payload, dict) or not isinstance(payload.get("check_runs"), list):
         raise InspectionError("Check Runs response is invalid.")
+    check_runs = payload["check_runs"]
     total = payload.get("total_count")
     if (
         not isinstance(total, int)
         or isinstance(total, bool)
         or total < 0
         or total > 100
+        or total != len(check_runs)
+        or not all(isinstance(item, dict) for item in check_runs)
     ):
-        raise InspectionError("Check Runs response requires unbounded pagination.")
+        raise InspectionError(
+            "Check Runs response has an invalid or incomplete bounded result."
+        )
     matches = [
         item
-        for item in payload["check_runs"]
-        if isinstance(item, dict)
-        and str(item.get("name", "")).casefold() == context.casefold()
+        for item in check_runs
+        if str(item.get("name", "")).casefold() == context.casefold()
     ]
     if not matches:
         raise InspectionError(f"Required check {context!r} has no Check Run evidence.")
@@ -242,18 +248,22 @@ def inspect_evidence(
     statuses = client.json(f"repos/{owner}/{repo}/commits/{sha}/status?per_page=100")
     if not isinstance(statuses, dict) or not isinstance(statuses.get("statuses"), list):
         raise InspectionError("Combined status response is invalid.")
+    status_entries = statuses["statuses"]
     total = statuses.get("total_count")
     if (
         not isinstance(total, int)
         or isinstance(total, bool)
         or total < 0
         or total > 100
+        or total != len(status_entries)
+        or not all(isinstance(status, dict) for status in status_entries)
     ):
-        raise InspectionError("Combined status response requires unbounded pagination.")
+        raise InspectionError(
+            "Combined status response has an invalid or incomplete bounded result."
+        )
     if any(
-        isinstance(status, dict)
-        and str(status.get("context", "")).casefold() == context.casefold()
-        for status in statuses["statuses"]
+        str(status.get("context", "")).casefold() == context.casefold()
+        for status in status_entries
     ):
         raise InspectionError(
             f"Required check {context!r} collides with a Commit Status on a controlling SHA."

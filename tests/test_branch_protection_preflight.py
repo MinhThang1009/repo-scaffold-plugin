@@ -262,6 +262,28 @@ jobs: {}
                 client, OWNER, REPOSITORY, HEAD_SHA
             )
 
+        non_blob_entry = dict(entry, type="tree")
+        FakeClient.responses = {
+            endpoint: {"truncated": False, "tree": [non_blob_entry]}
+        }
+        with self.assertRaisesRegex(
+            branch_protection_preflight.InspectionError, "not a blob"
+        ):
+            branch_protection_preflight.workflow_producers(
+                client, OWNER, REPOSITORY, HEAD_SHA
+            )
+
+        duplicate_entry = dict(entry, sha="c" * 40)
+        FakeClient.responses = {
+            endpoint: {"truncated": False, "tree": [entry, duplicate_entry]}
+        }
+        with self.assertRaisesRegex(
+            branch_protection_preflight.InspectionError, "appears more than once"
+        ):
+            branch_protection_preflight.workflow_producers(
+                client, OWNER, REPOSITORY, HEAD_SHA
+            )
+
         blob_endpoint = f"repos/{OWNER}/{REPOSITORY}/git/blobs/{BLOB_SHA}"
         FakeClient.responses = {
             endpoint: {"truncated": False, "tree": [entry]},
@@ -695,6 +717,18 @@ jobs:
                     )
 
         base = cast(dict[str, Any], valid["check_runs"][0])
+        for payload in (
+            {"total_count": 0, "check_runs": [base]},
+            {"total_count": 1, "check_runs": [None]},
+        ):
+            with self.subTest(incomplete_payload=payload):
+                with self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "invalid or incomplete",
+                ):
+                    branch_protection_preflight.app_id_for_check(
+                        payload, "ci-success", now
+                    )
         evidence_updates: list[tuple[dict[str, Any], str]] = [
             ({"app": {}}, "incomplete"),
             ({"app": {"id": True}}, "incomplete"),
@@ -755,6 +789,8 @@ jobs:
             {"total_count": -1, "statuses": []},
             {"total_count": 101, "statuses": []},
             {"total_count": 1, "statuses": [{"context": "CI-SUCCESS"}]},
+            {"total_count": 0, "statuses": [{"context": "other"}]},
+            {"total_count": 1, "statuses": [None]},
         ]:
             FakeClient.responses[status_endpoint] = status
             with self.subTest(status=status):
