@@ -426,7 +426,30 @@ def audit(
 
 def markdown_table_cell(value: object) -> str:
     """Render one value without permitting it to add Markdown table cells/rows."""
-    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("`", "\\`")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def markdown_code_span(value: object) -> str:
+    """Render one value in a code span without allowing delimiter injection."""
+    text = (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+    longest_backtick_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    if longest_backtick_run:
+        delimiter = "`" * (longest_backtick_run + 1)
+        return f"{delimiter} {text} {delimiter}"
+    return f"`{text}`"
 
 
 def markdown_report(report: dict[str, Any]) -> str:
@@ -435,8 +458,8 @@ def markdown_report(report: dict[str, Any]) -> str:
         "<!-- repo-scaffold-official-docs-audit -->",
         "# Official documentation review report",
         "",
-        f"- Checked: `{report['checked-at']}`",
-        f"- Overall status: **{report['status']}**",
+        f"- Checked: {markdown_code_span(report['checked-at'])}",
+        f"- Overall status: **{markdown_code_span(report['status'])}**",
         "",
     ]
     findings = report["findings"]
@@ -448,8 +471,12 @@ def markdown_report(report: dict[str, Any]) -> str:
             ]
         )
         lines.extend(
-            "| {kind} | `{path}` | {subject} | `{current}` | `{latest}` |".format(
-                **{key: markdown_table_cell(value) for key, value in finding.items()}
+            "| {kind} | {path} | {subject} | {current} | {latest} |".format(
+                kind=markdown_table_cell(finding.get("kind", "")),
+                path=markdown_code_span(finding.get("path", "")),
+                subject=markdown_table_cell(finding.get("subject", "")),
+                current=markdown_code_span(finding.get("current", "")),
+                latest=markdown_code_span(finding.get("latest", "")),
             )
             for finding in findings
         )
@@ -463,7 +490,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             [
                 "## Indeterminate checks",
                 "",
-                *[f"- {error}" for error in report["errors"]],
+                *[f"- {markdown_table_cell(error)}" for error in report["errors"]],
                 "",
             ]
         )

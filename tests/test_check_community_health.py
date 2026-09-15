@@ -734,6 +734,30 @@ class AuditAndCliTests(unittest.TestCase):
             community_health.markdown_report(report),
         )
 
+    def test_markdown_report_escapes_backticks_in_code_spans_and_cells(self) -> None:
+        report: dict[str, Any] = {
+            "repository": "owner/`repository",
+            "checked-at": "now`",
+            "summary": {"status": "attention"},
+            "community-profile": {"status": "attention"},
+            "files": [
+                {
+                    "label": "Policy`name",
+                    "paths": ["docs/a`b.md"],
+                    "tracker": "tracker`name",
+                    "status": "stale`status",
+                    "details": "detail`text",
+                }
+            ],
+            "errors": ["offline`retry"],
+        }
+
+        markdown = community_health.markdown_report(report)
+        self.assertIn("- Repository: `` owner/`repository ``", markdown)
+        self.assertIn("| Policy\\`name | `` docs/a`b.md `` |", markdown)
+        self.assertIn("| tracker\\`name | stale\\`status | detail\\`text |", markdown)
+        self.assertIn("- offline\\`retry", markdown)
+
     def test_write_text_and_parse_args(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "nested" / "report.md"

@@ -525,7 +525,30 @@ def audit(
 
 def markdown_table_cell(value: object) -> str:
     """Render one value without permitting it to add Markdown table cells/rows."""
-    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("`", "\\`")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def markdown_code_span(value: object) -> str:
+    """Render one value in a code span without allowing delimiter injection."""
+    text = (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+    longest_backtick_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    if longest_backtick_run:
+        delimiter = "`" * (longest_backtick_run + 1)
+        return f"{delimiter} {text} {delimiter}"
+    return f"`{text}`"
 
 
 def markdown_report(report: dict[str, Any]) -> str:
@@ -535,8 +558,8 @@ def markdown_report(report: dict[str, Any]) -> str:
         "<!-- repo-scaffold-community-health-drift -->",
         "# Community-health upstream report",
         "",
-        f"- Repository: `{report['repository']}`",
-        f"- Checked: `{report['checked-at']}`",
+        f"- Repository: {markdown_code_span(report['repository'])}",
+        f"- Checked: {markdown_code_span(report['checked-at'])}",
         f"- Overall status: **{summary['status']}**",
         f"- GitHub Community Profile: **{profile['status']}**"
         + (
@@ -551,7 +574,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     for result in report["files"]:
         paths = result["paths"]
         path_text = (
-            ", ".join(f"`{markdown_table_cell(path)}`" for path in paths)
+            ", ".join(markdown_code_span(path) for path in paths)
             if paths
             else "_absent_"
         )
@@ -568,7 +591,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     errors = report["errors"]
     if errors:
         lines.extend(["", "## Indeterminate checks", ""])
-        lines.extend(f"- {str(error).replace(chr(10), ' ')}" for error in errors)
+        lines.extend(f"- {markdown_table_cell(error)}" for error in errors)
     lines.extend(
         [
             "",

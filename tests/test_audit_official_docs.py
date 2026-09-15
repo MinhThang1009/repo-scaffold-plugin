@@ -509,6 +509,26 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 "Claim\\|text next | `old\\|value next` | `new\\|value next` |",
                 official_docs.markdown_report(report),
             )
+            backtick_report = {
+                **report,
+                "findings": [
+                    {
+                        "kind": "official-docs-review",
+                        "path": "README`guide.md",
+                        "subject": "Claim`text",
+                        "current": "old``value",
+                        "latest": "new`value",
+                    }
+                ],
+                "errors": ["offline`retry"],
+            }
+            rendered_backticks = official_docs.markdown_report(backtick_report)
+            self.assertIn(
+                "| official-docs-review | `` README`guide.md `` | Claim\\`text | "
+                "``` old``value ``` | `` new`value `` |",
+                rendered_backticks,
+            )
+            self.assertIn("- offline\\`retry", rendered_backticks)
             with mock.patch.object(
                 official_docs,
                 "read_document",
