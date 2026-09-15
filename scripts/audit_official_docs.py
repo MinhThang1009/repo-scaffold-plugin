@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
@@ -24,6 +25,7 @@ MAX_LOCAL_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_CLAIMS = 64
 MAX_MARKERS_PER_CLAIM = 8
 MAX_REVIEW_PERIOD_DAYS = 366
+MAX_FETCH_WORKERS = 8
 CLAIM_IDENTIFIER = re.compile(r"[a-z][a-z0-9-]*\Z")
 HOSTNAME = re.compile(r"[a-z0-9][a-z0-9.-]*[a-z0-9]\Z")
 DEFAULT_TRACKER_REGISTRY = Path(".github/official-docs-trackers.json")
@@ -78,6 +80,10 @@ class DocumentationClaim:
     markers: tuple[str, ...]
     reviewed_on: date
     review_period_days: int
+
+
+DocumentKey = tuple[str, tuple[str, ...]]
+DocumentResult = tuple[str, str] | AuditError
 
 
 def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -341,7 +347,11 @@ def read_local_source(path: Path) -> str:
 
 
 def claim_findings(
-    root: Path, claim: DocumentationClaim, today: date
+    root: Path,
+    claim: DocumentationClaim,
+    today: date,
+    *,
+    document_result: DocumentResult | None = None,
 ) -> list[dict[str, str]]:
     """Return review findings for one source without interpreting its prose automatically."""
     for relative in claim.paths:
@@ -356,7 +366,11 @@ def claim_findings(
             raise AuditError(
                 f"claim source path is missing, unsafe, or unreadable: {relative}"
             ) from error
-    resolved_url, content = read_document(claim.url, claim.allowed_hosts)
+    if document_result is None:
+        document_result = read_document(claim.url, claim.allowed_hosts)
+    elif isinstance(document_result, AuditError):
+        raise AuditError(str(document_result)) from document_result
+    resolved_url, content = document_result
     resolved_host = hostname(resolved_url, field=f"resolved URL for {claim.identifier}")
     if resolved_host not in claim.allowed_hosts:
         raise AuditError(
@@ -395,6 +409,22 @@ def claim_findings(
     return findings
 
 
+def fetch_documents(
+    claims: tuple[DocumentationClaim, ...],
+) -> dict[DocumentKey, DocumentResult]:
+    """Fetch each unique approved URL concurrently within a bounded worker pool."""
+    keys = list(dict.fromkeys((claim.url, claim.allowed_hosts) for claim in claims))
+    with ThreadPoolExecutor(max_workers=min(MAX_FETCH_WORKERS, len(keys))) as executor:
+        futures = {key: executor.submit(read_document, key[0], key[1]) for key in keys}
+        results: dict[DocumentKey, DocumentResult] = {}
+        for key, future in futures.items():
+            try:
+                results[key] = future.result()
+            except AuditError as error:
+                results[key] = error
+    return results
+
+
 def audit(
     root: Path,
     tracker_registry: Path = DEFAULT_TRACKER_REGISTRY,
@@ -409,9 +439,18 @@ def audit(
     except AuditError as error:
         claims = ()
         errors.append(str(error))
+    documents = fetch_documents(claims) if claims else {}
     for claim in claims:
         try:
-            findings.extend(claim_findings(root, claim, checked_on))
+            key = (claim.url, claim.allowed_hosts)
+            findings.extend(
+                claim_findings(
+                    root,
+                    claim,
+                    checked_on,
+                    document_result=documents[key],
+                )
+            )
         except AuditError as error:
             errors.append(str(error))
     status = "indeterminate" if errors else "attention" if findings else "current"
