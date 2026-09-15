@@ -240,7 +240,11 @@ non-empty `--title`, and any `gh issue close` mutation must also use an
 explicit `--repo` binding. The reminder must use the stable
 `repo-scaffold-freshness-${{ github.repository }}` repository-scoped,
 non-cancelling concurrency group so manual runs on another ref cannot race the
-scheduled run. The preflight rejects untrusted-trigger, comment-only,
+scheduled run. Because `workflow_dispatch` can select another ref, every
+manually dispatched Issue-writing reminder must check out
+`${{ github.event.repository.default_branch }}` with
+`persist-credentials: false`; this keeps its checker and tracker on the
+trusted default branch. The preflight rejects untrusted-trigger, comment-only,
 shell-ambiguous, or otherwise incomplete reminder scaffolds. If the
 reconciliation job declares job-level permissions, it must retain effective
 `contents: read` and `issues: write` access so it can check out and reconcile
@@ -301,7 +305,10 @@ reconciliation), so the checker has its repository files and Python runtime.
 Any auxiliary direct job must be an inert `steps: []` mapping with no execution
 configuration.
 Any
-repository, ref, path, token, cache, or other input override is rejected.
+repository, path, token, cache, or other input override is rejected. The only
+allowed checkout ref is the exact default-branch expression above; an
+arbitrary or omitted ref is rejected for manually dispatched Issue-writing
+workflows.
 The job summary must publish only the checked Markdown report with
 `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.
 Within the reconciliation job, the audit must complete before the lookup, and

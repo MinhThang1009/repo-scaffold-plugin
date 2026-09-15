@@ -913,6 +913,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "    steps:\n"
                 "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
                 "        with:\n"
+                "          ref: ${{ github.event.repository.default_branch }}\n"
                 "          persist-credentials: false\n"
                 "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97\n"
                 "        with:\n"
@@ -1038,6 +1039,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "    runs-on: ubuntu-latest\n"
                 "    timeout-minutes: 15\n"
                 "    steps:\n"
+                "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
+                "        with:\n"
+                "          ref: ${{ github.event.repository.default_branch }}\n"
+                "          persist-credentials: false\n"
                 "      - run: |\n"
                 "          set +e\n"
                 "          python scripts/audit_freshness.py \\\n"
@@ -1109,6 +1114,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "    steps:\n"
             "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
             "        with:\n"
+            "          ref: ${{ github.event.repository.default_branch }}\n"
             "          persist-credentials: false\n"
             "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97\n"
             "        with:\n"
@@ -4591,6 +4597,90 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
         )
 
+        safe_manual_workflow = {
+            "on": {"workflow_dispatch": ""},
+            "jobs": {
+                "audit": {
+                    "steps": [
+                        {
+                            "uses": "actions/checkout@" + "a" * 40,
+                            "with": {
+                                "ref": "${{ github.event.repository.default_branch }}",
+                                "persist-credentials": "false",
+                            },
+                        },
+                        {"run": "python audit.py"},
+                    ]
+                }
+            },
+        }
+        self.assertTrue(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                safe_manual_workflow
+            )
+        )
+        for checkout_with in (
+            {"persist-credentials": "false"},
+            {"ref": "main", "persist-credentials": "false"},
+        ):
+            unsafe_manual_workflow = {
+                **safe_manual_workflow,
+                "jobs": {
+                    "audit": {
+                        "steps": [
+                            {
+                                "uses": "actions/checkout@" + "a" * 40,
+                                "with": checkout_with,
+                            },
+                            {"run": "python audit.py"},
+                        ]
+                    }
+                },
+            }
+            self.assertFalse(
+                workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                    unsafe_manual_workflow
+                )
+            )
+        no_checkout_workflow = {
+            "on": {"workflow_dispatch": ""},
+            "jobs": {"audit": {"steps": [{"run": "python audit.py"}]}},
+        }
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                no_checkout_workflow
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(None)
+        )
+        self.assertTrue(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe({})
+        )
+        for malformed in (
+            {"on": {"workflow_dispatch": ""}, "jobs": []},
+            {"on": {"workflow_dispatch": ""}, "jobs": {"audit": None}},
+            {
+                "on": {"workflow_dispatch": ""},
+                "jobs": {"audit": {"steps": "invalid"}},
+            },
+            {
+                "on": {"workflow_dispatch": ""},
+                "jobs": {"audit": {"steps": [None]}},
+            },
+        ):
+            with self.subTest(malformed_manual_workflow=malformed):
+                self.assertFalse(
+                    workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                        malformed
+                    )
+                )
+        self.assertTrue(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {"on": {"workflow_dispatch": ""}, "jobs": {"audit": {"steps": []}}}
+            )
+        )
+
         for definition in (
             "alias gh='echo shadowed'",
             "declare -fx gh",
@@ -5284,6 +5374,28 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertFalse(result["pull_request_write_tokens_confirmed"])
         self.assertEqual(confirmed["decision"], "may-install-workflow-assets")
+
+    def test_manual_issue_write_workflow_must_use_default_branch_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "reminder.yml"
+            workflow.write_text(
+                "on:\n"
+                "  workflow_dispatch:\n"
+                "permissions:\n"
+                "  issues: write\n"
+                "jobs:\n"
+                "  audit:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + "\n"
+                "      - run: python audit.py\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "default branch",
+            ):
+                workflow_installation_preflight.workflow_capabilities([workflow])
 
     def test_pull_request_write_token_gate_ignores_read_only_and_target_workflows(
         self,

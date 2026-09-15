@@ -70,6 +70,11 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   only supported fields and input types. Maintain one idempotent issue when
   Issues are enabled. Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
+  Since `workflow_dispatch` can target a branch or tag, every manually
+  dispatched Issue-writing reminder must check out
+  `${{ github.event.repository.default_branch }}` with
+  `persist-credentials: false` before running repository code. This keeps the
+  checker and tracker on the trusted default branch.
   Community-health tracker registry paths must stay inside the repository and
   reject traversal, control characters, links, or reparse points before they
   are read. Directory inventories
@@ -148,14 +153,17 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
   non-Bash runner or shell overrides, workflow/job containers, and services must
   fail closed. Its reviewed checkout and Python setup actions must retain the
-  canonical full-SHA references and inputs, `persist-credentials: false` and
-  `python-version: 3.x`. Both preparation actions must appear exactly once,
+  canonical full-SHA references and inputs, including the exact default-branch
+  checkout ref and `persist-credentials: false`, plus `python-version: 3.x`.
+  Both preparation actions must appear exactly once,
   before exactly three canonical run steps (audit, summary, and
   reconciliation), so the checker has its repository files and Python runtime.
   Any auxiliary direct job must be an inert `steps: []` mapping with no execution
   configuration.
   Any
-  repository, ref, path, token, cache, or other input override must fail closed.
+  repository, path, token, cache, or other input override must fail closed. An
+  arbitrary or omitted checkout ref must also fail closed for manually
+  dispatched Issue-writing workflows.
   The job summary must publish only the checked Markdown report with
   `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.
   Within the

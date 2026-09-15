@@ -78,6 +78,33 @@ class ReminderWorkflowTests(unittest.TestCase):
             self.assertIn("--jq '[.items[].number] | join(\" \")'", script, relative)
             self.assertNotIn("--paginate", script, relative)
 
+    def test_issue_writing_reminders_checkout_the_default_branch(self) -> None:
+        for relative in (
+            ".github/workflows/community-health.yml",
+            ".github/workflows/freshness.yml",
+            ".github/workflows/official-docs.yml",
+            "skills/repo-scaffold/assets/workflows/community-health.yml",
+            "skills/repo-scaffold/assets/workflows/freshness.yml",
+        ):
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            checkout_steps = [
+                step
+                for job in document["jobs"].values()
+                for step in job["steps"]
+                if step.get("uses", "").startswith("actions/checkout@")
+            ]
+            self.assertEqual(len(checkout_steps), 1, relative)
+            self.assertEqual(
+                checkout_steps[0]["with"],
+                {
+                    "ref": "${{ github.event.repository.default_branch }}",
+                    "persist-credentials": "false",
+                },
+                relative,
+            )
+
     @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
     def test_clean_status_requires_report_marker_before_close(self) -> None:
         for relative, report in (

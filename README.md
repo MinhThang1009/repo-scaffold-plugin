@@ -334,7 +334,9 @@ and independently reports direct-PyPI-pin and lock-consistency drift, plus any
 versioned input the PR synchronizer could not make current. It serializes
 scheduled and manual runs per repository, opens or updates one marker Issue
 when attention is required, and closes it only after a clean scheduled/manual
-result. The
+result. Manual dispatches may target another ref in GitHub, so the reminder
+always checks out and audits the repository's default branch before using its
+Issue-writing token. The
 scaffold ships the same registry-driven checker and workflow to generated
 repositories when Issues are available. Track only sources with an
 authoritative owner and deterministic version resolver. Its version-1 registry
@@ -344,7 +346,9 @@ community-health policy tracking remains in its separate registry.
 The non-required weekly [official-documentation workflow](.github/workflows/official-docs.yml)
 uses [its explicit tracker registry](.github/official-docs-trackers.json) to
 revalidate the authoritative source URLs and stable claim markers, then requires
-a reviewed registry-date update at least every 90 days. It covers the plugin's
+a reviewed registry-date update at least every 90 days. Scheduled and manual
+reminder runs audit the default branch, even when GitHub dispatches them from a
+different ref. It covers the plugin's
 Codex, Claude Code, GitHub Actions, Agent Skills, Conventional Commits, and
 Keep a Changelog claims. Generated repositories do not inherit those
 plugin-specific claims.

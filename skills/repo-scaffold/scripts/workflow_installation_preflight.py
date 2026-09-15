@@ -169,9 +169,13 @@ FRESHNESS_REVIEWED_ACTION_REFERENCES = {
     "actions/setup-python": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
 }
 FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
-    "actions/checkout": {"persist-credentials": "false"},
+    "actions/checkout": {
+        "ref": "${{ github.event.repository.default_branch }}",
+        "persist-credentials": "false",
+    },
     "actions/setup-python": {"python-version": "3.x"},
 }
+TRUSTED_DEFAULT_BRANCH_REF = "${{ github.event.repository.default_branch }}"
 CRON_STEP = r"(?:/[1-9][0-9]*)?"
 CRON_MINUTE_VALUE = r"(?:[0-9]|[1-5][0-9])"
 CRON_HOUR_VALUE = r"(?:[0-9]|1[0-9]|2[0-3])"
@@ -1028,6 +1032,47 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
     return (
         prepared == FRESHNESS_ALLOWED_ACTION_REPOSITORIES
         and run_step_count == FRESHNESS_CANONICAL_RUN_STEP_COUNT
+    )
+
+
+def manual_issue_write_checkout_is_safe(document: object) -> bool:
+    """Keep manually dispatched Issue-writing jobs on the trusted base branch."""
+    if not isinstance(document, dict):
+        return False
+    triggers = document.get("on")
+    if not isinstance(triggers, dict) or "workflow_dispatch" not in triggers:
+        return True
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        return False
+    run_steps: list[dict[str, Any]] = []
+    checkout_steps: list[dict[str, Any]] = []
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            return False
+        steps = job.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        for step in steps:
+            if not isinstance(step, dict):
+                return False
+            if "run" in step:
+                run_steps.append(step)
+            uses = step.get("uses")
+            if (
+                isinstance(uses, str)
+                and uses.partition("@")[0].casefold() == "actions/checkout"
+            ):
+                checkout_steps.append(step)
+    if not run_steps:
+        return True
+    return bool(checkout_steps) and all(
+        step.get("with")
+        == {
+            "ref": TRUSTED_DEFAULT_BRANCH_REF,
+            "persist-credentials": "false",
+        }
+        for step in checkout_steps
     )
 
 
@@ -3192,6 +3237,12 @@ def workflow_capabilities(
             raise InspectionError(str(exc)) from exc
         if requires_issue_write(text, workflow):
             issue_workflows.add(workflow.name)
+            if not manual_issue_write_checkout_is_safe(workflow_documents[workflow]):
+                raise InspectionError(
+                    f"Workflow {workflow.name} has workflow_dispatch and Issue write "
+                    "access; executable steps must check out the repository default "
+                    "branch with the reviewed credentials-disabled input."
+                )
         if requires_pull_request_write_tokens(text, workflow):
             pull_request_write_workflows.add(workflow.name)
         if is_code_scanning_gate(text, workflow):

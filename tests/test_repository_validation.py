@@ -11302,6 +11302,93 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 [*contract_steps, {"run": "printf extra"}]
             )
         )
+        safe_manual_workflow = {
+            "on": {"workflow_dispatch": ""},
+            "jobs": {
+                "audit": {
+                    "steps": [
+                        {
+                            "uses": "actions/checkout@" + "a" * 40,
+                            "with": {
+                                "ref": "${{ github.event.repository.default_branch }}",
+                                "persist-credentials": "false",
+                            },
+                        },
+                        {"run": "python audit.py"},
+                    ]
+                }
+            },
+        }
+        self.assertTrue(
+            validate_repository.manual_issue_write_checkout_is_safe(
+                safe_manual_workflow
+            )
+        )
+        unsafe_manual_workflow = {
+            **safe_manual_workflow,
+            "jobs": {
+                "audit": {
+                    "steps": [
+                        {
+                            "uses": "actions/checkout@" + "a" * 40,
+                            "with": {"persist-credentials": "false"},
+                        },
+                        {"run": "python audit.py"},
+                    ]
+                }
+            },
+        }
+        self.assertFalse(
+            validate_repository.manual_issue_write_checkout_is_safe(
+                unsafe_manual_workflow
+            )
+        )
+        self.assertFalse(validate_repository.manual_issue_write_checkout_is_safe(None))
+        self.assertTrue(validate_repository.manual_issue_write_checkout_is_safe({}))
+        for malformed_manual in (
+            {"on": {"workflow_dispatch": ""}, "jobs": []},
+            {"on": {"workflow_dispatch": ""}, "jobs": {"audit": None}},
+            {
+                "on": {"workflow_dispatch": ""},
+                "jobs": {"audit": {"steps": "invalid"}},
+            },
+            {
+                "on": {"workflow_dispatch": ""},
+                "jobs": {"audit": {"steps": [None]}},
+            },
+        ):
+            with self.subTest(malformed_manual_workflow=malformed_manual):
+                self.assertFalse(
+                    validate_repository.manual_issue_write_checkout_is_safe(
+                        malformed_manual
+                    )
+                )
+        self.assertTrue(
+            validate_repository.manual_issue_write_checkout_is_safe(
+                {"on": {"workflow_dispatch": ""}, "jobs": {"audit": {"steps": []}}}
+            )
+        )
+
+        validators = (
+            validate_repository.validate_community_health_tracking_contract,
+            validate_repository.validate_freshness_tracking_contract,
+            validate_repository.validate_official_docs_tracking_contract,
+        )
+        with mock.patch.object(
+            validate_repository,
+            "manual_issue_write_checkout_is_safe",
+            return_value=False,
+        ):
+            for validator in validators:
+                with self.subTest(validator=validator.__name__):
+                    problems = validator(PLUGIN_ROOT)
+                    self.assertTrue(
+                        any(
+                            "manually dispatched Issue-writing jobs" in problem
+                            for problem in problems
+                        )
+                    )
+
         swapped_steps = list(contract_steps)
         run_indices = [
             index for index, step in enumerate(swapped_steps) if "run" in step

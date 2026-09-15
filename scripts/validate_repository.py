@@ -144,9 +144,13 @@ FRESHNESS_REVIEWED_ACTION_REFERENCES = {
     "actions/setup-python": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
 }
 FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
-    "actions/checkout": {"persist-credentials": "false"},
+    "actions/checkout": {
+        "ref": "${{ github.event.repository.default_branch }}",
+        "persist-credentials": "false",
+    },
     "actions/setup-python": {"python-version": "3.x"},
 }
+TRUSTED_DEFAULT_BRANCH_REF = "${{ github.event.repository.default_branch }}"
 FRESHNESS_TITLE_ASSIGNMENT = "title=Repository freshness update required"
 FRESHNESS_ISSUE_NUMBERS_INITIALIZATION = "issue_numbers="
 FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS = (
@@ -965,6 +969,47 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
     return (
         prepared == FRESHNESS_ALLOWED_ACTION_REPOSITORIES
         and run_step_count == FRESHNESS_CANONICAL_RUN_STEP_COUNT
+    )
+
+
+def manual_issue_write_checkout_is_safe(document: object) -> bool:
+    """Keep manually dispatched Issue-writing jobs on the trusted base branch."""
+    if not isinstance(document, dict):
+        return False
+    triggers = document.get("on")
+    if not isinstance(triggers, dict) or "workflow_dispatch" not in triggers:
+        return True
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        return False
+    run_steps: list[dict[str, object]] = []
+    checkout_steps: list[dict[str, object]] = []
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            return False
+        steps = job.get("steps", [])
+        if not isinstance(steps, list):
+            return False
+        for step in steps:
+            if not isinstance(step, dict):
+                return False
+            if "run" in step:
+                run_steps.append(step)
+            uses = step.get("uses")
+            if (
+                isinstance(uses, str)
+                and uses.partition("@")[0].casefold() == "actions/checkout"
+            ):
+                checkout_steps.append(step)
+    if not run_steps:
+        return True
+    return bool(checkout_steps) and all(
+        step.get("with")
+        == {
+            "ref": TRUSTED_DEFAULT_BRANCH_REF,
+            "persist-credentials": "false",
+        }
+        for step in checkout_steps
     )
 
 
@@ -7280,6 +7325,11 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
             problems.append(
                 f"{relative}: upstream-drift job must have effective issues: write permission"
             )
+        if not manual_issue_write_checkout_is_safe(workflow):
+            problems.append(
+                f"{relative}: manually dispatched Issue-writing jobs must check out "
+                "the repository default branch with credentials disabled"
+            )
         expected_script = (
             "scripts/check_community_health.py"
             if path == asset_workflow
@@ -7528,6 +7578,11 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             problems.append(
                 f"{relative}: audit job must have effective contents: read permission"
             )
+        if not manual_issue_write_checkout_is_safe(workflow):
+            problems.append(
+                f"{relative}: manually dispatched Issue-writing jobs must check out "
+                "the repository default branch with credentials disabled"
+            )
         if (
             "python scripts/audit_freshness.py" not in text
             or "repo-scaffold-freshness-audit" not in text
@@ -7624,6 +7679,10 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                             f"{relative}: official documentation URL must list this file in its tracker claim: {source_url}"
                         )
             required_claim_paths = {
+                "mutmut-windows-support": {
+                    "README.md",
+                    "CONTRIBUTING.md",
+                },
                 "github-actions-dependabot": {
                     ".github/dependabot.yml",
                     "skills/repo-scaffold/assets/dependabot.yml",
@@ -7897,6 +7956,11 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
     elif not job_effective_issue_write(workflow, job):
         problems.append(
             ".github/workflows/official-docs.yml: audit job must have effective issues: write permission"
+        )
+    if not manual_issue_write_checkout_is_safe(workflow):
+        problems.append(
+            ".github/workflows/official-docs.yml: manually dispatched Issue-writing "
+            "jobs must check out the repository default branch with credentials disabled"
         )
     for fragment in (
         "python scripts/audit_official_docs.py",

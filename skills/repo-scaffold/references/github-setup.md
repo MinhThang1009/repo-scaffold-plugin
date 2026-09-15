@@ -368,8 +368,11 @@ through a real repo-bound `gh issue create` or `gh issue edit --repo ...
 close` mutation must also use an explicit `--repo` binding. Its concurrency
 group must be the stable `repo-scaffold-freshness-${{ github.repository }}`
 repository-scoped, non-cancelling group so a manual run on another ref cannot
-race the scheduled run. Untrusted triggers, comments, shell-
-ambiguous commands, or an incomplete reminder do not satisfy the companion
+race the scheduled run. Since `workflow_dispatch` can target a branch or tag,
+its Issue-writing job must check out the exact
+`${{ github.event.repository.default_branch }}` ref with
+`persist-credentials: false` before running repository code. Untrusted triggers,
+comments, shell-ambiguous commands, or an incomplete reminder do not satisfy the companion
 requirement. If the reconciliation job declares job-level permissions, it must
 retain effective `contents: read` and `issues: write` access so it can check
 out and reconcile the repository. The `--body-file` value must match the
@@ -428,11 +431,14 @@ The bound `GITHUB_TOKEN` and `GH_TOKEN` must not be referenced from a freshness
 The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
 non-Bash runner or shell overrides, workflow/job containers, and services are
 rejected. Its reviewed checkout and Python setup actions must retain the
-canonical full-SHA references and inputs, `persist-credentials: false` and
-`python-version: 3.x`. Both preparation actions must appear exactly once,
+canonical full-SHA references and inputs, including the exact default-branch
+checkout ref and `persist-credentials: false`, plus `python-version: 3.x`.
+Both preparation actions must appear exactly once,
 before any run step, so the checker has its repository files and Python runtime.
 Any
-repository, ref, path, token, cache, or other input override is rejected.
+repository, path, token, cache, or other input override is rejected. An
+arbitrary or omitted checkout ref is also rejected for manually dispatched
+Issue-writing workflows.
 The job summary must publish only the checked Markdown report with
 `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.
 Within the reconciliation job, the audit must complete before the lookup, and
