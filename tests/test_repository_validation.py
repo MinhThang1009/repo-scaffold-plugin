@@ -7438,6 +7438,22 @@ class WorkflowShellValidationTests(unittest.TestCase):
         self.assertEqual(timeout_result, 2)
         self.assertEqual(stderr.getvalue(), "actionlint timed out.\n")
 
+        stderr = StringIO()
+        with (
+            mock.patch.object(
+                validate_workflows.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ),
+            redirect_stderr(stderr),
+        ):
+            execution_result = validate_workflows.run_actionlint(
+                "actionlint", [workflow], working_directory=working_directory
+            )
+
+        self.assertEqual(execution_result, 2)
+        self.assertEqual(stderr.getvalue(), "actionlint could not be executed.\n")
+
     def test_bash_block_is_normalized_to_binary_lf_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ci.yml"
@@ -7699,6 +7715,29 @@ jobs:
             any(
                 "ShellCheck timed out" in call.args[0]
                 for call in timeout_stderr.write.call_args_list
+            )
+        )
+
+        execution_stderr = mock.Mock()
+        with (
+            mock.patch.object(
+                validate_workflows,
+                "workflow_shell_blocks",
+                return_value=[("test: Test", "bash", b"echo ok")],
+            ),
+            mock.patch.object(
+                validate_workflows.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ),
+            mock.patch.object(validate_workflows.sys, "stderr", execution_stderr),
+        ):
+            execution_result = validate_workflows.run_shellcheck("shellcheck", [path])
+        self.assertEqual(execution_result, 2)
+        self.assertTrue(
+            any(
+                "ShellCheck could not be executed" in call.args[0]
+                for call in execution_stderr.write.call_args_list
             )
         )
 

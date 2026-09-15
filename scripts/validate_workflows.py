@@ -74,6 +74,9 @@ def run_actionlint(
     except subprocess.TimeoutExpired:
         print("actionlint timed out.", file=sys.stderr)
         return 2
+    except OSError:
+        print("actionlint could not be executed.", file=sys.stderr)
+        return 2
 
 
 def discover_workflows(directory: Path) -> list[Path]:
@@ -179,6 +182,12 @@ def run_shellcheck(executable: str, workflow_files: list[Path]) -> int:
                 )
             except subprocess.TimeoutExpired:
                 print(f"{path} ({label}): ShellCheck timed out.", file=sys.stderr)
+                return 2
+            except OSError:
+                print(
+                    f"{path} ({label}): ShellCheck could not be executed.",
+                    file=sys.stderr,
+                )
                 return 2
             if result.returncode != 0:
                 print(f"{path} ({label}):", file=sys.stderr)
