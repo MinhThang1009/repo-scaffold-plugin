@@ -278,6 +278,29 @@ class VersionedInputSyncTests(unittest.TestCase):
                     root, self.release_lookup, write=False
                 )
 
+    def test_rejects_non_object_or_nested_release_please_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            schema = (
+                "https://raw.githubusercontent.com/googleapis/release-please/"
+                "v17.11.1/schemas/config.json"
+            )
+            for content, message in (
+                (json.dumps([{"$schema": schema}]), "JSON object"),
+                (json.dumps({"nested": {"$schema": schema}}), "top-level"),
+            ):
+                with self.subTest(content=content):
+                    config.write_text(content, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, message):
+                        versioned_inputs.synchronize_release_please_schemas(
+                            root,
+                            (config.relative_to(root),),
+                            "v17.11.2",
+                            write=True,
+                        )
+                    self.assertEqual(config.read_text(encoding="utf-8"), content)
+
     def test_rejects_prerelease_schema_tag_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
