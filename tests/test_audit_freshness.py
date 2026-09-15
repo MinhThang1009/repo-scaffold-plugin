@@ -195,6 +195,17 @@ class FreshnessTests(unittest.TestCase):
                         freshness.pinned_requirements(path)
             with self.assertRaisesRegex(freshness.AuditError, "could not read"):
                 freshness.pinned_requirements(path.with_name("missing.in"))
+            path.write_text("ruff==1.0.0\n", encoding="utf-8")
+            with mock.patch.object(freshness, "MAX_REQUIREMENTS_BYTES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "size limit"):
+                    freshness.pinned_requirements(path)
+            path.write_bytes(b"ruff==1.0.0\n\xff")
+            with self.assertRaisesRegex(freshness.AuditError, "valid UTF-8"):
+                freshness.pinned_requirements(path)
+            path.write_text("ruff==1.0.0\nblack==1.0.0\n", encoding="utf-8")
+            with mock.patch.object(freshness, "MAX_REQUIREMENT_PINS", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "pin safety cap"):
+                    freshness.pinned_requirements(path)
 
     def test_action_findings_are_semantic_and_cache_upstream_releases(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -222,6 +233,72 @@ class FreshnessTests(unittest.TestCase):
                 ),
                 [],
             )
+
+    def test_action_findings_bound_workflow_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            with mock.patch.object(freshness, "MAX_WORKFLOW_BYTES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "safety cap"):
+                    freshness.action_findings(
+                        root,
+                        trackers.workflow_directories,
+                        lambda _repository: release("v1.0.0", "a" * 40),
+                    )
+
+    def test_action_findings_counts_failed_workflow_reads_toward_aggregate_cap(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            errors: list[str] = []
+            with (
+                mock.patch.object(freshness, "MAX_WORKFLOW_BYTES", 10),
+                mock.patch.object(freshness, "MAX_TRACKED_WORKFLOW_BYTES", 20),
+                self.assertRaisesRegex(freshness.AuditError, "byte safety cap"),
+            ):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v1.0.0", "a" * 40),
+                    errors,
+                )
+            self.assertEqual(len(errors), 1)
+
+    def test_action_findings_bound_inventory_and_upstream_repositories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            with mock.patch.object(freshness, "MAX_TRACKED_WORKFLOW_FILES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "file safety cap"):
+                    freshness.action_findings(
+                        root,
+                        trackers.workflow_directories,
+                        lambda _repository: release("v1.0.0", "a" * 40),
+                    )
+
+            with mock.patch.object(freshness, "MAX_TRACKED_WORKFLOW_BYTES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "byte safety cap"):
+                    freshness.action_findings(
+                        root,
+                        trackers.workflow_directories,
+                        lambda _repository: release("v1.0.0", "a" * 40),
+                    )
+
+            with mock.patch.object(freshness, "MAX_TRACKED_ACTION_REPOSITORIES", 0):
+                with self.assertRaisesRegex(
+                    freshness.AuditError, "repository safety cap"
+                ):
+                    freshness.action_findings(
+                        root,
+                        trackers.workflow_directories,
+                        lambda _repository: release("v1.0.0", "a" * 40),
+                    )
 
     def test_action_findings_normalizes_relative_repository_roots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -293,6 +370,27 @@ class FreshnessTests(unittest.TestCase):
                     lambda _repository: (_ for _ in ()).throw(
                         ValueError("release unavailable")
                     ),
+                )
+
+    def test_action_findings_rejects_unsafe_local_action_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + "      - uses: ./../outside-action\n",
+                encoding="utf-8",
+            )
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+
+            with self.assertRaisesRegex(
+                freshness.AuditError, "safe repository-relative path"
+            ):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
                 )
 
     def test_invalid_workflow_does_not_skip_other_action_pin_reminders(self) -> None:
@@ -535,6 +633,55 @@ class FreshnessTests(unittest.TestCase):
                     lambda _repository: release("v2.0.0", "b" * 40),
                 )
 
+    def test_action_directory_inspection_errors_do_not_hide_other_directories(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            errors: list[str] = []
+            asset_workflow = root / "skills/repo-scaffold/assets/workflows/ci.yml"
+
+            def inspect_workflows(
+                _root: Path, directories: tuple[Path, ...], **_options: object
+            ) -> list[Path]:
+                if directories == (Path(".github/workflows"),):
+                    raise OSError("permission denied")
+                self.assertEqual(
+                    directories, (Path("skills/repo-scaffold/assets/workflows"),)
+                )
+                return [asset_workflow]
+
+            with mock.patch.object(
+                freshness.sync_action_pins,
+                "workflow_paths",
+                side_effect=inspect_workflows,
+            ):
+                findings = freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda _repository: release("v2.0.0", "b" * 40),
+                    errors,
+                )
+
+        self.assertEqual(
+            errors,
+            [
+                "could not inspect workflow action pins in .github/workflows: "
+                "permission denied"
+            ],
+        )
+        self.assertEqual(
+            [(item["path"], item["subject"]) for item in findings],
+            [
+                (
+                    "skills/repo-scaffold/assets/workflows/ci.yml",
+                    "actions/checkout",
+                )
+            ],
+        )
+
     def test_release_please_and_requirement_findings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -571,6 +718,11 @@ class FreshnessTests(unittest.TestCase):
                 freshness.release_please_findings(
                     root, trackers.release_please_configs, "v17.6.0"
                 )
+            with mock.patch.object(freshness, "MAX_RELEASE_PLEASE_CONFIG_BYTES", 1):
+                with self.assertRaisesRegex(freshness.AuditError, "size limit"):
+                    freshness.release_please_findings(
+                        root, trackers.release_please_configs, "v17.6.0"
+                    )
             config.write_text(
                 json.dumps(
                     {
@@ -617,6 +769,26 @@ class FreshnessTests(unittest.TestCase):
                 freshness.requirement_findings(root, sources, latest_lookup), []
             )
             self.assertEqual(calls, ["ruff"])
+            with mock.patch.object(freshness, "MAX_TOTAL_REQUIREMENT_PINS", 1):
+                with self.assertRaisesRegex(
+                    freshness.AuditError, "tracked requirements.*pin safety cap"
+                ):
+                    freshness.requirement_findings(root, sources, latest_lookup)
+
+            lock = root / "lock.txt"
+            lock.write_text("black==0.1.0\n", encoding="utf-8")
+            source_with_lock = (
+                freshness.RequirementSource(
+                    first.relative_to(root), (lock.relative_to(root),)
+                ),
+            )
+            with mock.patch.object(freshness, "MAX_TOTAL_REQUIREMENT_PINS", 1):
+                with self.assertRaisesRegex(
+                    freshness.AuditError, "tracked requirements.*pin safety cap"
+                ):
+                    freshness.requirement_findings(
+                        root, source_with_lock, latest_lookup
+                    )
 
     def test_requirement_findings_records_one_lookup_error_per_package(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -707,6 +879,35 @@ class FreshnessTests(unittest.TestCase):
                 freshness.existing_optional_paths(
                     root, trackers.optional_release_please_configs
                 )
+            errors: list[str] = []
+            broken = root / "broken-optional.json"
+            existing = root / "existing-optional.json"
+            existing.write_text("{}\n", encoding="utf-8")
+
+            def inspect_optional(path: Path) -> bool:
+                candidate = Path(path)
+                if candidate == broken:
+                    raise OSError("permission denied")
+                return candidate == existing
+
+            with mock.patch.object(
+                freshness.os.path, "lexists", side_effect=inspect_optional
+            ):
+                self.assertEqual(
+                    freshness.existing_optional_paths(
+                        root,
+                        (Path("broken-optional.json"), Path("existing-optional.json")),
+                        errors,
+                    ),
+                    (Path("existing-optional.json"),),
+                )
+            self.assertEqual(
+                errors,
+                [
+                    "could not inspect optional freshness path broken-optional.json: "
+                    "permission denied"
+                ],
+            )
             self.assertEqual(freshness.ci_toolchain_findings(root, ()), [])
             self.assertEqual(
                 freshness.existing_optional_paths(
@@ -983,6 +1184,8 @@ class FreshnessTests(unittest.TestCase):
                     "unsupported top-level fields",
                 ),
                 ({"schema-version": 1, "allowlist": []}, "schema-version 3"),
+                ({"schema-version": 3.0, "allowlist": []}, "schema-version 3"),
+                ({"schema-version": True, "allowlist": []}, "schema-version 3"),
                 ({"schema-version": 3, "allowlist": {}}, "must be a list"),
                 (
                     {"schema-version": 3, "allowlist": [{**valid, "number": True}]},
@@ -1010,6 +1213,13 @@ class FreshnessTests(unittest.TestCase):
                     {
                         "schema-version": 3,
                         "allowlist": [{**valid, "path": "scripts//example.py"}],
+                    },
+                    "invalid selector",
+                ),
+                (
+                    {
+                        "schema-version": 3,
+                        "allowlist": [{**valid, "path": "scripts/\nexample.py"}],
                     },
                     "invalid selector",
                 ),
@@ -1114,6 +1324,11 @@ class FreshnessTests(unittest.TestCase):
                     freshness.safe_relative_path(value, field="test")
             with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
                 freshness.tracked_path(root, Path("missing"), kind="test path")
+            with mock.patch.object(Path, "is_file", return_value=False):
+                with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
+                    freshness.tracked_path(
+                        root, freshness.DEFAULT_TRACKER_REGISTRY, kind="test path"
+                    )
             with mock.patch.object(Path, "is_symlink", return_value=True):
                 with self.assertRaisesRegex(freshness.AuditError, "missing or unsafe"):
                     freshness.tracked_path(
@@ -1154,6 +1369,8 @@ class FreshnessTests(unittest.TestCase):
                 freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
             for document, message in (
                 ({"schema-version": 2}, "schema-version"),
+                ({**valid, "schema-version": True}, "schema-version"),
+                ({**valid, "schema-version": 1.0}, "schema-version"),
                 ({**valid, "unreviewed-inputs": []}, "unsupported schema fields"),
                 (
                     {
@@ -1213,6 +1430,37 @@ class FreshnessTests(unittest.TestCase):
                         ],
                     },
                     "locks",
+                ),
+                (
+                    {
+                        **valid,
+                        "requirement-sources": [
+                            {
+                                "path": "requirements.in",
+                                "locks": [
+                                    f"requirements-{index}.txt"
+                                    for index in range(
+                                        freshness.MAX_TRACKER_ENTRIES + 1
+                                    )
+                                ],
+                            }
+                        ],
+                    },
+                    "locks exceeds the entry limit",
+                ),
+                (
+                    {
+                        **valid,
+                        "release-please-configs": [
+                            f"release-{index}.json"
+                            for index in range(freshness.MAX_TRACKER_ENTRIES)
+                        ],
+                        "optional-release-please-configs": [
+                            f"optional-release-{index}.json"
+                            for index in range(freshness.MAX_TRACKER_ENTRIES)
+                        ],
+                    },
+                    "path safety cap",
                 ),
                 (
                     {
@@ -1603,6 +1851,27 @@ class FreshnessTests(unittest.TestCase):
                 report = freshness.audit(root, "synthetic-token")
             self.assertEqual(report["status"], "indeterminate")
             self.assertIn("workflow input unavailable", report["errors"])
+            client.latest_release.assert_called_with("googleapis/release-please")
+
+            client.latest_release.side_effect = freshness.AuditError(
+                "release-please unavailable"
+            )
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "GitHubReleaseClient",
+                    return_value=client,
+                ),
+                mock.patch.object(freshness, "action_findings", return_value=[]),
+                mock.patch.object(
+                    freshness, "latest_pypi_release", return_value="1.0.0"
+                ),
+            ):
+                report = freshness.audit(root, "synthetic-token")
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn("release-please unavailable", report["errors"])
+            client.latest_release.side_effect = None
+            client.latest_release.return_value = release("v17.6.0", "a" * 40)
 
             with (
                 mock.patch.object(

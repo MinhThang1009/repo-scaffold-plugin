@@ -1001,6 +1001,7 @@ body:
       label: Confirm another
       options:
         - label: Duplicate label
+  - type: []
 """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -22,8 +22,17 @@ import sync_action_pins
 
 PYPI_ROOT = "https://pypi.org/pypi"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
+MAX_TRACKED_WORKFLOW_FILES = 500
+MAX_TRACKED_WORKFLOW_BYTES = 64 * 1024 * 1024
+MAX_TRACKED_ACTION_REPOSITORIES = 500
+MAX_REQUIREMENTS_BYTES = 1024 * 1024
+MAX_REQUIREMENT_PINS = 512
+MAX_TOTAL_REQUIREMENT_PINS = 4096
+MAX_RELEASE_PLEASE_CONFIG_BYTES = 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
 MAX_TRACKER_ENTRIES = 256
+MAX_TRACKED_INPUT_PATHS = 500
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
@@ -138,6 +147,7 @@ def is_canonical_allowlist_path(value: object) -> bool:
         and not path.is_absolute()
         and ".." not in path.parts
         and "\\" not in value
+        and not any(ord(character) < 0x20 for character in value)
         and not any(PureWindowsPath(part).drive for part in path.parts)
         and path.as_posix() == value
     )
@@ -155,9 +165,37 @@ def tracked_path(root: Path, relative: Path, *, kind: str) -> Path:
     try:
         resolved = path.resolve(strict=True)
         resolved.relative_to(root.resolve())
+        if not path.is_file():
+            raise OSError("not a regular file")
     except (OSError, UnicodeError, RuntimeError, ValueError) as error:
         raise AuditError(f"{kind} is missing or unsafe: {relative}") from error
     return path
+
+
+def read_bounded_utf8(
+    path: Path,
+    max_bytes: int,
+    *,
+    kind: str,
+    limit_name: str = "size limit",
+    byte_count: list[int] | None = None,
+) -> str:
+    """Read one trusted repository file with a bounded UTF-8 payload."""
+    if byte_count is not None:
+        byte_count[:] = [0]
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(max_bytes + 1)
+    except OSError as error:
+        raise AuditError(f"could not read {kind} {path}: {error}") from error
+    if byte_count is not None:
+        byte_count[:] = [len(payload)]
+    if len(payload) > max_bytes:
+        raise AuditError(f"{kind} exceeds the {max_bytes}-byte {limit_name}: {path}")
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError as error:
+        raise AuditError(f"{kind} is not valid UTF-8: {path}") from error
 
 
 def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
@@ -168,15 +206,16 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         kind="freshness tracker registry",
     )
     try:
-        if registry_path.stat().st_size > MAX_TRACKER_REGISTRY_BYTES:
-            raise AuditError(
-                f"freshness tracker registry exceeds the size limit: {relative}"
-            )
         document = json.loads(
-            registry_path.read_text(encoding="utf-8"),
+            read_bounded_utf8(
+                registry_path,
+                MAX_TRACKER_REGISTRY_BYTES,
+                kind="freshness tracker registry",
+            ),
             object_pairs_hook=unique_json_object,
         )
     except (
+        AuditError,
         OSError,
         UnicodeError,
         ValueError,
@@ -185,7 +224,11 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         raise AuditError(
             f"could not read freshness tracker registry {relative}: {error}"
         ) from error
-    if not isinstance(document, dict) or document.get("schema-version") != 1:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schema-version")) is not int
+        or document.get("schema-version") != 1
+    ):
         raise AuditError("freshness tracker registry must use schema-version 1")
     if not set(document).issubset(FRESHNESS_TRACKER_REGISTRY_KEYS):
         raise AuditError(
@@ -238,6 +281,10 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
             raise AuditError(
                 "freshness tracker registry requirement locks must be a list"
             )
+        if len(locks) > MAX_TRACKER_ENTRIES:
+            raise AuditError(
+                "freshness tracker registry requirement locks exceeds the entry limit"
+            )
         parsed_locks = tuple(
             safe_relative_path(
                 lock, field="freshness tracker registry requirement lock"
@@ -261,7 +308,7 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         raise AuditError(
             "freshness tracker registry requirement lock paths must not reference requirement source paths"
         )
-    return FreshnessTrackers(
+    trackers = FreshnessTrackers(
         workflow_directories=paths("workflow-directories", allow_empty=False),
         release_please_configs=paths("release-please-configs", allow_empty=True),
         optional_release_please_configs=paths(
@@ -280,6 +327,24 @@ def load_trackers(root: Path, relative: Path) -> FreshnessTrackers:
         ),
         requirement_sources=tuple(requirement_sources),
     )
+    tracked_path_count = (
+        len(trackers.workflow_directories)
+        + len(trackers.release_please_configs)
+        + len(trackers.optional_release_please_configs)
+        + len(trackers.ci_toolchain_policies)
+        + len(trackers.code_scanning_allowlists)
+        + len(trackers.optional_code_scanning_allowlists)
+        + sum(
+            1 + len(requirement_source.locks)
+            for requirement_source in requirement_sources
+        )
+    )
+    if tracked_path_count > MAX_TRACKED_INPUT_PATHS:
+        raise AuditError(
+            "freshness tracker registry exceeds the "
+            f"{MAX_TRACKED_INPUT_PATHS}-path safety cap"
+        )
+    return trackers
 
 
 def normalized_name(name: str) -> str:
@@ -332,10 +397,9 @@ def latest_pypi_release(package: str) -> str:
 
 def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
     """Read exact direct pins, ignoring comments and include directives."""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as error:
-        raise AuditError(f"could not read requirements file {path}: {error}") from error
+    lines = read_bounded_utf8(
+        path, MAX_REQUIREMENTS_BYTES, kind="requirements file"
+    ).splitlines()
     pins: dict[str, tuple[str, str]] = {}
     for line in lines:
         stripped = line.strip()
@@ -350,6 +414,11 @@ def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
         previous = pins.get(key)
         if previous is not None and previous[1] != version:
             raise AuditError(f"conflicting direct pins for {name} in {path}")
+        if previous is None and len(pins) >= MAX_REQUIREMENT_PINS:
+            raise AuditError(
+                "requirements file exceeds the "
+                f"{MAX_REQUIREMENT_PINS}-pin safety cap: {path}"
+            )
         pins[key] = (name, version)
     if not pins:
         raise AuditError(f"requirements file has no direct pins: {path}")
@@ -370,12 +439,16 @@ def action_findings(
     findings: list[dict[str, str]] = []
     releases: dict[str, sync_action_pins.ActionRelease] = {}
     failed_releases: set[str] = set()
+    workflow_file_count = 0
+    workflow_byte_count = 0
     for workflow_directory in workflow_directories:
         try:
             workflow_paths = sync_action_pins.workflow_paths(
-                root, (workflow_directory,)
+                root,
+                (workflow_directory,),
+                max_files=MAX_TRACKED_WORKFLOW_FILES,
             )
-        except ValueError as cause:
+        except (OSError, UnicodeError, RuntimeError, ValueError) as cause:
             issue = AuditError(
                 "could not inspect workflow action pins in "
                 f"{workflow_directory.as_posix()}: {cause}"
@@ -384,12 +457,47 @@ def action_findings(
                 raise issue from cause
             errors.append(str(issue))
             continue
+        workflow_file_count += len(workflow_paths)
+        if workflow_file_count > MAX_TRACKED_WORKFLOW_FILES:
+            raise AuditError(
+                "tracked workflow inventory exceeds the "
+                f"{MAX_TRACKED_WORKFLOW_FILES}-file safety cap"
+            )
         for path in workflow_paths:
+            bytes_read: list[int] = []
             try:
-                text = path.read_text(encoding="utf-8")
+                text = read_bounded_utf8(
+                    path,
+                    MAX_WORKFLOW_BYTES,
+                    kind="workflow",
+                    limit_name="safety cap",
+                    byte_count=bytes_read,
+                )
+            except (AuditError, OSError, UnicodeError, ValueError) as cause:
+                workflow_byte_count += bytes_read[0] if bytes_read else 0
+                if workflow_byte_count > MAX_TRACKED_WORKFLOW_BYTES:
+                    raise AuditError(
+                        "tracked workflow inventory exceeds the "
+                        f"{MAX_TRACKED_WORKFLOW_BYTES}-byte safety cap"
+                    ) from cause
+                issue = AuditError(
+                    "could not inspect workflow action pins "
+                    f"{path.relative_to(root).as_posix()}: {cause}"
+                )
+                if errors is None:
+                    raise issue from cause
+                errors.append(str(issue))
+                continue
+            workflow_byte_count += bytes_read[0]
+            if workflow_byte_count > MAX_TRACKED_WORKFLOW_BYTES:
+                raise AuditError(
+                    "tracked workflow inventory exceeds the "
+                    f"{MAX_TRACKED_WORKFLOW_BYTES}-byte safety cap"
+                )
+            try:
                 sync_action_pins.auditable_action_repositories(path, text)
                 matches = sync_action_pins.action_pin_matches(text)
-            except (OSError, UnicodeError, ValueError) as cause:
+            except (AuditError, OSError, UnicodeError, ValueError) as cause:
                 issue = AuditError(
                     "could not inspect workflow action pins "
                     f"{path.relative_to(root).as_posix()}: {cause}"
@@ -406,6 +514,14 @@ def action_findings(
                     continue
                 release = releases.get(repository)
                 if release is None:
+                    if (
+                        len(releases) + len(failed_releases)
+                        >= MAX_TRACKED_ACTION_REPOSITORIES
+                    ):
+                        raise AuditError(
+                            "tracked action repository inventory exceeds the "
+                            f"{MAX_TRACKED_ACTION_REPOSITORIES}-repository safety cap"
+                        )
                     try:
                         release = release_lookup(repository)
                     except (OSError, ValueError, AuditError) as error:
@@ -442,10 +558,15 @@ def release_please_findings(
             path = tracked_path(root, relative, kind="Release Please config")
             try:
                 document = json.loads(
-                    path.read_text(encoding="utf-8"),
+                    read_bounded_utf8(
+                        path,
+                        MAX_RELEASE_PLEASE_CONFIG_BYTES,
+                        kind="Release Please config",
+                    ),
                     object_pairs_hook=unique_json_object,
                 )
             except (
+                AuditError,
                 OSError,
                 UnicodeError,
                 ValueError,
@@ -483,14 +604,25 @@ def release_please_findings(
     return findings
 
 
-def existing_optional_paths(root: Path, paths: tuple[Path, ...]) -> tuple[Path, ...]:
-    """Return opted-in optional paths that exist without hiding unsafe entries."""
-    try:
-        return tuple(path for path in paths if os.path.lexists(root / path))
-    except (OSError, UnicodeError, ValueError) as error:
-        raise AuditError(
-            f"could not inspect optional freshness paths: {error}"
-        ) from error
+def existing_optional_paths(
+    root: Path, paths: tuple[Path, ...], errors: list[str] | None = None
+) -> tuple[Path, ...]:
+    """Return existing optional paths while isolating per-path inspection errors."""
+    existing: list[Path] = []
+    for path in paths:
+        try:
+            present = os.path.lexists(root / path)
+        except (OSError, UnicodeError, RuntimeError, ValueError) as error:
+            issue = AuditError(
+                f"could not inspect optional freshness path {path}: {error}"
+            )
+            if errors is None:
+                raise issue from error
+            errors.append(str(issue))
+            continue
+        if present:
+            existing.append(path)
+    return tuple(existing)
 
 
 def ci_toolchain_findings(
@@ -568,12 +700,13 @@ def code_scanning_allowlist_findings(
     for relative in allowlists:
         try:
             path = tracked_path(root, relative, kind="code-scanning allowlist")
-            if path.stat().st_size > MAX_CODE_SCANNING_ALLOWLIST_BYTES:
-                raise AuditError(
-                    f"code-scanning allowlist exceeds the size limit: {relative}"
-                )
             document = json.loads(
-                path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+                read_bounded_utf8(
+                    path,
+                    MAX_CODE_SCANNING_ALLOWLIST_BYTES,
+                    kind="code-scanning allowlist",
+                ),
+                object_pairs_hook=unique_json_object,
             )
             if not isinstance(document, dict):
                 raise AuditError(
@@ -585,8 +718,8 @@ def code_scanning_allowlist_findings(
                 )
             schema_version = document.get("schema-version")
             entries = document.get("allowlist")
-            if schema_version != 3:
-                if schema_version == 2:
+            if type(schema_version) is not int or schema_version != 3:
+                if type(schema_version) is int and schema_version == 2:
                     findings.append(
                         {
                             "kind": "code-scanning-allowlist-schema",
@@ -705,6 +838,7 @@ def requirement_findings(
     findings: list[dict[str, str]] = []
     latest_versions: dict[str, str] = {}
     failed_lookups: set[str] = set()
+    total_pin_count = 0
     for requirement_source in sources:
         try:
             source = tracked_path(
@@ -716,16 +850,30 @@ def requirement_findings(
                 raise
             errors.append(str(error))
             continue
+        total_pin_count += len(pins)
+        if total_pin_count > MAX_TOTAL_REQUIREMENT_PINS:
+            raise AuditError(
+                "tracked requirements exceed the "
+                f"{MAX_TOTAL_REQUIREMENT_PINS}-pin safety cap"
+            )
         locks: dict[Path, dict[str, tuple[str, str]]] = {}
         for relative in requirement_source.locks:
             try:
-                locks[relative] = pinned_requirements(
+                lock_pins = pinned_requirements(
                     tracked_path(root, relative, kind="requirements lock")
                 )
             except AuditError as error:
                 if errors is None:
                     raise
                 errors.append(str(error))
+            else:
+                total_pin_count += len(lock_pins)
+                if total_pin_count > MAX_TOTAL_REQUIREMENT_PINS:
+                    raise AuditError(
+                        "tracked requirements exceed the "
+                        f"{MAX_TOTAL_REQUIREMENT_PINS}-pin safety cap"
+                    )
+                locks[relative] = lock_pins
         for key, (name, current) in pins.items():
             for lock_relative, lock_pins in locks.items():
                 locked = lock_pins.get(key)
@@ -783,6 +931,9 @@ def audit(
     if trackers is not None:
         try:
             client = sync_action_pins.GitHubReleaseClient(token)
+        except (OSError, ValueError, AuditError) as error:
+            errors.append(str(error))
+        else:
             try:
                 findings.extend(
                     action_findings(
@@ -797,20 +948,24 @@ def audit(
             release_please_configs = (
                 trackers.release_please_configs
                 + existing_optional_paths(
-                    root, trackers.optional_release_please_configs
+                    root, trackers.optional_release_please_configs, errors
                 )
             )
             if release_please_configs:
-                findings.extend(
-                    release_please_findings(
-                        root,
-                        release_please_configs,
-                        client.latest_release("googleapis/release-please").tag,
-                        errors,
+                try:
+                    latest_release_please_tag = client.latest_release(
+                        "googleapis/release-please"
+                    ).tag
+                    findings.extend(
+                        release_please_findings(
+                            root,
+                            release_please_configs,
+                            latest_release_please_tag,
+                            errors,
+                        )
                     )
-                )
-        except (OSError, ValueError, AuditError) as error:
-            errors.append(str(error))
+                except (OSError, ValueError, AuditError) as error:
+                    errors.append(str(error))
         try:
             findings.extend(
                 requirement_findings(
@@ -834,7 +989,7 @@ def audit(
                     root,
                     trackers.code_scanning_allowlists
                     + existing_optional_paths(
-                        root, trackers.optional_code_scanning_allowlists
+                        root, trackers.optional_code_scanning_allowlists, errors
                     ),
                     datetime.now(timezone.utc).date(),
                     errors,

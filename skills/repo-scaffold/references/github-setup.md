@@ -273,13 +273,17 @@ Use only `$hasIssuesEnabled` and `$hasDiscussionsEnabled` from that final query 
 
 Before copying a GitHub Actions asset, run the bundled read-only preflight. It
 binds the response to the exact repository, rejects archived or disabled
-repositories, and checks whether GitHub Actions is enabled. Pass
+repositories, bounds the workflow input count and total bytes, and checks
+whether GitHub Actions is enabled. Pass
 `--require-external-actions` for any asset with `uses:`. A `local_only` policy
-forbids those assets. For a `selected` policy, pass each candidate asset with
-`--workflow`; the preflight reads the effective selected-actions policy and
-checks every exact pinned action reference. It fails closed unless each reference
-matches an explicit allowlist pattern or is covered by GitHub's `actions/*`
-allowance. This preflight accepts pattern matches only for public repositories,
+forbids those assets, including Docker container actions. For a `selected`
+policy, pass each candidate asset with
+`--workflow`; the preflight follows the `selected_actions_url` advertised by
+GitHub, including organization or enterprise policy overrides, and checks every
+exact pinned action reference. It fails closed unless each reference matches an
+explicit allowlist pattern or is covered by GitHub's `actions/*` or
+`github/*` allowance. Negative allowlist patterns remain blocking. This preflight
+accepts pattern matches only for public repositories,
 because it does not infer Enterprise Cloud eligibility. Marketplace verified-creator
 access alone is not treated as proof for a specific action. When an asset is
 provided through `--workflow`, the preflight derives its external-action and
@@ -287,7 +291,18 @@ shipped issue-workflow requirements. `--require-issues` remains an explicit
 assertion for an issue-writing workflow outside the shipped asset names.
 If a supplied workflow calls a local reusable workflow, pass the called
 workflow as another `--workflow` input in the same invocation; unresolved local
-calls are rejected before the action policy can be approved.
+calls are rejected before the action policy can be approved. The called input
+must come from the same workflow directory as its caller; a matching basename
+from another directory is ambiguous and is rejected. The supplied called
+workflow must declare `workflow_call`, and local call loops are rejected.
+The supplied local call graph must also stay within GitHub's 10 workflow levels
+and 50 unique nested workflows per top-level caller.
+For a project with a runnable test or lint command, the workflow phase must
+install a configured CI workflow or record an explicit user decision to defer
+it before the scaffold is declared complete. For every applicable approved
+asset, pass the exact asset paths through `--workflow`, copy the required
+companion files, and verify the installed files. Optional assets remain
+feature-specific, but omission must be recorded as not applicable or deferred.
 For any supplied `pull_request` workflow with a write permission, it also
 requires `--confirm-pull-request-write-tokens`. Before passing that flag,
 verify the repository Actions setting **Send write tokens to workflows from
@@ -335,7 +350,8 @@ pass `assets/code-scanning-allowlist.json` with `--code-scanning-allowlist`.
 The preflight rejects a gate plan without both companions, so copy all three
 verified inputs only after it returns `may-install-workflow-assets`. The supplied
 allowlist must contain only schema-v3 entries with exact selector fields, unique
-positive alert numbers, canonical POSIX paths, non-future ISO review dates, and
+positive alert numbers, canonical POSIX paths without traversal or control
+characters, non-future ISO review dates, and
 review periods from 1 to 366 days. Its top-level fields must be exactly
 `schema-version` and `allowlist`; malformed entries fail before approval. The
 freshness workflow must use only scheduled and manual triggers. Each schedule
@@ -350,9 +366,13 @@ through a real repo-bound `gh issue create` or `gh issue edit --repo ...
 --body-file` command. Every `create` or `edit` mutation must use
 `--body-file`, `create` must provide a non-empty `--title`, and any `gh issue
 close` mutation must also use an explicit `--repo` binding. Its concurrency
-group must be repository-scoped and non-cancelling so a manual run on another
-ref cannot race the scheduled run. Untrusted triggers, comments, shell-
-ambiguous commands, or an incomplete reminder do not satisfy the companion
+group must be the stable `repo-scaffold-freshness-${{ github.repository }}`
+repository-scoped, non-cancelling group so a manual run on another ref cannot
+race the scheduled run. Since `workflow_dispatch` can target a branch or tag,
+its Issue-writing job must check out the exact
+`${{ github.event.repository.default_branch }}` ref with
+`persist-credentials: false` before running repository code. Untrusted triggers,
+comments, shell-ambiguous commands, or an incomplete reminder do not satisfy the companion
 requirement. If the reconciliation job declares job-level permissions, it must
 retain effective `contents: read` and `issues: write` access so it can check
 out and reconcile the repository. The `--body-file` value must match the
@@ -367,10 +387,12 @@ command hash are also rejected.
 Every freshness API lookup and Issue mutation must bind directly to the runner's
 `$GITHUB_REPOSITORY` value, with `github.com/` explicit for `gh issue --repo`;
 hard-coded repositories and overrides of that variable are rejected. The lookup
-must be a paginated GET of open Issues, filter non-PR bodies for the freshness
-marker, and return their issue numbers so reruns remain idempotent. It must use
-the canonical marker-filtering JQ expression, exactly one lookup invocation,
-and no extra `gh api` arguments.
+must use the GitHub Issue Search API as a bounded GET for open Issues, with
+`is:issue`, `in:body`, the freshness marker, and `per_page=2`; it returns at most
+the first two matching issue numbers so reruns remain idempotent without an
+unbounded pagination loop. It must use `[.items[].number] | join(" ")` so the
+bounded result is one shell-safe line, exactly one lookup invocation, and no
+extra `gh api` arguments.
 The lookup result must be captured and flow into the Issue number passed to a
 `close` or `edit` mutation, directly or through an issue-number array; logging
 or testing the result alone is insufficient.
@@ -409,11 +431,14 @@ The bound `GITHUB_TOKEN` and `GH_TOKEN` must not be referenced from a freshness
 The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
 non-Bash runner or shell overrides, workflow/job containers, and services are
 rejected. Its reviewed checkout and Python setup actions must retain the
-canonical full-SHA references and inputs, `persist-credentials: false` and
-`python-version: 3.x`. Both preparation actions must appear exactly once,
+canonical full-SHA references and inputs, including the exact default-branch
+checkout ref and `persist-credentials: false`, plus `python-version: 3.x`.
+Both preparation actions must appear exactly once,
 before any run step, so the checker has its repository files and Python runtime.
 Any
-repository, ref, path, token, cache, or other input override is rejected.
+repository, path, token, cache, or other input override is rejected. An
+arbitrary or omitted checkout ref is also rejected for manually dispatched
+Issue-writing workflows.
 The job summary must publish only the checked Markdown report with
 `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.
 Within the reconciliation job, the audit must complete before the lookup, and
@@ -441,6 +466,15 @@ allowlist, and requirement input; do not empty a category to suppress a check.
 Its version-1 schema supports only known top-level fields and known
 requirement-source fields; lock paths cannot reference requirement sources, so
 new inputs cannot be silently ignored.
+The freshness checker bounds each tracked workflow read to 5 MiB and records an
+indeterminate check when a file exceeds that cap. It also caps the tracked
+workflow inventory at 500 files and 64 MiB, and the distinct action repositories
+it resolves at 500, so large or hostile repositories cannot force unbounded
+local reads or upstream lookups. Requirements and tracked JSON policy inputs
+are bounded to 1 MiB before parsing. The tracker registry is also capped at
+500 tracked input paths, including requirement locks. Each requirements file
+may contain at most 512 unique direct pins, and all tracked requirement sources
+and locks together at most 4096 pins.
 The reconciliation job itself
 must inherit or declare
 `issues: write`, be named `freshness-audit`, and use `timeout-minutes: 15`; a

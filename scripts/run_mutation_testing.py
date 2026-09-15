@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 
-MUTMUT_VERSION = "3.7.0"
+MUTMUT_VERSION = "3.8.0"
 SCHEMA_VERSION = 1
 REUSABLE_SOURCES_NAME = ".incremental-sources.json"
 MAX_REUSABLE_SOURCES = 10_000
@@ -54,6 +54,7 @@ def _validate_source_path(value: str) -> str:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or any(ord(character) < 0x20 for character in value)
         or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
         or path.suffix != ".py"

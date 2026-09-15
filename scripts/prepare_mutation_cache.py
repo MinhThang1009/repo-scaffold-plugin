@@ -97,6 +97,7 @@ def _validate_relative_path(value: str, *, kind: str) -> PurePosixPath:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or any(ord(character) < 0x20 for character in value)
         or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
         or any(part in ("", ".") for part in path.parts)
@@ -140,8 +141,10 @@ def _validate_test_sources(value: Any) -> dict[str, str]:
 def _validate_source_paths(source_hashes: dict[str, str]) -> None:
     for raw_path in source_hashes:
         path = PurePosixPath(raw_path)
-        if path.suffix != ".py" or not any(
-            _is_within(path, root) for root in SOURCE_ROOTS
+        if (
+            any(ord(character) < 0x20 for character in raw_path)
+            or path.suffix != ".py"
+            or not any(_is_within(path, root) for root in SOURCE_ROOTS)
         ):
             raise ValueError(f"manifest has invalid source path {raw_path!r}")
 

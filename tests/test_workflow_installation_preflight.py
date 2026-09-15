@@ -57,6 +57,8 @@ class FakeClient:
 
     def json(self, endpoint: str) -> object:
         self.request_count += 1
+        if endpoint == "repositories/42/actions/permissions/selected-actions":
+            endpoint = "repos/octo/example/actions/permissions/selected-actions"
         return self.responses[endpoint]
 
 
@@ -75,6 +77,48 @@ def arguments(**overrides: object) -> argparse.Namespace:
 
 
 class WorkflowInstallationPreflightTests(unittest.TestCase):
+    def test_freshness_concurrency_group_is_stable_across_branch_names(self) -> None:
+        for relative in (
+            ".github/workflows/freshness.yml",
+            "skills/repo-scaffold/assets/workflows/freshness.yml",
+        ):
+            path = PLUGIN_ROOT / relative
+            original = path.read_text(encoding="utf-8")
+            renamed = workflow_installation_preflight.workflow_document(original, path)
+            renamed["name"] = "Renamed on a manually dispatched branch"
+            self.assertTrue(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    workflow_installation_preflight.yaml.safe_dump(renamed), path
+                ),
+                relative,
+            )
+            dynamic_group = workflow_installation_preflight.workflow_document(
+                original, path
+            )
+            concurrency = dynamic_group["concurrency"]
+            assert isinstance(concurrency, dict)
+            concurrency["group"] = "${{ github.workflow }}-${{ github.repository }}"
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    workflow_installation_preflight.yaml.safe_dump(dynamic_group), path
+                ),
+                relative,
+            )
+
+    def test_freshness_legacy_query_requires_line_preserving_collector(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        legacy_query_with_read = workflow_text.replace(
+            "--jq '[.items[].number] | join(\" \")'",
+            "--jq '.items[].number'",
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.is_freshness_reminder_workflow(
+                legacy_query_with_read, workflow_path
+            )
+        )
+
     def test_freshness_requires_preparation_before_audit(self) -> None:
         for relative in (
             ".github/workflows/freshness.yml",
@@ -88,6 +132,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 (2, 0, 1, 3, 4),
                 (1, 2, 0, 3, 4),
                 (0, 2, 1, 3, 4),
+                (0, 1, 3, 2, 4),
                 (0, 1, 0, 2, 3, 4),
                 (0, 1, 1, 2, 3, 4),
                 (0, 1, 2, 0, 3, 4),
@@ -108,6 +153,61 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             self.assertFalse(
                 workflow_installation_preflight.is_freshness_reminder_workflow(
                     candidate, path
+                )
+            )
+
+    def test_freshness_run_step_order_helper_rejects_malformed_steps(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow = workflow_installation_preflight.workflow_document(
+            workflow_path.read_text(encoding="utf-8"), Path("freshness.yml")
+        )
+        steps = workflow["jobs"]["audit"]["steps"]
+        self.assertTrue(
+            workflow_installation_preflight.freshness_run_step_order_is_safe(steps)
+        )
+        for malformed in (None, [], [None], [*steps, {"run": "extra"}]):
+            with self.subTest(malformed=malformed):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_run_step_order_is_safe(
+                        malformed
+                    )
+                )
+        summary_index = next(
+            index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict)
+            and step.get("name") == "Add report to job summary"
+        )
+        malformed_summary = list(steps)
+        malformed_summary[summary_index] = {
+            **malformed_summary[summary_index],
+            "run": None,
+        }
+        self.assertFalse(
+            workflow_installation_preflight.freshness_run_step_order_is_safe(
+                malformed_summary
+            )
+        )
+        audit_index = next(
+            index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict) and step.get("id") == "audit"
+        )
+        malformed_auth_steps = [dict(step) for step in steps]
+        malformed_auth_steps[audit_index]["id"] = "not-audit"
+        self.assertFalse(
+            workflow_installation_preflight.freshness_authentication_bindings_are_safe(
+                workflow, {**workflow["jobs"]["audit"], "steps": malformed_auth_steps}
+            )
+        )
+        with mock.patch.object(
+            workflow_installation_preflight,
+            "freshness_command_order_is_valid",
+            return_value=False,
+        ):
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    workflow_path.read_text(encoding="utf-8"), workflow_path
                 )
             )
 
@@ -149,6 +249,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "repos/octo/example/actions/permissions": {
                 "enabled": actions_enabled,
                 "allowed_actions": allowed_actions,
+                "selected_actions_url": (
+                    "https://api.github.com/repositories/42/actions/permissions/"
+                    "selected-actions"
+                ),
             },
         }
 
@@ -236,6 +340,88 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ["octo/unapproved@cccccccccccccccccccccccccccccccccccccccc"],
         )
         self.assertEqual(result["github_api_requests"], 3)
+
+    def test_uses_selected_actions_endpoint_advertised_by_github(self) -> None:
+        self.configure(allowed_actions="selected")
+        repository_permissions = FakeClient.responses[
+            "repos/octo/example/actions/permissions"
+        ]
+        assert isinstance(repository_permissions, dict)
+        repository_permissions["selected_actions_url"] = (
+            "https://api.github.com/organizations/42/actions/permissions/"
+            "selected-actions"
+        )
+        FakeClient.responses[
+            "repos/octo/example/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": False,
+            "verified_allowed": False,
+            "patterns_allowed": ["octo/allowed@*"],
+        }
+        FakeClient.responses[
+            "organizations/42/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": False,
+            "verified_allowed": False,
+            "patterns_allowed": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text(
+                "steps:\n"
+                "  - uses: octo/allowed@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(require_external_actions=True, workflow=[workflow])
+                )
+        self.assertEqual(
+            result["decision"], "allow-selected-actions-before-installing-workflows"
+        )
+        self.assertFalse(result["external_actions_verified"])
+        self.assertEqual(
+            result["unapproved_action_references"],
+            ["octo/allowed@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        )
+        self.assertEqual(result["github_api_requests"], 3)
+
+    def test_selected_actions_endpoint_rejects_untrusted_urls(self) -> None:
+        with self.assertRaisesRegex(
+            workflow_installation_preflight.InspectionError,
+            "policy response is invalid",
+        ):
+            workflow_installation_preflight.selected_actions_endpoint([])
+        for value in (
+            None,
+            "https://evil.example/organizations/42/actions/permissions/selected-actions",
+            "https://api.github.com/organizations/42/actions/permissions/selected-actions?x=1",
+            "https://api.github.com/organizations/0/actions/permissions/selected-actions",
+            "https://api.github.com/repos/octo/example/actions/permissions/selected-actions",
+            "https://api.github.com/enterprises/./actions/permissions/selected-actions",
+            "https://api.github.com/enterprises/../actions/permissions/selected-actions",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError,
+                    "selected-actions URL",
+                ):
+                    workflow_installation_preflight.selected_actions_endpoint(
+                        {"selected_actions_url": value}
+                    )
+        self.assertEqual(
+            workflow_installation_preflight.selected_actions_endpoint(
+                {
+                    "selected_actions_url": (
+                        "https://api.github.com/enterprises/acme-1/actions/permissions/"
+                        "selected-actions"
+                    )
+                }
+            ),
+            "enterprises/acme-1/actions/permissions/selected-actions",
+        )
 
     def test_approves_selected_policy_only_after_exact_workflow_comparison(
         self,
@@ -361,6 +547,32 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         arguments(require_external_actions=True, workflow=[unpinned])
                     )
 
+    def test_workflow_inputs_have_count_and_total_byte_safety_caps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.yml"
+            second = root / "second.yml"
+            for path in (first, second):
+                path.write_text("jobs: {}\n", encoding="utf-8")
+            with mock.patch.object(
+                workflow_installation_preflight, "MAX_WORKFLOW_INPUTS", 1
+            ):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError,
+                    "file safety cap",
+                ):
+                    workflow_installation_preflight.workflow_capabilities(
+                        [first, second]
+                    )
+            with mock.patch.object(
+                workflow_installation_preflight, "MAX_TOTAL_WORKFLOW_BYTES", 1
+            ):
+                with self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError,
+                    "total byte safety cap",
+                ):
+                    workflow_installation_preflight.workflow_capabilities([first])
+
     def test_selected_policy_does_not_assume_private_pattern_eligibility(self) -> None:
         self.configure(allowed_actions="selected")
         repository_response = FakeClient.responses["repos/octo/example"]
@@ -391,6 +603,89 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             result["unapproved_action_references"],
             ["octo/allowed@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
         )
+
+    def test_selected_policy_honors_blocks_and_all_github_owned_actions(self) -> None:
+        sha = "a" * 40
+        policy = {
+            "github_owned_allowed": True,
+            "verified_allowed": False,
+            "patterns_allowed": ["*, !evil/action@*"],
+        }
+
+        self.assertTrue(
+            workflow_installation_preflight.selected_policy_allows(
+                f"actions/checkout@{sha}", policy, public_repository=True
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.selected_policy_allows(
+                f"github/codeql-action/init@{sha}", policy, public_repository=True
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.selected_policy_allows(
+                f"evil/action@{sha}", policy, public_repository=True
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.selected_policy_allows(
+                f"evil/action@{sha}",
+                {
+                    **policy,
+                    "github_owned_allowed": False,
+                    "patterns_allowed": ["owner/*, !owner/blocked@*"],
+                },
+                public_repository=True,
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.selected_policy_allows(
+                "docker://alpine@sha256:" + "a" * 64,
+                policy,
+                public_repository=True,
+            )
+        )
+
+    def test_docker_container_actions_require_external_capability(self) -> None:
+        self.configure(allowed_actions="local_only")
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "docker.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  build:\n"
+                "    steps:\n"
+                "      - uses: docker://alpine@sha256:" + "a" * 64 + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(workflow=[workflow])
+                )
+        self.assertEqual(
+            result["decision"],
+            "allow-external-actions-before-installing-workflows",
+        )
+        self.assertTrue(result["requires_external_actions"])
+        self.assertFalse(result["external_actions_verified"])
+        self.assertEqual(
+            result["external_action_references"],
+            ["docker://alpine@sha256:" + "a" * 64],
+        )
+
+    def test_selected_policy_rejects_empty_comma_pattern_entries(self) -> None:
+        with self.assertRaisesRegex(
+            workflow_installation_preflight.InspectionError,
+            "invalid allowed patterns",
+        ):
+            workflow_installation_preflight.selected_actions_policy(
+                {
+                    "github_owned_allowed": False,
+                    "verified_allowed": False,
+                    "patterns_allowed": ["owner/*, !"],
+                }
+            )
 
     def test_selected_policy_rejects_invalid_api_response_and_visibility(self) -> None:
         for response, message in (
@@ -608,7 +903,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "  contents: read\n"
                 "  issues: write\n"
                 "concurrency:\n"
-                "  group: ${{ github.workflow }}-${{ github.repository }}\n"
+                "  group: repo-scaffold-freshness-${{ github.repository }}\n"
                 "  cancel-in-progress: false\n"
                 "jobs:\n"
                 "  audit:\n"
@@ -618,6 +913,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "    steps:\n"
                 "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
                 "        with:\n"
+                "          ref: ${{ github.event.repository.default_branch }}\n"
                 "          persist-credentials: false\n"
                 "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97\n"
                 "        with:\n"
@@ -648,10 +944,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "        run: |\n"
                 "          set -euo pipefail\n"
                 "          issue_numbers_output=$(\n"
-                "            gh api --hostname github.com --paginate \\\n"
-                '              "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \\\n'
-                "              --jq '.[] | select(.pull_request == null) | "
-                'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
+                "            gh api --hostname github.com \\\n"
+                '              "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" \\\n'
+                "              --jq '.items[].number'\n"
                 "          )\n"
                 "          issue_numbers=()\n"
                 '          if [[ -n "$issue_numbers_output" ]]; then\n'
@@ -736,7 +1031,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "permissions:\n"
                 "  issues: write\n"
                 "concurrency:\n"
-                "  group: ${{ github.workflow }}-${{ github.repository }}\n"
+                "  group: repo-scaffold-freshness-${{ github.repository }}\n"
                 "  cancel-in-progress: false\n"
                 "jobs:\n"
                 "  audit:\n"
@@ -744,6 +1039,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "    runs-on: ubuntu-latest\n"
                 "    timeout-minutes: 15\n"
                 "    steps:\n"
+                "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
+                "        with:\n"
+                "          ref: ${{ github.event.repository.default_branch }}\n"
+                "          persist-credentials: false\n"
                 "      - run: |\n"
                 "          set +e\n"
                 "          python scripts/audit_freshness.py \\\n"
@@ -756,10 +1055,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            printf '%s\\n' '<!-- repo-scaffold-freshness-audit -->' > \"$RUNNER_TEMP/freshness.md\"\n"
                 "            checker_exit=2\n"
                 "          fi\n"
-                "          gh api --hostname github.com --paginate "
-                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
-                "--jq '.[] | select(.pull_request == null) | "
-                'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
+                "          gh api --hostname github.com "
+                '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" '
+                "--jq '.items[].number'\n"
                 "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
                 '          grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n'
                 '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file "$RUNNER_TEMP/freshness.md"\n',
@@ -806,7 +1104,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "  contents: read\n"
             "  issues: write\n"
             "concurrency:\n"
-            "  group: ${{ github.workflow }}-${{ github.repository }}\n"
+            "  group: repo-scaffold-freshness-${{ github.repository }}\n"
             "  cancel-in-progress: false\n"
             "jobs:\n"
             "  audit:\n"
@@ -816,6 +1114,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "    steps:\n"
             "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
             "        with:\n"
+            "          ref: ${{ github.event.repository.default_branch }}\n"
             "          persist-credentials: false\n"
             "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97\n"
             "        with:\n"
@@ -841,10 +1140,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         repository_lookup_command = (
             "          issue_numbers_output=$(\n"
-            "            gh api --hostname github.com --paginate \\\n"
-            '              "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \\\n'
-            "              --jq '.[] | select(.pull_request == null) | "
-            'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
+            "            gh api --hostname github.com \\\n"
+            '              "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" \\\n'
+            "              --jq '.items[].number'\n"
             "          )\n"
             "          issue_numbers=()\n"
             '          if [[ -n "$issue_numbers_output" ]]; then\n'
@@ -874,13 +1172,31 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         valid += repository_lookup_command + body_command
         cases = {
             "valid": valid,
+            "summary before audit": valid.replace(
+                "      - name: Audit versioned maintenance inputs\n",
+                "      - name: Add report to job summary\n"
+                "        shell: bash\n"
+                '        run: cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"\n'
+                "      - name: Audit versioned maintenance inputs\n",
+                1,
+            ).replace(
+                "      - name: Add report to job summary\n"
+                "        shell: bash\n"
+                '        run: cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"\n',
+                "",
+                1,
+            ),
             "extra API option": valid.replace(
                 repository_lookup_command,
-                repository_lookup_command.replace("--paginate ", "--paginate --slurp "),
+                repository_lookup_command.replace("gh api ", "gh api --slurp ", 1),
             ),
             "extra API output": valid.replace(
                 repository_lookup_command,
-                repository_lookup_command.replace("| .number'\n", "| .number, 999'\n"),
+                repository_lookup_command.replace(
+                    "--jq '.items[].number'",
+                    "--jq '.items[].number, 999'",
+                    1,
+                ),
             ),
             "extra lookup output": valid.replace(
                 "          issue_numbers_output=$(\n",
@@ -896,10 +1212,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "extra lookup API": valid.replace(
                 "          )\n          issue_numbers=()\n",
                 "          )\n"
-                "          gh api --hostname github.com --paginate "
-                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
-                "--jq '.[] | select(.pull_request == null) | "
-                'select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number\'\n'
+                "          gh api --hostname github.com "
+                '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" '
+                "--jq '.items[].number'\n"
                 "          issue_numbers=()\n",
                 1,
             ),
@@ -1608,7 +1923,13 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 workflow_installation_preflight.workflow_capabilities([workflow]),
-                ([], [], [], [], False),
+                (
+                    ["docker://alpine@sha256:" + "a" * 64],
+                    [],
+                    [],
+                    [],
+                    False,
+                ),
             )
 
             for content in (
@@ -1711,6 +2032,19 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 workflow_installation_preflight.validate_code_scanning_allowlist(
                     allowlist
                 )
+            for schema_version in (3.0, True):
+                allowlist.write_text(
+                    json.dumps({"schema-version": schema_version, "allowlist": []}),
+                    encoding="utf-8",
+                )
+                with self.subTest(schema_version=schema_version):
+                    with self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError,
+                        "schema-version 3",
+                    ):
+                        workflow_installation_preflight.validate_code_scanning_allowlist(
+                            allowlist
+                        )
 
             metadata = allowlist.stat()
             allowlist.write_text('{"schema-version": 3}\n', encoding="utf-8")
@@ -1808,6 +2142,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 (
                     "windows path",
                     [{**valid_entry, "path": "C:/example.py"}],
+                    "canonical POSIX",
+                ),
+                (
+                    "control-character path",
+                    [{**valid_entry, "path": "scripts/\nexample.py"}],
                     "canonical POSIX",
                 ),
                 (
@@ -2549,13 +2888,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 audit_command + " --unexpected ignored"
             )
         )
-        jq_expression = (
-            '.[] | select(.pull_request == null) | select((.body // "") | '
-            'contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
-        )
+        jq_expression = ".items[].number"
         api_lookup = (
-            "gh api --hostname github.com --paginate "
-            '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+            "gh api --hostname github.com "
+            '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" '
             f"--jq '{jq_expression}'"
         )
         self.assertTrue(
@@ -2566,7 +2902,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
                 api_lookup.replace(
-                    "repos/$GITHUB_REPOSITORY", "repos/attacker/repository"
+                    "search/issues?q=repo:$GITHUB_REPOSITORY",
+                    "search/issues?q=repo:attacker/repository",
                 )
             )
         )
@@ -2597,14 +2934,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
-                api_lookup.replace("--paginate ", "")
+                api_lookup + " --paginate"
             )
         )
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
-                api_lookup.replace(
-                    "state=open&per_page=100", "state=closed&per_page=100"
-                )
+                api_lookup.replace("is:open", "is:closed")
             )
         )
         self.assertFalse(
@@ -2623,12 +2958,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             with self.subTest(option=option):
                 self.assertFalse(
                     workflow_installation_preflight.has_freshness_repository_api_reads(
-                        api_lookup.replace("--paginate ", f"--paginate {option} ")
+                        api_lookup.replace("gh api ", f"gh api {option} ", 1)
                     )
                 )
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
-                api_lookup.replace("--paginate ", "-- ")
+                api_lookup.replace("gh api ", "gh api -- ", 1)
             )
         )
         self.assertFalse(
@@ -2645,21 +2980,19 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             with self.subTest(method=method):
                 self.assertFalse(
                     workflow_installation_preflight.has_freshness_repository_api_reads(
-                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                        api_lookup.replace("gh api ", f"gh api {method} ", 1)
                     )
                 )
         for method in ("--method GET", "--method=GET", "-XGET", "-X GET"):
             with self.subTest(method=method):
                 self.assertTrue(
                     workflow_installation_preflight.has_freshness_repository_api_reads(
-                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                        api_lookup.replace("gh api ", f"gh api {method} ", 1)
                     )
                 )
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
-                api_lookup.replace(
-                    "--paginate ", "--paginate --method GET --method GET "
-                )
+                api_lookup.replace("gh api ", "gh api --method GET --method GET ", 1)
             )
         )
         mutation_command = (
@@ -2686,6 +3019,29 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             + api_lookup
             + '\n)\nmapfile -t issue_numbers <<< "$issue_numbers_output"'
         )
+        legacy_api_with_single_line_reader = bound_api_lookup.replace(
+            "\n)\nmapfile -t issue_numbers",
+            "\n)\nread -r -a issue_numbers",
+            1,
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                legacy_api_with_single_line_reader
+                + '\ngh issue edit "${issue_numbers[0]}" --repo r '
+                "--body-file report.md"
+            )
+        )
+        for malformed_collection in (
+            "issue_numbers_output=$(\n  gh api 'unterminated\n)\n"
+            'mapfile -t issue_numbers <<< "$issue_numbers_output"',
+            bound_api_lookup.replace(f"--jq '{jq_expression}'", "--jq", 1),
+        ):
+            with self.subTest(malformed_collection=malformed_collection):
+                self.assertFalse(
+                    workflow_installation_preflight.freshness_issue_numbers_collection_matches_api(
+                        malformed_collection
+                    )
+                )
         malformed_lookup = (
             "issue_numbers_output=$(\n  gh api\n  printf extra\n)\n"
             "$issue_numbers_output"
@@ -2720,6 +3076,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             workflow_installation_preflight.freshness_api_result_controls_issue_selection(
                 extra_lookup_api
                 + '\ngh issue edit "${issue_numbers[0]}" --repo r --body-file report.md'
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_api_result_controls_issue_selection(
+                "output=$(gh api)\ngh api\n"
+                'gh issue edit "$output" --repo r --body-file report.md'
             )
         )
         self.assertTrue(
@@ -2929,8 +3291,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertFalse(
             workflow_installation_preflight.has_freshness_repository_api_reads(
                 "GITHUB_REPOSITORY=attacker/repository "
-                "gh api --hostname github.com --paginate "
-                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"'
+                "gh api --hostname github.com "
+                '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"'
             )
         )
         self.assertFalse(
@@ -4235,6 +4597,90 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
         )
 
+        safe_manual_workflow = {
+            "on": {"workflow_dispatch": ""},
+            "jobs": {
+                "audit": {
+                    "steps": [
+                        {
+                            "uses": "actions/checkout@" + "a" * 40,
+                            "with": {
+                                "ref": "${{ github.event.repository.default_branch }}",
+                                "persist-credentials": "false",
+                            },
+                        },
+                        {"run": "python audit.py"},
+                    ]
+                }
+            },
+        }
+        self.assertTrue(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                safe_manual_workflow
+            )
+        )
+        for checkout_with in (
+            {"persist-credentials": "false"},
+            {"ref": "main", "persist-credentials": "false"},
+        ):
+            unsafe_manual_workflow = {
+                **safe_manual_workflow,
+                "jobs": {
+                    "audit": {
+                        "steps": [
+                            {
+                                "uses": "actions/checkout@" + "a" * 40,
+                                "with": checkout_with,
+                            },
+                            {"run": "python audit.py"},
+                        ]
+                    }
+                },
+            }
+            self.assertFalse(
+                workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                    unsafe_manual_workflow
+                )
+            )
+        no_checkout_workflow = {
+            "on": {"workflow_dispatch": ""},
+            "jobs": {"audit": {"steps": [{"run": "python audit.py"}]}},
+        }
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                no_checkout_workflow
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(None)
+        )
+        self.assertTrue(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe({})
+        )
+        for malformed in (
+            {"on": {"workflow_dispatch": ""}, "jobs": []},
+            {"on": {"workflow_dispatch": ""}, "jobs": {"audit": None}},
+            {
+                "on": {"workflow_dispatch": ""},
+                "jobs": {"audit": {"steps": "invalid"}},
+            },
+            {
+                "on": {"workflow_dispatch": ""},
+                "jobs": {"audit": {"steps": [None]}},
+            },
+        ):
+            with self.subTest(malformed_manual_workflow=malformed):
+                self.assertFalse(
+                    workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                        malformed
+                    )
+                )
+        self.assertTrue(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {"on": {"workflow_dispatch": ""}, "jobs": {"audit": {"steps": []}}}
+            )
+        )
+
         for definition in (
             "alias gh='echo shadowed'",
             "declare -fx gh",
@@ -4335,7 +4781,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "\n".join(
                 (
                     'if [[ -n "$issue_numbers_output" ]]; then',
-                    '  mapfile -t issue_numbers <<< "$issue_numbers_output"',
+                    '  read -r -a issue_numbers <<< "$issue_numbers_output"',
                     "fi",
                 )
             )
@@ -4593,15 +5039,235 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             caller = root / "caller.yml"
+            for call in (
+                "./.github/workflows/../release.yml",
+                "./.github/workflows/a\n.yml",
+            ):
+                with self.subTest(call=call):
+                    caller.write_text(
+                        f"jobs:\n  publish:\n    uses: {json.dumps(call)}\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError,
+                        "unsafe local reusable-workflow reference",
+                    ):
+                        workflow_installation_preflight.workflow_capabilities([caller])
+
+    def test_local_reusable_workflow_inputs_bind_to_callers_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            caller = root / "candidate" / "release-please.yml"
+            wrong_directory = root / "other" / "release.yml"
+            caller.parent.mkdir(parents=True)
+            wrong_directory.parent.mkdir(parents=True)
             caller.write_text(
-                "jobs:\n  publish:\n    uses: ./.github/workflows/../release.yml\n",
+                "jobs:\n  publish:\n    uses: ./.github/workflows/release.yml\n",
+                encoding="utf-8",
+            )
+            wrong_directory.write_text(
+                "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@"
+                + "a" * 40
+                + "\n",
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
                 workflow_installation_preflight.InspectionError,
-                "unsafe local reusable-workflow reference",
+                "same workflow directory",
+            ):
+                workflow_installation_preflight.workflow_capabilities(
+                    [caller, wrong_directory]
+                )
+
+    def test_local_reusable_workflows_require_workflow_call_and_no_cycles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            caller = root / "caller.yml"
+            called = root / "called.yml"
+            caller.write_text(
+                "on: push\njobs:\n  call:\n    uses: ./.github/workflows/called.yml\n",
+                encoding="utf-8",
+            )
+            called.write_text("on: push\njobs: {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "declare workflow_call",
+            ):
+                workflow_installation_preflight.workflow_capabilities([caller, called])
+
+            caller.write_text(
+                "on: workflow_call\njobs:\n  call:\n    uses: ./.github/workflows/called.yml\n",
+                encoding="utf-8",
+            )
+            called.write_text(
+                "on: workflow_call\njobs:\n  call:\n    uses: ./.github/workflows/caller.yml\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "must not contain cycles",
+            ):
+                workflow_installation_preflight.workflow_capabilities([caller, called])
+
+    def test_reusable_workflow_and_graph_helpers_cover_supported_shapes(self) -> None:
+        for document, expected in (
+            ({"on": {"workflow_call": None}}, True),
+            ({"on": {"workflow_call": {}}}, True),
+            ({"on": {"workflow_call": ""}}, True),
+            ({"on": {"workflow_call": "null"}}, True),
+            ({"on": ["workflow_call"]}, True),
+            ({"on": "workflow_call"}, True),
+            ({"on": {"push": None}}, False),
+            ({"on": {"workflow_call": False}}, False),
+            ({"on": {"workflow_call": True}}, False),
+            ({"on": {"workflow_call": "false"}}, False),
+            ({"on": {"workflow_call": []}}, False),
+            ({"on": {"workflow_call": 0}}, False),
+            ({"on": None}, False),
+            ({}, False),
+        ):
+            with self.subTest(document=document):
+                self.assertEqual(
+                    workflow_installation_preflight.workflow_is_reusable(document),
+                    expected,
+                )
+        first, second, shared = (Path("first"), Path("second"), Path("shared"))
+        self.assertTrue(
+            workflow_installation_preflight.local_reusable_workflow_graph_is_acyclic(
+                {first: (second, shared), second: (shared,), shared: ()}
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.local_reusable_workflow_graph_is_acyclic(
+                {first: (first,)}
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.local_reusable_workflow_graph_is_acyclic(
+                {first: (second,), second: (first,)}
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.local_reusable_workflow_limits_are_safe(
+                {first: (second,), second: ()}
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.local_reusable_workflow_limits_are_safe(
+                {first: (shared, second), second: (shared,), shared: ()}
+            )
+        )
+        third = Path("third")
+        self.assertTrue(
+            workflow_installation_preflight.local_reusable_workflow_limits_are_safe(
+                {
+                    first: (second, third),
+                    second: (shared,),
+                    third: (shared,),
+                    shared: (),
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.local_reusable_workflow_limits_are_safe(
+                {first: (first,)}
+            )
+        )
+
+    def test_local_reusable_workflow_limits_reject_deep_and_wide_graphs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            depth = workflow_installation_preflight.MAX_LOCAL_REUSABLE_WORKFLOW_LEVELS
+            files = [root / f"depth-{index}.yml" for index in range(depth + 1)]
+            for index, path in enumerate(files):
+                next_job = (
+                    f"  call:\n    uses: ./.github/workflows/{files[index + 1].name}\n"
+                    if index + 1 < len(files)
+                    else "  done:\n    runs-on: ubuntu-latest\n    steps: []\n"
+                )
+                path.write_text(
+                    f"on: workflow_call\njobs:\n{next_job}", encoding="utf-8"
+                )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "depth or count limits",
+            ):
+                workflow_installation_preflight.workflow_capabilities(files)
+
+            count = (
+                workflow_installation_preflight.MAX_LOCAL_REUSABLE_WORKFLOWS_PER_CALLER
+                + 1
+            )
+            root_workflow = root / "wide-root.yml"
+            children = [root / f"wide-{index}.yml" for index in range(count)]
+            uses = "".join(
+                f"  call-{index}:\n    uses: ./.github/workflows/{child.name}\n"
+                for index, child in enumerate(children)
+            )
+            root_workflow.write_text(
+                f"on: workflow_call\njobs:\n{uses}", encoding="utf-8"
+            )
+            for child in children:
+                child.write_text(
+                    "on: workflow_call\njobs:\n"
+                    "  done:\n    runs-on: ubuntu-latest\n    steps: []\n",
+                    encoding="utf-8",
+                )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "depth or count limits",
+            ):
+                workflow_installation_preflight.workflow_capabilities(
+                    [root_workflow, *children]
+                )
+
+    def test_unsafe_local_action_references_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            caller = root / "caller.yml"
+            caller.write_text(
+                "jobs:\n  test:\n    steps:\n      - uses: ./../outside-action\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "safe repository-relative path",
             ):
                 workflow_installation_preflight.workflow_capabilities([caller])
+
+    def test_empty_uses_references_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "empty-uses.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses:\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "non-empty string",
+            ):
+                workflow_installation_preflight.workflow_capabilities([workflow])
+
+    def test_external_action_repository_traversal_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "traversal.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: ../evil@" + "a" * 40 + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "invalid repository",
+            ):
+                workflow_installation_preflight.workflow_capabilities([workflow])
 
     def test_duplicate_workflow_input_names_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4650,6 +5316,30 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(result["freshness_reminder_supplied"])
         self.assertTrue(result["code_scanning_companions_verified"])
 
+    def test_code_scanning_gate_detection_handles_shell_tokenization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gate = root / "code-scanning-gate.yml"
+            gate.write_text(
+                "jobs:\n"
+                "  gate:\n"
+                "    steps:\n"
+                "      - run: >-\n"
+                '          python "scripts/check_code_scanning_""alerts.py"\n',
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                workflow_installation_preflight.is_code_scanning_gate(
+                    gate.read_text(encoding="utf-8"), gate
+                )
+            )
+            malformed = (
+                'jobs:\n  gate:\n    steps:\n      - run: python "unterminated\n'
+            )
+            self.assertTrue(
+                workflow_installation_preflight.is_code_scanning_gate(malformed, gate)
+            )
+
     def test_pull_request_write_scopes_require_explicit_confirmation(self) -> None:
         self.configure()
         with tempfile.TemporaryDirectory() as directory:
@@ -4684,6 +5374,28 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         )
         self.assertFalse(result["pull_request_write_tokens_confirmed"])
         self.assertEqual(confirmed["decision"], "may-install-workflow-assets")
+
+    def test_manual_issue_write_workflow_must_use_default_branch_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "reminder.yml"
+            workflow.write_text(
+                "on:\n"
+                "  workflow_dispatch:\n"
+                "permissions:\n"
+                "  issues: write\n"
+                "jobs:\n"
+                "  audit:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: actions/checkout@" + "a" * 40 + "\n"
+                "      - run: python audit.py\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError,
+                "default branch",
+            ):
+                workflow_installation_preflight.workflow_capabilities([workflow])
 
     def test_pull_request_write_token_gate_ignores_read_only_and_target_workflows(
         self,

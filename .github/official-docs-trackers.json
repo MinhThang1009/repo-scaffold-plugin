@@ -42,6 +42,16 @@
       "review-period-days": 90
     },
     {
+      "id": "mutmut-windows-support",
+      "label": "mutmut operating-system support",
+      "url": "https://raw.githubusercontent.com/boxed/mutmut/main/README.rst",
+      "allowed-hosts": ["raw.githubusercontent.com"],
+      "paths": ["README.md", "CONTRIBUTING.md"],
+      "required-markers": ["`fork` support", "WSL"],
+      "reviewed-on": "2026-09-15",
+      "review-period-days": 90
+    },
+    {
       "id": "github-cli-home",
       "label": "GitHub CLI availability",
       "url": "https://cli.github.com/",

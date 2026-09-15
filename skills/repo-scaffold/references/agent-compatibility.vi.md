@@ -24,9 +24,11 @@ marketplace tại `~/.agents/plugins/marketplace.json`. Xem [tài liệu plugin 
 Để public trên OpenAI, hãy nộp release ZIP theo [flow Skills-only cho
 plugin](https://developers.openai.com/plugins/guides/submit-claude-plugin).
 Thư mục `repo-scaffold/` duy nhất trong archive chứa Claude manifest không rỗng
-và skill dùng chung cùng mọi file được tham chiếu. Portal OpenAI chuẩn hóa Codex
-manifest trong quá trình review; listing marketplace Claude Code vẫn cần một
-phê duyệt riêng.
+và skill dùng chung cùng mọi file được tham chiếu. Portal OpenAI chuyển đổi
+Claude manifest thành Codex manifest và bổ sung các mặc định interface còn thiếu
+trong quá trình review; Codex compatibility manifest được commit vẫn dùng cho
+cài đặt Codex trực tiếp và local marketplace. Listing marketplace Claude Code
+vẫn cần một phê duyệt riêng.
 
 Codex đọc hướng dẫn dự án từ `AGENTS.md` và áp dụng các tệp phù hợp từ root
 của repository đến thư mục làm việc. `AGENTS.md` được tạo ra là điểm vào hướng
@@ -100,6 +102,8 @@ hoặc tạo biến thể ngôn ngữ riêng cho từng agent.
 
 ## Chính sách ngôn ngữ
 
-Tài liệu tương thích agent có cả tiếng Anh và tiếng Việt. Với từng repository
-đích, luôn chọn đúng một ngôn ngữ đầu ra dự án, `en` hoặc `vi`; lựa chọn này
-ảnh hưởng file hướng tới người dùng của dự án, không ảnh hưởng adapter agent.
+Với mỗi repository đích, hãy hỏi user chọn đúng một ngôn ngữ đầu ra trước khi
+dựng. Các asset đã review hiện chỉ hỗ trợ `en` và `vi`; nếu user yêu cầu ngôn
+ngữ khác, hãy giải thích giới hạn và chờ user chọn `en` hoặc `vi`, hoặc dừng.
+Không tự động fallback hoặc trộn ngôn ngữ. Lựa chọn đã xác nhận ảnh hưởng file
+hướng tới người dùng của dự án, không ảnh hưởng adapter agent.

@@ -71,7 +71,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "Disabled repositories cannot install dependency-review workflows."
         )
     visibility = repository.get("visibility")
-    if visibility not in SUPPORTED_VISIBILITIES:
+    if visibility not in tuple(SUPPORTED_VISIBILITIES):
         raise InspectionError("Repository response has an invalid visibility value.")
 
     github_code_security = "not-required"

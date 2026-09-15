@@ -6,6 +6,7 @@ import os
 import re
 import runpy
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -346,6 +347,25 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             problems,
         )
 
+    def test_scaffold_ci_asset_runs_the_declared_os_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            asset_path = root / "skills/repo-scaffold/assets/workflows/ci.yml"
+            asset = asset_path.read_text(encoding="utf-8").replace(
+                "runs-on: ${{ matrix.os }}", "runs-on: ubuntu-latest", 1
+            )
+            asset_path.write_text(asset, encoding="utf-8")
+
+            problems = validate_repository.validate_python_support_contract(root)
+
+        self.assertIn(
+            "skills/repo-scaffold/assets/workflows/ci.yml: scaffold CI must "
+            "load a runtime policy dynamically, run the test matrix on its "
+            "selected OS, and retain a scheduled canary",
+            problems,
+        )
+
     def test_ruff_target_must_match_the_policy_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -391,6 +411,18 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                 self.assertEqual(
                     validate_repository.validate_python_support_contract(root),
                     ["Python support contract: policy validation timed out"],
+                )
+
+            with mock.patch.object(
+                validate_repository.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_python_support_contract(root),
+                    [
+                        "Python support contract: policy validation could not be executed"
+                    ],
                 )
 
             failed = mock.Mock(returncode=1, stderr="line one\nline two\n", stdout="")
@@ -522,6 +554,26 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                 "          MUTATION_CACHE_INTEGRATION_RESULT: "
                 "${{ needs.mutation-cache-integration.result }}\n",
                 "",
+                1,
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_python_support_contract(root)
+
+        self.assertIn(
+            ".github/workflows/ci.yml: ci-success must require tests, quality, "
+            "and mutation integration while keeping canaries outside the gate",
+            problems,
+        )
+
+    def test_ci_success_rejects_unhashable_needs_entries_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "needs: [test, quality, mutation-cache-integration]",
+                "needs: [[test], quality, mutation-cache-integration]",
                 1,
             )
             workflow_path.write_text(workflow, encoding="utf-8")
@@ -705,6 +757,14 @@ class ActionReferenceValidationTests(unittest.TestCase):
             (workflow_root / "invalid.yml").write_text(
                 "name: first\nname: second\n", encoding="utf-8"
             )
+            (workflow_root / "local-traversal.yml").write_text(
+                "permissions: {contents: read}\n"
+                "jobs:\n"
+                "  test:\n"
+                "    steps:\n"
+                "      - uses: ./../outside-action\n",
+                encoding="utf-8",
+            )
 
             problems = validate_repository.validate_action_references(root)
 
@@ -714,7 +774,23 @@ class ActionReferenceValidationTests(unittest.TestCase):
             self.assertTrue(
                 any("container reference must use" in item for item in problems)
             )
+            self.assertTrue(
+                any(
+                    "local action reference must be a safe" in item for item in problems
+                )
+            )
             self.assertFalse(any("invalid.yml" in item for item in problems))
+
+        for reference, expected in (
+            ("./local-action", True),
+            ("actions/checkout@" + "a" * 40, False),
+            (None, False),
+        ):
+            with self.subTest(local_action_reference=reference):
+                self.assertEqual(
+                    validate_repository.is_safe_local_action_reference(reference),
+                    expected,
+                )
 
     def test_workflow_aliases_are_walked_once(self) -> None:
         digest = "a" * 64
@@ -1075,6 +1151,24 @@ class CiToolchainContractValidationTests(unittest.TestCase):
                 problems,
             )
 
+    def test_standalone_tool_downloads_require_bounded_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow = workflow_path.read_text(encoding="utf-8").replace(
+                "            --retry 5 --retry-delay 2 --retry-max-time 120 \\\n",
+                "",
+            )
+            workflow_path.write_text(workflow, encoding="utf-8")
+
+            problems = validate_repository.validate_ci_toolchain_contract(root)
+
+        self.assertEqual(
+            sum("must use bounded download retries" in item for item in problems),
+            2,
+        )
+
     def test_missing_script_and_policies_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1119,6 +1213,18 @@ class CiToolchainContractValidationTests(unittest.TestCase):
 
             self.assertTrue(any("validation timed out" in item for item in problems))
             self.assertTrue(any("invalid policy" in item for item in problems))
+
+            with mock.patch.object(
+                validate_repository.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ):
+                problems = validate_repository.validate_ci_toolchain_contract(root)
+
+            self.assertEqual(
+                sum("validation could not be executed" in item for item in problems),
+                2,
+            )
 
     def test_policy_sync_and_workflow_structure_regressions_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1273,6 +1379,24 @@ class CiToolchainContractValidationTests(unittest.TestCase):
                 problems = validate_repository.validate_ci_toolchain_contract(root)
 
             self.assertFalse(any("found '7'" in item for item in problems))
+
+
+class LinkWorkflowContractTests(unittest.TestCase):
+    def test_link_workflows_retry_transient_upstream_failures(self) -> None:
+        workflow_paths = (
+            PLUGIN_ROOT / ".github" / "workflows" / "links.yml",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "links.yml",
+        )
+        for path in workflow_paths:
+            with self.subTest(path=path):
+                workflow = path.read_text(encoding="utf-8")
+                self.assertIn("--max-retries 5", workflow)
+                self.assertIn("--retry-wait-time 2", workflow)
 
 
 class MirroredDependencyMetadataTests(unittest.TestCase):
@@ -2017,11 +2141,57 @@ class MutationTestingContractTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            runner_path = root / "scripts" / "run_mutation_testing.py"
+            runner_path.write_text(
+                runner_path.read_text(encoding="utf-8").replace(
+                    f'MUTMUT_VERSION = "{current_version}"',
+                    f'MUTMUT_VERSION = "{replacement_version}"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
 
             self.assertEqual(
                 validate_repository.validate_mutation_testing_contract(root),
                 [],
             )
+
+    def test_mutation_runner_version_must_match_direct_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            direct_path = root / "requirements-mutation.in"
+            direct_text = direct_path.read_text(encoding="utf-8")
+            match = re.search(r"(?m)^mutmut==([^\s;\\]+)$", direct_text)
+            self.assertIsNotNone(match)
+            assert match is not None
+            current_version = match.group(1)
+            replacement_version = "999.0.0"
+            direct_path.write_text(
+                direct_text.replace(
+                    f"mutmut=={current_version}",
+                    f"mutmut=={replacement_version}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            lock_path = root / "requirements-mutation.txt"
+            lock_path.write_text(
+                lock_path.read_text(encoding="utf-8").replace(
+                    f"mutmut=={current_version} \\",
+                    f"mutmut=={replacement_version} \\",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            "scripts/run_mutation_testing.py: MUTMUT_VERSION must match the "
+            "requirements-mutation.in mutmut pin",
+            problems,
+        )
 
     def test_duplicate_mutation_pin_and_lock_mismatch_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3100,6 +3270,16 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                     ["scaffold contract: validation timed out"],
                 )
 
+            with mock.patch.object(
+                validate_repository.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_scaffold_contract(root),
+                    ["scaffold contract: validation could not be executed"],
+                )
+
             failed = mock.Mock(returncode=1, stderr="first\nsecond\n", stdout="")
             with mock.patch.object(
                 validate_repository.subprocess, "run", return_value=failed
@@ -3146,6 +3326,21 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 self.assertEqual(
                     validate_repository.validate_release_archive(root),
                     ["release archive: git archive timed out"],
+                )
+
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess,
+                    "run",
+                    side_effect=PermissionError("blocked"),
+                ),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_release_archive(root),
+                    ["release archive: git archive could not be executed"],
                 )
 
             with (
@@ -3209,6 +3404,22 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 self.assertEqual(
                     validate_repository.validate_release_archive(root),
                     ["release archive: source enumeration timed out"],
+                )
+
+            source_outcome = PermissionError("blocked")
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess,
+                    "run",
+                    side_effect=archive_then_source,
+                ),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_release_archive(root),
+                    ["release archive: source enumeration could not be executed"],
                 )
 
             for stderr, expected in (
@@ -4648,6 +4859,9 @@ jobs:
         self.assertIn("update each existing release PR title", generation)
 
     def test_skill_resolves_one_language_per_project(self) -> None:
+        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
         generation = (
             PLUGIN_ROOT
             / "skills"
@@ -4658,21 +4872,100 @@ jobs:
         setup = (
             PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
         ).read_text(encoding="utf-8")
+        compatibility = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.md"
+        ).read_text(encoding="utf-8")
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        skill_flat = " ".join(skill.split())
+        generation_flat = " ".join(generation.split())
+        compatibility_flat = " ".join(compatibility.split())
+        readme_flat = " ".join(readme.split())
 
-        self.assertIn("`SCAFFOLD_LANGUAGE`, either `en` or `vi`", generation)
-        self.assertIn("the user's explicit language request", generation)
-        self.assertIn("active project instructions", generation)
-        self.assertIn("then `en` as the", generation)
-        self.assertIn("Never leave an", generation)
-        self.assertIn("English/Vietnamese hybrid", generation)
-        self.assertIn("commit, pull-request,", generation)
+        self.assertIn("Before generation, ask the user", skill_flat)
+        self.assertIn("A valid `en` or `vi` answer is required", skill_flat)
         self.assertIn(
-            "or release text created as part of an authorized scaffold", generation
+            "reviewed assets currently support only `en` and `vi`", skill_flat
         )
+        self.assertIn("do not silently fall back, mix languages", skill_flat)
+        self.assertIn("Set `SCAFFOLD_LANGUAGE` from the confirmed answer", skill_flat)
+        self.assertIn(
+            "Which project-output language should I use, en or vi?", skill_flat
+        )
+        self.assertIn("Before generation, ask", generation_flat)
+        self.assertIn("`SCAFFOLD_LANGUAGE`, either `en` or `vi`", generation_flat)
+        self.assertIn("A valid answer is required", generation_flat)
+        self.assertIn(
+            "reviewed assets currently support only `en` and `vi`", generation_flat
+        )
+        self.assertIn("do not silently fall", generation_flat)
+        self.assertIn(
+            "Project instructions and existing documentation", generation_flat
+        )
+        self.assertIn("Never leave an", generation_flat)
+        self.assertIn("English/Vietnamese hybrid", generation_flat)
+        self.assertIn("commit, pull-request,", generation_flat)
+        self.assertIn(
+            "or release text created as part of an authorized scaffold", generation_flat
+        )
+        self.assertIn(
+            "ask the user to choose exactly one project-output language",
+            compatibility_flat,
+        )
+        self.assertIn(
+            "reviewed assets currently support only `en` and `vi`",
+            compatibility_flat,
+        )
+        self.assertIn("does not silently fall back or mix languages", readme_flat)
         self.assertIn("chore${scope}: release${component} ${version}", setup)
         self.assertIn("chore${scope}: phát hành${component} ${version}", setup)
         self.assertIn("Performance Improvements", setup)
         self.assertIn("Cải thiện hiệu năng", setup)
+
+    def test_workflow_setup_requires_an_explicit_installation_plan(self) -> None:
+        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        generation = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        ).read_text(encoding="utf-8")
+        contracts = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "workflow-contracts.md"
+        ).read_text(encoding="utf-8")
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        generation_flat = " ".join(generation.split())
+        contracts_flat = " ".join(contracts.split())
+        setup_flat = " ".join(setup.split())
+
+        self.assertIn(
+            "Every GitHub.com project with a runnable test or lint command must "
+            "finish this phase with a configured CI workflow",
+            " ".join(skill.split()),
+        )
+        self.assertIn("workflow-installation preflight", " ".join(skill.split()))
+        self.assertIn(
+            "Workflow installation is an explicit generation decision", generation_flat
+        )
+        self.assertIn("copy the companion files in the table", generation_flat)
+        self.assertIn("test job must run on `matrix.os`", contracts_flat)
+        self.assertIn(
+            "workflow phase must install a configured CI workflow", setup_flat
+        )
+        self.assertIn("test job uses `matrix.os`", readme)
 
     def test_accepts_intentional_semver_build_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4886,6 +5179,7 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
                 "jobs": {"release_please": {}},
             }
             codeql = {
+                "on": [],
                 "permissions": {
                     "actions": "read",
                     "contents": "read",
@@ -5152,6 +5446,7 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (asset_root / "commitlint.yml").write_text(
+                "on: []\n"
                 "concurrency:\n"
                 "  group: required-${{ github.ref }}\n"
                 "  cancel-in-progress: false\n",
@@ -5269,6 +5564,19 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 any("require schema-version" in item for item in unknown_fields)
             )
 
+            for schema_version in (3.0, True):
+                allowlist.write_text(
+                    json.dumps({"schema-version": schema_version, "allowlist": []}),
+                    encoding="utf-8",
+                )
+                with self.subTest(schema_version=schema_version):
+                    invalid_schema = (
+                        validate_repository.validate_code_scanning_gate_contract(root)
+                    )
+                    self.assertTrue(
+                        any("require schema-version" in item for item in invalid_schema)
+                    )
+
             allowlist.write_text(
                 '{"schema-version": 3, "allowlist": ['
                 '{"number": 0, "tool": "CodeQL", "rule": "x", '
@@ -5304,6 +5612,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 "../escape",
                 "C:/example.py",
                 "scripts//example.py",
+                "scripts/\nexample.py",
             ):
                 with self.subTest(invalid_path=invalid_path):
                     allowlist.write_text(
@@ -6100,6 +6409,25 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
 
             self.assertEqual(validate_repository.validate_release_attestation(root), [])
 
+    def test_release_attestation_reports_malformed_build_step_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            engine_path = root / ".github" / "workflows" / "release.yml"
+            engine = yaml.safe_load(engine_path.read_text(encoding="utf-8"))
+            engine["jobs"]["build"]["steps"][0]["name"] = []
+            engine_path.write_text(
+                yaml.safe_dump(engine, sort_keys=False), encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_release_attestation(root)
+
+        self.assertIn(
+            ".github/workflows/release.yml: archive build must use git archive "
+            "with --worktree-attributes",
+            problems,
+        )
+
     def test_rejects_privilege_and_publish_gate_regressions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -6527,6 +6855,7 @@ body:
                     "options": [{"label": "Duplicate label"}],
                 },
             },
+            {"type": []},
         ]
 
         problems = validate_repository.validate_issue_form_body(relative, body)
@@ -6548,6 +6877,7 @@ body:
             "body[11] contains unsupported keys",
             "body[12].attributes.label must be unique",
             "body[13].attributes.options labels must be unique among form inputs",
+            "body[14] has invalid type",
         )
         for expected in expected_fragments:
             self.assertTrue(any(expected in item for item in problems), expected)
@@ -6618,7 +6948,7 @@ body:
                 "name: Bug\ndescription: ''\nbody: []\n", encoding="utf-8"
             )
             (template_root / "config.yml").write_text(
-                "blank_issues_enabled: maybe\ncontact_links: invalid\n",
+                "blank_issues_enabled: []\ncontact_links: invalid\n",
                 encoding="utf-8",
             )
 
@@ -6819,7 +7149,7 @@ class DependabotValidationTests(unittest.TestCase):
                 "  - package-ecosystem: pip\n"
                 "    directory: /\n"
                 "    schedule:\n"
-                "      interval: sometimes\n"
+                "      interval: []\n"
                 "  - package-ecosystem: pip\n"
                 "    schedule:\n"
                 "      interval: weekly\n",
@@ -6982,10 +7312,78 @@ class WorkflowShellValidationTests(unittest.TestCase):
             ignored.write_text("ignored\n", encoding="utf-8")
             nested.mkdir()
             (nested / "nested.yml").write_text("jobs: {}\n", encoding="utf-8")
+            (root / "directory.yml").mkdir()
 
             self.assertEqual(
                 validate_workflows.discover_workflows(root), [yml, yaml_file]
             )
+
+    def test_workflow_discovery_rejects_linked_directories_and_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / "ci.yml"
+            workflow.write_text("jobs: {}\n", encoding="utf-8")
+
+            with mock.patch.object(
+                validate_workflows, "is_link_or_reparse", return_value=True
+            ):
+                with self.assertRaisesRegex(ValueError, "linked or a reparse point"):
+                    validate_workflows.discover_workflows(root)
+
+            with mock.patch.object(
+                validate_workflows,
+                "is_link_or_reparse",
+                side_effect=lambda path: path == workflow,
+            ):
+                with self.assertRaisesRegex(ValueError, "linked or a reparse point"):
+                    validate_workflows.discover_workflows(root)
+
+    def test_workflow_path_safety_handles_missing_errors_and_reparse_points(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.yml"
+            self.assertFalse(validate_workflows.is_link_or_reparse(missing))
+
+            path = mock.Mock(spec=Path)
+            path.lstat.side_effect = OSError("denied")
+            with self.assertRaisesRegex(ValueError, "could not inspect workflow path"):
+                validate_workflows.is_link_or_reparse(path)
+
+            path.lstat.side_effect = None
+            path.lstat.return_value = mock.Mock(
+                st_mode=stat.S_IFLNK, st_file_attributes=0
+            )
+            self.assertTrue(validate_workflows.is_link_or_reparse(path))
+            path.lstat.return_value = mock.Mock(
+                st_mode=stat.S_IFREG, st_file_attributes=0x400
+            )
+            self.assertTrue(validate_workflows.is_link_or_reparse(path))
+
+    def test_workflow_reader_rejects_linked_path(self) -> None:
+        with mock.patch.object(
+            validate_workflows, "is_link_or_reparse", return_value=True
+        ):
+            with self.assertRaisesRegex(ValueError, "linked or a reparse point"):
+                validate_workflows.read_workflow_text(Path("ci.yml"))
+
+    def test_freshness_authentication_requires_one_audit_step(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
+        workflow = validate_repository.load_yaml(workflow_path)
+        job = workflow["jobs"]["audit"]
+        steps = job["steps"]
+        audit_index = next(
+            index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict) and step.get("id") == "audit"
+        )
+        malformed_steps = [dict(step) for step in steps]
+        malformed_steps[audit_index]["id"] = "not-audit"
+        self.assertFalse(
+            validate_repository.freshness_authentication_bindings_are_safe(
+                workflow, {**job, "steps": malformed_steps}
+            )
+        )
 
     def test_executable_resolution_skips_unsafe_and_unusable_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -7156,6 +7554,22 @@ class WorkflowShellValidationTests(unittest.TestCase):
         self.assertEqual(timeout_result, 2)
         self.assertEqual(stderr.getvalue(), "actionlint timed out.\n")
 
+        stderr = StringIO()
+        with (
+            mock.patch.object(
+                validate_workflows.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ),
+            redirect_stderr(stderr),
+        ):
+            execution_result = validate_workflows.run_actionlint(
+                "actionlint", [workflow], working_directory=working_directory
+            )
+
+        self.assertEqual(execution_result, 2)
+        self.assertEqual(stderr.getvalue(), "actionlint could not be executed.\n")
+
     def test_bash_block_is_normalized_to_binary_lf_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ci.yml"
@@ -7175,12 +7589,18 @@ class WorkflowShellValidationTests(unittest.TestCase):
 
     def test_workflow_parser_converts_recursive_yaml_failures(self) -> None:
         path = mock.Mock(spec=Path)
-        path.read_text.return_value = "jobs: {}\n"
 
-        with mock.patch.object(
-            validate_workflows.yaml,
-            "load",
-            side_effect=RecursionError("too deep"),
+        with (
+            mock.patch.object(
+                validate_workflows,
+                "read_workflow_text",
+                return_value="jobs: {}\n",
+            ),
+            mock.patch.object(
+                validate_workflows.yaml,
+                "load",
+                side_effect=RecursionError("too deep"),
+            ),
         ):
             with self.assertRaisesRegex(yaml.YAMLError, "nesting exceeds"):
                 validate_workflows.workflow_shell_blocks(path)
@@ -7227,12 +7647,30 @@ jobs:
 
     def test_workflow_parser_reads_utf8_and_ignores_jobs_without_steps(self) -> None:
         path = mock.Mock(spec=Path)
-        path.read_text.return_value = (
-            "jobs:\n  scalar: 7\n  empty:\n    runs-on: ubuntu-latest\n"
-        )
+        workflow = "jobs:\n  scalar: 7\n  empty:\n    runs-on: ubuntu-latest\n"
 
-        self.assertEqual(validate_workflows.workflow_shell_blocks(path), [])
-        path.read_text.assert_called_once_with(encoding="utf-8")
+        with mock.patch.object(
+            validate_workflows, "read_workflow_text", return_value=workflow
+        ) as read_workflow:
+            self.assertEqual(validate_workflows.workflow_shell_blocks(path), [])
+        read_workflow.assert_called_once_with(path)
+
+    def test_workflow_parser_bounds_size_and_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ci.yml"
+            path.write_bytes(b"x" * (validate_workflows.MAX_WORKFLOW_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, "exceeds the .* safety cap"):
+                validate_workflows.workflow_shell_blocks(path)
+
+            path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(ValueError, "not valid UTF-8"):
+                validate_workflows.workflow_shell_blocks(path)
+
+            with (
+                mock.patch.object(Path, "open", side_effect=OSError("denied")),
+                self.assertRaisesRegex(ValueError, "could not read workflow file"),
+            ):
+                validate_workflows.workflow_shell_blocks(path)
 
     def test_workflow_parser_errors_are_exact(self) -> None:
         cases = (
@@ -7396,6 +7834,29 @@ jobs:
             )
         )
 
+        execution_stderr = mock.Mock()
+        with (
+            mock.patch.object(
+                validate_workflows,
+                "workflow_shell_blocks",
+                return_value=[("test: Test", "bash", b"echo ok")],
+            ),
+            mock.patch.object(
+                validate_workflows.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ),
+            mock.patch.object(validate_workflows.sys, "stderr", execution_stderr),
+        ):
+            execution_result = validate_workflows.run_shellcheck("shellcheck", [path])
+        self.assertEqual(execution_result, 2)
+        self.assertTrue(
+            any(
+                "ShellCheck could not be executed" in call.args[0]
+                for call in execution_stderr.write.call_args_list
+            )
+        )
+
         failure_stderr = mock.Mock()
         failure_stderr.buffer = BytesIO()
         process = mock.Mock(returncode=3, stdout=b"stdout\n", stderr=b"stderr\n")
@@ -7447,6 +7908,26 @@ jobs:
                 "actionlint is required" in call.args[0]
                 for call in stderr.write.call_args_list
             )
+        )
+
+        discovery_stderr = StringIO()
+        with (
+            mock.patch.object(
+                validate_workflows,
+                "resolve_path_executable",
+                side_effect=["actionlint", "shellcheck"],
+            ),
+            mock.patch.object(
+                validate_workflows,
+                "discover_workflows",
+                side_effect=ValueError("workflow path is linked"),
+            ),
+            redirect_stderr(discovery_stderr),
+        ):
+            self.assertEqual(validate_workflows.main(), 2)
+        self.assertEqual(
+            discovery_stderr.getvalue(),
+            "Could not discover workflow files: workflow path is linked\n",
         )
 
     def test_main_uses_exact_tool_names_roots_and_diagnostics(self) -> None:
@@ -7717,6 +8198,63 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
             any("every supported surface" in problem for problem in problems)
         )
 
+    def test_registry_rejects_unknown_top_level_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github" / "community-health-trackers.json"
+            document = validate_repository.load_json(installed)
+            document["unexpected"] = True
+            installed.write_text(json.dumps(document), encoding="utf-8")
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any("every supported surface" in problem for problem in problems)
+        )
+
+    def test_registry_rejects_linked_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github" / "community-health-trackers.json"
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _repository_root: path == installed,
+            ):
+                problems = (
+                    validate_repository.validate_community_health_tracking_contract(
+                        root
+                    )
+                )
+        self.assertIn(
+            ".github/community-health-trackers.json: community-health registry path is linked or a reparse point",
+            problems,
+        )
+
+    def test_registry_path_inspection_errors_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            with mock.patch.object(
+                validate_repository,
+                "path_has_link_or_reparse",
+                side_effect=OSError("permission denied"),
+            ):
+                problems = (
+                    validate_repository.validate_community_health_tracking_contract(
+                        root
+                    )
+                )
+        self.assertEqual(
+            sum(
+                "community-health registry path could not be inspected" in problem
+                for problem in problems
+            ),
+            2,
+        )
+
     def test_nonmapping_registry_and_workflow_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -7802,6 +8340,58 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
             any("effective issues: write permission" in problem for problem in problems)
         )
 
+    def test_report_marker_must_precede_clean_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/community-health.yml"
+            installed.write_text(
+                installed.read_text(encoding="utf-8").replace(
+                    '          grep -Fq "$marker" "$RUNNER_TEMP/community-health.md"\n',
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "report marker before clean reconciliation" in problem
+                for problem in problems
+            )
+        )
+
+    def test_unexpected_checker_exit_statuses_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/community-health.yml"
+            installed.write_text(
+                installed.read_text(encoding="utf-8").replace(
+                    "          if [[ \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then\n"
+                    "            printf 'Community-health checker returned an unexpected exit status: %s\\n' \"$CHECKER_EXIT\" >&2\n"
+                    "            exit 1\n"
+                    "          fi\n",
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "reject unexpected checker exit statuses" in problem
+                for problem in problems
+            )
+        )
+
 
 class FreshnessTrackingContractTests(unittest.TestCase):
     def test_freshness_requires_preparation_before_audit(self) -> None:
@@ -7881,6 +8471,24 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertEqual(
             validate_repository.validate_freshness_tracking_contract(PLUGIN_ROOT),
             [],
+        )
+
+    def test_freshness_registry_schema_versions_must_be_integers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            for relative in (
+                ".github/freshness-trackers.json",
+                "skills/repo-scaffold/assets/freshness-trackers.json",
+            ):
+                path = root / relative
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document["schema-version"] = True
+                path.write_text(json.dumps(document), encoding="utf-8")
+            problems = validate_repository.validate_freshness_tracking_contract(root)
+
+        self.assertEqual(
+            sum("must use schema-version 1" in problem for problem in problems), 2
         )
 
     def test_freshness_job_runtime_contract_is_required(self) -> None:
@@ -8786,13 +9394,10 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "--json-output report.json --markdown-output report.md"
             )
         )
-        jq_expression = (
-            '.[] | select(.pull_request == null) | select((.body // "") | '
-            'contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
-        )
+        jq_expression = ".items[].number"
         api_lookup = (
-            "gh api --hostname github.com --paginate "
-            '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" '
+            "gh api --hostname github.com "
+            '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" '
             f"--jq '{jq_expression}'"
         )
         self.assertTrue(
@@ -8801,7 +9406,8 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
                 api_lookup.replace(
-                    "repos/$GITHUB_REPOSITORY", "repos/attacker/repository"
+                    "search/issues?q=repo:$GITHUB_REPOSITORY",
+                    "search/issues?q=repo:attacker/repository",
                 )
             )
         )
@@ -8832,14 +9438,12 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
-                api_lookup.replace("--paginate ", "")
+                api_lookup + " --paginate"
             )
         )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
-                api_lookup.replace(
-                    "state=open&per_page=100", "state=closed&per_page=100"
-                )
+                api_lookup.replace("is:open", "is:closed")
             )
         )
         self.assertFalse(
@@ -8858,12 +9462,12 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             with self.subTest(option=option):
                 self.assertFalse(
                     validate_repository.has_freshness_repository_api_reads(
-                        api_lookup.replace("--paginate ", f"--paginate {option} ")
+                        api_lookup.replace("gh api ", f"gh api {option} ", 1)
                     )
                 )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
-                api_lookup.replace("--paginate ", "-- ")
+                api_lookup.replace("gh api ", "gh api -- ", 1)
             )
         )
         self.assertFalse(
@@ -8880,21 +9484,19 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             with self.subTest(method=method):
                 self.assertFalse(
                     validate_repository.has_freshness_repository_api_reads(
-                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                        api_lookup.replace("gh api ", f"gh api {method} ", 1)
                     )
                 )
         for method in ("--method GET", "--method=GET", "-XGET", "-X GET"):
             with self.subTest(method=method):
                 self.assertTrue(
                     validate_repository.has_freshness_repository_api_reads(
-                        api_lookup.replace("--paginate ", f"--paginate {method} ")
+                        api_lookup.replace("gh api ", f"gh api {method} ", 1)
                     )
                 )
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
-                api_lookup.replace(
-                    "--paginate ", "--paginate --method GET --method GET "
-                )
+                api_lookup.replace("gh api ", "gh api --method GET --method GET ", 1)
             )
         )
         audit_command = (
@@ -8923,6 +9525,29 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             + api_lookup
             + '\n)\nmapfile -t issue_numbers <<< "$issue_numbers_output"'
         )
+        legacy_api_with_single_line_reader = bound_api_lookup.replace(
+            "\n)\nmapfile -t issue_numbers",
+            "\n)\nread -r -a issue_numbers",
+            1,
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                legacy_api_with_single_line_reader
+                + '\ngh issue edit "${issue_numbers[0]}" --repo r '
+                "--body-file report.md"
+            )
+        )
+        for malformed_collection in (
+            "issue_numbers_output=$(\n  gh api 'unterminated\n)\n"
+            'mapfile -t issue_numbers <<< "$issue_numbers_output"',
+            bound_api_lookup.replace(f"--jq '{jq_expression}'", "--jq", 1),
+        ):
+            with self.subTest(malformed_collection=malformed_collection):
+                self.assertFalse(
+                    validate_repository.freshness_issue_numbers_collection_matches_api(
+                        malformed_collection
+                    )
+                )
         malformed_lookup = (
             "issue_numbers_output=$(\n  gh api\n  printf extra\n)\n"
             "$issue_numbers_output"
@@ -8966,6 +9591,12 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             validate_repository.freshness_api_result_controls_issue_selection(
                 extra_lookup_api
                 + '\ngh issue edit "${issue_numbers[0]}" --repo r --body-file report.md'
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_api_result_controls_issue_selection(
+                "output=$(gh api)\ngh api\n"
+                'gh issue edit "$output" --repo r --body-file report.md'
             )
         )
         self.assertTrue(
@@ -9171,8 +9802,8 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         self.assertFalse(
             validate_repository.has_freshness_repository_api_reads(
                 "GITHUB_REPOSITORY=attacker/repository "
-                "gh api --hostname github.com --paginate "
-                '"repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"'
+                "gh api --hostname github.com "
+                '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"'
             )
         )
         self.assertFalse(
@@ -9914,7 +10545,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 )
         ignored_api_output_text = contract_text.replace(
             '          if [[ -n "$issue_numbers_output" ]]; then\n'
-            '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
+            '            read -r -a issue_numbers <<< "$issue_numbers_output"\n'
             "          fi\n",
             "",
             1,
@@ -9926,7 +10557,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             )
         )
         logged_api_output_text = contract_text.replace(
-            '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n',
+            '            read -r -a issue_numbers <<< "$issue_numbers_output"\n',
             '            echo "$issue_numbers_output"\n',
             1,
         )
@@ -10671,6 +11302,126 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 [*contract_steps, {"run": "printf extra"}]
             )
         )
+        safe_manual_workflow = {
+            "on": {"workflow_dispatch": ""},
+            "jobs": {
+                "audit": {
+                    "steps": [
+                        {
+                            "uses": "actions/checkout@" + "a" * 40,
+                            "with": {
+                                "ref": "${{ github.event.repository.default_branch }}",
+                                "persist-credentials": "false",
+                            },
+                        },
+                        {"run": "python audit.py"},
+                    ]
+                }
+            },
+        }
+        self.assertTrue(
+            validate_repository.manual_issue_write_checkout_is_safe(
+                safe_manual_workflow
+            )
+        )
+        unsafe_manual_workflow = {
+            **safe_manual_workflow,
+            "jobs": {
+                "audit": {
+                    "steps": [
+                        {
+                            "uses": "actions/checkout@" + "a" * 40,
+                            "with": {"persist-credentials": "false"},
+                        },
+                        {"run": "python audit.py"},
+                    ]
+                }
+            },
+        }
+        self.assertFalse(
+            validate_repository.manual_issue_write_checkout_is_safe(
+                unsafe_manual_workflow
+            )
+        )
+        self.assertFalse(validate_repository.manual_issue_write_checkout_is_safe(None))
+        self.assertTrue(validate_repository.manual_issue_write_checkout_is_safe({}))
+        for malformed_manual in (
+            {"on": {"workflow_dispatch": ""}, "jobs": []},
+            {"on": {"workflow_dispatch": ""}, "jobs": {"audit": None}},
+            {
+                "on": {"workflow_dispatch": ""},
+                "jobs": {"audit": {"steps": "invalid"}},
+            },
+            {
+                "on": {"workflow_dispatch": ""},
+                "jobs": {"audit": {"steps": [None]}},
+            },
+        ):
+            with self.subTest(malformed_manual_workflow=malformed_manual):
+                self.assertFalse(
+                    validate_repository.manual_issue_write_checkout_is_safe(
+                        malformed_manual
+                    )
+                )
+        self.assertTrue(
+            validate_repository.manual_issue_write_checkout_is_safe(
+                {"on": {"workflow_dispatch": ""}, "jobs": {"audit": {"steps": []}}}
+            )
+        )
+
+        validators = (
+            validate_repository.validate_community_health_tracking_contract,
+            validate_repository.validate_freshness_tracking_contract,
+            validate_repository.validate_official_docs_tracking_contract,
+        )
+        with mock.patch.object(
+            validate_repository,
+            "manual_issue_write_checkout_is_safe",
+            return_value=False,
+        ):
+            for validator in validators:
+                with self.subTest(validator=validator.__name__):
+                    problems = validator(PLUGIN_ROOT)
+                    self.assertTrue(
+                        any(
+                            "manually dispatched Issue-writing jobs" in problem
+                            for problem in problems
+                        )
+                    )
+
+        swapped_steps = list(contract_steps)
+        run_indices = [
+            index for index, step in enumerate(swapped_steps) if "run" in step
+        ]
+        swapped_steps[run_indices[0]], swapped_steps[run_indices[1]] = (
+            swapped_steps[run_indices[1]],
+            swapped_steps[run_indices[0]],
+        )
+        self.assertTrue(
+            validate_repository.freshness_run_step_order_is_safe(contract_steps)
+        )
+        self.assertFalse(
+            validate_repository.freshness_run_step_order_is_safe(swapped_steps)
+        )
+        for malformed in (None, [], [None], [*contract_steps, {"run": "extra"}]):
+            with self.subTest(malformed_run_steps=malformed):
+                self.assertFalse(
+                    validate_repository.freshness_run_step_order_is_safe(malformed)
+                )
+        summary_index = next(
+            index
+            for index, step in enumerate(contract_steps)
+            if isinstance(step, dict)
+            and step.get("name") == "Add report to job summary"
+        )
+        malformed_summary = list(contract_steps)
+        malformed_summary[summary_index] = {
+            **malformed_summary[summary_index],
+            "run": None,
+        }
+        self.assertFalse(
+            validate_repository.freshness_run_step_order_is_safe(malformed_summary)
+        )
 
         for definition in (
             "alias gh='echo shadowed'",
@@ -10757,7 +11508,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
             "\n".join(
                 (
                     'if [[ -n "$issue_numbers_output" ]]; then',
-                    '  mapfile -t issue_numbers <<< "$issue_numbers_output"',
+                    '  read -r -a issue_numbers <<< "$issue_numbers_output"',
                     "fi",
                 )
             )
@@ -11077,6 +11828,24 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             [],
         )
 
+    def test_registry_rejects_unknown_top_level_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            registry_path = root / ".github" / "official-docs-trackers.json"
+            document = validate_repository.load_json(registry_path)
+            document["unexpected"] = True
+            registry_path.write_text(json.dumps(document), encoding="utf-8")
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+        self.assertTrue(
+            any(
+                "versioned non-empty official-documentation claim registry" in problem
+                for problem in problems
+            )
+        )
+
     def test_reconciliation_job_must_keep_effective_issue_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -11098,6 +11867,30 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "audit job must have effective issues: write permission" in problem
+                for problem in problems
+            )
+        )
+
+    def test_report_marker_must_precede_clean_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/official-docs.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8").replace(
+                    '          grep -Fq "$marker" "$RUNNER_TEMP/official-docs.md"\n',
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "report marker before clean reconciliation" in problem
                 for problem in problems
             )
         )
@@ -11518,6 +12311,28 @@ class WorkflowScriptCopyContractTests(unittest.TestCase):
             validate_repository.validate_workflow_script_copy_contract(PLUGIN_ROOT), []
         )
 
+    def test_freshness_workflow_copies_its_requirement_source(self) -> None:
+        dependency = (
+            Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+            Path("skills/repo-scaffold/assets/requirements-docs.txt"),
+            "assets/requirements-docs.txt",
+            Path("requirements-docs.txt"),
+            False,
+        )
+        self.assertIn(dependency, validate_repository.WORKFLOW_SCRIPT_COPY_CONTRACT)
+        reference = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "scaffold-generation.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "| `assets/workflows/freshness.yml` | `assets/requirements-docs.txt` | "
+            "`requirements-docs.txt` |",
+            reference,
+        )
+
     def test_missing_documented_workflow_script_copy_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -11878,7 +12693,7 @@ class PolicyDriftReminderContractTests(unittest.TestCase):
                 PLUGIN_ROOT / ".github" / "workflows" / "ci.yml"
             ).read_text(encoding="utf-8")
             workflow_text = workflow_text.replace(
-                "${{ github.workflow }}-policy-drift-${{ github.repository }}",
+                "repo-scaffold-ci-policy-drift-${{ github.repository }}",
                 "${{ github.workflow }}-policy-drift-${{ github.ref }}",
             )
             (workflow_directory / "ci.yml").write_text(workflow_text, encoding="utf-8")
@@ -11889,6 +12704,34 @@ class PolicyDriftReminderContractTests(unittest.TestCase):
             [
                 ".github/workflows/ci.yml: policy drift reminder must use a "
                 "repository-scoped non-cancelling concurrency group"
+            ],
+        )
+
+    def test_policy_drift_reminder_rejects_unhashable_needs_entries_without_crashing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            workflow_text = (
+                (PLUGIN_ROOT / ".github" / "workflows" / "ci.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    "needs: [python-latest-canary, toolchain-drift-canary]",
+                    "needs: [[python-latest-canary], toolchain-drift-canary]",
+                    1,
+                )
+            )
+            (workflow_directory / "ci.yml").write_text(workflow_text, encoding="utf-8")
+
+            problems = validate_repository.validate_policy_drift_reminder_contract(root)
+
+        self.assertEqual(
+            problems,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must depend on both "
+                "scheduled canaries with least-privilege issue access"
             ],
         )
 

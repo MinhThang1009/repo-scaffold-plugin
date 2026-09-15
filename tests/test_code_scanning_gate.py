@@ -172,6 +172,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 r"scripts\example.py",
                 "scripts/./example.py",
                 "scripts//example.py",
+                "scripts/\nexample.py",
                 "C:/example.py",
                 "scripts/C:example.py",
             ):
@@ -229,6 +230,8 @@ class CodeScanningGateTests(unittest.TestCase):
                 gate.load_allowlist(root / "missing.json")
             for document, message in (
                 ({"schema-version": 1, "allowlist": []}, "schema-version"),
+                ({"schema-version": 3.0, "allowlist": []}, "schema-version"),
+                ({"schema-version": True, "allowlist": []}, "schema-version"),
                 ({"schema-version": 2, "allowlist": {}}, "must be a list"),
             ):
                 path = root / "allowlist.json"
@@ -632,6 +635,7 @@ class CodeScanningGateTests(unittest.TestCase):
                 ],
                 "path must be text",
             ),
+            ([alert(1, path="scripts/\nexample.py")], "canonical POSIX"),
             ([{**alert(1), "number": "one"}], "number must be an integer"),
             ([{**alert(1), "number": True}], "number must be an integer"),
         ):

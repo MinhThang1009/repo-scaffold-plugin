@@ -5,11 +5,35 @@ Read this reference before installing or modifying GitHub Actions workflows.
 Install workflows only for a verified GitHub.com repository. Give every job the
 least privilege, set `persist-credentials: false` for checkout unless needed,
 pin every external action to a verified full SHA and job/service container images
-to a verified full SHA-256 digest, and keep generated workflows
+to a verified full SHA-256 digest, bound supplied workflow input count and total
+bytes, and keep generated workflows
 valid for `pull_request` and `merge_group` whenever their check can be required.
 Use `cancel-in-progress: false` for required-check concurrency.
+For a GitHub.com project with a runnable test or lint command, workflow setup
+must end with a configured CI workflow or an explicit user decision to defer it.
+Every applicable approved asset must pass the workflow-installation preflight
+with its exact `--workflow` inputs, and every documented companion must be
+installed and verified. Optional assets may remain not applicable, but their
+omission must be recorded rather than silently skipped. The generic CI asset's
+test job must run on `matrix.os`, whose reviewed policy may include
+`ubuntu-latest`, `windows-latest`, and `macos-latest`.
 External `docker://` workflow references must use a full SHA-256 digest; the
 workflow-installation preflight rejects mutable container tags.
+Docker container actions are external action requirements, and selected policy
+approval fails closed unless the reference is explicitly representable and
+allowed.
+Selected-actions preflight must follow GitHub's validated `selected_actions_url`
+so organization and enterprise policy overrides cannot be replaced by a more
+permissive repository endpoint.
+Local reusable-workflow call paths must use canonical repository-relative POSIX
+paths without traversal, backslash, or control characters. Calls must be
+supplied from the same workflow directory as their caller; a matching basename
+from another directory is ambiguous.
+Each supplied called workflow must declare `workflow_call`, and local call loops
+are rejected. The supplied graph must stay within GitHub's 10 workflow levels
+and 50 unique nested workflows per top-level caller.
+Local `./...` action references must use canonical repository-relative paths;
+traversal, backslash, and control-character forms are rejected.
 
 The reviewed runtime policy is the single source of truth. Do not duplicate
 supported versions in prose or workflow YAML, retain the scheduled compatibility
@@ -17,6 +41,16 @@ canary, load `.github/ci-toolchain.json` through the bundled
 `ci_toolchain.py run-markdownlint` tooling, retain the scheduled/manual drift
 canary, reconcile one durable reminder issue when a concrete policy canary
 detects drift, and must not install an unreviewed release automatically.
+When CI downloads the reviewed standalone ShellCheck or actionlint archive,
+the download must use HTTPS, verify the policy digest, and use bounded retries
+so transient release-service failures do not turn into avoidable gate failures.
+The link checker must also use bounded retries with backoff for transient
+upstream HTTP failures while continuing to fail on unresolved links.
+Maintenance readers must bound repository-controlled workflow, release-config,
+and claim-source files before decoding them, then fail closed on oversized or
+invalid UTF-8 input. The action-pin synchronizer also caps its workflow inventory
+at 500 files and 64 MiB in total, so a large repository cannot exhaust the
+maintenance runner while preparing a PR.
 
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.
@@ -36,10 +70,34 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   only supported fields and input types. Maintain one idempotent issue when
   Issues are enabled. Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
+  Since `workflow_dispatch` can target a branch or tag, every manually
+  dispatched Issue-writing reminder must check out
+  `${{ github.event.repository.default_branch }}` with
+  `persist-credentials: false` before running repository code. This keeps the
+  checker and tracker on the trusted default branch.
+  Community-health tracker registry paths must stay inside the repository and
+  reject traversal, control characters, links, or reparse points before they
+  are read. Directory inventories
+  are bounded to 10,000 entries so large repositories fail closed.
+  Shipped reminders use stable, distinct repository prefixes:
+  `repo-scaffold-community-health-${{ github.repository }}`,
+  `repo-scaffold-official-docs-${{ github.repository }}`,
+  `repo-scaffold-freshness-${{ github.repository }}`, and
+  `repo-scaffold-ci-policy-drift-${{ github.repository }}`. A renamed manual
+  branch workflow therefore cannot race its scheduled run.
   The version-1 freshness tracker registry supports only known top-level fields
   and exact `path`/`locks` requirement-source fields; lock paths cannot
   reference requirement sources, and unknown fields must fail closed instead of
-  being ignored.
+  being ignored. The freshness checker bounds each tracked workflow read to
+  5 MiB and reports an indeterminate check when a file exceeds that cap. It
+  also caps the tracked workflow inventory at 500 files and 64 MiB, and the
+  distinct action repositories it resolves at 500, so large or hostile
+  repositories cannot force unbounded local reads or upstream lookups.
+  The tracker registry is also capped at 500 tracked input paths, including
+  requirement locks. Each requirements file may contain at most 512 unique
+  direct pins, and all tracked requirement sources and locks together at most
+  4096 pins. Requirements and tracked JSON policy inputs are bounded to 1 MiB
+  before parsing.
   Every reminder mutation must use an explicit repository binding, and every
   freshness `create` or `edit` mutation must use a durable `--body-file` (with a
   non-empty `--title` for `create`). The reconciliation job must have effective
@@ -49,10 +107,12 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   and `issues: write` access. Freshness API lookups and Issue
   mutations must bind directly to the runner's `$GITHUB_REPOSITORY` value, with
   `github.com/` explicit for `gh issue --repo`; hard-coded repositories and
-  overrides of that variable must fail closed. The lookup must be a paginated
-  GET of open Issues, filter non-PR bodies for the freshness marker, and return
-  issue numbers so reruns remain idempotent. It must use the canonical
-  marker-filtering JQ expression, exactly one lookup invocation, and no extra
+  overrides of that variable must fail closed. The lookup must use the GitHub
+  Issue Search API as a bounded GET for open Issues, with `is:issue`, `in:body`,
+  the freshness marker, and `per_page=2`; it returns at most the first two
+  matching issue numbers so reruns remain idempotent without an unbounded
+  pagination loop. It must use `[.items[].number] | join(" ")` so the bounded
+  result is one shell-safe line, exactly one lookup invocation, and no extra
   `gh api` arguments. The lookup
   result must be captured and flow into the Issue number passed to a `close` or
   `edit` mutation, directly or through an issue-number array; logging or testing
@@ -93,14 +153,17 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   The reminder job must run on `ubuntu-latest` with Bash as its effective shell;
   non-Bash runner or shell overrides, workflow/job containers, and services must
   fail closed. Its reviewed checkout and Python setup actions must retain the
-  canonical full-SHA references and inputs, `persist-credentials: false` and
-  `python-version: 3.x`. Both preparation actions must appear exactly once,
+  canonical full-SHA references and inputs, including the exact default-branch
+  checkout ref and `persist-credentials: false`, plus `python-version: 3.x`.
+  Both preparation actions must appear exactly once,
   before exactly three canonical run steps (audit, summary, and
   reconciliation), so the checker has its repository files and Python runtime.
   Any auxiliary direct job must be an inert `steps: []` mapping with no execution
   configuration.
   Any
-  repository, ref, path, token, cache, or other input override must fail closed.
+  repository, path, token, cache, or other input override must fail closed. An
+  arbitrary or omitted checkout ref must also fail closed for manually
+  dispatched Issue-writing workflows.
   The job summary must publish only the checked Markdown report with
   `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.
   Within the
@@ -138,7 +201,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   The checked-in registry must retain every shipped workflow, release, allowlist,
   and requirement input; do not empty a category to suppress a check.
   Code-scanning allowlists must use only the `schema-version` and `allowlist`
-  top-level fields. Exceptions must also carry a bounded review date and
+  top-level fields. Exception paths must be canonical POSIX paths without
+  traversal or control characters. Exceptions must also carry a bounded review date and
   be tracked by freshness; do not install the code-scanning gate without its
   matching allowlist and freshness reminder.
 - CI: create or adapt a stack-valid workflow with real commands and a stable

@@ -91,7 +91,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "Requested default branch does not match the repository default branch."
         )
     visibility = repository.get("visibility")
-    if visibility not in SUPPORTED_VISIBILITIES:
+    if visibility not in tuple(SUPPORTED_VISIBILITIES):
         raise InspectionError("Repository response has an invalid visibility value.")
     is_fork = require_boolean(repository, "fork")
     release_please_token = "not-requested"

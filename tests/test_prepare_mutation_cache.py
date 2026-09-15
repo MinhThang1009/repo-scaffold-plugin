@@ -350,6 +350,9 @@ class MutationCacheTests(unittest.TestCase):
             lambda: prepare_mutation_cache._validate_relative_path(
                 "scripts/C:alpha.py", kind="source"
             ),
+            lambda: prepare_mutation_cache._validate_relative_path(
+                "scripts/\nalpha.py", kind="source"
+            ),
             lambda: prepare_mutation_cache._validate_test_sources([]),
             lambda: prepare_mutation_cache._validate_test_sources({1: "source"}),
             lambda: prepare_mutation_cache._validate_test_sources(
@@ -357,6 +360,9 @@ class MutationCacheTests(unittest.TestCase):
             ),
             lambda: prepare_mutation_cache._validate_source_paths(
                 {"outside.py": digest}
+            ),
+            lambda: prepare_mutation_cache._validate_source_paths(
+                {"scripts/\nalpha.py": digest}
             ),
             lambda: prepare_mutation_cache._source_state_paths(
                 Path("mutants"), "outside.py"

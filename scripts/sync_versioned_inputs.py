@@ -40,13 +40,19 @@ def synchronize_release_please_schemas(
             repository_root, relative, kind="Release Please config"
         )
         try:
-            content = path.read_bytes().decode("utf-8")
-        except (OSError, UnicodeError) as error:
+            content = audit_freshness.read_bounded_utf8(
+                path,
+                audit_freshness.MAX_RELEASE_PLEASE_CONFIG_BYTES,
+                kind="Release Please config",
+            )
+        except audit_freshness.AuditError as error:
             raise ValueError(
                 f"could not read Release Please config {relative}: {error}"
             ) from error
         try:
-            json.loads(content, object_pairs_hook=audit_freshness.unique_json_object)
+            document = json.loads(
+                content, object_pairs_hook=audit_freshness.unique_json_object
+            )
         except (
             ValueError,
             RecursionError,
@@ -54,12 +60,18 @@ def synchronize_release_please_schemas(
             raise ValueError(
                 f"could not read Release Please config {relative}: {error}"
             ) from error
+        if not isinstance(document, dict):
+            raise ValueError(f"Release Please config must be a JSON object: {relative}")
         matches = list(SCHEMA_FIELD.finditer(content))
         if len(matches) != 1:
             raise ValueError(
                 f"Release Please config must contain exactly one supported $schema: {relative}"
             )
         match = matches[0]
+        if document.get("$schema") != match.group("url"):
+            raise ValueError(
+                f"Release Please config must contain a top-level supported $schema: {relative}"
+            )
         schema_match = audit_freshness.RELEASE_PLEASE_SCHEMA.fullmatch(
             match.group("url")
         )
@@ -79,8 +91,12 @@ def synchronize_release_please_schemas(
                 repository_root, relative, kind="Release Please config"
             )
             try:
-                current_content = path.read_bytes().decode("utf-8")
-            except (OSError, UnicodeError) as error:
+                current_content = audit_freshness.read_bounded_utf8(
+                    path,
+                    audit_freshness.MAX_RELEASE_PLEASE_CONFIG_BYTES,
+                    kind="Release Please config",
+                )
+            except audit_freshness.AuditError as error:
                 raise ValueError(
                     f"could not reread Release Please config {relative}: {error}"
                 ) from error

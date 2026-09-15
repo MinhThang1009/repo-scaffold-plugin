@@ -83,7 +83,7 @@ agent:
 - "set up the repo to production standard"
 - "dựng repo chuẩn GitHub bằng tiếng Việt"
 
-The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. It resolves one project language (`en` or `vi`) before generation and applies it consistently to documentation, templates, and release metadata. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
+The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. Before generation, it asks the user to confirm one supported project language (`en` or `vi`) and applies that choice consistently to documentation, templates, and release metadata. Requests for another language are reported as unsupported by the reviewed assets; the skill does not silently fall back or mix languages. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
 
 For supported adapters, invocation, and generic Agent Skills use, read the
 [agent compatibility guidance](skills/repo-scaffold/references/agent-compatibility.md)
@@ -293,11 +293,13 @@ repositories during release audits.
 
 The [Python support policy](.github/python-support.json) is the single source of
 truth for CI. GitHub Actions tests every declared feature release on Ubuntu and
-the minimum/latest boundaries on Windows. The quality job consumes the policy's
-latest value. A non-required weekly `3.x` canary tests the latest stable Python,
+the minimum/latest boundaries on Windows and macOS. The quality job consumes the
+policy's latest value. A non-required weekly `3.x` canary tests the latest stable Python,
 then fails on undeclared-version drift so support changes require a reviewed
-policy update. Repository validation rejects policy, workflow, scaffold, and
-documentation drift. Scheduled/manual canaries maintain one reminder Issue when
+policy update. The test job uses `matrix.os`, so the policy can exercise all
+declared hosted platforms without duplicating runner lists in workflow YAML.
+Repository validation rejects policy, workflow, scaffold, and documentation drift.
+Scheduled/manual canaries maintain one reminder Issue when
 either reviewed policy needs attention. The quality job also runs formatting, lint, type, compile,
 workflow, metadata, link, and release-archive checks.
 The [CI toolchain policy](.github/ci-toolchain.json) separately centralizes the
@@ -313,7 +315,7 @@ resolves every transitive dependency and records PyPI SHA-256 hashes used by CI.
 The conventional `.in` to `.txt` pairing lets Dependabot run `pip-compile` and
 update both files in one PR. Platform-conditional packages required by the
 supported matrix are pinned directly so a lock regenerated on Linux remains
-installable with hashes on Windows. A weekly PR-only version-maintenance
+installable with hashes on Windows and macOS. A weekly PR-only version-maintenance
 synchronizer creates one draft PR with immutable GitHub Action pins and Release
 Please schema URLs updated in lockstep across repository workflows,
 configuration, and scaffold assets. It uses a dedicated fine-grained PAT stored
@@ -332,7 +334,9 @@ and independently reports direct-PyPI-pin and lock-consistency drift, plus any
 versioned input the PR synchronizer could not make current. It serializes
 scheduled and manual runs per repository, opens or updates one marker Issue
 when attention is required, and closes it only after a clean scheduled/manual
-result. The
+result. Manual dispatches may target another ref in GitHub, so the reminder
+always checks out and audits the repository's default branch before using its
+Issue-writing token. The
 scaffold ships the same registry-driven checker and workflow to generated
 repositories when Issues are available. Track only sources with an
 authoritative owner and deterministic version resolver. Its version-1 registry
@@ -342,13 +346,15 @@ community-health policy tracking remains in its separate registry.
 The non-required weekly [official-documentation workflow](.github/workflows/official-docs.yml)
 uses [its explicit tracker registry](.github/official-docs-trackers.json) to
 revalidate the authoritative source URLs and stable claim markers, then requires
-a reviewed registry-date update at least every 90 days. It covers the plugin's
+a reviewed registry-date update at least every 90 days. Scheduled and manual
+reminder runs audit the default branch, even when GitHub dispatches them from a
+different ref. It covers the plugin's
 Codex, Claude Code, GitHub Actions, Agent Skills, Conventional Commits, and
 Keep a Changelog claims. Generated repositories do not inherit those
 plugin-specific claims.
 Mutation testing extends that toolchain through the separate, hash-verified
-`requirements-mutation.txt`. Mutmut versions are not duplicated in validators
-or tests; a compatible Dependabot bump passes the runner integration tests,
+`requirements-mutation.txt`. The runner's reviewed `MUTMUT_VERSION` is checked
+against the direct pin, and a compatible Dependabot bump passes the runner integration tests,
 while an incompatible internal API change fails those behavioral checks. Its
 daily and manually dispatched workflow plans every mutant on Linux, executes
 each exact assignment in a 32-way matrix, then rejects missing, duplicate, or
