@@ -210,7 +210,27 @@ jobs: {}
             "path": ".github/workflows/ci.yml",
             "sha": BLOB_SHA,
         }
-        FakeClient.responses = {endpoint: {"truncated": False, "tree": [entry]}}
+        FakeClient.responses = {
+            endpoint: {
+                "truncated": False,
+                "tree": [
+                    entry,
+                    None,
+                    {"type": "tree", "path": ".github/workflows"},
+                    {"type": "blob", "path": 42, "sha": BLOB_SHA},
+                    {
+                        "type": "blob",
+                        "path": ".github/workflows/nested/ci.yml",
+                        "sha": BLOB_SHA,
+                    },
+                    {
+                        "type": "blob",
+                        "path": ".github/workflows/notes.txt",
+                        "sha": BLOB_SHA,
+                    },
+                ],
+            }
+        }
         with mock.patch.object(branch_protection_preflight, "MAX_WORKFLOWS", 0):
             with self.assertRaisesRegex(
                 branch_protection_preflight.InspectionError, "count exceeds"
@@ -218,6 +238,15 @@ jobs: {}
                 branch_protection_preflight.workflow_producers(
                     client, OWNER, REPOSITORY, HEAD_SHA
                 )
+
+        unsafe_entry = dict(entry, path=".github/workflows/a\n.yml")
+        FakeClient.responses = {endpoint: {"truncated": False, "tree": [unsafe_entry]}}
+        with self.assertRaisesRegex(
+            branch_protection_preflight.InspectionError, "not canonical"
+        ):
+            branch_protection_preflight.workflow_producers(
+                client, OWNER, REPOSITORY, HEAD_SHA
+            )
 
         invalid_entry = dict(entry, sha="short")
         FakeClient.responses = {endpoint: {"truncated": False, "tree": [invalid_entry]}}

@@ -2903,6 +2903,16 @@ class WorkflowDiscoveryTests(unittest.TestCase):
 
             invalid.write_text(workflow, encoding="utf-8")
             with (
+                mock.patch.object(
+                    codeql_preflight, "is_direct_workflow_path", return_value=False
+                ),
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "not canonical"
+                ),
+            ):
+                codeql_preflight.load_local_workflows(root)
+
+            with (
                 mock.patch.object(codeql_preflight, "MAX_WORKFLOW_BYTES", 8),
                 self.assertRaisesRegex(
                     codeql_preflight.InspectionError, "byte safety cap"
@@ -3053,6 +3063,11 @@ class WorkflowResolverTests(unittest.TestCase):
                         "path": ".github/workflows/ci.yml",
                         "sha": blob,
                     },
+                    {
+                        "type": "blob",
+                        "path": ".github/workflows/notes.txt",
+                        "sha": "d" * 40,
+                    },
                 ],
             },
         ]
@@ -3085,6 +3100,22 @@ class WorkflowResolverTests(unittest.TestCase):
                     },
                 ],
                 "invalid blob ID",
+            ),
+            (
+                [
+                    {"sha": commit},
+                    {
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "type": "blob",
+                                "path": ".github/workflows/a\n.yml",
+                                "sha": blob,
+                            }
+                        ],
+                    },
+                ],
+                "not canonical",
             ),
         ]
         for responses, message in invalid_responses:

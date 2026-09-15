@@ -2734,6 +2734,8 @@ def load_local_workflows(
         if not path.is_file() or path.suffix.lower() not in {".yml", ".yaml"}:
             continue
         key = path.relative_to(repo_root).as_posix()
+        if not is_direct_workflow_path(key):
+            raise InspectionError(f"Local workflow path is not canonical: {key!r}")
         try:
             if path.stat().st_size > MAX_WORKFLOW_BYTES:
                 raise InspectionError(
@@ -2895,14 +2897,25 @@ def load_remote_default_branch(
     items = tree.get("tree")
     if not isinstance(items, list):
         raise InspectionError("Default-branch tree has no tree array.")
-    workflow_items = [
-        item
-        for item in items
-        if isinstance(item, dict)
-        and item.get("type") == "blob"
-        and isinstance(item.get("path"), str)
-        and is_direct_workflow_path(item["path"])
-    ]
+    workflow_items: list[dict[str, Any]] = []
+    for item in items:
+        if (
+            not isinstance(item, dict)
+            or item.get("type") != "blob"
+            or not isinstance(item.get("path"), str)
+        ):
+            continue
+        path = item["path"]
+        pure_path = PurePosixPath(path)
+        if pure_path.parent != PurePosixPath(".github/workflows"):
+            continue
+        if pure_path.suffix.lower() not in {".yml", ".yaml"}:
+            continue
+        if not is_direct_workflow_path(path):
+            raise InspectionError(
+                f"Default-branch workflow path is not canonical: {path!r}"
+            )
+        workflow_items.append(item)
     if len(workflow_items) > MAX_REMOTE_WORKFLOWS:
         raise InspectionError(
             f"Remote workflow count exceeded the {MAX_REMOTE_WORKFLOWS}-file safety cap."

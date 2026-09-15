@@ -19,6 +19,7 @@ from codeql_preflight import (
     GitHubClient,
     InspectionError,
     UniqueKeyBaseLoader,
+    is_direct_workflow_path,
     split_repository,
 )
 
@@ -88,15 +89,23 @@ def workflow_producers(
     entries = tree.get("tree")
     if not isinstance(entries, list):
         raise InspectionError("Workflow tree has no tree array.")
-    workflows = [
-        entry
-        for entry in entries
-        if isinstance(entry, dict)
-        and entry.get("type") == "blob"
-        and isinstance(entry.get("path"), str)
-        and PurePosixPath(entry["path"]).parent == PurePosixPath(".github/workflows")
-        and PurePosixPath(entry["path"]).suffix.lower() in {".yml", ".yaml"}
-    ]
+    workflows: list[dict[str, Any]] = []
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or entry.get("type") != "blob"
+            or not isinstance(entry.get("path"), str)
+        ):
+            continue
+        path = entry["path"]
+        pure_path = PurePosixPath(path)
+        if pure_path.parent != PurePosixPath(".github/workflows"):
+            continue
+        if pure_path.suffix.lower() not in {".yml", ".yaml"}:
+            continue
+        if not is_direct_workflow_path(path):
+            raise InspectionError(f"Workflow path is not canonical: {path!r}")
+        workflows.append(entry)
     if len(workflows) > MAX_WORKFLOWS:
         raise InspectionError("Workflow count exceeds the safety cap.")
     producers: list[Producer] = []
