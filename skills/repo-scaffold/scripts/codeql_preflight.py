@@ -313,6 +313,8 @@ class GitHubClient:
             raise InspectionError(
                 "GitHub CLI is not installed or not on PATH."
             ) from exc
+        except OSError as exc:
+            raise InspectionError("GitHub CLI could not be executed.") from exc
         except subprocess.TimeoutExpired as exc:
             raise InspectionError(
                 f"GitHub API request timed out for {endpoint!r} after "

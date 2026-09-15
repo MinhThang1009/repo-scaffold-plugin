@@ -3230,6 +3230,18 @@ class GitHubClientTests(unittest.TestCase):
         ):
             client.raw("repos/octo/repo")
 
+        with (
+            mock.patch.object(
+                codeql_preflight.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ),
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "could not be executed"
+            ),
+        ):
+            client.raw("repos/octo/repo")
+
         def fail_request(*_args: object, **kwargs: object) -> mock.Mock:
             cast(BinaryIO, kwargs["stderr"]).write(b"denied")
             return mock.Mock(returncode=1)
