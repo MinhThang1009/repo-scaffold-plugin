@@ -24,9 +24,11 @@ For a checkout private to one user, use a personal marketplace at
 For an OpenAI public listing, submit the release ZIP through the [Skills-only
 plugin flow](https://developers.openai.com/plugins/guides/submit-claude-plugin).
 Its single `repo-scaffold/` directory includes a nonempty Claude manifest and
-the shared skill with all referenced files. The OpenAI portal normalizes the
-Codex manifest during review; a Claude Code marketplace listing remains a
-separate approval.
+the shared skill with all referenced files. The OpenAI portal converts the
+Claude manifest into a Codex manifest and adds missing interface defaults
+during review; the checked-in Codex compatibility manifest remains for direct
+Codex and local-marketplace installation. A Claude Code marketplace listing
+remains a separate approval.
 
 Codex reads project instructions from `AGENTS.md`; it layers the applicable
 files from the repository root to the working directory. The generated
