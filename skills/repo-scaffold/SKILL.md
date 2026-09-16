@@ -331,9 +331,11 @@ invalid. Its version-1 schema supports only known top-level fields and known
 requirement-source fields; lock paths cannot reference requirement sources, so
 new inputs cannot be silently ignored. The freshness checker bounds each
 tracked workflow read to 5 MiB and records an indeterminate check when a file
-exceeds that cap. It also caps the tracked workflow inventory at 500 files and
-64 MiB, and the distinct action repositories it resolves at 500, so a large
-or hostile repository cannot force unbounded local reads or upstream lookups.
+exceeds that cap. It resolves independent upstream inputs with a bounded worker
+pool, preserving deterministic findings and fail-closed errors, and caps the
+tracked workflow inventory at 500 files and 64 MiB, plus the distinct action
+repositories it resolves at 500, so a large or hostile repository cannot force
+unbounded local reads or upstream lookups.
 The action-pin synchronizer applies the same 500-file and 64 MiB aggregate
 workflow budget before preparing maintenance changes.
 The tracker registry is also capped at 500 tracked input paths, including

@@ -7,6 +7,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from datetime import date
@@ -353,10 +354,29 @@ class FreshnessTests(unittest.TestCase):
             findings = freshness.action_findings(
                 root, trackers.workflow_directories, lookup
             )
-            self.assertEqual(calls, ["actions/checkout", "actions/setup-node"])
+            self.assertEqual(sorted(calls), ["actions/checkout", "actions/setup-node"])
             self.assertTrue(
                 any(finding["subject"] == "actions/setup-node" for finding in findings)
             )
+
+    def test_bounded_parallel_lookup_resolves_independent_keys_concurrently(
+        self,
+    ) -> None:
+        barrier = threading.Barrier(2)
+
+        def lookup(key: str) -> str:
+            barrier.wait(timeout=5)
+            return key.upper()
+
+        resolved, failed = freshness.bounded_parallel_lookup(
+            ("first", "second"),
+            lookup,
+            error_types=(RuntimeError,),
+            errors=[],
+        )
+
+        self.assertEqual(resolved, {"first": "FIRST", "second": "SECOND"})
+        self.assertEqual(failed, set())
 
     def test_action_findings_raises_lookup_error_without_an_error_sink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -790,6 +810,28 @@ class FreshnessTests(unittest.TestCase):
                         root, source_with_lock, latest_lookup
                     )
 
+    def test_requirement_findings_normalizes_package_lookup_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.in"
+            second = root / "second.in"
+            first.write_text("demo-pkg==0.1.0\n", encoding="utf-8")
+            second.write_text("demo_pkg==0.1.0\n", encoding="utf-8")
+            calls: list[str] = []
+
+            def latest_lookup(name: str) -> str:
+                calls.append(name)
+                return "0.1.0"
+
+            sources = (
+                freshness.RequirementSource(first.relative_to(root), ()),
+                freshness.RequirementSource(second.relative_to(root), ()),
+            )
+            self.assertEqual(
+                freshness.requirement_findings(root, sources, latest_lookup), []
+            )
+            self.assertEqual(calls, ["demo-pkg"])
+
     def test_requirement_findings_records_one_lookup_error_per_package(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1043,6 +1085,13 @@ class FreshnessTests(unittest.TestCase):
                 stderr="error: markdownlint-cli2 policy pins 1.0.0, but latest npm release is '2.0.0'",
                 stdout="",
             )
+
+            def run_checker(command: list[str], **_kwargs: object) -> mock.Mock:
+                policy = str(command[command.index("--policy") + 1])
+                if policy.endswith("first-toolchain.json"):
+                    return indeterminate
+                return stale
+
             with (
                 mock.patch.object(
                     freshness.sync_action_pins,
@@ -1052,9 +1101,7 @@ class FreshnessTests(unittest.TestCase):
                 mock.patch.object(
                     freshness, "latest_pypi_release", return_value="1.0.0"
                 ),
-                mock.patch.object(
-                    freshness.subprocess, "run", side_effect=[indeterminate, stale]
-                ),
+                mock.patch.object(freshness.subprocess, "run", side_effect=run_checker),
             ):
                 report = freshness.audit(root, "synthetic-token")
 
@@ -1066,10 +1113,15 @@ class FreshnessTests(unittest.TestCase):
             )
 
             errors: list[str] = []
+
+            def run_timeout_checker(command: list[str], **_kwargs: object) -> mock.Mock:
+                policy = str(command[command.index("--policy") + 1])
+                if policy.endswith("first-toolchain.json"):
+                    raise subprocess.TimeoutExpired("checker", 60)
+                return stale
+
             with mock.patch.object(
-                freshness.subprocess,
-                "run",
-                side_effect=[subprocess.TimeoutExpired("checker", 60), stale],
+                freshness.subprocess, "run", side_effect=run_timeout_checker
             ):
                 findings = freshness.ci_toolchain_findings(
                     root,

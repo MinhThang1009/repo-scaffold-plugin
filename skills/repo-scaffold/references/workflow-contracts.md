@@ -90,9 +90,11 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   reference requirement sources, and unknown fields must fail closed instead of
   being ignored. The freshness checker bounds each tracked workflow read to
   5 MiB and reports an indeterminate check when a file exceeds that cap. It
-  also caps the tracked workflow inventory at 500 files and 64 MiB, and the
-  distinct action repositories it resolves at 500, so large or hostile
-  repositories cannot force unbounded local reads or upstream lookups.
+  resolves independent upstream inputs with a bounded worker pool, preserving
+  deterministic findings and fail-closed errors. It also caps the tracked
+  workflow inventory at 500 files and 64 MiB, and the distinct action
+  repositories it resolves at 500, so large or hostile repositories cannot
+  force unbounded local reads or upstream lookups.
   The tracker registry is also capped at 500 tracked input paths, including
   requirement locks. Each requirements file may contain at most 512 unique
   direct pins, and all tracked requirement sources and locks together at most
