@@ -23,6 +23,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Manual dispatch can select another branch or tag. Keep repository
+          # code and the token-backed PR mutation on the trusted default branch.
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Verify version-sync token

@@ -6345,6 +6345,21 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
             f"{relative}: synchronizer job permissions must remain contents: read; "
             "the dedicated PAT performs writes"
         )
+    checkout_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/checkout@")
+    ]
+    if len(checkout_steps) != 1 or checkout_steps[0].get("with") != {
+        "ref": TRUSTED_DEFAULT_BRANCH_REF,
+        "persist-credentials": "false",
+    }:
+        problems.append(
+            f"{relative}: synchronizer must check out the trusted default branch "
+            "with credentials disabled before running repository code"
+        )
     token_steps = [
         step
         for step in steps

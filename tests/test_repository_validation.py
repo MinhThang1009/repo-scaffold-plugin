@@ -868,6 +868,42 @@ class ActionPinSyncContractTests(unittest.TestCase):
             [],
         )
 
+    def test_synchronizer_manual_dispatch_checks_out_default_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / ".github" / "workflows" / "action-pin-sync.yml"
+            workflow.parent.mkdir(parents=True)
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml",
+                workflow,
+            )
+            script = root / "scripts" / "sync_action_pins.py"
+            versioned_inputs_script = root / "scripts" / "sync_versioned_inputs.py"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(PLUGIN_ROOT / "scripts" / "sync_action_pins.py", script)
+            shutil.copy2(
+                PLUGIN_ROOT / "scripts" / "sync_versioned_inputs.py",
+                versioned_inputs_script,
+            )
+
+            self.assertEqual(
+                validate_repository.validate_action_pin_sync_contract(root), []
+            )
+            original = workflow.read_text(encoding="utf-8")
+            workflow.write_text(
+                original.replace(
+                    "ref: ${{ github.event.repository.default_branch }}",
+                    "ref: ${{ github.ref }}",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_action_pin_sync_contract(root)
+
+        self.assertTrue(
+            any("trusted default branch" in problem for problem in problems)
+        )
+
     def test_missing_script_and_invalid_workflow_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

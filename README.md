@@ -322,7 +322,9 @@ configuration, and scaffold assets. It uses a dedicated fine-grained PAT stored
 as `VERSION_SYNC_TOKEN`, so normal PR CI runs; it never auto-merges. Scope that
 token to this repository only, with **Contents: Read and write**, **Pull
 requests: Read and write**, and **Workflows: Read and write** because the
-synchronizer may update workflow files. Keep it separate from
+synchronizer may update workflow files. Manual synchronizer runs always check out
+the default branch with credentials disabled before running repository code, so a
+selected branch or tag cannot reach the PAT-backed PR mutation. Keep it separate from
 `RELEASE_PLEASE_TOKEN` to avoid granting release automation unnecessary workflow
 write access. Python updates are
 grouped by dependency across the root toolchain and
