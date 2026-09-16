@@ -44,6 +44,7 @@ CACHE_DIRECTORIES = {
     ".venv",
 }
 COVERAGE_FAIL_UNDER = 100
+MUTATION_PLAN_TIMEOUT_MINUTES = "180"
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
@@ -4391,10 +4392,20 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
             ".github/workflows/mutation-testing.yml: require plan, shard, and "
             "aggregate mutation jobs"
         ]
+    plan = jobs["mutation-plan"]
     shards = jobs["mutation-shards"]
     aggregate = jobs["mutation-quality"]
-    if not isinstance(shards, dict) or not isinstance(aggregate, dict):
+    if (
+        not isinstance(plan, dict)
+        or not isinstance(shards, dict)
+        or not isinstance(aggregate, dict)
+    ):
         return [".github/workflows/mutation-testing.yml: mutation jobs must map"]
+    if plan.get("timeout-minutes") != MUTATION_PLAN_TIMEOUT_MINUTES:
+        return [
+            ".github/workflows/mutation-testing.yml: mutation plan must allow a "
+            f"{MUTATION_PLAN_TIMEOUT_MINUTES}-minute generation budget"
+        ]
     matrix = shards.get("strategy", {}).get("matrix", {})
     assigned = matrix.get("shard") if isinstance(matrix, dict) else None
     if assigned != [str(index) for index in range(32)]:

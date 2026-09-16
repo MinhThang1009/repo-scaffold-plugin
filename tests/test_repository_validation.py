@@ -2039,11 +2039,12 @@ class MutationTestingContractTests(unittest.TestCase):
         valid: dict[str, Any] = {
             "jobs": {
                 "mutation-plan": {
+                    "timeout-minutes": "180",
                     "steps": [
                         {
                             "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32"
                         }
-                    ]
+                    ],
                 },
                 "mutation-shards": {
                     "strategy": {
@@ -2087,6 +2088,18 @@ class MutationTestingContractTests(unittest.TestCase):
                     }
                 },
                 "plan, execute, and merge",
+            ),
+            (
+                {
+                    "jobs": {
+                        **valid["jobs"],
+                        "mutation-plan": {
+                            **valid["jobs"]["mutation-plan"],
+                            "timeout-minutes": "60",
+                        },
+                    }
+                },
+                "mutation plan must allow a 180-minute generation budget",
             ),
         )
         for workflow, message in cases:
