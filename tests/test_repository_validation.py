@@ -904,6 +904,21 @@ class ActionPinSyncContractTests(unittest.TestCase):
             any("trusted default branch" in problem for problem in problems)
         )
 
+    def test_synchronizer_concurrency_serializes_shared_pull_request_branch(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
+        )
+        self.assertEqual(
+            workflow["concurrency"],
+            {
+                "group": validate_repository.VERSION_SYNC_CONCURRENCY_GROUP,
+                "cancel-in-progress": "false",
+            },
+        )
+        self.assertNotIn("github.ref", workflow["concurrency"]["group"])
+
     def test_missing_script_and_invalid_workflow_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

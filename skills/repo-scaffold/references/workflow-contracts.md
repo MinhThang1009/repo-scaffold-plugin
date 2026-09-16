@@ -54,7 +54,9 @@ maintenance runner while preparing a PR. Because its manual trigger can select a
 branch or tag, its checkout must pin the synchronizer to
 `${{ github.event.repository.default_branch }}` with
 `persist-credentials: false` before running repository code; the PAT-backed PR
-mutation must never consume code from the selected ref.
+mutation must never consume code from the selected ref. Its concurrency group
+must be repository-scoped and non-cancelling because every run updates the same
+maintenance branch.
 
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.

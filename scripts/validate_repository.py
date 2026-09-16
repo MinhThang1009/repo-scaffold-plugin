@@ -82,6 +82,7 @@ OFFICIAL_DOCS_REMINDER_CONCURRENCY_GROUP = (
 FRESHNESS_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-freshness-${{ github.repository }}"
 )
+VERSION_SYNC_CONCURRENCY_GROUP = "repo-scaffold-version-sync-${{ github.repository }}"
 FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
 FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
 FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
@@ -6322,11 +6323,11 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     concurrency = workflow.get("concurrency")
     if (
         not isinstance(concurrency, dict)
-        or concurrency.get("group") != "${{ github.workflow }}-${{ github.ref }}"
+        or concurrency.get("group") != VERSION_SYNC_CONCURRENCY_GROUP
         or concurrency.get("cancel-in-progress") != "false"
     ):
         problems.append(
-            f"{relative}: synchronizer concurrency must preserve active runs"
+            f"{relative}: synchronizer concurrency must serialize the shared maintenance branch"
         )
     jobs = workflow.get("jobs")
     job = jobs.get("synchronize") if isinstance(jobs, dict) else None

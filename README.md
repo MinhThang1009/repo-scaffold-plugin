@@ -324,7 +324,9 @@ token to this repository only, with **Contents: Read and write**, **Pull
 requests: Read and write**, and **Workflows: Read and write** because the
 synchronizer may update workflow files. Manual synchronizer runs always check out
 the default branch with credentials disabled before running repository code, so a
-selected branch or tag cannot reach the PAT-backed PR mutation. Keep it separate from
+selected branch or tag cannot reach the PAT-backed PR mutation. All runs share a
+repository-scoped non-cancelling concurrency group because they update the same
+maintenance branch. Keep it separate from
 `RELEASE_PLEASE_TOKEN` to avoid granting release automation unnecessary workflow
 write access. Python updates are
 grouped by dependency across the root toolchain and

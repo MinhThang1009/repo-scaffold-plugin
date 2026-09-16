@@ -9,7 +9,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Manual dispatch can select a ref, but every run writes the same maintenance
+  # branch. Serialize by repository so selected refs cannot race that PR.
+  group: repo-scaffold-version-sync-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
