@@ -81,6 +81,10 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   `${{ github.event.repository.default_branch }}` with
   `persist-credentials: false` before running repository code. This keeps the
   checker and tracker on the trusted default branch.
+  The preflight evaluates each job's effective `issues: write` permission, so a
+  checkout in a different job cannot satisfy the requirement; job-level reusable
+  workflows are rejected, and repository-local actions require their trusted
+  checkout to precede execution.
   Community-health tracker registry paths must stay inside the repository and
   reject traversal, control characters, links, or reparse points before they
   are read. Directory inventories

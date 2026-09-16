@@ -4599,6 +4599,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
 
         safe_manual_workflow = {
             "on": {"workflow_dispatch": ""},
+            "permissions": {"issues": "write"},
             "jobs": {
                 "audit": {
                     "steps": [
@@ -4644,6 +4645,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
         no_checkout_workflow = {
             "on": {"workflow_dispatch": ""},
+            "permissions": {"issues": "write"},
             "jobs": {"audit": {"steps": [{"run": "python audit.py"}]}},
         }
         self.assertFalse(
@@ -4678,6 +4680,151 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertTrue(
             workflow_installation_preflight.manual_issue_write_checkout_is_safe(
                 {"on": {"workflow_dispatch": ""}, "jobs": {"audit": {"steps": []}}}
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": "pull_request",
+                    "permissions": {"issues": "write"},
+                    "jobs": {"audit": {"steps": [{"run": "python audit.py"}]}},
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": "workflow_dispatch",
+                    "permissions": {"issues": "write"},
+                    "jobs": {"audit": {"steps": [{"run": "python audit.py"}]}},
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": ["push", 3],
+                    "jobs": {"audit": {"steps": []}},
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {"on": 3, "jobs": {"audit": {"steps": []}}}
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": {"workflow_dispatch": ""},
+                    "jobs": {"external": {"uses": "owner/workflow@" + "a" * 40}},
+                }
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": {"workflow_dispatch": ""},
+                    "jobs": {"empty": {"name": "no steps"}},
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": {"workflow_dispatch": ""},
+                    "permissions": {"issues": "write"},
+                    "jobs": {"missing": {"name": "no steps"}},
+                }
+            )
+        )
+
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": ["push", "workflow_dispatch"],
+                    "permissions": {"issues": "write"},
+                    "jobs": {
+                        "audit": {
+                            "steps": [
+                                {"run": "python audit.py"},
+                                {
+                                    "uses": "actions/checkout@" + "a" * 40,
+                                    "with": {
+                                        "ref": "${{ github.event.repository.default_branch }}",
+                                        "persist-credentials": "false",
+                                    },
+                                },
+                            ]
+                        }
+                    },
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": {"workflow_dispatch": ""},
+                    "permissions": {"issues": "write"},
+                    "jobs": {
+                        "unsafe": {"steps": [{"run": "python audit.py"}]},
+                        "safe": {
+                            "steps": [
+                                {
+                                    "uses": "actions/checkout@" + "a" * 40,
+                                    "with": {
+                                        "ref": "${{ github.event.repository.default_branch }}",
+                                        "persist-credentials": "false",
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": {"workflow_dispatch": ""},
+                    "permissions": {"issues": "write"},
+                    "jobs": {
+                        "audit": {
+                            "steps": [
+                                {"uses": "./.github/actions/audit"},
+                                {
+                                    "uses": "actions/checkout@" + "a" * 40,
+                                    "with": {
+                                        "ref": "${{ github.event.repository.default_branch }}",
+                                        "persist-credentials": "false",
+                                    },
+                                },
+                            ]
+                        }
+                    },
+                }
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.manual_issue_write_checkout_is_safe(
+                {
+                    "on": {"workflow_dispatch": ""},
+                    "permissions": {"issues": "write"},
+                    "jobs": {
+                        "audit": {"uses": "./.github/workflows/audit.yml"},
+                        "safe": {
+                            "steps": [
+                                {
+                                    "uses": "actions/checkout@" + "a" * 40,
+                                    "with": {
+                                        "ref": "${{ github.event.repository.default_branch }}",
+                                        "persist-credentials": "false",
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                }
             )
         )
 

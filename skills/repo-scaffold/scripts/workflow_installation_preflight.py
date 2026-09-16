@@ -1036,44 +1036,69 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
 
 
 def manual_issue_write_checkout_is_safe(document: object) -> bool:
-    """Keep manually dispatched Issue-writing jobs on the trusted base branch."""
+    """Keep each manually dispatched Issue-writing job on the trusted base branch."""
     if not isinstance(document, dict):
         return False
-    triggers = document.get("on")
-    if not isinstance(triggers, dict) or "workflow_dispatch" not in triggers:
+    if "on" not in document:
+        return True
+    triggers = document["on"]
+    if isinstance(triggers, dict):
+        manual_dispatch = "workflow_dispatch" in triggers
+    elif isinstance(triggers, list):
+        if not all(isinstance(event, str) for event in triggers):
+            return False
+        manual_dispatch = "workflow_dispatch" in triggers
+    elif isinstance(triggers, str):
+        manual_dispatch = triggers == "workflow_dispatch"
+    else:
+        return False
+    if not manual_dispatch:
         return True
     jobs = document.get("jobs")
     if not isinstance(jobs, dict):
         return False
-    run_steps: list[dict[str, Any]] = []
-    checkout_steps: list[dict[str, Any]] = []
     for job in jobs.values():
         if not isinstance(job, dict):
             return False
-        steps = job.get("steps", [])
+        issue_write = job_effective_issue_write(document, job)
+        if "uses" in job:
+            if issue_write:
+                return False
+            continue
+        if "steps" not in job:
+            if issue_write:
+                return False
+            continue
+        steps = job["steps"]
         if not isinstance(steps, list):
             return False
-        for step in steps:
-            if not isinstance(step, dict):
-                return False
+        if any(not isinstance(step, dict) for step in steps):
+            return False
+        if not issue_write:
+            continue
+        run_indices: list[int] = []
+        checkout_indices: list[int] = []
+        for index, step in enumerate(steps):
             if "run" in step:
-                run_steps.append(step)
+                run_indices.append(index)
             uses = step.get("uses")
             if (
                 isinstance(uses, str)
                 and uses.partition("@")[0].casefold() == "actions/checkout"
             ):
-                checkout_steps.append(step)
-    if not run_steps:
-        return True
-    return bool(checkout_steps) and all(
-        step.get("with")
-        == {
-            "ref": TRUSTED_DEFAULT_BRANCH_REF,
-            "persist-credentials": "false",
-        }
-        for step in checkout_steps
-    )
+                checkout_indices.append(index)
+                if step.get("with") != {
+                    "ref": TRUSTED_DEFAULT_BRANCH_REF,
+                    "persist-credentials": "false",
+                }:
+                    return False
+            elif isinstance(uses, str) and uses.startswith("./"):
+                run_indices.append(index)
+        if run_indices and (
+            not checkout_indices or checkout_indices[0] > min(run_indices)
+        ):
+            return False
+    return True
 
 
 def freshness_run_step_order_is_safe(steps: object) -> bool:
