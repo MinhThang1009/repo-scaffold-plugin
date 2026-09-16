@@ -372,11 +372,15 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
         }
         for identifier, content in excerpts.items():
             claim = claims[identifier]
+            # This test validates endpoint excerpts and registry path identity.
+            # Mutmut can expand copied source files beyond the production local
+            # source cap; bounded-source behavior has focused coverage above.
             with (
                 self.subTest(identifier=identifier),
                 mock.patch.object(
                     official_docs, "read_document", return_value=(claim.url, content)
                 ),
+                mock.patch.object(official_docs, "read_local_source", return_value=""),
             ):
                 self.assertEqual(
                     official_docs.claim_findings(PLUGIN_ROOT, claim, date(2026, 9, 8)),
