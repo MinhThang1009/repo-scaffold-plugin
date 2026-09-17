@@ -281,3 +281,4 @@ class ReminderWorkflowTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn("unexpected exit status", result.stderr)
+        self.assertNotIn("MUTATION:", result.stdout)

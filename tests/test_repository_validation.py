@@ -4984,6 +4984,13 @@ jobs:
             compatibility_flat,
         )
         self.assertIn("does not silently fall back or mix languages", readme_flat)
+        self.assertIn(
+            "Before generation, it requires one explicit project-output language choice",
+            readme_flat,
+        )
+        self.assertNotIn(
+            "English is the default when no preference exists", readme_flat
+        )
         self.assertIn("chore${scope}: release${component} ${version}", setup)
         self.assertIn("chore${scope}: phát hành${component} ${version}", setup)
         self.assertIn("Performance Improvements", setup)
@@ -8435,7 +8442,7 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
             installed = root / ".github/workflows/community-health.yml"
             installed.write_text(
                 installed.read_text(encoding="utf-8").replace(
-                    "          if [[ \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then\n"
+                    "          if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then\n"
                     "            printf 'Community-health checker returned an unexpected exit status: %s\\n' \"$CHECKER_EXIT\" >&2\n"
                     "            exit 1\n"
                     "          fi\n",
@@ -8445,6 +8452,37 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            problems = validate_repository.validate_community_health_tracking_contract(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "reject unexpected checker exit statuses" in problem
+                for problem in problems
+            )
+        )
+
+    def test_unexpected_checker_status_guard_precedes_issue_mutation(self) -> None:
+        guard_block = (
+            "          if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' "
+            "&& \"$CHECKER_EXIT\" != '2' ]]; then\n"
+            "            printf 'Community-health checker returned an unexpected exit status: %s\\n' \"$CHECKER_EXIT\" >&2\n"
+            "            exit 1\n"
+            "          fi\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            installed = root / ".github/workflows/community-health.yml"
+            workflow_text = installed.read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(guard_block, "", 1)
+            workflow_text = workflow_text.replace(
+                "          if [[ \"$CHECKER_EXIT\" == '2' ]]; then\n",
+                guard_block + "          if [[ \"$CHECKER_EXIT\" == '2' ]]; then\n",
+                1,
+            )
+            installed.write_text(workflow_text, encoding="utf-8")
             problems = validate_repository.validate_community_health_tracking_contract(
                 root
             )

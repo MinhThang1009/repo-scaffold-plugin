@@ -89,6 +89,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   reject traversal, control characters, links, or reparse points before they
   are read. Directory inventories
   are bounded to 10,000 entries so large repositories fail closed.
+  The community-health checker accepts only exit statuses 0, 1, and 2; any
+  other status must fail closed before clean/stale branching or Issue mutation.
   Shipped reminders use stable, distinct repository prefixes:
   `repo-scaffold-community-health-${{ github.repository }}`,
   `repo-scaffold-official-docs-${{ github.repository }}`,

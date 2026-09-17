@@ -405,6 +405,8 @@ The reconciliation job and its steps may not use `if`, `needs`, `strategy`,
 or mask the reminder.
 The checker exit status must drive the clean/stale split: close the existing
 issue when clean, and edit or create the report when stale before failing.
+The community-health checker accepts only exit statuses 0, 1, and 2; any other
+status must fail closed before clean/stale branching or Issue mutation.
 `CHECKER_EXIT` must be bound to the audit step's `checker_exit` output, and the
 audit output must derive from the checker's exit status.
 The audit must disable `errexit` while running the checker, capture its status,

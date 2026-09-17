@@ -74,6 +74,10 @@ REMINDER_ISSUE_ALLOWED_MUTATIONS = frozenset({"create", "edit", "close"})
 REMINDER_ISSUE_BODY_MUTATIONS = frozenset({"create", "edit"})
 REMINDER_ISSUE_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "view"})
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
+COMMUNITY_HEALTH_CHECKER_STATUS_GUARD = (
+    "if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' "
+    "&& \"$CHECKER_EXIT\" != '2' ]]; then"
+)
 COMMUNITY_HEALTH_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-community-health-${{ github.repository }}"
 )
@@ -1650,6 +1654,36 @@ def reminder_report_marker_check_is_safe(
         and len(grep_indices) == 1
         and len(clean_indices) == 1
         and marker_indices[0] < grep_indices[0] < clean_indices[0]
+    )
+
+
+def community_health_exit_status_guard_is_safe(text: str) -> bool:
+    """Require invalid checker statuses to fail before any Issue mutation."""
+    lines = [line.strip() for line in text.splitlines()]
+    marker_check = 'grep -Fq "$marker" "$RUNNER_TEMP/community-health.md"'
+    clean_branch = "if [[ \"$CHECKER_EXIT\" == '0' ]]; then"
+    mutation_commands = (
+        "gh issue close ",
+        "gh issue edit ",
+        "gh issue create ",
+    )
+    guard_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line == COMMUNITY_HEALTH_CHECKER_STATUS_GUARD
+    ]
+    marker_indices = [index for index, line in enumerate(lines) if line == marker_check]
+    clean_indices = [index for index, line in enumerate(lines) if line == clean_branch]
+    mutation_indices = [
+        index for index, line in enumerate(lines) if line.startswith(mutation_commands)
+    ]
+    return (
+        len(guard_indices) == 1
+        and len(marker_indices) == 1
+        and len(clean_indices) == 1
+        and bool(mutation_indices)
+        and marker_indices[0] < guard_indices[0] < clean_indices[0]
+        and all(index > guard_indices[0] for index in mutation_indices)
     )
 
 
@@ -7403,12 +7437,10 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
             problems.append(
                 f"{relative}: reminder must verify its report marker before clean reconciliation"
             )
-        if (
-            "if [[ \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then"
-            not in text
-        ):
+        if not community_health_exit_status_guard_is_safe(text):
             problems.append(
-                f"{relative}: reminder must reject unexpected checker exit statuses"
+                f"{relative}: reminder must reject unexpected checker exit statuses "
+                "before Issue mutation"
             )
         if not has_repo_bound_issue_reconciliation(text):
             problems.append(
