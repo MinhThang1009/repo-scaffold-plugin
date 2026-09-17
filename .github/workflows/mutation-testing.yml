@@ -45,6 +45,8 @@ jobs:
         run: python -m pip check
 
       - name: Generate exact mutation shards
+        env:
+          REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: ${{ github.workspace }}
         shell: bash
         run: python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32
 

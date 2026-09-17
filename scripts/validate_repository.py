@@ -4435,6 +4435,29 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         or not isinstance(aggregate, dict)
     ):
         return [".github/workflows/mutation-testing.yml: mutation jobs must map"]
+    expected_source_root_env = {
+        "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
+    }
+    plan_steps = plan.get("steps")
+    plan_generation_steps = (
+        [
+            step
+            for step in plan_steps
+            if isinstance(step, dict)
+            and step.get("run")
+            == "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32"
+        ]
+        if isinstance(plan_steps, list)
+        else []
+    )
+    if (
+        len(plan_generation_steps) != 1
+        or plan_generation_steps[0].get("env") != expected_source_root_env
+    ):
+        return [
+            ".github/workflows/mutation-testing.yml: mutation plan must expose "
+            "the tracked source root"
+        ]
     if plan.get("timeout-minutes") != MUTATION_PLAN_TIMEOUT_MINUTES:
         return [
             ".github/workflows/mutation-testing.yml: mutation plan must allow a "

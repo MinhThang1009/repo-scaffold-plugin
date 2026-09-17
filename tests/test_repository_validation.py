@@ -2042,7 +2042,10 @@ class MutationTestingContractTests(unittest.TestCase):
                     "timeout-minutes": "180",
                     "steps": [
                         {
-                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32"
+                            "env": {
+                                "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
+                            },
+                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32",
                         }
                     ],
                 },
@@ -2088,6 +2091,23 @@ class MutationTestingContractTests(unittest.TestCase):
                     }
                 },
                 "plan, execute, and merge",
+            ),
+            (
+                {
+                    "jobs": {
+                        **valid["jobs"],
+                        "mutation-plan": {
+                            **valid["jobs"]["mutation-plan"],
+                            "steps": [
+                                {
+                                    **valid["jobs"]["mutation-plan"]["steps"][0],
+                                    "env": {},
+                                }
+                            ],
+                        },
+                    }
+                },
+                "mutation plan must expose the tracked source root",
             ),
             (
                 {
