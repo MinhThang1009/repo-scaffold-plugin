@@ -12166,7 +12166,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                     "skills/repo-scaffold/references/github-setup.md",
                 ],
-                "github-reminder-issues-api": "skills/repo-scaffold/assets/workflows/freshness.yml",
+                "github-reminder-issue-search-api": "skills/repo-scaffold/assets/workflows/freshness.yml",
                 "github-repository-labels-api": "skills/repo-scaffold/references/github-setup.md",
                 "github-branch-protection-status-checks": [
                     "README.md",
@@ -12453,7 +12453,7 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-check-runs-api",
             "github-commit-statuses-api",
             "github-repository-labels-api",
-            "github-reminder-issues-api",
+            "github-reminder-issue-search-api",
             "github-branch-protection-status-checks",
             "github-branches-api",
             "github-effective-branch-rules-api",

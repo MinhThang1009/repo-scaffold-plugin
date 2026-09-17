@@ -7854,7 +7854,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
                     "skills/repo-scaffold/references/github-setup.md",
                 },
-                "github-reminder-issues-api": {
+                "github-reminder-issue-search-api": {
                     ".github/workflows/ci.yml",
                     ".github/workflows/community-health.yml",
                     ".github/workflows/freshness.yml",

@@ -701,9 +701,9 @@
       "review-period-days": 90
     },
     {
-      "id": "github-reminder-issues-api",
-      "label": "GitHub Issues API for reminder workflows",
-      "url": "https://docs.github.com/en/rest/issues/issues",
+      "id": "github-reminder-issue-search-api",
+      "label": "GitHub Issue Search API for reminder workflows",
+      "url": "https://docs.github.com/en/rest/search/search",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
         ".github/workflows/ci.yml",
@@ -714,11 +714,11 @@
         "skills/repo-scaffold/assets/workflows/freshness.yml"
       ],
       "required-markers": [
-        "List repository issues",
-        "pull_request",
+        "Search issues and pull requests",
+        "is:issue",
         "per_page"
       ],
-      "reviewed-on": "2026-09-07",
+      "reviewed-on": "2026-09-17",
       "review-period-days": 90
     },
     {
