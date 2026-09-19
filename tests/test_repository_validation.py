@@ -2039,7 +2039,7 @@ class MutationTestingContractTests(unittest.TestCase):
         valid: dict[str, Any] = {
             "jobs": {
                 "mutation-plan": {
-                    "timeout-minutes": "180",
+                    "timeout-minutes": "360",
                     "steps": [
                         {
                             "env": {
@@ -2119,7 +2119,7 @@ class MutationTestingContractTests(unittest.TestCase):
                         },
                     }
                 },
-                "mutation plan must allow a 180-minute generation budget",
+                "mutation plan must allow a 360-minute generation budget",
             ),
         )
         for workflow, message in cases:
