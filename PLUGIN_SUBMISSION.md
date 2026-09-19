@@ -18,7 +18,8 @@ portal selection are listed separately and must be verified at submission time.
 Use the canonical default-branch URLs declared in the plugin manifest when
 copying these policies into the submission portal.
 
-The Codex marketplace package includes the native `.codex-plugin` manifest and
+The Codex marketplace package includes the supported `.codex-plugin`
+compatibility manifest and
 the repo-scoped `.agents/plugins/marketplace.json` catalog for private or local
 installation. The same release archive also includes a native Claude Code
 `.claude-plugin` manifest and marketplace catalog. See

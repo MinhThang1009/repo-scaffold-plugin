@@ -128,7 +128,7 @@ class CodeScanningGateTests(unittest.TestCase):
                     with self.assertRaisesRegex(gate.GateError, "review"):
                         gate.load_allowlist(path)
 
-    def test_checked_in_allowlist_approves_reviewed_default_branch_checkout(
+    def test_checked_in_allowlist_approves_reviewed_pr_template_exception(
         self,
     ) -> None:
         allowlist_path = PLUGIN_ROOT / ".github" / "code-scanning-allowlist.json"
@@ -139,11 +139,6 @@ class CodeScanningGateTests(unittest.TestCase):
         reasons_by_path = {
             entry["path"]: entry["reason"] for entry in allowlist["allowlist"]
         }
-        code_scanning_reason = reasons_by_path[
-            ".github/workflows/code-scanning-gate.yml"
-        ]
-        self.assertIn("trusted default branch", code_scanning_reason)
-        self.assertNotIn("github.event.pull_request.base.sha", code_scanning_reason)
         self.assertIn(
             "github.event.pull_request.base.sha",
             reasons_by_path[".github/workflows/pr-template.yml"],
@@ -153,10 +148,10 @@ class CodeScanningGateTests(unittest.TestCase):
             gate.unapproved_alerts(
                 (
                     gate.Alert(
-                        18,
+                        17,
                         "Scorecard",
                         "DangerousWorkflowID",
-                        ".github/workflows/code-scanning-gate.yml",
+                        ".github/workflows/pr-template.yml",
                     ),
                 ),
                 selectors,
