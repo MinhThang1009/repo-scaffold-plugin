@@ -37,16 +37,118 @@ class ReminderWorkflowTests(unittest.TestCase):
             if relative == ".github/workflows/ci.yml":
                 concurrency = document["jobs"]["policy-drift-reminder"]["concurrency"]
                 expected_group = (
-                    "${{ github.workflow }}-policy-drift-${{ github.repository }}"
+                    "repo-scaffold-ci-policy-drift-${{ github.repository }}"
                 )
             else:
                 concurrency = document["concurrency"]
-                expected_group = "${{ github.workflow }}-${{ github.repository }}"
+                expected_group = (
+                    "repo-scaffold-community-health-${{ github.repository }}"
+                    if relative.endswith("/community-health.yml")
+                    else (
+                        "repo-scaffold-official-docs-${{ github.repository }}"
+                        if relative.endswith("/official-docs.yml")
+                        else "repo-scaffold-freshness-${{ github.repository }}"
+                    )
+                )
             self.assertEqual(
                 concurrency,
                 {"group": expected_group, "cancel-in-progress": "false"},
                 relative,
             )
+            self.assertNotIn("github.workflow", concurrency["group"], relative)
+
+    def test_issue_lookup_is_bounded_search(self) -> None:
+        for relative in WORKFLOWS:
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            scripts = [
+                step["run"]
+                for job in document["jobs"].values()
+                for step in job["steps"]
+                if "Reconcile" in step.get("name", "") and "issue" in step["name"]
+            ]
+            self.assertEqual(len(scripts), 1, relative)
+            script = scripts[0]
+            self.assertIn("search/issues?q=repo:", script, relative)
+            self.assertIn("is:issue+is:open+in:body+", script, relative)
+            self.assertIn("%22%3C%21--+", script, relative)
+            self.assertIn("+--%3E%22&per_page=2", script, relative)
+            self.assertIn("per_page=2", script, relative)
+            self.assertIn("--jq '[.items[].number] | join(\" \")'", script, relative)
+            self.assertNotIn("--paginate", script, relative)
+
+    def test_issue_writing_reminders_checkout_the_default_branch(self) -> None:
+        for relative in (
+            ".github/workflows/community-health.yml",
+            ".github/workflows/freshness.yml",
+            ".github/workflows/official-docs.yml",
+            "skills/repo-scaffold/assets/workflows/community-health.yml",
+            "skills/repo-scaffold/assets/workflows/freshness.yml",
+        ):
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            checkout_steps = [
+                step
+                for job in document["jobs"].values()
+                for step in job["steps"]
+                if step.get("uses", "").startswith("actions/checkout@")
+            ]
+            self.assertEqual(len(checkout_steps), 1, relative)
+            self.assertEqual(
+                checkout_steps[0]["with"],
+                {
+                    "ref": "${{ github.event.repository.default_branch }}",
+                    "persist-credentials": "false",
+                },
+                relative,
+            )
+
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
+    def test_clean_status_requires_report_marker_before_close(self) -> None:
+        for relative, report in (
+            (".github/workflows/community-health.yml", "community-health.md"),
+            (".github/workflows/official-docs.yml", "official-docs.md"),
+        ):
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            script = next(
+                step["run"]
+                for job in document["jobs"].values()
+                for step in job["steps"]
+                if "Reconcile" in step.get("name", "") and "issue" in step["name"]
+            )
+            with self.subTest(workflow=relative):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    (root / report).write_text("wrong-marker\n", encoding="utf-8")
+                    environment = {
+                        **os.environ,
+                        "REPOSITORY": "synthetic/example",
+                        "GITHUB_REPOSITORY": "synthetic/example",
+                        "RUNNER_TEMP": ".",
+                        "CHECKER_EXIT": "0",
+                    }
+                    stub = """gh() {
+  if [[ "$1" == api ]]; then printf '41\\n'; return 0; fi
+  printf 'MUTATION:%s\\n' "$2"
+}
+"""
+                    result = subprocess.run(
+                        [str(BASH), "--noprofile", "--norc", "-s"],
+                        input=stub + script,
+                        cwd=root,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=15,
+                        check=False,
+                    )
+                    self.assertNotIn("MUTATION:close", result.stdout)
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
     def test_issue_lookup_must_succeed_before_any_reminder_mutation(self) -> None:
@@ -102,7 +204,7 @@ class ReminderWorkflowTests(unittest.TestCase):
                         }
                         stub = """gh() {
   if [[ "$1" == api ]]; then
-    if [[ -n "$TEST_NUMBERS" ]]; then printf '%s\\n' "$TEST_NUMBERS"; fi
+    if [[ -n "$TEST_NUMBERS" ]]; then printf '%s\\n' "${TEST_NUMBERS//$'\\n'/ }"; fi
     return "$TEST_API_EXIT"
   fi
   printf 'MUTATION:%s\\n' "$2"
@@ -135,3 +237,48 @@ class ReminderWorkflowTests(unittest.TestCase):
                             self.assertNotEqual(result.returncode, 0)
                         elif clean:
                             self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
+    def test_community_health_rejects_unexpected_checker_status(self) -> None:
+        relative = ".github/workflows/community-health.yml"
+        document = yaml.load(
+            (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+        )
+        script = next(
+            step["run"]
+            for job in document["jobs"].values()
+            for step in job["steps"]
+            if "Reconcile" in step.get("name", "") and "issue" in step["name"]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "community-health.md").write_text(
+                "<!-- repo-scaffold-community-health-drift -->\n", encoding="utf-8"
+            )
+            environment = {
+                **os.environ,
+                "REPOSITORY": "synthetic/example",
+                "GITHUB_REPOSITORY": "synthetic/example",
+                "RUNNER_TEMP": ".",
+                "CHECKER_EXIT": "127",
+            }
+            stub = """gh() {
+  if [[ "$1" == api ]]; then return 0; fi
+  printf 'MUTATION:%s\\n' "$2"
+}
+"""
+            result = subprocess.run(
+                [str(BASH), "--noprofile", "--norc", "-s"],
+                input=stub + script,
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=15,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("unexpected exit status", result.stderr)
+        self.assertNotIn("MUTATION:", result.stdout)

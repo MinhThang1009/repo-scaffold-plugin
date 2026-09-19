@@ -4,23 +4,24 @@ Effective date: August 13, 2026
 
 ## Scope
 
-Repo Scaffold is a source-distributed Codex plugin. It contains a skill,
-templates, and local validation scripts. The maintainer does not operate a
-backend, MCP server, analytics service, account system, or telemetry endpoint
-for this plugin.
+Repo Scaffold is a source-distributed Agent Skills plugin for Codex and Claude
+Code. It contains a skill, templates, and local validation scripts. The
+maintainer does not operate a backend, MCP server, analytics service, account
+system, or telemetry endpoint for this plugin.
 
 ## Data processed during use
 
-When you ask Codex to use the plugin, Codex may read files in the repository you
-selected, create or update repository files, run local validation tools, and use
-your authenticated GitHub CLI session for GitHub.com operations that you
-authorize. The plugin instructs Codex not to expose credentials and to confirm
-outward-facing changes before performing them.
+When you ask Codex or Claude Code to use the plugin, the selected agent host may
+read files in the repository you selected, create or update repository files,
+run local validation tools, and use your authenticated GitHub CLI session for
+GitHub.com operations that you authorize. The plugin instructs the host not to
+expose credentials and to confirm outward-facing changes before performing
+them.
 
 The plugin does not send repository content to a service operated by the
-maintainer. Processing performed by Codex, OpenAI, GitHub, GitHub CLI, or another
-tool is governed by that provider's privacy terms and by your account or
-workspace configuration.
+maintainer. Processing performed by Codex, Claude Code, OpenAI, Anthropic,
+GitHub, GitHub CLI, or another tool is governed by that provider's privacy terms
+and by your account or workspace configuration.
 
 ## Reports and contributions
 

@@ -2,15 +2,6 @@
   "schema-version": 3,
   "allowlist": [
     {
-      "number": 18,
-      "tool": "Scorecard",
-      "rule": "DangerousWorkflowID",
-      "path": ".github/workflows/code-scanning-gate.yml",
-      "reason": "The pull_request_target workflow checks out only the trusted default branch with read-only permissions and never executes pull-request code.",
-      "reviewed-on": "2026-09-09",
-      "review-period-days": 90
-    },
-    {
       "number": 17,
       "tool": "Scorecard",
       "rule": "DangerousWorkflowID",

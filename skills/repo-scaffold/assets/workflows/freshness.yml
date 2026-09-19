@@ -10,7 +10,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.repository }}
+  group: repo-scaffold-freshness-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -22,6 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Set up Python
@@ -67,13 +68,13 @@ jobs:
           marker='<!-- repo-scaffold-freshness-audit -->'
           title='Repository freshness update required'
           issue_numbers_output=$(
-            gh api --hostname github.com --paginate \
-              "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
-              --jq '.[] | select(.pull_request == null) | select((.body // "") | contains("<!-- repo-scaffold-freshness-audit -->")) | .number'
+            gh api --hostname github.com \
+              "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" \
+              --jq '[.items[].number] | join(" ")'
           )
           issue_numbers=()
           if [[ -n "$issue_numbers_output" ]]; then
-            mapfile -t issue_numbers <<< "$issue_numbers_output"
+            read -r -a issue_numbers <<< "$issue_numbers_output"
           fi
           if (( ${#issue_numbers[@]} > 1 )); then
             printf 'Found multiple open freshness reminder issues.\n' >&2

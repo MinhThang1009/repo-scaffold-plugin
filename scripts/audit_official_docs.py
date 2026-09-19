@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
@@ -20,12 +21,15 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_REGISTRY_BYTES = 512 * 1024
+MAX_LOCAL_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_CLAIMS = 64
 MAX_MARKERS_PER_CLAIM = 8
 MAX_REVIEW_PERIOD_DAYS = 366
+MAX_FETCH_WORKERS = 8
 CLAIM_IDENTIFIER = re.compile(r"[a-z][a-z0-9-]*\Z")
 HOSTNAME = re.compile(r"[a-z0-9][a-z0-9.-]*[a-z0-9]\Z")
 DEFAULT_TRACKER_REGISTRY = Path(".github/official-docs-trackers.json")
+OFFICIAL_DOCS_TRACKER_KEYS = frozenset({"schema-version", "claims"})
 
 
 class AuditError(RuntimeError):
@@ -78,6 +82,10 @@ class DocumentationClaim:
     review_period_days: int
 
 
+DocumentKey = tuple[str, tuple[str, ...]]
+DocumentResult = tuple[str, str] | AuditError
+
+
 def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """Build a JSON object while rejecting duplicate keys."""
     document: dict[str, Any] = {}
@@ -98,6 +106,7 @@ def safe_relative_path(value: object, *, field: str) -> Path:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or any(ord(character) < 0x20 for character in value)
         or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
     ):
@@ -194,8 +203,16 @@ def load_trackers(
         raise AuditError(
             f"could not read official-docs tracker registry {relative}: {error}"
         ) from error
-    if not isinstance(document, dict) or document.get("schema-version") != 1:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schema-version")) is not int
+        or document.get("schema-version") != 1
+    ):
         raise AuditError("official-docs tracker registry must use schema-version 1")
+    if set(document) != OFFICIAL_DOCS_TRACKER_KEYS:
+        raise AuditError(
+            "official-docs tracker registry contains unsupported top-level fields"
+        )
     values = document.get("claims")
     if not isinstance(values, list) or not values or len(values) > MAX_CLAIMS:
         raise AuditError(
@@ -312,8 +329,29 @@ def read_document(url: str, allowed_hosts: tuple[str, ...]) -> tuple[str, str]:
         ) from error
 
 
+def read_local_source(path: Path) -> str:
+    """Read one claim source with a bounded UTF-8 payload."""
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_LOCAL_SOURCE_BYTES + 1)
+    except OSError as error:
+        raise AuditError(f"could not read claim source {path}: {error}") from error
+    if len(payload) > MAX_LOCAL_SOURCE_BYTES:
+        raise AuditError(
+            f"claim source exceeds the {MAX_LOCAL_SOURCE_BYTES}-byte safety cap: {path}"
+        )
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError as error:
+        raise AuditError(f"claim source is not valid UTF-8: {path}") from error
+
+
 def claim_findings(
-    root: Path, claim: DocumentationClaim, today: date
+    root: Path,
+    claim: DocumentationClaim,
+    today: date,
+    *,
+    document_result: DocumentResult | None = None,
 ) -> list[dict[str, str]]:
     """Return review findings for one source without interpreting its prose automatically."""
     for relative in claim.paths:
@@ -323,12 +361,16 @@ def claim_findings(
                 raise AuditError(f"claim source path is missing or unsafe: {relative}")
             resolved = path.resolve(strict=True)
             resolved.relative_to(root.resolve())
-            path.read_text(encoding="utf-8")
+            read_local_source(path)
         except (OSError, UnicodeError, ValueError) as error:
             raise AuditError(
                 f"claim source path is missing, unsafe, or unreadable: {relative}"
             ) from error
-    resolved_url, content = read_document(claim.url, claim.allowed_hosts)
+    if document_result is None:
+        document_result = read_document(claim.url, claim.allowed_hosts)
+    elif isinstance(document_result, AuditError):
+        raise AuditError(str(document_result)) from document_result
+    resolved_url, content = document_result
     resolved_host = hostname(resolved_url, field=f"resolved URL for {claim.identifier}")
     if resolved_host not in claim.allowed_hosts:
         raise AuditError(
@@ -367,6 +409,22 @@ def claim_findings(
     return findings
 
 
+def fetch_documents(
+    claims: tuple[DocumentationClaim, ...],
+) -> dict[DocumentKey, DocumentResult]:
+    """Fetch each unique approved URL concurrently within a bounded worker pool."""
+    keys = list(dict.fromkeys((claim.url, claim.allowed_hosts) for claim in claims))
+    with ThreadPoolExecutor(max_workers=min(MAX_FETCH_WORKERS, len(keys))) as executor:
+        futures = {key: executor.submit(read_document, key[0], key[1]) for key in keys}
+        results: dict[DocumentKey, DocumentResult] = {}
+        for key, future in futures.items():
+            try:
+                results[key] = future.result()
+            except AuditError as error:
+                results[key] = error
+    return results
+
+
 def audit(
     root: Path,
     tracker_registry: Path = DEFAULT_TRACKER_REGISTRY,
@@ -381,9 +439,18 @@ def audit(
     except AuditError as error:
         claims = ()
         errors.append(str(error))
+    documents = fetch_documents(claims) if claims else {}
     for claim in claims:
         try:
-            findings.extend(claim_findings(root, claim, checked_on))
+            key = (claim.url, claim.allowed_hosts)
+            findings.extend(
+                claim_findings(
+                    root,
+                    claim,
+                    checked_on,
+                    document_result=documents[key],
+                )
+            )
         except AuditError as error:
             errors.append(str(error))
     status = "indeterminate" if errors else "attention" if findings else "current"
@@ -398,7 +465,30 @@ def audit(
 
 def markdown_table_cell(value: object) -> str:
     """Render one value without permitting it to add Markdown table cells/rows."""
-    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("`", "\\`")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def markdown_code_span(value: object) -> str:
+    """Render one value in a code span without allowing delimiter injection."""
+    text = (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+    longest_backtick_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    if longest_backtick_run:
+        delimiter = "`" * (longest_backtick_run + 1)
+        return f"{delimiter} {text} {delimiter}"
+    return f"`{text}`"
 
 
 def markdown_report(report: dict[str, Any]) -> str:
@@ -407,8 +497,8 @@ def markdown_report(report: dict[str, Any]) -> str:
         "<!-- repo-scaffold-official-docs-audit -->",
         "# Official documentation review report",
         "",
-        f"- Checked: `{report['checked-at']}`",
-        f"- Overall status: **{report['status']}**",
+        f"- Checked: {markdown_code_span(report['checked-at'])}",
+        f"- Overall status: **{markdown_code_span(report['status'])}**",
         "",
     ]
     findings = report["findings"]
@@ -420,8 +510,12 @@ def markdown_report(report: dict[str, Any]) -> str:
             ]
         )
         lines.extend(
-            "| {kind} | `{path}` | {subject} | `{current}` | `{latest}` |".format(
-                **{key: markdown_table_cell(value) for key, value in finding.items()}
+            "| {kind} | {path} | {subject} | {current} | {latest} |".format(
+                kind=markdown_table_cell(finding.get("kind", "")),
+                path=markdown_code_span(finding.get("path", "")),
+                subject=markdown_table_cell(finding.get("subject", "")),
+                current=markdown_code_span(finding.get("current", "")),
+                latest=markdown_code_span(finding.get("latest", "")),
             )
             for finding in findings
         )
@@ -435,7 +529,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             [
                 "## Indeterminate checks",
                 "",
-                *[f"- {error}" for error in report["errors"]],
+                *[f"- {markdown_table_cell(error)}" for error in report["errors"]],
                 "",
             ]
         )

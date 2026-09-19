@@ -2685,6 +2685,9 @@ class WorkflowDiscoveryTests(unittest.TestCase):
         self.assertFalse(
             codeql_preflight.is_direct_workflow_path(".github/workflows/nested/ci.yml")
         )
+        self.assertFalse(
+            codeql_preflight.is_direct_workflow_path(".github/workflows/a\n.yml")
+        )
 
     def test_safe_path_rejects_a_dangling_link_component(self) -> None:
         root = Path("C:/repository")
@@ -2723,6 +2726,40 @@ class WorkflowDiscoveryTests(unittest.TestCase):
                 codeql_preflight.InspectionError, "repository root"
             ):
                 codeql_preflight.require_safe_root(root)
+
+    def test_macos_temp_alias_is_allowed_only_for_its_private_target(self) -> None:
+        with mock.patch.object(codeql_preflight.sys, "platform", "darwin"):
+            with mock.patch.object(
+                codeql_preflight.Path, "is_symlink", autospec=True, return_value=True
+            ):
+                with mock.patch.object(
+                    codeql_preflight.os.path,
+                    "realpath",
+                    return_value="/private/var",
+                ):
+                    self.assertTrue(
+                        codeql_preflight.is_macos_system_alias(Path("/var"))
+                    )
+                    self.assertFalse(
+                        codeql_preflight.is_macos_system_alias(Path("/etc"))
+                    )
+            with mock.patch.object(codeql_preflight.sys, "platform", "linux"):
+                self.assertFalse(codeql_preflight.is_macos_system_alias(Path("/var")))
+
+    def test_allowed_system_alias_root_is_not_rejected(self) -> None:
+        root = (
+            Path("C:/repository") if os.name == "nt" else Path("/var/folders/project")
+        )
+        with (
+            mock.patch.object(codeql_preflight.os.path, "lexists", return_value=True),
+            mock.patch.object(codeql_preflight.Path, "is_symlink", return_value=True),
+            mock.patch.object(codeql_preflight, "is_reparse_point", return_value=False),
+            mock.patch.object(codeql_preflight.os.path, "ismount", return_value=True),
+            mock.patch.object(
+                codeql_preflight, "is_macos_system_alias", return_value=True
+            ),
+        ):
+            self.assertIsNone(codeql_preflight.require_safe_root(root))
 
     def test_missing_workflow_root_is_safety_checked_before_skip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2866,6 +2903,16 @@ class WorkflowDiscoveryTests(unittest.TestCase):
 
             invalid.write_text(workflow, encoding="utf-8")
             with (
+                mock.patch.object(
+                    codeql_preflight, "is_direct_workflow_path", return_value=False
+                ),
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "not canonical"
+                ),
+            ):
+                codeql_preflight.load_local_workflows(root)
+
+            with (
                 mock.patch.object(codeql_preflight, "MAX_WORKFLOW_BYTES", 8),
                 self.assertRaisesRegex(
                     codeql_preflight.InspectionError, "byte safety cap"
@@ -2943,6 +2990,7 @@ class WorkflowResolverTests(unittest.TestCase):
             )
         for call, message in (
             ("./.github/workflows/../escape.yml", "traversal"),
+            ("./.github/workflows/./reusable.yml", "not a direct"),
             ("./.github/workflows/nested/reusable.yml", "not a direct"),
         ):
             with self.subTest(call=call):
@@ -2989,6 +3037,7 @@ class WorkflowResolverTests(unittest.TestCase):
 
         for invalid_call, message in (
             ("owner/repo/.github/workflows/../escape.yml@main", "traversal"),
+            ("owner/repo/.github/workflows/./reusable.yml@main", "not a direct"),
             ("owner/repo/.github/workflows/nested/file.yml@main", "not a direct"),
             ("unsupported", "Unsupported"),
         ):
@@ -3009,12 +3058,18 @@ class WorkflowResolverTests(unittest.TestCase):
             {
                 "truncated": False,
                 "tree": [
+                    None,
                     {"type": "tree", "path": ".github/workflows"},
                     {"type": "blob", "path": "README.md", "sha": "c" * 40},
                     {
                         "type": "blob",
                         "path": ".github/workflows/ci.yml",
                         "sha": blob,
+                    },
+                    {
+                        "type": "blob",
+                        "path": ".github/workflows/notes.txt",
+                        "sha": "d" * 40,
                     },
                 ],
             },
@@ -3048,6 +3103,58 @@ class WorkflowResolverTests(unittest.TestCase):
                     },
                 ],
                 "invalid blob ID",
+            ),
+            (
+                [
+                    {"sha": commit},
+                    {
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "type": "blob",
+                                "path": ".github/workflows/a\n.yml",
+                                "sha": blob,
+                            }
+                        ],
+                    },
+                ],
+                "not canonical",
+            ),
+            (
+                [
+                    {"sha": commit},
+                    {
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "type": "tree",
+                                "path": ".github/workflows/ci.yml",
+                            }
+                        ],
+                    },
+                ],
+                "not a blob",
+            ),
+            (
+                [
+                    {"sha": commit},
+                    {
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "type": "blob",
+                                "path": ".github/workflows/ci.yml",
+                                "sha": blob,
+                            },
+                            {
+                                "type": "blob",
+                                "path": ".github/workflows/ci.yml",
+                                "sha": "c" * 40,
+                            },
+                        ],
+                    },
+                ],
+                "appears more than once",
             ),
         ]
         for responses, message in invalid_responses:
@@ -3157,6 +3264,18 @@ class GitHubClientTests(unittest.TestCase):
                 codeql_preflight.subprocess, "run", side_effect=FileNotFoundError()
             ),
             self.assertRaisesRegex(codeql_preflight.InspectionError, "not installed"),
+        ):
+            client.raw("repos/octo/repo")
+
+        with (
+            mock.patch.object(
+                codeql_preflight.subprocess,
+                "run",
+                side_effect=PermissionError("blocked"),
+            ),
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "could not be executed"
+            ),
         ):
             client.raw("repos/octo/repo")
 

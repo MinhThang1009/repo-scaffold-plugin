@@ -18,7 +18,8 @@ portal selection are listed separately and must be verified at submission time.
 Use the canonical default-branch URLs declared in the plugin manifest when
 copying these policies into the submission portal.
 
-The Codex marketplace package includes the native `.codex-plugin` manifest and
+The Codex marketplace package includes the supported `.codex-plugin`
+compatibility manifest and
 the repo-scoped `.agents/plugins/marketplace.json` catalog for private or local
 installation. The same release archive also includes a native Claude Code
 `.claude-plugin` manifest and marketplace catalog. See
@@ -32,8 +33,10 @@ submission flow](https://developers.openai.com/plugins/guides/submit-claude-plug
 The release ZIP qualifies for that path: it has one `repo-scaffold/` root with a
 nonempty `.claude-plugin/plugin.json` and the shared
 `skills/repo-scaffold/SKILL.md` plus its referenced scripts, references, and
-assets. The archive also contains `.codex-plugin/plugin.json`; the portal
-reviews and normalizes the Codex manifest during upload.
+assets. The archive also contains `.codex-plugin/plugin.json` for direct Codex
+and local-marketplace installation. The Skills-only portal converts the Claude
+manifest into a Codex manifest and adds any missing interface defaults during
+review.
 
 At submission time, open the OpenAI portal, select **Create plugin** and
 **Skills only**, upload the release ZIP, review the generated manifest, then

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,44 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
+
+
+def is_link_or_reparse(path: Path) -> bool:
+    """Return whether a workflow path is a symlink or Windows reparse point."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise ValueError(f"could not inspect workflow path: {path}: {error}") from error
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & reparse_flag
+    )
+
+
+def read_workflow_text(path: Path) -> str:
+    """Read one workflow with a bounded UTF-8 payload."""
+    try:
+        if is_link_or_reparse(path):
+            raise ValueError(f"workflow path is linked or a reparse point: {path}")
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_WORKFLOW_BYTES + 1)
+    except ValueError:
+        raise
+    except OSError as error:
+        raise ValueError(f"could not read workflow file: {path}: {error}") from error
+    if len(payload) > MAX_WORKFLOW_BYTES:
+        raise ValueError(
+            f"workflow file exceeds the {MAX_WORKFLOW_BYTES}-byte safety cap: {path}"
+        )
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError(f"workflow file is not valid UTF-8: {path}") from error
 
 
 def resolve_path_executable(name: str, *, forbidden_root: Path) -> str | None:
@@ -54,23 +93,32 @@ def run_actionlint(
     except subprocess.TimeoutExpired:
         print("actionlint timed out.", file=sys.stderr)
         return 2
+    except OSError:
+        print("actionlint could not be executed.", file=sys.stderr)
+        return 2
 
 
 def discover_workflows(directory: Path) -> list[Path]:
     """Return direct GitHub workflow files using either supported YAML suffix."""
-    return sorted(
-        path
-        for path in directory.glob("*")
-        if path.is_file() and path.suffix.lower() in {".yml", ".yaml"}
-    )
+    if is_link_or_reparse(directory):
+        raise ValueError(
+            f"workflow directory is linked or a reparse point: {directory}"
+        )
+    workflows: list[Path] = []
+    for path in directory.glob("*"):
+        if path.suffix.lower() not in {".yml", ".yaml"}:
+            continue
+        if is_link_or_reparse(path):
+            raise ValueError(f"workflow path is linked or a reparse point: {path}")
+        if path.is_file():
+            workflows.append(path)
+    return sorted(workflows)
 
 
 def workflow_shell_blocks(path: Path) -> list[tuple[str, str, bytes]]:
     """Extract statically identifiable Bash and POSIX shell run blocks."""
     try:
-        document: Any = yaml.load(
-            path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
-        )
+        document: Any = yaml.load(read_workflow_text(path), Loader=yaml.BaseLoader)
     except RecursionError as error:
         raise yaml.YAMLError("YAML nesting exceeds parser limit") from error
     if not isinstance(document, dict):
@@ -162,6 +210,12 @@ def run_shellcheck(executable: str, workflow_files: list[Path]) -> int:
             except subprocess.TimeoutExpired:
                 print(f"{path} ({label}): ShellCheck timed out.", file=sys.stderr)
                 return 2
+            except OSError:
+                print(
+                    f"{path} ({label}): ShellCheck could not be executed.",
+                    file=sys.stderr,
+                )
+                return 2
             if result.returncode != 0:
                 print(f"{path} ({label}):", file=sys.stderr)
                 sys.stderr.buffer.write(result.stdout)
@@ -190,10 +244,16 @@ def main() -> int:
         )
         return 2
 
-    installed_workflows = discover_workflows(repository_root / ".github" / "workflows")
-    asset_workflows = discover_workflows(
-        repository_root / "skills" / "repo-scaffold" / "assets" / "workflows"
-    )
+    try:
+        installed_workflows = discover_workflows(
+            repository_root / ".github" / "workflows"
+        )
+        asset_workflows = discover_workflows(
+            repository_root / "skills" / "repo-scaffold" / "assets" / "workflows"
+        )
+    except (OSError, ValueError) as error:
+        print(f"Could not discover workflow files: {error}", file=sys.stderr)
+        return 2
     if not installed_workflows or not asset_workflows:
         print("Expected installed workflows and workflow assets.", file=sys.stderr)
         return 2

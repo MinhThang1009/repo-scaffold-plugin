@@ -53,8 +53,14 @@ jobs:
 
   test:
     needs: prepare_runtime
-    runs-on: ubuntu-latest
+    # The rendered runtime policy selects ubuntu-latest, windows-latest, and/or
+    # macos-latest through matrix.os. Keep this binding so every declared
+    # platform is exercised instead of silently running all jobs on Ubuntu.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare_runtime.outputs.matrix) }}

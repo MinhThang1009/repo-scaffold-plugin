@@ -10,7 +10,7 @@ import re
 import stat
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -18,6 +18,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 GITHUB_API_URL = "https://api.github.com"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
+MAX_WORKFLOW_FILES = 500
+MAX_TOTAL_WORKFLOW_BYTES = 64 * 1024 * 1024
 MAX_ACTION_TAG_PAGES = 20
 MAX_ANNOTATED_TAG_DEPTH = 10
 YAML_TAG_PATTERN = r"!(?:<[^>\r\n]+>|[^\s\[\]{},#&*|>@]*)"
@@ -202,6 +205,30 @@ def action_repository(action: str) -> str:
     return "/".join(action.split("/")[:2]).casefold()
 
 
+def is_valid_action_repository(repository: str) -> bool:
+    """Return whether an action repository is a GitHub-style owner/repository path."""
+    return REPOSITORY_PATTERN.fullmatch(repository) is not None and not any(
+        component in {".", ".."} for component in repository.split("/")
+    )
+
+
+def is_safe_local_action_reference(reference: str) -> bool:
+    """Return whether a local action path stays within the checked-out repository."""
+    if not isinstance(reference, str) or not reference.startswith("./"):
+        return False
+    relative = reference[2:]
+    path = PurePosixPath(relative)
+    return (
+        bool(relative)
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and "\\" not in reference
+        and not any(ord(character) < 0x20 for character in reference)
+        and not any(PureWindowsPath(part).drive for part in path.parts)
+        and path.as_posix() == relative
+    )
+
+
 def _is_link_or_reparse(path: Path) -> bool:
     """Return whether an existing path is a symlink or Windows reparse point."""
     if path.is_symlink():
@@ -237,8 +264,12 @@ def _path_has_link_or_reparse(path: Path, repository_root: Path) -> bool:
 def workflow_paths(
     repository_root: Path,
     workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
+    *,
+    max_files: int | None = MAX_WORKFLOW_FILES,
 ) -> list[Path]:
     """Return every tracked workflow that carries a synchronized action pin."""
+    if max_files is not None and max_files < 0:
+        raise ValueError("workflow file safety cap must not be negative")
     repository_root = Path(os.path.abspath(repository_root))
     if not repository_root.is_dir() or _path_has_link_or_reparse(
         repository_root, repository_root
@@ -267,6 +298,11 @@ def workflow_paths(
                 if _path_has_link_or_reparse(path, repository_root):
                     raise ValueError(f"workflow file is unsafe: {path}")
                 if path.is_file():
+                    if max_files is not None and len(paths) >= max_files:
+                        raise ValueError(
+                            "workflow inventory exceeds the "
+                            f"{max_files}-file safety cap"
+                        )
                     paths.append(path)
     if not paths:
         raise ValueError("no workflow files were found for action-pin synchronization")
@@ -280,8 +316,8 @@ def write_workflow_bytes(
     if _path_has_link_or_reparse(path, repository_root):
         raise ValueError(f"workflow file is unsafe: {path}")
     try:
-        current_content = path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeError) as error:
+        current_content = read_workflow_text(path)
+    except ValueError as error:
         raise ValueError(
             f"could not reread workflow file before writing: {path}"
         ) from error
@@ -290,6 +326,27 @@ def write_workflow_bytes(
     if _path_has_link_or_reparse(path, repository_root):
         raise ValueError(f"workflow file is unsafe: {path}")
     path.write_bytes(content.encode("utf-8"))
+
+
+def read_workflow_text(path: Path, *, byte_count: list[int] | None = None) -> str:
+    """Read one workflow with a bounded UTF-8 payload."""
+    if byte_count is not None:
+        byte_count[:] = [0]
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_WORKFLOW_BYTES + 1)
+    except OSError as error:
+        raise ValueError(f"could not read workflow file: {path}: {error}") from error
+    if len(payload) > MAX_WORKFLOW_BYTES:
+        raise ValueError(
+            f"workflow file exceeds the {MAX_WORKFLOW_BYTES}-byte safety cap: {path}"
+        )
+    if byte_count is not None:
+        byte_count[:] = [len(payload)]
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError(f"workflow file is not valid UTF-8: {path}") from error
 
 
 def block_scalar_content_ranges(content: str) -> tuple[tuple[int, int], ...]:
@@ -843,12 +900,21 @@ def auditable_action_repositories(path: Path, content: str) -> set[str]:
         for match in action_pin_matches(content)
     }
     for reference in pins:
-        if reference.startswith(("./", "docker://")):
+        if reference.startswith("./"):
+            if not is_safe_local_action_reference(reference):
+                raise ValueError(
+                    "workflow local action reference must be a safe "
+                    f"repository-relative path: {path}: {reference}"
+                )
+            continue
+        if reference.startswith("docker://"):
             continue
         if reference not in pinned_references:
             raise ValueError(f"workflow action is not pinned to a full SHA: {path}")
         action = reference.rsplit("@", 1)[0]
         repository = action_repository(action)
+        if not is_valid_action_repository(repository):
+            raise ValueError(f"workflow action has an invalid repository: {path}")
         repositories.add(repository)
     return repositories
 
@@ -988,7 +1054,7 @@ class GitHubReleaseClient:
 
     def latest_release(self, repository: str) -> ActionRelease:
         """Resolve the stable latest release tag to its immutable commit SHA."""
-        if REPOSITORY_PATTERN.fullmatch(repository) is None:
+        if not is_valid_action_repository(repository):
             raise ValueError(f"invalid action repository: {repository}")
         if repository in TAG_LIST_ACTION_REPOSITORIES:
             return self.latest_action_tag(repository)
@@ -1039,10 +1105,18 @@ def synchronize_action_pins(
     workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
 ) -> list[Path]:
     """Update all allowed action pins after resolving every release."""
-    contents = {
-        path: path.read_bytes().decode("utf-8")
-        for path in workflow_paths(repository_root, workflow_directories)
-    }
+    contents: dict[Path, str] = {}
+    total_workflow_bytes = 0
+    for path in workflow_paths(repository_root, workflow_directories):
+        bytes_read: list[int] = []
+        content = read_workflow_text(path, byte_count=bytes_read)
+        total_workflow_bytes += bytes_read[0]
+        if total_workflow_bytes > MAX_TOTAL_WORKFLOW_BYTES:
+            raise ValueError(
+                "workflow inventory exceeds the "
+                f"{MAX_TOTAL_WORKFLOW_BYTES}-byte safety cap"
+            )
+        contents[path] = content
     repositories = sorted(
         {
             repository

@@ -209,7 +209,7 @@ def parse_tool(name: str, value: Any) -> ToolPin:
             f"standalone-tools.{name}.asset-template must contain exactly one "
             "{version} token and only safe filename characters"
         )
-    if archive_format not in {"tar.gz", "tar.xz"}:
+    if archive_format not in ("tar.gz", "tar.xz"):
         raise ToolchainError(
             f"standalone-tools.{name}.archive-format must be tar.gz or tar.xz"
         )

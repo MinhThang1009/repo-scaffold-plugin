@@ -12,6 +12,7 @@
     "ubuntu-latest"
   ],
   "boundary-coverage-os": [
-    "windows-latest"
+    "windows-latest",
+    "macos-latest"
   ]
 }

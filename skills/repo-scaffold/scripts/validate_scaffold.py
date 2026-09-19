@@ -737,7 +737,7 @@ def validate_issue_forms(
             if set(item) - ISSUE_FORM_BODY_KEYS:
                 problems.append(f"{prefix} contains unsupported keys")
             item_type = item.get("type")
-            if item_type not in ISSUE_FORM_INPUT_TYPES:
+            if item_type not in tuple(ISSUE_FORM_INPUT_TYPES):
                 problems.append(f"{prefix}.type must be a supported input type")
                 continue
             if item_type == "markdown":
@@ -789,7 +789,7 @@ def validate_issue_forms(
                     isinstance(option, dict)
                     and isinstance(option.get("label"), str)
                     and option["label"].strip()
-                    and option.get("required", "false") in {"true", "false"}
+                    and option.get("required", "false") in ("true", "false")
                     for option in options
                 )
             ):
@@ -812,7 +812,7 @@ def validate_issue_forms(
             validations = item.get("validations")
             if validations is not None and (
                 not isinstance(validations, dict)
-                or validations.get("required", "false") not in {"true", "false"}
+                or validations.get("required", "false") not in ("true", "false")
             ):
                 problems.append(f"{prefix}.validations.required must be a boolean")
         if not has_input:

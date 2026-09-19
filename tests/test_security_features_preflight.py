@@ -140,7 +140,9 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             (repository(permissions={"admin": "yes"}), "invalid 'admin'"),
             (repository(fork="no"), "invalid 'fork'"),
             (repository(visibility="unknown"), "invalid visibility"),
+            (repository(visibility=[]), "invalid visibility"),
             (repository(owner={"type": "Enterprise"}), "unsupported owner"),
+            (repository(owner={"type": []}), "unsupported owner"),
         ]
         for response, message in cases:
             FakeClient.response = response
@@ -160,14 +162,19 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             security_features_preflight.InspectionError, "invalid 'archived'"
         ):
             security_features_preflight.require_boolean({}, "archived")
-        for analysis, message in [
+        cases: list[tuple[object, str]] = [
             (None, "no security_and_analysis"),
             ({"secret_scanning": "enabled"}, "invalid 'secret_scanning'"),
             (
                 {"secret_scanning": {"status": "unknown"}},
                 "invalid 'secret_scanning'",
             ),
-        ]:
+            (
+                {"secret_scanning": {"status": []}},
+                "invalid 'secret_scanning'",
+            ),
+        ]
+        for analysis, message in cases:
             with self.subTest(analysis=analysis):
                 with self.assertRaisesRegex(
                     security_features_preflight.InspectionError, message

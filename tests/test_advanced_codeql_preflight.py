@@ -208,6 +208,12 @@ class AdvancedCodeqlPreflightTests(unittest.TestCase):
             ),
             (
                 arguments(),
+                repository(visibility=[]),
+                {"enabled": True},
+                "invalid visibility",
+            ),
+            (
+                arguments(),
                 repository(visibility="private", owner={"type": "User"}),
                 {"enabled": True},
                 "organization-owned",

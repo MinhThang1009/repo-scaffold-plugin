@@ -6,7 +6,7 @@ For a locally shared installation, contact the person or workspace that supplied
 the plugin. Include:
 
 - the plugin version;
-- the Codex environment and operating system;
+- the Codex or Claude Code environment and operating system;
 - the target repository stack;
 - the scaffold options requested;
 - the exact non-sensitive error output.

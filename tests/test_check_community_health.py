@@ -110,13 +110,24 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(community_health.load_registry(path), parsed)
 
     def test_registry_rejects_invalid_top_level_documents(self) -> None:
-        invalid = [None, {}, {"schema-version": 1, "files": []}]
+        invalid = [
+            None,
+            {},
+            {"schema-version": 1, "files": []},
+            {"schema-version": 1.0, "files": []},
+            {"schema-version": True, "files": []},
+        ]
         for document in invalid:
             with (
                 self.subTest(document=document),
                 self.assertRaises(community_health.AuditError),
             ):
                 community_health.parse_registry(document)
+
+        unsupported = registry_document()
+        unsupported["unexpected"] = True
+        with self.assertRaisesRegex(community_health.AuditError, "unsupported"):
+            community_health.parse_registry(unsupported)
 
     def test_registry_rejects_invalid_entries(self) -> None:
         mutations = [
@@ -134,6 +145,7 @@ class RegistryTests(unittest.TestCase):
             ("candidates", [r"docs\file.md"]),
             ("candidates", ["C:/README.md"]),
             ("candidates", ["docs/C:README.md"]),
+            ("candidates", ["docs/\nREADME.md"]),
             ("candidates", ["README.md", "README.md"]),
             ("allow_multiple", "true"),
         ]
@@ -183,6 +195,18 @@ class RegistryTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(community_health.AuditError, "size limit"):
                 community_health.load_registry(oversized)
+
+            linked = Path(directory) / "linked.json"
+            linked.write_text(json.dumps(registry_document()), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    community_health, "is_link_or_reparse", return_value=True
+                ),
+                self.assertRaisesRegex(
+                    community_health.AuditError, "linked or a reparse point"
+                ),
+            ):
+                community_health.load_registry(linked)
 
 
 class GitHubClientTests(unittest.TestCase):
@@ -382,9 +406,54 @@ class InventoryTests(unittest.TestCase):
                 self.assertRaisesRegex(community_health.AuditError, "linked"),
             ):
                 community_health._directory_files(root, path)
+
+            with self.assertRaisesRegex(
+                community_health.AuditError, "safe repository-relative path"
+            ):
+                community_health.checked_registry_path(root, Path("../outside.json"))
+            with self.assertRaisesRegex(
+                community_health.AuditError, "safe repository-relative path"
+            ):
+                community_health.checked_registry_path(root, Path("registry\n.json"))
+            with self.assertRaisesRegex(
+                community_health.AuditError, "within the repository root"
+            ):
+                community_health.checked_registry_path(
+                    root, root.parent / "outside.json"
+                )
+            with (
+                mock.patch.object(
+                    community_health.os.path, "lexists", return_value=True
+                ),
+                mock.patch.object(
+                    community_health, "is_link_or_reparse", return_value=True
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    community_health.AuditError, "linked or reparse-point"
+                ):
+                    community_health.checked_registry_path(
+                        root, Path(".github/community-health-trackers.json")
+                    )
             with (
                 mock.patch.object(Path, "rglob", side_effect=OSError("denied")),
                 self.assertRaisesRegex(community_health.AuditError, "enumerate"),
+            ):
+                community_health._directory_files(root, path)
+            with (
+                mock.patch.object(
+                    Path,
+                    "rglob",
+                    return_value=(
+                        path / str(index)
+                        for index in range(community_health.MAX_DIRECTORY_ENTRIES + 1)
+                    ),
+                ),
+                mock.patch.object(
+                    community_health, "is_link_or_reparse", return_value=False
+                ),
+                mock.patch.object(Path, "is_file", return_value=False),
+                self.assertRaisesRegex(community_health.AuditError, "entry safety cap"),
             ):
                 community_health._directory_files(root, path)
 
@@ -664,6 +733,30 @@ class AuditAndCliTests(unittest.TestCase):
             "stale\\|status next | detail\\|text next |",
             community_health.markdown_report(report),
         )
+
+    def test_markdown_report_escapes_backticks_in_code_spans_and_cells(self) -> None:
+        report: dict[str, Any] = {
+            "repository": "owner/`repository",
+            "checked-at": "now`",
+            "summary": {"status": "attention"},
+            "community-profile": {"status": "attention"},
+            "files": [
+                {
+                    "label": "Policy`name",
+                    "paths": ["docs/a`b.md"],
+                    "tracker": "tracker`name",
+                    "status": "stale`status",
+                    "details": "detail`text",
+                }
+            ],
+            "errors": ["offline`retry"],
+        }
+
+        markdown = community_health.markdown_report(report)
+        self.assertIn("- Repository: `` owner/`repository ``", markdown)
+        self.assertIn("| Policy\\`name | `` docs/a`b.md `` |", markdown)
+        self.assertIn("| tracker\\`name | stale\\`status | detail\\`text |", markdown)
+        self.assertIn("- offline\\`retry", markdown)
 
     def test_write_text_and_parse_args(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
