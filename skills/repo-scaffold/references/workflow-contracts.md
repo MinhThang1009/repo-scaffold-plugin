@@ -25,6 +25,14 @@ allowed.
 Selected-actions preflight must follow GitHub's validated `selected_actions_url`
 so organization and enterprise policy overrides cannot be replaced by a more
 permissive repository endpoint.
+Any asset declaring `pull_request_target` also requires a separate review of the
+applicable GitHub Actions workflow-execution policy. GitHub's default policy for
+public repositories is scheduled to block that event on November 2, 2026 unless
+an applicable policy explicitly allows it. Inspect the [official
+guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
+and defer the asset when that policy cannot be verified; selected-actions
+approval does not prove event-policy eligibility, and this plugin does not change
+remote Actions policy.
 Local reusable-workflow call paths must use canonical repository-relative POSIX
 paths without traversal, backslash, or control characters. Calls must be
 supplied from the same workflow directory as their caller; a matching basename

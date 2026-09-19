@@ -10,7 +10,8 @@ project-tailored community-health files, then configure a verified GitHub.com
 repository only when the user authorizes outward-facing changes.
 
 Follow the active host, system, developer, and project instructions. Codex can use
-`AGENTS.md`; Claude Code reads `CLAUDE.md` and can import it. Read
+`AGENTS.md`; Claude Code reads `CLAUDE.md`, and v2.1.277 and later can also read
+`AGENTS.md` directly. A `CLAUDE.md` import remains useful for compatibility. Read
 `references/agent-compatibility.md` for host-specific guidance. Before generation,
 ask the user to choose exactly one supported scaffold language, `en` or `vi`, and
 use it consistently.
@@ -219,6 +220,15 @@ Every supplied local reusable workflow must declare `workflow_call`, and loops
 in the supplied local workflow graph are rejected. The supplied graph must also
 stay within GitHub's 10 workflow levels and 50 unique nested workflows per
 top-level caller.
+
+For public repositories, a supplied workflow that declares `pull_request_target`
+also needs an applicable GitHub Actions workflow-execution policy that explicitly
+allows that event. GitHub's default public-repository policy is scheduled to
+block `pull_request_target` on November 2, 2026. Review the [official policy
+guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
+and defer the asset when the event policy cannot be verified; the selected-actions
+result above does not prove event-policy eligibility, and this plugin does not
+change the remote policy.
 
 The community-health tracker registry must stay inside the repository and reject
 traversal, control characters, links, or reparse points before it is read.

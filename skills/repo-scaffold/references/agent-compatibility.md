@@ -74,10 +74,13 @@ Point that agent's skill discovery at `skills/`, or import
 repository deliberately does not claim native installation support for an
 unverified agent or invent its configuration format.
 
-Host instructions remain authoritative. Codex can use `AGENTS.md`; Claude Code
-reads `CLAUDE.md`, not `AGENTS.md` directly. For a target repository that needs
-shared instructions, use a `CLAUDE.md` containing `@AGENTS.md`. The scaffold
-ships that exact adapter as `assets/CLAUDE.md`. See the [Claude Code memory documentation](https://code.claude.com/docs/en/memory).
+Host instructions remain authoritative. Codex can use `AGENTS.md`; current Claude
+Code versions can also read `AGENTS.md` directly (v2.1.277 and later). Claude
+Code still reads `CLAUDE.md` when that file is present, and some sessions or
+providers may not support direct `AGENTS.md` loading. For a target repository
+that needs one shared instruction source across those cases, use a `CLAUDE.md`
+containing `@AGENTS.md`. The scaffold ships that exact adapter as
+`assets/CLAUDE.md`. See the [Claude Code memory documentation](https://code.claude.com/docs/en/memory).
 
 ## Multi-agent behavior
 

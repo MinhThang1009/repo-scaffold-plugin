@@ -76,10 +76,12 @@ này không tuyên bố hỗ trợ cài đặt native cho agent chưa được x
 tự tạo định dạng cấu hình riêng cho nó.
 
 Hướng dẫn của host luôn có hiệu lực cao hơn. Codex có thể dùng `AGENTS.md`;
-Claude Code đọc `CLAUDE.md`, không đọc trực tiếp `AGENTS.md`. Khi repository
-đích cần dùng chung hướng dẫn, dùng `CLAUDE.md` chứa `@AGENTS.md`. Scaffold
-cung cấp đúng adapter đó tại `assets/CLAUDE.md`. Xem [tài liệu memory của
-Claude Code](https://code.claude.com/docs/en/memory).
+các phiên bản Claude Code hiện tại cũng có thể đọc trực tiếp `AGENTS.md` (từ
+v2.1.277). Claude Code vẫn đọc `CLAUDE.md` khi file này tồn tại, và một số
+session hoặc provider có thể chưa hỗ trợ đọc trực tiếp `AGENTS.md`. Khi
+repository đích cần một nguồn hướng dẫn dùng chung trong cả các trường hợp đó,
+dùng `CLAUDE.md` chứa `@AGENTS.md`. Scaffold cung cấp đúng adapter đó tại
+`assets/CLAUDE.md`. Xem [tài liệu memory của Claude Code](https://code.claude.com/docs/en/memory).
 
 ## Hành vi multi-agent
 

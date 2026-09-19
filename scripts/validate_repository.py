@@ -7822,6 +7822,15 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 "github-actions-workflow-runs-api": {
                     "skills/repo-scaffold/references/github-setup.md",
                 },
+                "github-pull-request-target-policy": {
+                    "README.md",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                },
+                "github-actions-policies-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
                 "github-codeql-advanced-setup": {
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
