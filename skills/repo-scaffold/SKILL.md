@@ -225,10 +225,11 @@ For public repositories, a supplied workflow that declares `pull_request_target`
 also needs an applicable GitHub Actions workflow-execution policy that explicitly
 allows that event. GitHub's default public-repository policy is scheduled to
 block `pull_request_target` on November 2, 2026. Review the [official policy
-guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
-and defer the asset when the event policy cannot be verified; the selected-actions
-result above does not prove event-policy eligibility, and this plugin does not
-change the remote policy.
+guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
+The workflow-installation preflight reads inherited Actions policies and fails
+closed unless an active event rule allows the event for every supplied workflow
+path. Its selected-actions result does not prove event-policy eligibility, and
+this plugin does not change the remote policy.
 
 The community-health tracker registry must stay inside the repository and reject
 traversal, control characters, links, or reparse points before it is read.

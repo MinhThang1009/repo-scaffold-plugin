@@ -254,6 +254,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     "selected-actions"
                 ),
             },
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100": {
+                "total_count": 0,
+                "policies": [],
+            },
         }
 
     def test_allows_confirmed_actions_and_issue_workflow_capabilities(self) -> None:
@@ -798,7 +802,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 workflow_installation_preflight.workflow_capabilities([workflow]),
-                ([], ["ci.yml"], [], [], False),
+                ([], ["ci.yml"], [], [], False, []),
             )
 
     def test_permission_text_outside_permission_fields_is_not_a_requirement(
@@ -814,7 +818,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 workflow_installation_preflight.workflow_capabilities([workflow]),
-                ([], [], [], [], False),
+                ([], [], [], [], False, []),
             )
 
     def test_rejects_unparseable_or_ambiguous_permission_documents(self) -> None:
@@ -1929,6 +1933,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     [],
                     [],
                     False,
+                    [],
                 ),
             )
 
@@ -1961,7 +1966,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 workflow_installation_preflight.workflow_capabilities([workflow]),
-                ([], [], [], [], False),
+                ([], [], [], [], False, []),
             )
 
             for content, message in (
@@ -5445,6 +5450,22 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
 
     def test_shipped_code_scanning_companions_are_accepted_together(self) -> None:
         self.configure()
+        FakeClient.responses[
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+        ] = {
+            "total_count": 1,
+            "policies": [{"id": 7}],
+        }
+        FakeClient.responses["repos/octo/example/actions/policies/7"] = {
+            "id": 7,
+            "enforcement": "active",
+            "rules": [
+                {
+                    "type": "restrict_action_events",
+                    "parameters": {"allowed_events": ["pull_request_target"]},
+                }
+            ],
+        }
         assets = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
         with mock.patch.object(
             workflow_installation_preflight, "GitHubClient", FakeClient
@@ -5543,6 +5564,302 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "default branch",
             ):
                 workflow_installation_preflight.workflow_capabilities([workflow])
+
+    def test_pull_request_target_requires_an_active_event_policy(self) -> None:
+        self.configure()
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "target.yml"
+            workflow.write_text("on: pull_request_target\njobs: {}\n", encoding="utf-8")
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                result = workflow_installation_preflight.run(
+                    arguments(workflow=[workflow])
+                )
+
+            self.assertEqual(
+                result["decision"],
+                "allow-pull-request-target-event-before-installing-workflows",
+            )
+            self.assertEqual(result["pull_request_target_workflows"], ["target.yml"])
+            self.assertFalse(result["pull_request_target_policy_verified"])
+
+            FakeClient.responses[
+                "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+            ] = {
+                "total_count": 1,
+                "policies": [{"id": 7}],
+            }
+            FakeClient.responses["repos/octo/example/actions/policies/7"] = {
+                "id": 7,
+                "enforcement": "active",
+                "rules": [
+                    {
+                        "type": "restrict_action_events",
+                        "parameters": {"allowed_events": ["pull_request_target"]},
+                    }
+                ],
+            }
+            with mock.patch.object(
+                workflow_installation_preflight, "GitHubClient", FakeClient
+            ):
+                approved = workflow_installation_preflight.run(
+                    arguments(workflow=[workflow])
+                )
+
+        self.assertEqual(approved["decision"], "may-install-workflow-assets")
+        self.assertTrue(approved["pull_request_target_policy_verified"])
+
+    def test_pull_request_target_policy_is_path_aware_and_fail_closed(self) -> None:
+        allowed = {
+            "total_count": 1,
+            "policies": [
+                {
+                    "enforcement": "active",
+                    "conditions": {
+                        "workflow_path": {
+                            "include": [".github/workflows/target.yml"],
+                            "exclude": [],
+                        }
+                    },
+                    "rules": [
+                        {
+                            "type": "restrict_action_events",
+                            "parameters": {"allowed_events": ["pull_request_target"]},
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertTrue(
+            workflow_installation_preflight.actions_event_policy_allows(
+                allowed, ["target.yml"]
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.actions_event_policy_allows(
+                allowed, ["other.yml"]
+            )
+        )
+        denied = json.loads(json.dumps(allowed))
+        denied["policies"][0]["rules"][0]["parameters"]["allowed_events"] = [
+            "pull_request"
+        ]
+        self.assertFalse(
+            workflow_installation_preflight.actions_event_policy_allows(
+                denied, ["target.yml"]
+            )
+        )
+        with self.assertRaisesRegex(
+            workflow_installation_preflight.InspectionError,
+            "incomplete or invalid",
+        ):
+            workflow_installation_preflight.actions_event_policy_allows(
+                {"total_count": 1, "policies": []}, ["target.yml"]
+            )
+
+    def test_actions_policy_index_expands_validated_policy_details(self) -> None:
+        self.configure()
+        client = FakeClient("github.com")
+        self.assertEqual(
+            workflow_installation_preflight.load_actions_policy_details(
+                client, "octo", "example"
+            ),
+            {"total_count": 0, "policies": []},
+        )
+        FakeClient.responses[
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+        ] = {"total_count": 1, "policies": [{"id": 7, "name": "events"}]}
+        FakeClient.responses["repos/octo/example/actions/policies/7"] = {
+            "id": 7,
+            "enforcement": "active",
+            "rules": [],
+        }
+        self.assertEqual(
+            workflow_installation_preflight.load_actions_policy_details(
+                client, "octo", "example"
+            )["policies"],
+            [{"id": 7, "enforcement": "active", "rules": []}],
+        )
+
+        invalid_indexes: tuple[object, ...] = (
+            [],
+            {"total_count": 1, "policies": []},
+            {"total_count": 0, "policies": [{"id": 7}]},
+            {"total_count": 1, "policies": [None]},
+            {"total_count": 1, "policies": [{"id": 0}]},
+            {"total_count": 1, "policies": [{"id": True}]},
+            {
+                "total_count": workflow_installation_preflight.MAX_ACTIONS_POLICY_ENTRIES
+                + 1,
+                "policies": [
+                    {"id": index}
+                    for index in range(
+                        1,
+                        workflow_installation_preflight.MAX_ACTIONS_POLICY_ENTRIES + 2,
+                    )
+                ],
+            },
+        )
+        for invalid_index in invalid_indexes:
+            with self.subTest(invalid_index=invalid_index):
+                FakeClient.responses[
+                    "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+                ] = invalid_index
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.load_actions_policy_details(
+                        client, "octo", "example"
+                    )
+
+        FakeClient.responses[
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+        ] = {"total_count": 1, "policies": [{"id": 7}]}
+        for detail in (None, {"id": 8}):
+            with self.subTest(detail=detail):
+                FakeClient.responses["repos/octo/example/actions/policies/7"] = detail
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.load_actions_policy_details(
+                        client, "octo", "example"
+                    )
+
+    def test_pull_request_target_policy_validation_rejects_ambiguous_shapes(
+        self,
+    ) -> None:
+        self.assertTrue(
+            workflow_installation_preflight.actions_event_policy_allows({}, [])
+        )
+        for document in (None, {"total_count": 1, "policies": [None]}):
+            with self.subTest(document=document):
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.actions_event_policy_allows(
+                        document, ["target.yml"]
+                    )
+
+        for document in (
+            {"total_count": 1, "policies": [{"enforcement": "unknown"}]},
+            {
+                "total_count": 1,
+                "policies": [{"enforcement": "active", "rules": "bad"}],
+            },
+            {
+                "total_count": 1,
+                "policies": [{"enforcement": "active", "rules": [None]}],
+            },
+            {
+                "total_count": 1,
+                "policies": [
+                    {
+                        "enforcement": "active",
+                        "rules": [
+                            {
+                                "type": "restrict_action_events",
+                                "parameters": {},
+                                "extra": True,
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "total_count": 1,
+                "policies": [
+                    {
+                        "enforcement": "active",
+                        "rules": [
+                            {
+                                "type": "restrict_action_events",
+                                "parameters": {"allowed_events": [""]},
+                            }
+                        ],
+                    }
+                ],
+            },
+        ):
+            with self.subTest(document=document):
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.actions_event_policy_allows(
+                        document, ["target.yml"]
+                    )
+
+        self.assertFalse(
+            workflow_installation_preflight.actions_event_policy_allows(
+                {
+                    "total_count": 1,
+                    "policies": [
+                        {"enforcement": "active", "rules": [{"type": "other"}]}
+                    ],
+                },
+                ["target.yml"],
+            )
+        )
+
+        self.assertFalse(
+            workflow_installation_preflight.actions_event_policy_allows(
+                {
+                    "total_count": 1,
+                    "policies": [{"enforcement": "evaluate", "rules": []}],
+                },
+                ["target.yml"],
+            )
+        )
+        conditions_cases: tuple[dict[str, object], ...] = (
+            {"unexpected": {}},
+            {"workflow_path": {"include": []}},
+        )
+        for conditions in conditions_cases:
+            with self.subTest(conditions=conditions):
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.action_policy_workflow_path_applies(
+                        {"conditions": conditions}, "target.yml"
+                    )
+        self.assertTrue(
+            workflow_installation_preflight.action_policy_workflow_path_applies(
+                {"conditions": {}}, "target.yml"
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.action_policy_workflow_path_applies(
+                {"conditions": {"workflow_path": None}}, "target.yml"
+            )
+        )
+        workflow_path_cases: tuple[dict[str, object], ...] = (
+            {"include": "bad", "exclude": []},
+            {"include": [""], "exclude": []},
+            {"include": ["target.yml"], "exclude": ["~ALL"]},
+            {"include": ["~ALL", "target.yml"], "exclude": []},
+            {"include": ["target\\.yml"], "exclude": []},
+        )
+        for workflow_path in workflow_path_cases:
+            with self.subTest(workflow_path=workflow_path):
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.action_policy_workflow_path_applies(
+                        {"conditions": {"workflow_path": workflow_path}},
+                        "target.yml",
+                    )
+        self.assertFalse(
+            workflow_installation_preflight.action_policy_workflow_path_applies(
+                {
+                    "conditions": {
+                        "workflow_path": {
+                            "include": [],
+                            "exclude": [".github/workflows/target.yml"],
+                        }
+                    }
+                },
+                "target.yml",
+            )
+        )
+
+        document_cases: tuple[dict[str, object], ...] = (
+            {"on": ["push", 1]},
+            {"on": 1},
+        )
+        for document in document_cases:
+            with self.subTest(document=document):
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.workflow_event_is_configured(
+                        document, "pull_request_target"
+                    )
 
     def test_pull_request_write_token_gate_ignores_read_only_and_target_workflows(
         self,

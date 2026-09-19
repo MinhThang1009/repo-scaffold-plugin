@@ -12184,8 +12184,12 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/references/workflow-contracts.md",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                 ],
-                "github-actions-policies-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-actions-policies-api": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                ],
                 "github-codeql-advanced-setup": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
                 "github-codeql-default-setup-api": "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
                 "github-code-scanning-sarif-upload": "skills/repo-scaffold/scripts/scorecard_preflight.py",

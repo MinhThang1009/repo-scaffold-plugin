@@ -11,6 +11,7 @@ import shlex
 import stat
 from collections.abc import Iterator
 from datetime import date, datetime, timezone
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from zoneinfo import available_timezones
@@ -35,6 +36,7 @@ CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION = 3
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
+MAX_ACTIONS_POLICY_ENTRIES = 256
 CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
 CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
 FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
@@ -168,6 +170,9 @@ FRESHNESS_REVIEWED_ACTION_REFERENCES = {
     "actions/checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-python": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
 }
+PULL_REQUEST_TARGET_EVENT = "pull_request_target"
+ACTION_POLICY_ENFORCEMENTS = frozenset({"disabled", "evaluate", "active"})
+ACTION_POLICIES_QUERY = "?has_parents=true&per_page=100"
 FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
     "actions/checkout": {
         "ref": "${{ github.event.repository.default_branch }}",
@@ -3159,9 +3164,157 @@ def selected_actions_policy(document: Any) -> dict[str, bool | list[str]]:
     }
 
 
+def workflow_event_is_configured(document: dict[str, Any], event: str) -> bool:
+    """Return whether a parsed workflow declares one supported event."""
+    triggers = document.get("on")
+    if isinstance(triggers, dict):
+        return event in triggers
+    if isinstance(triggers, list):
+        if not all(isinstance(trigger, str) for trigger in triggers):
+            raise InspectionError("Workflow event trigger list is invalid.")
+        return event in triggers
+    if isinstance(triggers, str):
+        return triggers == event
+    if triggers is None:
+        return False
+    raise InspectionError("Workflow event trigger is invalid.")
+
+
+def action_policy_workflow_path_applies(
+    policy: dict[str, Any], workflow_name: str
+) -> bool:
+    """Return whether an Actions policy applies to an installed workflow path."""
+    conditions = policy.get("conditions")
+    if conditions is None:
+        return True
+    if not isinstance(conditions, dict) or set(conditions) - {"workflow_path"}:
+        raise InspectionError("Actions policy conditions are invalid.")
+    workflow_condition = conditions.get("workflow_path")
+    if workflow_condition is None:
+        return True
+    if not isinstance(workflow_condition, dict) or set(workflow_condition) != {
+        "include",
+        "exclude",
+    }:
+        raise InspectionError("Actions policy workflow path condition is invalid.")
+
+    include = workflow_condition["include"]
+    exclude = workflow_condition["exclude"]
+    if (
+        not isinstance(include, list)
+        or not isinstance(exclude, list)
+        or any(
+            not isinstance(pattern, str)
+            or not pattern
+            or any(ord(character) < 0x20 for character in pattern)
+            or "\\" in pattern
+            for pattern in (*include, *exclude)
+        )
+        or "~ALL" in exclude
+        or "~ALL" in include
+        and len(include) != 1
+    ):
+        raise InspectionError("Actions policy workflow path patterns are invalid.")
+
+    workflow_path = f".github/workflows/{workflow_name}"
+    included = not include or any(
+        pattern == "~ALL" or fnmatchcase(workflow_path, pattern) for pattern in include
+    )
+    excluded = any(fnmatchcase(workflow_path, pattern) for pattern in exclude)
+    return included and not excluded
+
+
+def load_actions_policy_details(
+    client: GitHubClient, owner: str, repo: str
+) -> dict[str, Any]:
+    """Expand the inherited policy index into validated policy documents."""
+    index = client.json(f"repos/{owner}/{repo}/actions/policies{ACTION_POLICIES_QUERY}")
+    if not isinstance(index, dict):
+        raise InspectionError("Actions policies response is invalid.")
+    policies = index.get("policies")
+    total_count = index.get("total_count")
+    if (
+        not isinstance(policies, list)
+        or len(policies) > MAX_ACTIONS_POLICY_ENTRIES
+        or type(total_count) is not int
+        or total_count != len(policies)
+    ):
+        raise InspectionError("Actions policies response is incomplete or invalid.")
+
+    details: list[dict[str, Any]] = []
+    for summary in policies:
+        policy_id = summary.get("id") if isinstance(summary, dict) else None
+        if type(policy_id) is not int or policy_id < 1:
+            raise InspectionError("Actions policy summary has an invalid ID.")
+        detail = client.json(f"repos/{owner}/{repo}/actions/policies/{policy_id}")
+        if not isinstance(detail, dict) or detail.get("id") != policy_id:
+            raise InspectionError("Actions policy detail does not match its summary.")
+        details.append(detail)
+    return {"total_count": total_count, "policies": details}
+
+
+def actions_event_policy_allows(document: Any, workflow_names: list[str]) -> bool:
+    """Require active inherited Actions policies to allow every target workflow."""
+    if not workflow_names:
+        return True
+    if not isinstance(document, dict):
+        raise InspectionError("Actions policies response is invalid.")
+    policies = document.get("policies")
+    total_count = document.get("total_count")
+    if (
+        not isinstance(policies, list)
+        or len(policies) > MAX_ACTIONS_POLICY_ENTRIES
+        or type(total_count) is not int
+        or total_count != len(policies)
+    ):
+        raise InspectionError("Actions policies response is incomplete or invalid.")
+
+    applicable_event_policy = {workflow_name: False for workflow_name in workflow_names}
+    for policy in policies:
+        if not isinstance(policy, dict):
+            raise InspectionError("Actions policy entry is invalid.")
+        enforcement = policy.get("enforcement")
+        if enforcement not in ACTION_POLICY_ENFORCEMENTS:
+            raise InspectionError("Actions policy enforcement is invalid.")
+        if enforcement != "active":
+            continue
+        rules = policy.get("rules", [])
+        if not isinstance(rules, list):
+            raise InspectionError("Actions policy rules are invalid.")
+        applicable_workflows = [
+            workflow_name
+            for workflow_name in workflow_names
+            if action_policy_workflow_path_applies(policy, workflow_name)
+        ]
+        for rule in rules:
+            if not isinstance(rule, dict):
+                raise InspectionError("Actions policy rule is invalid.")
+            if rule.get("type") != "restrict_action_events":
+                continue
+            if set(rule) != {"type", "parameters"}:
+                raise InspectionError("Actions event policy rule is invalid.")
+            parameters = rule["parameters"]
+            allowed_events = (
+                parameters.get("allowed_events")
+                if isinstance(parameters, dict)
+                else None
+            )
+            if not isinstance(allowed_events, list) or any(
+                not isinstance(event, str) or not event.strip()
+                for event in allowed_events
+            ):
+                raise InspectionError("Actions event policy rule is invalid.")
+            for workflow_name in applicable_workflows:
+                applicable_event_policy[workflow_name] = True
+                if PULL_REQUEST_TARGET_EVENT not in allowed_events:
+                    return False
+
+    return all(applicable_event_policy.values())
+
+
 def workflow_capabilities(
     workflows: list[Path],
-) -> tuple[list[str], list[str], list[str], list[str], bool]:
+) -> tuple[list[str], list[str], list[str], list[str], bool, list[str]]:
     """Read external references and workflow capabilities that require confirmation."""
     if not workflows:
         raise InspectionError(
@@ -3175,6 +3328,7 @@ def workflow_capabilities(
     issue_workflows: set[str] = set()
     pull_request_write_workflows: set[str] = set()
     code_scanning_gate_workflows: set[str] = set()
+    pull_request_target_workflows: set[str] = set()
     freshness_reminder_supplied = False
     workflow_inputs = {workflow.name: workflow for workflow in workflows}
     if len(workflow_inputs) != len(workflows):
@@ -3270,6 +3424,10 @@ def workflow_capabilities(
                 )
         if requires_pull_request_write_tokens(text, workflow):
             pull_request_write_workflows.add(workflow.name)
+        if workflow_event_is_configured(
+            workflow_documents[workflow], PULL_REQUEST_TARGET_EVENT
+        ):
+            pull_request_target_workflows.add(workflow.name)
         if is_code_scanning_gate(text, workflow):
             code_scanning_gate_workflows.add(workflow.name)
         if is_freshness_reminder_workflow(text, workflow):
@@ -3297,6 +3455,7 @@ def workflow_capabilities(
         sorted(pull_request_write_workflows, key=str.casefold),
         sorted(code_scanning_gate_workflows, key=str.casefold),
         freshness_reminder_supplied,
+        sorted(pull_request_target_workflows, key=str.casefold),
     )
 
 
@@ -3359,6 +3518,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError("Disabled repositories cannot install workflow assets.")
     issues_enabled = require_boolean(repository, "has_issues")
     visibility = repository.get("visibility")
+    if not isinstance(visibility, str) or visibility not in {
+        "public",
+        "private",
+        "internal",
+    }:
+        raise InspectionError("Repository response has an invalid visibility value.")
 
     (
         external_action_references,
@@ -3366,10 +3531,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         pull_request_write_workflows,
         code_scanning_gate_workflows,
         freshness_reminder_supplied,
+        pull_request_target_workflows,
     ) = (
         workflow_capabilities(args.workflow)
         if args.workflow
-        else ([], [], [], [], False)
+        else ([], [], [], [], False, [])
     )
     requires_external_actions = args.require_external_actions or bool(
         external_action_references
@@ -3386,14 +3552,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         selected_policy = selected_actions_policy(
             client.json(selected_actions_endpoint(actions_permissions_response))
         )
-        if not isinstance(visibility, str) or visibility not in {
-            "public",
-            "private",
-            "internal",
-        }:
-            raise InspectionError(
-                "Repository response has an invalid visibility value."
-            )
         if not external_action_references:
             (
                 external_action_references,
@@ -3401,6 +3559,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 pull_request_write_workflows,
                 code_scanning_gate_workflows,
                 freshness_reminder_supplied,
+                pull_request_target_workflows,
             ) = workflow_capabilities(args.workflow)
         unapproved_action_references = [
             reference
@@ -3411,6 +3570,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 public_repository=visibility == "public",
             )
         ]
+    pull_request_target_policy_verified = True
+    if visibility == "public" and pull_request_target_workflows:
+        policies = load_actions_policy_details(client, owner, repo)
+        pull_request_target_policy_verified = actions_event_policy_allows(
+            policies, pull_request_target_workflows
+        )
     external_actions_verified = actions_enabled and (
         not requires_external_actions
         or allowed_actions == "all"
@@ -3440,6 +3605,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         and not external_actions_verified
     ):
         decision = "allow-selected-actions-before-installing-workflows"
+    elif not pull_request_target_policy_verified:
+        decision = "allow-pull-request-target-event-before-installing-workflows"
     elif not issue_workflows_eligible:
         decision = "enable-issues-before-installing-issue-workflows"
     elif not pull_request_write_tokens_confirmed:
@@ -3460,6 +3627,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "external_action_references": external_action_references,
         "unapproved_action_references": unapproved_action_references,
         "selected_actions_policy": selected_policy,
+        "pull_request_target_workflows": pull_request_target_workflows,
+        "pull_request_target_policy_verified": pull_request_target_policy_verified,
         "issues_enabled": issues_enabled,
         "requires_issues": requires_issues,
         "detected_issue_workflows": detected_issue_workflows,

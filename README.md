@@ -61,8 +61,10 @@ Public repositories that install an asset using `pull_request_target` also need
 an applicable GitHub Actions workflow-execution policy that explicitly allows
 that event. GitHub's default public-repository policy is scheduled to block
 `pull_request_target` on November 2, 2026; the workflow-installation preflight's
-selected-actions result does not prove event-policy eligibility. Review the
-[official policy guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
+selected-actions result does not prove event-policy eligibility. The
+workflow-installation preflight now reads inherited Actions policies and fails
+closed unless an active event rule allows the event for every supplied workflow
+path. Review the [official policy guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
 before installing those assets. This plugin does not change that remote policy.
 
 ## 2. Requirements

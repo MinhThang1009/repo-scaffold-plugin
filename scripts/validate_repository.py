@@ -7827,9 +7827,11 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/references/workflow-contracts.md",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                 },
                 "github-actions-policies-api": {
                     "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                 },
                 "github-codeql-advanced-setup": {
                     "skills/repo-scaffold/SKILL.md",

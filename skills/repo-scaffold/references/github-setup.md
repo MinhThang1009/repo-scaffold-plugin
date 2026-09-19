@@ -301,11 +301,12 @@ Any supplied workflow that declares `pull_request_target` needs a separate
 event-policy review for public repositories. GitHub's default policy is scheduled
 to block that event on November 2, 2026 unless an applicable workflow-execution
 policy explicitly allows it. Inspect the applicable inherited policies with the
-read-only [Actions policies API](https://docs.github.com/en/rest/actions/policies),
-confirm a `restrict_action_events` rule includes `pull_request_target` for the
-workflow path, and defer installation when that proof is unavailable. The
-workflow-installation preflight's selected-actions result does not establish this
-event-policy proof, and the plugin does not create or modify the remote policy.
+read-only [Actions policies API](https://docs.github.com/en/rest/actions/policies).
+The workflow-installation preflight performs this check and requires an active
+`restrict_action_events` rule that includes `pull_request_target` for every
+supplied workflow path. Defer installation when that proof is unavailable. The
+selected-actions result does not establish this event-policy proof, and the
+plugin does not create or modify the remote policy.
 For a project with a runnable test or lint command, the workflow phase must
 install a configured CI workflow or record an explicit user decision to defer
 it before the scaffold is declared complete. For every applicable approved

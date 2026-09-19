@@ -264,7 +264,8 @@
         "README.md",
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
-        "skills/repo-scaffold/references/workflow-contracts.md"
+        "skills/repo-scaffold/references/workflow-contracts.md",
+        "skills/repo-scaffold/scripts/workflow_installation_preflight.py"
       ],
       "required-markers": [
         "pull_request_target",
@@ -280,7 +281,8 @@
       "url": "https://docs.github.com/en/rest/actions/policies",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
-        "skills/repo-scaffold/references/github-setup.md"
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/workflow_installation_preflight.py"
       ],
       "required-markers": [
         "List repository Actions policies",
