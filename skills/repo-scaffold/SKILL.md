@@ -404,7 +404,7 @@ under the active project workflow. Before creating or editing a PR body, read
 ### 7. Verify
 
 - Run `python scripts/validate_scaffold.py --repository-root .`.
-- Run `python scripts/ci_toolchain.py run-markdownlint` when Node.js is
+- Run `python scripts/ci_toolchain.py run-markdownlint` when Node.js 22 or later is
   available; otherwise report it as skipped and verify `docs-contract` after
   push.
 - Parse installed workflows and verify real checks before branch protection.

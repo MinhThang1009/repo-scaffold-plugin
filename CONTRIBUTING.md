@@ -41,7 +41,7 @@ The plugin has no build step. Development checks require:
 - mutmut, on Linux, macOS, or Windows through WSL
 - Ruff
 - mypy
-- Node.js with `npx` for markdownlint
+- Node.js 22 or later with `npx` for markdownlint
 - actionlint
 - ShellCheck
 - `pip-tools`, only when regenerating a lock; record the version used in the

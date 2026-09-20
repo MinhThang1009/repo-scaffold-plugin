@@ -5,7 +5,7 @@
   "npm-tools": {
     "markdownlint-cli2": {
       "package": "markdownlint-cli2",
-      "version": "0.23.2"
+      "version": "0.23.3"
     }
   },
   "standalone-tools": {}
