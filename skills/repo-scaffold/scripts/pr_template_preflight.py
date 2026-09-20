@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -20,6 +22,47 @@ TEMPLATE_MARKER_PATTERN = re.compile(
     r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",
     re.MULTILINE,
 )
+
+
+def is_link_or_reparse(path: Path) -> bool:
+    """Return whether an existing path is a link or Windows reparse point."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & reparse_flag
+    )
+
+
+def path_has_link_or_reparse(path: Path, repository_root: Path) -> bool:
+    """Return whether a repository-relative path crosses a link-like boundary."""
+    boundary = Path(os.path.abspath(repository_root))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError:
+        return True
+    current = boundary
+    for part in (None, *relative.parts):
+        if part is not None:
+            current /= part
+        if is_link_or_reparse(current):
+            return True
+        if not os.path.lexists(current):
+            break
+    return False
+
+
+def safe_repository_root(repository_root: Path) -> Path:
+    """Return an absolute repository root without following linked components."""
+    root = Path(os.path.abspath(repository_root))
+    if path_has_link_or_reparse(root, root):
+        raise ValueError(f"repository root is linked or a reparse point: {root}")
+    if not root.is_dir():
+        raise ValueError(f"repository root is not a directory: {root}")
+    return root
 
 
 def required_template(title: str) -> str:
@@ -45,11 +88,17 @@ def select_template(title: str, requested_template: str | None = None) -> str:
 
 def template_catalog(repository_root: Path) -> dict[str, Path]:
     """Return the checked-in template catalog and reject ambiguous identifiers."""
-    root = repository_root.resolve()
+    root = safe_repository_root(repository_root)
     catalog = {"default": root / ".github" / "PULL_REQUEST_TEMPLATE.md"}
     directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+    if path_has_link_or_reparse(catalog["default"], root) or path_has_link_or_reparse(
+        directory, root
+    ):
+        raise ValueError("trusted PR template catalog contains a linked path")
     if directory.is_dir():
         for path in sorted(directory.glob("*.md")):
+            if path_has_link_or_reparse(path, root):
+                raise ValueError(f"trusted PR template path is linked: {path}")
             template_id = path.stem
             if TEMPLATE_ID_PATTERN.fullmatch(template_id) is None:
                 raise ValueError(
@@ -65,11 +114,11 @@ def template_catalog(repository_root: Path) -> dict[str, Path]:
 
 def template_path(repository_root: Path, template: str) -> Path:
     """Return a selected template only when it has its required marker."""
-    catalog = template_catalog(repository_root)
+    root = safe_repository_root(repository_root)
+    catalog = template_catalog(root)
     path = catalog.get(template)
     if path is None:
         if template == "default" or template in TEMPLATE_BY_TITLE_TYPE.values():
-            root = repository_root.resolve()
             expected = (
                 root / ".github" / "PULL_REQUEST_TEMPLATE.md"
                 if template == "default"
@@ -82,6 +131,8 @@ def template_path(repository_root: Path, template: str) -> Path:
         )
     if not path.is_file():
         raise ValueError(f"trusted PR template is missing: {path}")
+    if path_has_link_or_reparse(path, root):
+        raise ValueError(f"trusted PR template path is linked: {path}")
     try:
         markers = TEMPLATE_MARKER_PATTERN.findall(path.read_text(encoding="utf-8"))
     except OSError as error:
@@ -126,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
-    relative = path.relative_to(arguments.repository_root.resolve())
+    relative = path.relative_to(safe_repository_root(arguments.repository_root))
     print(f"Selected PR template: {relative.as_posix()}")
     print(
         "Copy this UTF-8 template to a body file, complete its required checklist, "

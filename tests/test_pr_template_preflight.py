@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import runpy
+import stat
 import sys
 import tempfile
 import unittest
@@ -174,6 +175,84 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "duplicate pull-request"):
                 pr_template_preflight.template_catalog(root)
+
+    def test_rejects_linked_or_reparse_repository_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+
+            with mock.patch.object(
+                pr_template_preflight, "path_has_link_or_reparse", return_value=True
+            ):
+                with self.assertRaisesRegex(ValueError, "linked"):
+                    pr_template_preflight.template_catalog(root)
+
+            self.assertTrue(
+                pr_template_preflight.path_has_link_or_reparse(root.parent, root)
+            )
+            self.assertFalse(
+                pr_template_preflight.path_has_link_or_reparse(
+                    root / ".github" / "missing", root
+                )
+            )
+            with mock.patch.object(
+                pr_template_preflight, "is_link_or_reparse", return_value=True
+            ):
+                self.assertTrue(
+                    pr_template_preflight.path_has_link_or_reparse(root, root)
+                )
+            with mock.patch.object(
+                Path,
+                "lstat",
+                return_value=mock.Mock(st_mode=stat.S_IFLNK, st_file_attributes=0),
+            ):
+                self.assertTrue(pr_template_preflight.is_link_or_reparse(root))
+
+            with self.assertRaisesRegex(ValueError, "not a directory"):
+                pr_template_preflight.safe_repository_root(root / "missing")
+
+            with mock.patch.object(
+                pr_template_preflight,
+                "path_has_link_or_reparse",
+                side_effect=[False, True],
+            ):
+                with self.assertRaisesRegex(ValueError, "catalog contains a linked"):
+                    pr_template_preflight.template_catalog(root)
+
+            with mock.patch.object(
+                pr_template_preflight,
+                "path_has_link_or_reparse",
+                side_effect=[False, False, False, True],
+            ):
+                with self.assertRaisesRegex(ValueError, "template path is linked"):
+                    pr_template_preflight.template_catalog(root)
+
+            selected = root / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md"
+            with (
+                mock.patch.object(
+                    pr_template_preflight,
+                    "safe_repository_root",
+                    return_value=root,
+                ),
+                mock.patch.object(
+                    pr_template_preflight,
+                    "template_catalog",
+                    return_value={"security": selected},
+                ),
+                mock.patch.object(
+                    pr_template_preflight,
+                    "path_has_link_or_reparse",
+                    return_value=True,
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "template path is linked"):
+                    pr_template_preflight.template_path(root, "security")
+            with mock.patch.object(
+                Path,
+                "lstat",
+                return_value=mock.Mock(st_mode=0, st_file_attributes=0x400),
+            ):
+                self.assertTrue(pr_template_preflight.is_link_or_reparse(root))
 
     def test_rejects_nonfile_or_unreadable_selected_template(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
