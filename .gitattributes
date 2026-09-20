@@ -12,6 +12,16 @@
 
 # Keep repository-only development files out of generated source archives.
 /.github/**       export-ignore
+# The plugin release archive includes these README-linked policy and reminder
+# files so the distributed README remains self-contained.
+/.github/ci-toolchain.json            -export-ignore
+/.github/freshness-trackers.json      -export-ignore
+/.github/official-docs-trackers.json  -export-ignore
+/.github/python-support.json          -export-ignore
+/.github/workflows                    -export-ignore
+/.github/workflows/**                 export-ignore
+/.github/workflows/freshness.yml      -export-ignore
+/.github/workflows/official-docs.yml  -export-ignore
 /.gitattributes   export-ignore
 /.gitignore       export-ignore
 /.editorconfig    export-ignore
@@ -22,6 +32,7 @@
 /requirements-mutation.in export-ignore
 /requirements-mutation.txt export-ignore
 /PLUGIN_SUBMISSION.md export-ignore
+/PLUGIN_SUBMISSION.md -export-ignore
 scripts/**        export-ignore
 tests/**          export-ignore
 

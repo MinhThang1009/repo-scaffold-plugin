@@ -33,7 +33,8 @@ submission flow](https://developers.openai.com/plugins/guides/submit-claude-plug
 The release ZIP qualifies for that path: it has one `repo-scaffold/` root with a
 nonempty `.claude-plugin/plugin.json` and the shared
 `skills/repo-scaffold/SKILL.md` plus its referenced scripts, references, and
-assets. The archive also contains `.codex-plugin/plugin.json` for direct Codex
+assets. Its packaged README retains every first-party relative documentation
+target that it references. The archive also contains `.codex-plugin/plugin.json` for direct Codex
 and local-marketplace installation. The Skills-only portal converts the Claude
 manifest into a Codex manifest and adds any missing interface defaults during
 review.

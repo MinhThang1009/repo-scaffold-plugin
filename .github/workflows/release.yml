@@ -164,7 +164,16 @@ jobs:
             --format=zip \
             --prefix="repo-scaffold/" \
             --output "dist/repo-scaffold-plugin-${artifact_tag}.zip" \
-            HEAD -- .agents .claude-plugin .codex-plugin skills README.md LICENSE
+            HEAD -- .agents .claude-plugin .codex-plugin skills \
+              .github/ci-toolchain.json \
+              .github/freshness-trackers.json \
+              .github/official-docs-trackers.json \
+              .github/python-support.json \
+              .github/workflows/freshness.yml \
+              .github/workflows/official-docs.yml \
+              README.md LICENSE CODE_OF_CONDUCT.md CONTRIBUTING.md \
+              GOVERNANCE.md PLUGIN_SUBMISSION.md PRIVACY.md SECURITY.md \
+              SUPPORT.md TERMS.md
 
       - name: Validate release artifacts
         shell: bash

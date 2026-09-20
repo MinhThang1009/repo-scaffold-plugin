@@ -8,6 +8,7 @@ import configparser
 import importlib
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -48,6 +49,28 @@ MUTATION_PLAN_TIMEOUT_MINUTES = "360"
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
+RELEASE_ARCHIVE_PATHS = (
+    ".agents",
+    ".claude-plugin",
+    ".codex-plugin",
+    "skills",
+    ".github/ci-toolchain.json",
+    ".github/freshness-trackers.json",
+    ".github/official-docs-trackers.json",
+    ".github/python-support.json",
+    ".github/workflows/freshness.yml",
+    ".github/workflows/official-docs.yml",
+    "README.md",
+    "LICENSE",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "GOVERNANCE.md",
+    "PLUGIN_SUBMISSION.md",
+    "PRIVACY.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "TERMS.md",
+)
 COMMUNITY_HEALTH_TRACKER_KEYS = frozenset({"schema-version", "files"})
 OFFICIAL_DOCS_TRACKER_KEYS = frozenset({"schema-version", "claims"})
 CONTAINER_IMAGE_REFERENCE_PATTERN = re.compile(
@@ -6113,6 +6136,16 @@ def validate_release_attestation(repository_root: Path) -> list[str]:
                     f"{relative}: archive build must use git archive with "
                     "--worktree-attributes"
                 )
+            elif relative == ".github/workflows/release.yml":
+                normalized_archive_run = " ".join(
+                    token for token in archive_steps[0]["run"].split() if token != "\\"
+                )
+                expected_archive_command = "HEAD -- " + " ".join(RELEASE_ARCHIVE_PATHS)
+                if expected_archive_command not in normalized_archive_run:
+                    problems.append(
+                        f"{relative}: archive build must include the canonical "
+                        "README-closure path set"
+                    )
 
         if not isinstance(attest, dict):
             problems.append(f"{relative}: attest job is missing")
@@ -8411,14 +8444,7 @@ def validate_release_archive(repository_root: Path) -> list[str]:
     git = resolve_path_executable("git", forbidden_root=source_root)
     if git is None:
         return ["release archive: git is unavailable outside the repository"]
-    archive_paths = (
-        ".agents",
-        ".claude-plugin",
-        ".codex-plugin",
-        "skills",
-        "README.md",
-        "LICENSE",
-    )
+    archive_paths = RELEASE_ARCHIVE_PATHS
     with tempfile.TemporaryDirectory(prefix="repo-scaffold-archive-") as directory:
         archive = Path(directory) / "plugin.zip"
         command = [
@@ -8470,6 +8496,52 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                         problems.append(
                             f"release archive: symbolic link {item.filename!r}"
                         )
+                for item in bundle.infolist():
+                    if item.is_dir() or not item.filename.casefold().endswith(".md"):
+                        continue
+                    try:
+                        text = bundle.read(item).decode("utf-8")
+                    except (UnicodeDecodeError, OSError) as error:
+                        problems.append(
+                            f"release archive: {item.filename}: could not read Markdown: {error}"
+                        )
+                        continue
+                    for destination in markdown_link_destinations(text):
+                        decoded_destination = unquote(destination)
+                        parsed = urlsplit(destination)
+                        if (
+                            not destination
+                            or destination.startswith(("#", "/", "//"))
+                            or TEMPLATE_TOKEN.search(decoded_destination)
+                            or parsed.scheme
+                        ):
+                            continue
+                        decoded_path = unquote(parsed.path)
+                        if "\x00" in decoded_path:
+                            problems.append(
+                                f"release archive: {item.filename}: relative link has an invalid path: {destination}"
+                            )
+                            continue
+                        normalized = posixpath.normpath(
+                            posixpath.join(
+                                PurePosixPath(item.filename).parent.as_posix(),
+                                decoded_path,
+                            )
+                        )
+                        if (
+                            normalized == "."
+                            or normalized.startswith("../")
+                            or normalized.startswith("/")
+                            or not normalized.startswith("repo-scaffold/")
+                        ):
+                            problems.append(
+                                f"release archive: {item.filename}: relative link escapes archive: {destination}"
+                            )
+                            continue
+                        if normalized not in names and f"{normalized}/" not in names:
+                            problems.append(
+                                f"release archive: {item.filename}: relative link is missing: {destination}"
+                            )
         except (OSError, zipfile.BadZipFile) as error:
             return [f"release archive: invalid ZIP: {error}"]
 
