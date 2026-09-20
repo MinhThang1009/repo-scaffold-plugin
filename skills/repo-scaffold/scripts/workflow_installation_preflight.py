@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
+import os
 import re
 import shlex
 import stat
 from collections.abc import Iterator
 from datetime import date, datetime, timezone
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from zoneinfo import available_timezones
@@ -27,10 +28,15 @@ import sync_action_pins
 
 
 ALLOWED_ACTION_POLICIES = frozenset({"all", "local_only", "selected"})
+MAX_WORKFLOW_INPUTS = 500
+MAX_TOTAL_WORKFLOW_BYTES = 64 * 1024 * 1024
+MAX_LOCAL_REUSABLE_WORKFLOW_LEVELS = 10
+MAX_LOCAL_REUSABLE_WORKFLOWS_PER_CALLER = 50
 CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION = 3
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
+MAX_ACTIONS_POLICY_ENTRIES = 256
 CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
 CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
 FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
@@ -42,27 +48,32 @@ FRESHNESS_REMINDER_MUTATION_SUBCOMMANDS = frozenset({"create", "edit", "close"})
 FRESHNESS_REMINDER_BODY_SUBCOMMANDS = frozenset({"create", "edit"})
 FRESHNESS_REMINDER_ALLOWED_MUTATION_SUBCOMMANDS = frozenset({"create", "edit", "close"})
 FRESHNESS_REMINDER_READ_ONLY_SUBCOMMANDS = frozenset({"list", "ls", "status", "view"})
-FRESHNESS_REMINDER_CONCURRENCY_GROUP = "${{ github.workflow }}-${{ github.repository }}"
+FRESHNESS_REMINDER_CONCURRENCY_GROUP = (
+    "repo-scaffold-freshness-${{ github.repository }}"
+)
 FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
 FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
 FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
 FRESHNESS_REMINDER_API_ENDPOINT = (
-    "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100"
+    "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+"
+    "%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"
 )
-FRESHNESS_REMINDER_API_JQ = (
-    ".[] | select(.pull_request == null) | "
-    f'select((.body // "") | contains("<!-- {FRESHNESS_REMINDER_MARKER} -->")) | .number'
+FRESHNESS_REMINDER_API_JQ = '[.items[].number] | join(" ")'
+FRESHNESS_REMINDER_API_JQ_LEGACY = ".items[].number"
+FRESHNESS_REMINDER_API_JQ_VALUES = frozenset(
+    {FRESHNESS_REMINDER_API_JQ, FRESHNESS_REMINDER_API_JQ_LEGACY}
 )
 FRESHNESS_REMINDER_API_ALLOWED_ARGUMENTS = frozenset(
     {
         "--hostname",
         "github.com",
         "--hostname=github.com",
-        "--paginate",
         FRESHNESS_REMINDER_API_ENDPOINT,
         "--jq",
         FRESHNESS_REMINDER_API_JQ,
+        FRESHNESS_REMINDER_API_JQ_LEGACY,
         f"--jq={FRESHNESS_REMINDER_API_JQ}",
+        f"--jq={FRESHNESS_REMINDER_API_JQ_LEGACY}",
         "--method",
         "--method=GET",
         "-X",
@@ -150,6 +161,7 @@ FRESHNESS_AUDIT_TRACKER_REGISTRY = ".github/freshness-trackers.json"
 FRESHNESS_ALLOWED_ACTION_REPOSITORIES = frozenset(
     {"actions/checkout", "actions/setup-python"}
 )
+GITHUB_OWNED_ACTION_PREFIXES = ("actions/", "github/")
 FRESHNESS_CANONICAL_RUN_STEP_COUNT = 3
 FRESHNESS_ACTION_REFERENCE_PATTERN = re.compile(
     r"(?:actions/checkout|actions/setup-python)@[0-9a-f]{40}\Z", re.IGNORECASE
@@ -158,10 +170,17 @@ FRESHNESS_REVIEWED_ACTION_REFERENCES = {
     "actions/checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-python": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
 }
+PULL_REQUEST_TARGET_EVENT = "pull_request_target"
+ACTION_POLICY_ENFORCEMENTS = frozenset({"disabled", "evaluate", "active"})
+ACTION_POLICIES_QUERY = "?has_parents=true&per_page=100"
 FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
-    "actions/checkout": {"persist-credentials": "false"},
+    "actions/checkout": {
+        "ref": "${{ github.event.repository.default_branch }}",
+        "persist-credentials": "false",
+    },
     "actions/setup-python": {"python-version": "3.x"},
 }
+TRUSTED_DEFAULT_BRANCH_REF = "${{ github.event.repository.default_branch }}"
 CRON_STEP = r"(?:/[1-9][0-9]*)?"
 CRON_MINUTE_VALUE = r"(?:[0-9]|[1-5][0-9])"
 CRON_HOUR_VALUE = r"(?:[0-9]|1[0-9]|2[0-3])"
@@ -246,6 +265,27 @@ FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
 )
 FRESHNESS_TITLE_ASSIGNMENT = "title=Repository freshness update required"
 FRESHNESS_ISSUE_NUMBERS_INITIALIZATION = "issue_numbers="
+FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS = (
+    ("mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"),
+    ("read", "-r", "-a", "issue_numbers", "<<<", "$issue_numbers_output"),
+)
+FRESHNESS_ISSUE_NUMBERS_COLLECTION_BY_JQ = {
+    FRESHNESS_REMINDER_API_JQ: (
+        "read",
+        "-r",
+        "-a",
+        "issue_numbers",
+        "<<<",
+        "$issue_numbers_output",
+    ),
+    FRESHNESS_REMINDER_API_JQ_LEGACY: (
+        "mapfile",
+        "-t",
+        "issue_numbers",
+        "<<<",
+        "$issue_numbers_output",
+    ),
+}
 FRESHNESS_DUPLICATE_ISSUE_GUARD = (
     "if (( ${#issue_numbers[@]} > 1 )); then",
     "printf 'Found multiple open freshness reminder issues.\\n' >&2",
@@ -292,7 +332,19 @@ FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
     }
 )
 FRESHNESS_ALLOWED_SHELL_COMMANDS = frozenset(
-    {"${", "cat", "exit", "fi", "gh", "grep", "if", "mapfile", "printf", "set"}
+    {
+        "${",
+        "cat",
+        "exit",
+        "fi",
+        "gh",
+        "grep",
+        "if",
+        "mapfile",
+        "printf",
+        "read",
+        "set",
+    }
 )
 FRESHNESS_ALLOWED_ISSUE_OPTIONS: dict[str, frozenset[str]] = {
     "close": frozenset({"--comment", "--repo"}),
@@ -988,6 +1040,110 @@ def freshness_action_steps_are_safe(steps: object) -> bool:
     )
 
 
+def manual_issue_write_checkout_is_safe(document: object) -> bool:
+    """Keep each manually dispatched Issue-writing job on the trusted base branch."""
+    if not isinstance(document, dict):
+        return False
+    if "on" not in document:
+        return True
+    triggers = document["on"]
+    if isinstance(triggers, dict):
+        manual_dispatch = "workflow_dispatch" in triggers
+    elif isinstance(triggers, list):
+        if not all(isinstance(event, str) for event in triggers):
+            return False
+        manual_dispatch = "workflow_dispatch" in triggers
+    elif isinstance(triggers, str):
+        manual_dispatch = triggers == "workflow_dispatch"
+    else:
+        return False
+    if not manual_dispatch:
+        return True
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        return False
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            return False
+        issue_write = job_effective_issue_write(document, job)
+        if "uses" in job:
+            if issue_write:
+                return False
+            continue
+        if "steps" not in job:
+            if issue_write:
+                return False
+            continue
+        steps = job["steps"]
+        if not isinstance(steps, list):
+            return False
+        if any(not isinstance(step, dict) for step in steps):
+            return False
+        if not issue_write:
+            continue
+        run_indices: list[int] = []
+        checkout_indices: list[int] = []
+        for index, step in enumerate(steps):
+            if "run" in step:
+                run_indices.append(index)
+            uses = step.get("uses")
+            if (
+                isinstance(uses, str)
+                and uses.partition("@")[0].casefold() == "actions/checkout"
+            ):
+                checkout_indices.append(index)
+                if step.get("with") != {
+                    "ref": TRUSTED_DEFAULT_BRANCH_REF,
+                    "persist-credentials": "false",
+                }:
+                    return False
+            elif isinstance(uses, str) and uses.startswith("./"):
+                run_indices.append(index)
+        if run_indices and (
+            not checkout_indices or checkout_indices[0] > min(run_indices)
+        ):
+            return False
+    return True
+
+
+def freshness_run_step_order_is_safe(steps: object) -> bool:
+    """Require audit, summary, and reconciliation in their execution order."""
+    if not isinstance(steps, list):
+        return False
+    run_steps = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if isinstance(step, dict) and "run" in step
+    ]
+    if len(run_steps) != FRESHNESS_CANONICAL_RUN_STEP_COUNT:
+        return False
+    audit_steps = [index for index, step in run_steps if step.get("id") == "audit"]
+    summary_steps = [
+        index
+        for index, step in run_steps
+        if isinstance(step.get("run"), str)
+        and step.get("id") != "audit"
+        and not (
+            isinstance(step.get("env"), dict)
+            and step["env"].get("CHECKER_EXIT")
+            == "${{ steps.audit.outputs.checker_exit }}"
+        )
+        and freshness_summary_output_is_safe(step["run"])
+    ]
+    reconciliation_steps = [
+        index
+        for index, step in run_steps
+        if isinstance(step.get("env"), dict)
+        and step["env"].get("CHECKER_EXIT") == "${{ steps.audit.outputs.checker_exit }}"
+    ]
+    return (
+        len(audit_steps) == 1
+        and len(summary_steps) == 1
+        and len(reconciliation_steps) == 1
+        and audit_steps[0] < summary_steps[0] < reconciliation_steps[0]
+    )
+
+
 def freshness_authentication_bindings_are_safe(workflow: object, job: object) -> bool:
     """Require GitHub CLI authentication to use the workflow token in place."""
     if not isinstance(workflow, dict) or not isinstance(job, dict):
@@ -1390,13 +1546,10 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
                 FRESHNESS_AUDIT_MARKDOWN_OUTPUT,
             ]:
                 return False
-            elif executable == "mapfile" and command_body != [
+            elif executable in {
                 "mapfile",
-                "-t",
-                "issue_numbers",
-                "<<<",
-                "$issue_numbers_output",
-            ]:
+                "read",
+            } and not is_freshness_issue_numbers_collection_command(command_body):
                 return False
             elif executable == "exit" and command_body not in (
                 ["exit", "0"],
@@ -1686,8 +1839,9 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         if freshness_variable_is_reassigned(
             shell_command_prefix(segment), "issue_numbers"
         )
-        and shell_command_prefix(segment)
-        != ["mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"]
+        and not is_freshness_issue_numbers_collection_command(
+            shell_command_prefix(segment)
+        )
     ]
     if issue_numbers_reassignments != [[FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]]:
         return False
@@ -1741,16 +1895,15 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         for index, segment in enumerate(segments)
         if shell_command_prefix(segment) == [FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]
     ]
-    mapfile_indices = [
+    collection_indices = [
         index
         for index, segment in enumerate(segments)
-        if shell_command_prefix(segment)
-        == ["mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"]
+        if is_freshness_issue_numbers_collection_command(shell_command_prefix(segment))
     ]
     if (
         len(issue_numbers_initialization_indices) != 1
-        or len(mapfile_indices) != 1
-        or issue_numbers_initialization_indices[0] >= mapfile_indices[0]
+        or len(collection_indices) != 1
+        or issue_numbers_initialization_indices[0] >= collection_indices[0]
     ):
         return False
     clean_test = clean_tests[0]
@@ -1960,9 +2113,7 @@ def has_freshness_repository_api_reads(
                 api_arguments = tokens[position + 2 :]
                 if "--" in api_arguments:
                     return False
-                if tuple(token for token in api_arguments if token == "--paginate") != (
-                    "--paginate",
-                ):
+                if "--paginate" in api_arguments:
                     return False
                 methods = [
                     api_arguments[index + 1]
@@ -1987,10 +2138,14 @@ def has_freshness_repository_api_reads(
                 if hostname != ("github.com",):
                     return False
                 jq_values = option_values(api_arguments, "--jq")
-                if jq_values is None or jq_values != (FRESHNESS_REMINDER_API_JQ,):
+                if (
+                    jq_values is None
+                    or len(jq_values) != 1
+                    or jq_values[0] not in FRESHNESS_REMINDER_API_JQ_VALUES
+                ):
                     return False
                 endpoints = [
-                    token for token in api_arguments if token.startswith("repos/")
+                    token for token in api_arguments if token.startswith("search/")
                 ]
                 if endpoints != [FRESHNESS_REMINDER_API_ENDPOINT]:
                     return False
@@ -2006,7 +2161,6 @@ def has_freshness_repository_api_reads(
                 )
                 expected_argument_count = (
                     1
-                    + 1
                     + (2 if "--hostname" in api_arguments else 1)
                     + (2 if "--jq" in api_arguments else 1)
                     + (
@@ -2212,6 +2366,42 @@ def freshness_variable_is_reassigned(tokens: list[str], variable: str) -> bool:
     )
 
 
+def is_freshness_issue_numbers_collection_command(tokens: list[str]) -> bool:
+    """Return whether a reviewed command captures bounded Issue numbers."""
+    return tuple(tokens) in FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS
+
+
+def freshness_issue_numbers_collection_matches_api(command: str) -> bool:
+    """Require the collector to preserve every number emitted by the API query."""
+    jq_values: list[str] = []
+    collection_commands: list[tuple[str, ...]] = []
+    for logical_line in shell_logical_lines(command):
+        line_segments = shell_command_segments(logical_line)
+        if line_segments is None:
+            return False
+        for segment in line_segments:
+            command_tokens = shell_command_prefix(segment)
+            api_positions = [
+                index
+                for index in range(len(command_tokens) - 1)
+                if is_github_cli_executable(command_tokens[index])
+                and command_tokens[index + 1] == "api"
+            ]
+            for position in api_positions:
+                values = option_values(command_tokens[position + 2 :], "--jq")
+                if values is None or len(values) != 1:
+                    return False
+                jq_values.append(values[0])
+            if is_freshness_issue_numbers_collection_command(command_tokens):
+                collection_commands.append(tuple(command_tokens))
+    if len(jq_values) != 1 or len(collection_commands) != 1:
+        return False
+    return (
+        FRESHNESS_ISSUE_NUMBERS_COLLECTION_BY_JQ.get(jq_values[0])
+        == collection_commands[0]
+    )
+
+
 def freshness_api_result_controls_issue_selection(command: str) -> bool:
     """Require lookup output to identify the Issue passed to a mutation."""
     parsed = freshness_api_result_assignments(command)
@@ -2224,6 +2414,8 @@ def freshness_api_result_controls_issue_selection(command: str) -> bool:
         variable == "issue_numbers_output" for variable, _ in api_result_assignments
     ):
         if not freshness_issue_lookup_substitution_is_safe(command):
+            return False
+        if not freshness_issue_numbers_collection_matches_api(command):
             return False
     segments: list[list[str]] = []
     for logical_line in shell_logical_lines(command):
@@ -2255,7 +2447,11 @@ def freshness_api_result_controls_issue_selection(command: str) -> bool:
 
     for collection_index, segment in enumerate(segments):
         command_tokens = shell_command_prefix(segment)
-        if not command_tokens or command_tokens[0] not in {"mapfile", "readarray"}:
+        if not command_tokens or command_tokens[0] not in {
+            "mapfile",
+            "read",
+            "readarray",
+        }:
             continue
         redirect_indices = [
             index for index, token in enumerate(command_tokens) if token == "<<<"
@@ -2525,7 +2721,7 @@ def local_reusable_workflow_names(document: dict[str, Any], source: Path) -> lis
         if (
             not relative
             or "\\" in relative
-            or "\x00" in relative
+            or any(ord(character) < 0x20 for character in relative)
             or path.as_posix() != relative
             or path.parts[:2] != (".github", "workflows")
             or len(path.parts) != 3
@@ -2536,6 +2732,79 @@ def local_reusable_workflow_names(document: dict[str, Any], source: Path) -> lis
             )
         names.append(path.name)
     return names
+
+
+def workflow_is_reusable(document: dict[str, Any]) -> bool:
+    """Return whether a workflow declares the reusable-workflow trigger."""
+    triggers = document.get("on")
+    if isinstance(triggers, dict):
+        if "workflow_call" not in triggers:
+            return False
+        configuration = triggers["workflow_call"]
+        # GitHub accepts an empty event configuration or a mapping of inputs,
+        # secrets, and outputs. Treating arbitrary scalars (for example,
+        # ``workflow_call: false``) as enabled would approve an invalid caller
+        # relationship before actionlint or GitHub can reject it.
+        return configuration in (None, "", "null") or isinstance(configuration, dict)
+    if isinstance(triggers, list):
+        return "workflow_call" in triggers
+    return triggers == "workflow_call"
+
+
+def local_reusable_workflow_graph_is_acyclic(
+    edges: dict[Path, tuple[Path, ...]],
+) -> bool:
+    """Return whether supplied local reusable workflows contain no call loops."""
+    visiting: set[Path] = set()
+    visited: set[Path] = set()
+
+    def visit(workflow: Path) -> bool:
+        if workflow in visiting:
+            return False
+        if workflow in visited:
+            return True
+        visiting.add(workflow)
+        for called_workflow in edges.get(workflow, ()):
+            if not visit(called_workflow):
+                return False
+        visiting.remove(workflow)
+        visited.add(workflow)
+        return True
+
+    return all(visit(workflow) for workflow in edges)
+
+
+def local_reusable_workflow_limits_are_safe(
+    edges: dict[Path, tuple[Path, ...]],
+) -> bool:
+    """Enforce GitHub's local reusable-workflow depth and fan-out limits."""
+    if not local_reusable_workflow_graph_is_acyclic(edges):
+        return False
+    incoming = {
+        called_workflow
+        for called_workflows in edges.values()
+        for called_workflow in called_workflows
+    }
+    roots = [workflow for workflow in edges if workflow not in incoming]
+    for root in roots:
+        best_depth: dict[Path, int] = {root: 1}
+        reachable: set[Path] = {root}
+        pending: list[tuple[Path, int]] = [(root, 1)]
+        while pending:
+            workflow, depth = pending.pop()
+            if depth > MAX_LOCAL_REUSABLE_WORKFLOW_LEVELS:
+                return False
+            if depth < best_depth.get(workflow, 0):
+                continue
+            for called_workflow in edges.get(workflow, ()):
+                reachable.add(called_workflow)
+                if len(reachable) - 1 > MAX_LOCAL_REUSABLE_WORKFLOWS_PER_CALLER:
+                    return False
+                next_depth = depth + 1
+                if next_depth > best_depth.get(called_workflow, 0):
+                    best_depth[called_workflow] = next_depth
+                    pending.append((called_workflow, next_depth))
+    return True
 
 
 def requires_issue_write(text: str, source: Path) -> bool:
@@ -2598,10 +2867,17 @@ def requires_pull_request_write_tokens(text: str, source: Path) -> bool:
 
 def is_code_scanning_gate(text: str, source: Path) -> bool:
     """Identify a gate that requires the shipped allowlist freshness reminder."""
-    return any(
-        CODE_SCANNING_GATE_COMMAND in command
-        for command in workflow_run_commands(workflow_document(text, source))
-    )
+    for command in workflow_run_commands(workflow_document(text, source)):
+        if CODE_SCANNING_GATE_COMMAND in command:
+            return True
+        try:
+            tokens = shlex.split(command, comments=True, posix=True)
+        except ValueError:
+            # An ambiguous shell command must not bypass the companion gate.
+            return True
+        if CODE_SCANNING_GATE_COMMAND in tokens:
+            return True
+    return False
 
 
 def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
@@ -2655,6 +2931,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
             if (
                 not freshness_job_execution_is_unconditional(job)
                 or not freshness_execution_context_is_bash(document, job)
+                or not freshness_run_step_order_is_safe(steps)
                 or not freshness_authentication_bindings_are_safe(document, job)
                 or not freshness_checker_result_binding_is_safe(document, job)
                 or not freshness_shell_definitions_are_safe(job_text)
@@ -2713,6 +2990,7 @@ def validate_code_scanning_allowlist(path: Path) -> None:
     if (
         not isinstance(document, dict)
         or set(document) != CODE_SCANNING_ALLOWLIST_KEYS
+        or type(document.get("schema-version")) is not int
         or document.get("schema-version") != CODE_SCANNING_ALLOWLIST_SCHEMA_VERSION
         or not isinstance(document.get("allowlist"), list)
     ):
@@ -2769,6 +3047,7 @@ def validate_code_scanning_allowlist(path: Path) -> None:
                 or path_value_as_posix.is_absolute()
                 or ".." in path_value_as_posix.parts
                 or "\\" in path_value
+                or any(ord(character) < 0x20 for character in path_value)
                 or any(
                     PureWindowsPath(part).drive for part in path_value_as_posix.parts
                 )
@@ -2831,6 +3110,36 @@ def actions_permissions(document: Any) -> tuple[bool, str]:
     return enabled, allowed_actions
 
 
+SELECTED_ACTIONS_URL_PATTERN = re.compile(
+    r"https://api\.github\.com/(?P<endpoint>"
+    r"(?:repositories/[1-9][0-9]*|organizations/[1-9][0-9]*|"
+    r"enterprises/[A-Za-z0-9_.-]+)/actions/permissions/selected-actions)\Z"
+)
+
+
+def selected_actions_endpoint(document: Any) -> str:
+    """Return the trusted selected-actions endpoint advertised by GitHub."""
+    if not isinstance(document, dict):
+        raise InspectionError("Selected Actions policy response is invalid.")
+    value = document.get("selected_actions_url")
+    match = (
+        SELECTED_ACTIONS_URL_PATTERN.fullmatch(value)
+        if isinstance(value, str)
+        else None
+    )
+    if match is None:
+        raise InspectionError(
+            "Selected Actions policy response has an invalid selected-actions URL."
+        )
+    endpoint = match.group("endpoint")
+    identifier = endpoint.split("/", 2)[1]
+    if identifier in {".", ".."}:
+        raise InspectionError(
+            "Selected Actions policy response has an invalid selected-actions URL."
+        )
+    return endpoint
+
+
 def selected_actions_policy(document: Any) -> dict[str, bool | list[str]]:
     """Validate the effective selected-actions response from GitHub."""
     if not isinstance(document, dict):
@@ -2842,8 +3151,9 @@ def selected_actions_policy(document: Any) -> dict[str, bool | list[str]]:
         raise InspectionError("Selected Actions policy has invalid boolean settings.")
     if not isinstance(patterns, list) or any(
         not isinstance(pattern, str)
-        or not pattern
+        or not pattern.strip()
         or any(character in pattern for character in "\r\n\x00")
+        or any(not part.strip() or part.strip() == "!" for part in pattern.split(","))
         for pattern in patterns
     ):
         raise InspectionError("Selected Actions policy has invalid allowed patterns.")
@@ -2854,24 +3164,180 @@ def selected_actions_policy(document: Any) -> dict[str, bool | list[str]]:
     }
 
 
+def workflow_event_is_configured(document: dict[str, Any], event: str) -> bool:
+    """Return whether a parsed workflow declares one supported event."""
+    triggers = document.get("on")
+    if isinstance(triggers, dict):
+        return event in triggers
+    if isinstance(triggers, list):
+        if not all(isinstance(trigger, str) for trigger in triggers):
+            raise InspectionError("Workflow event trigger list is invalid.")
+        return event in triggers
+    if isinstance(triggers, str):
+        return triggers == event
+    if triggers is None:
+        return False
+    raise InspectionError("Workflow event trigger is invalid.")
+
+
+def action_policy_workflow_path_applies(
+    policy: dict[str, Any], workflow_name: str
+) -> bool:
+    """Return whether an Actions policy applies to an installed workflow path."""
+    conditions = policy.get("conditions")
+    if conditions is None:
+        return True
+    if not isinstance(conditions, dict) or set(conditions) - {"workflow_path"}:
+        raise InspectionError("Actions policy conditions are invalid.")
+    workflow_condition = conditions.get("workflow_path")
+    if workflow_condition is None:
+        return True
+    if not isinstance(workflow_condition, dict) or set(workflow_condition) != {
+        "include",
+        "exclude",
+    }:
+        raise InspectionError("Actions policy workflow path condition is invalid.")
+
+    include = workflow_condition["include"]
+    exclude = workflow_condition["exclude"]
+    if (
+        not isinstance(include, list)
+        or not isinstance(exclude, list)
+        or any(
+            not isinstance(pattern, str)
+            or not pattern
+            or any(ord(character) < 0x20 for character in pattern)
+            or "\\" in pattern
+            for pattern in (*include, *exclude)
+        )
+        or "~ALL" in exclude
+        or "~ALL" in include
+        and len(include) != 1
+    ):
+        raise InspectionError("Actions policy workflow path patterns are invalid.")
+
+    workflow_path = f".github/workflows/{workflow_name}"
+    included = not include or any(
+        pattern == "~ALL" or fnmatchcase(workflow_path, pattern) for pattern in include
+    )
+    excluded = any(fnmatchcase(workflow_path, pattern) for pattern in exclude)
+    return included and not excluded
+
+
+def load_actions_policy_details(
+    client: GitHubClient, owner: str, repo: str
+) -> dict[str, Any]:
+    """Expand the inherited policy index into validated policy documents."""
+    index = client.json(f"repos/{owner}/{repo}/actions/policies{ACTION_POLICIES_QUERY}")
+    if not isinstance(index, dict):
+        raise InspectionError("Actions policies response is invalid.")
+    policies = index.get("policies")
+    total_count = index.get("total_count")
+    if (
+        not isinstance(policies, list)
+        or len(policies) > MAX_ACTIONS_POLICY_ENTRIES
+        or type(total_count) is not int
+        or total_count != len(policies)
+    ):
+        raise InspectionError("Actions policies response is incomplete or invalid.")
+
+    details: list[dict[str, Any]] = []
+    for summary in policies:
+        policy_id = summary.get("id") if isinstance(summary, dict) else None
+        if type(policy_id) is not int or policy_id < 1:
+            raise InspectionError("Actions policy summary has an invalid ID.")
+        detail = client.json(f"repos/{owner}/{repo}/actions/policies/{policy_id}")
+        if not isinstance(detail, dict) or detail.get("id") != policy_id:
+            raise InspectionError("Actions policy detail does not match its summary.")
+        details.append(detail)
+    return {"total_count": total_count, "policies": details}
+
+
+def actions_event_policy_allows(document: Any, workflow_names: list[str]) -> bool:
+    """Require active inherited Actions policies to allow every target workflow."""
+    if not workflow_names:
+        return True
+    if not isinstance(document, dict):
+        raise InspectionError("Actions policies response is invalid.")
+    policies = document.get("policies")
+    total_count = document.get("total_count")
+    if (
+        not isinstance(policies, list)
+        or len(policies) > MAX_ACTIONS_POLICY_ENTRIES
+        or type(total_count) is not int
+        or total_count != len(policies)
+    ):
+        raise InspectionError("Actions policies response is incomplete or invalid.")
+
+    applicable_event_policy = {workflow_name: False for workflow_name in workflow_names}
+    for policy in policies:
+        if not isinstance(policy, dict):
+            raise InspectionError("Actions policy entry is invalid.")
+        enforcement = policy.get("enforcement")
+        if enforcement not in ACTION_POLICY_ENFORCEMENTS:
+            raise InspectionError("Actions policy enforcement is invalid.")
+        if enforcement != "active":
+            continue
+        rules = policy.get("rules", [])
+        if not isinstance(rules, list):
+            raise InspectionError("Actions policy rules are invalid.")
+        applicable_workflows = [
+            workflow_name
+            for workflow_name in workflow_names
+            if action_policy_workflow_path_applies(policy, workflow_name)
+        ]
+        for rule in rules:
+            if not isinstance(rule, dict):
+                raise InspectionError("Actions policy rule is invalid.")
+            if rule.get("type") != "restrict_action_events":
+                continue
+            if set(rule) != {"type", "parameters"}:
+                raise InspectionError("Actions event policy rule is invalid.")
+            parameters = rule["parameters"]
+            allowed_events = (
+                parameters.get("allowed_events")
+                if isinstance(parameters, dict)
+                else None
+            )
+            if not isinstance(allowed_events, list) or any(
+                not isinstance(event, str) or not event.strip()
+                for event in allowed_events
+            ):
+                raise InspectionError("Actions event policy rule is invalid.")
+            for workflow_name in applicable_workflows:
+                applicable_event_policy[workflow_name] = True
+                if PULL_REQUEST_TARGET_EVENT not in allowed_events:
+                    return False
+
+    return all(applicable_event_policy.values())
+
+
 def workflow_capabilities(
     workflows: list[Path],
-) -> tuple[list[str], list[str], list[str], list[str], bool]:
+) -> tuple[list[str], list[str], list[str], list[str], bool, list[str]]:
     """Read external references and workflow capabilities that require confirmation."""
     if not workflows:
         raise InspectionError(
             "Selected Actions policy requires at least one --workflow input."
         )
+    if len(workflows) > MAX_WORKFLOW_INPUTS:
+        raise InspectionError(
+            f"Workflow inputs exceed the {MAX_WORKFLOW_INPUTS}-file safety cap."
+        )
     references: set[str] = set()
     issue_workflows: set[str] = set()
     pull_request_write_workflows: set[str] = set()
     code_scanning_gate_workflows: set[str] = set()
+    pull_request_target_workflows: set[str] = set()
     freshness_reminder_supplied = False
     workflow_inputs = {workflow.name: workflow for workflow in workflows}
     if len(workflow_inputs) != len(workflows):
         raise InspectionError(
             "Workflow inputs must have unique filenames for local reusable-workflow resolution."
         )
+    workflow_texts: dict[Path, str] = {}
+    workflow_documents: dict[Path, dict[str, Any]] = {}
+    total_workflow_bytes = 0
     for workflow in workflows:
         try:
             metadata = workflow.lstat()
@@ -2888,19 +3354,60 @@ def workflow_capabilities(
                 raw = stream.read(MAX_WORKFLOW_BYTES + 1)
             if len(raw) > MAX_WORKFLOW_BYTES:
                 raise OSError("workflow exceeds the byte safety cap")
+            total_workflow_bytes += len(raw)
+            if total_workflow_bytes > MAX_TOTAL_WORKFLOW_BYTES:
+                raise InspectionError(
+                    "Workflow inputs exceed the total byte safety cap."
+                )
             text = raw.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise InspectionError(
                 f"Workflow input is missing or unsafe: {workflow}"
             ) from exc
         document = workflow_document(text, workflow)
+        for reference in workflow_uses_values(document):
+            if not isinstance(reference, str) or not reference.strip():
+                raise InspectionError(
+                    f"Workflow {workflow} has a uses reference that is not a "
+                    "non-empty string."
+                )
         validate_container_references(document, workflow)
+        workflow_texts[workflow] = text
+        workflow_documents[workflow] = document
+    local_workflow_edges: dict[Path, tuple[Path, ...]] = {}
+    for workflow in workflows:
+        document = workflow_documents[workflow]
+        called_workflows: list[Path] = []
         for local_name in local_reusable_workflow_names(document, workflow):
-            if local_name not in workflow_inputs:
+            called_workflow = workflow_inputs.get(local_name)
+            if called_workflow is None:
                 raise InspectionError(
                     f"Workflow {workflow} calls local reusable workflow {local_name!r}; "
                     "pass it as another --workflow input."
                 )
+            caller_directory = os.path.normcase(os.path.abspath(workflow.parent))
+            called_directory = os.path.normcase(os.path.abspath(called_workflow.parent))
+            if caller_directory != called_directory:
+                raise InspectionError(
+                    f"Workflow {workflow} calls local reusable workflow "
+                    f"{local_name!r}; pass the called workflow from the same "
+                    "workflow directory as another --workflow input."
+                )
+            if not workflow_is_reusable(workflow_documents[called_workflow]):
+                raise InspectionError(
+                    f"Workflow {workflow} calls local workflow {local_name!r}; "
+                    "the supplied workflow must declare workflow_call."
+                )
+            called_workflows.append(called_workflow)
+        local_workflow_edges[workflow] = tuple(called_workflows)
+    if not local_reusable_workflow_graph_is_acyclic(local_workflow_edges):
+        raise InspectionError("Local reusable workflow calls must not contain cycles.")
+    if not local_reusable_workflow_limits_are_safe(local_workflow_edges):
+        raise InspectionError(
+            "Local reusable workflow calls exceed GitHub's depth or count limits."
+        )
+    for workflow in workflows:
+        text = workflow_texts[workflow]
         try:
             # This rejects aliases, unpinned actions, and non-action `uses:` forms
             # before the exact references below are compared with GitHub's policy.
@@ -2909,8 +3416,18 @@ def workflow_capabilities(
             raise InspectionError(str(exc)) from exc
         if requires_issue_write(text, workflow):
             issue_workflows.add(workflow.name)
+            if not manual_issue_write_checkout_is_safe(workflow_documents[workflow]):
+                raise InspectionError(
+                    f"Workflow {workflow.name} has workflow_dispatch and Issue write "
+                    "access; executable steps must check out the repository default "
+                    "branch with the reviewed credentials-disabled input."
+                )
         if requires_pull_request_write_tokens(text, workflow):
             pull_request_write_workflows.add(workflow.name)
+        if workflow_event_is_configured(
+            workflow_documents[workflow], PULL_REQUEST_TARGET_EVENT
+        ):
+            pull_request_target_workflows.add(workflow.name)
         if is_code_scanning_gate(text, workflow):
             code_scanning_gate_workflows.add(workflow.name)
         if is_freshness_reminder_workflow(text, workflow):
@@ -2930,7 +3447,7 @@ def workflow_capabilities(
         references.update(
             reference
             for reference in direct_references
-            if not reference.startswith(("./", "docker://"))
+            if not reference.startswith("./")
         )
     return (
         sorted(references, key=str.casefold),
@@ -2938,6 +3455,7 @@ def workflow_capabilities(
         sorted(pull_request_write_workflows, key=str.casefold),
         sorted(code_scanning_gate_workflows, key=str.casefold),
         freshness_reminder_supplied,
+        sorted(pull_request_target_workflows, key=str.casefold),
     )
 
 
@@ -2945,10 +3463,27 @@ def selected_policy_allows(
     reference: str, policy: dict[str, bool | list[str]], *, public_repository: bool
 ) -> bool:
     """Apply GitHub's selected-actions allowlist to one exact action reference."""
+    if reference.casefold().startswith("docker://"):
+        return False
     action = reference.rsplit("@", 1)[0]
-    # GitHub documents this setting for actions in the `actions` organization.
+    patterns = policy["patterns_allowed"]
+    assert isinstance(patterns, list)
+    pattern_match = False
+    for configured_pattern in patterns:
+        for raw_pattern in configured_pattern.split(","):
+            pattern = raw_pattern.strip()
+            blocked = pattern.startswith("!")
+            candidate = pattern[1:] if blocked else pattern
+            escaped = re.escape(candidate.casefold()).replace(r"\*", ".*")
+            if re.fullmatch(escaped, reference.casefold()) is None:
+                continue
+            if blocked:
+                return False
+            pattern_match = True
+    # GitHub documents GitHub-owned actions in both the `actions` and `github`
+    # organizations. Explicit negative patterns remain blocking in either case.
     if policy["github_owned_allowed"] is True and action.casefold().startswith(
-        "actions/"
+        GITHUB_OWNED_ACTION_PREFIXES
     ):
         return True
     # GitHub does not expose a stable REST attribute proving a Marketplace creator
@@ -2957,12 +3492,7 @@ def selected_policy_allows(
     # Enterprise Cloud eligibility for a private or internal repository.
     if not public_repository:
         return False
-    patterns = policy["patterns_allowed"]
-    assert isinstance(patterns, list)
-    return any(
-        fnmatch.fnmatchcase(reference.casefold(), pattern.casefold())
-        for pattern in patterns
-    )
+    return pattern_match
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -2988,6 +3518,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError("Disabled repositories cannot install workflow assets.")
     issues_enabled = require_boolean(repository, "has_issues")
     visibility = repository.get("visibility")
+    if not isinstance(visibility, str) or visibility not in {
+        "public",
+        "private",
+        "internal",
+    }:
+        raise InspectionError("Repository response has an invalid visibility value.")
 
     (
         external_action_references,
@@ -2995,33 +3531,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         pull_request_write_workflows,
         code_scanning_gate_workflows,
         freshness_reminder_supplied,
+        pull_request_target_workflows,
     ) = (
         workflow_capabilities(args.workflow)
         if args.workflow
-        else ([], [], [], [], False)
+        else ([], [], [], [], False, [])
     )
     requires_external_actions = args.require_external_actions or bool(
         external_action_references
     )
     requires_issues = args.require_issues or bool(detected_issue_workflows)
 
-    actions_enabled, allowed_actions = actions_permissions(
-        client.json(f"repos/{owner}/{repo}/actions/permissions")
+    actions_permissions_response = client.json(
+        f"repos/{owner}/{repo}/actions/permissions"
     )
+    actions_enabled, allowed_actions = actions_permissions(actions_permissions_response)
     selected_policy: dict[str, bool | list[str]] | None = None
     unapproved_action_references: list[str] = []
     if actions_enabled and requires_external_actions and allowed_actions == "selected":
         selected_policy = selected_actions_policy(
-            client.json(f"repos/{owner}/{repo}/actions/permissions/selected-actions")
+            client.json(selected_actions_endpoint(actions_permissions_response))
         )
-        if not isinstance(visibility, str) or visibility not in {
-            "public",
-            "private",
-            "internal",
-        }:
-            raise InspectionError(
-                "Repository response has an invalid visibility value."
-            )
         if not external_action_references:
             (
                 external_action_references,
@@ -3029,6 +3559,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 pull_request_write_workflows,
                 code_scanning_gate_workflows,
                 freshness_reminder_supplied,
+                pull_request_target_workflows,
             ) = workflow_capabilities(args.workflow)
         unapproved_action_references = [
             reference
@@ -3039,6 +3570,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 public_repository=visibility == "public",
             )
         ]
+    pull_request_target_policy_verified = True
+    if visibility == "public" and pull_request_target_workflows:
+        policies = load_actions_policy_details(client, owner, repo)
+        pull_request_target_policy_verified = actions_event_policy_allows(
+            policies, pull_request_target_workflows
+        )
     external_actions_verified = actions_enabled and (
         not requires_external_actions
         or allowed_actions == "all"
@@ -3068,6 +3605,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         and not external_actions_verified
     ):
         decision = "allow-selected-actions-before-installing-workflows"
+    elif not pull_request_target_policy_verified:
+        decision = "allow-pull-request-target-event-before-installing-workflows"
     elif not issue_workflows_eligible:
         decision = "enable-issues-before-installing-issue-workflows"
     elif not pull_request_write_tokens_confirmed:
@@ -3088,6 +3627,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "external_action_references": external_action_references,
         "unapproved_action_references": unapproved_action_references,
         "selected_actions_policy": selected_policy,
+        "pull_request_target_workflows": pull_request_target_workflows,
+        "pull_request_target_policy_verified": pull_request_target_policy_verified,
         "issues_enabled": issues_enabled,
         "requires_issues": requires_issues,
         "detected_issue_workflows": detected_issue_workflows,

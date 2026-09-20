@@ -24,9 +24,11 @@ For a checkout private to one user, use a personal marketplace at
 For an OpenAI public listing, submit the release ZIP through the [Skills-only
 plugin flow](https://developers.openai.com/plugins/guides/submit-claude-plugin).
 Its single `repo-scaffold/` directory includes a nonempty Claude manifest and
-the shared skill with all referenced files. The OpenAI portal normalizes the
-Codex manifest during review; a Claude Code marketplace listing remains a
-separate approval.
+the shared skill with all referenced files. The OpenAI portal converts the
+Claude manifest into a Codex manifest and adds missing interface defaults
+during review; the checked-in Codex compatibility manifest remains for direct
+Codex and local-marketplace installation. A Claude Code marketplace listing
+remains a separate approval.
 
 Codex reads project instructions from `AGENTS.md`; it layers the applicable
 files from the repository root to the working directory. The generated
@@ -72,10 +74,13 @@ Point that agent's skill discovery at `skills/`, or import
 repository deliberately does not claim native installation support for an
 unverified agent or invent its configuration format.
 
-Host instructions remain authoritative. Codex can use `AGENTS.md`; Claude Code
-reads `CLAUDE.md`, not `AGENTS.md` directly. For a target repository that needs
-shared instructions, use a `CLAUDE.md` containing `@AGENTS.md`. The scaffold
-ships that exact adapter as `assets/CLAUDE.md`. See the [Claude Code memory documentation](https://code.claude.com/docs/en/memory).
+Host instructions remain authoritative. Codex can use `AGENTS.md`; current Claude
+Code versions can also read `AGENTS.md` directly (v2.1.277 and later). Claude
+Code still reads `CLAUDE.md` when that file is present, and some sessions or
+providers may not support direct `AGENTS.md` loading. For a target repository
+that needs one shared instruction source across those cases, use a `CLAUDE.md`
+containing `@AGENTS.md`. The scaffold ships that exact adapter as
+`assets/CLAUDE.md`. See the [Claude Code memory documentation](https://code.claude.com/docs/en/memory).
 
 ## Multi-agent behavior
 
@@ -99,6 +104,9 @@ the scaffold workflow or create agent-specific language variants.
 ## Language policy
 
 Agent-facing compatibility documentation is available in English and Vietnamese.
-For every target repository, resolve exactly one project-output language,
-`en` or `vi`; this affects generated project-facing files, not the selected
-agent adapter.
+For every target repository, ask the user to choose exactly one project-output
+language before generation. The reviewed assets currently support only `en` and
+`vi`; if another language is requested, explain the limitation and wait for an
+`en` or `vi` choice, or stop. Do not silently fall back or mix languages. The
+confirmed choice affects generated project-facing files, not the selected agent
+adapter.

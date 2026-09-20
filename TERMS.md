@@ -7,7 +7,8 @@ Effective date: August 13, 2026
 These terms apply when you install, use, or redistribute Repo Scaffold. The
 plugin is a source-distributed development tool, not a hosted service. By using
 it, you agree to these terms and to the terms of the platforms and tools you use
-with it, including Codex, OpenAI, GitHub, and GitHub CLI where applicable.
+with it, including Codex, Claude Code, OpenAI, Anthropic, GitHub, and GitHub CLI
+where applicable.
 
 ## License
 

@@ -10,9 +10,11 @@ project-tailored community-health files, then configure a verified GitHub.com
 repository only when the user authorizes outward-facing changes.
 
 Follow the active host, system, developer, and project instructions. Codex can use
-`AGENTS.md`; Claude Code reads `CLAUDE.md` and can import it. Read
-`references/agent-compatibility.md` for host-specific guidance. Resolve one
-scaffold language, `en` or `vi`, before generation and use it consistently.
+`AGENTS.md`; Claude Code reads `CLAUDE.md`, and v2.1.277 and later can also read
+`AGENTS.md` directly. A `CLAUDE.md` import remains useful for compatibility. Read
+`references/agent-compatibility.md` for host-specific guidance. Before generation,
+ask the user to choose exactly one supported scaffold language, `en` or `vi`, and
+use it consistently.
 
 ## Core principles
 
@@ -51,10 +53,15 @@ CODEOWNERS owner, release/citation metadata, artifact basename, funding,
 security-policy commitments, and optional community features. Preserve existing
 settings and confirm a default branch when the remote does not establish one.
 
-Resolve `SCAFFOLD_LANGUAGE` in this order: explicit user request, active
-project instructions, dominant first-party human-facing documentation, then
-`en`. Ask when higher-priority signals conflict. Do not infer English from
-identifiers or technical literals.
+Before making any generation decision, ask the user: "Which project-output
+language should I use, en or vi?" A valid `en` or `vi` answer is required before
+generation, even when project evidence suggests a language. If the user requests
+another language, explain that the reviewed assets currently support only `en` and
+`vi`; do not silently fall back, mix languages, or generate until the user chooses
+a supported language or stops. Set `SCAFFOLD_LANGUAGE` from the confirmed answer.
+Project instructions and existing documentation may inform the recommendation but
+may not replace this confirmation. Do not infer English from identifiers or
+technical literals.
 
 ### 3. Generate files
 
@@ -77,10 +84,23 @@ required verified capability exists.
 Only for a verified GitHub.com repository, read
 `references/workflow-contracts.md` before installing or changing a workflow.
 Use only workflows applicable to the detected stack and user-approved features.
+Every GitHub.com project with a runnable test or lint command must finish this
+phase with a configured CI workflow, or an explicit user decision to defer it;
+do not silently leave the generic CI sentinel in a finished scaffold. Treat
+the workflow set as an explicit install plan: for each applicable approved
+asset, run the workflow-installation preflight with its exact `--workflow`
+inputs, copy every documented companion, and verify the final files. Optional
+feature workflows remain opt-in, but their omission must be recorded as
+not-applicable or deferred.
 Pin external actions to verified full SHAs and job/service container images to
 verified full SHA-256 digests, give permissions explicitly, and
 verify a real event-compatible producer before making a check required. Keep
 external-network checks advisory.
+
+The generic CI asset binds its test job to `matrix.os`. A rendered runtime
+policy may select the supported GitHub-hosted labels `ubuntu-latest`,
+`windows-latest`, and `macos-latest`; keep the policy and matrix as the single
+source of truth instead of hard-coding a runner in the test job.
 
 For CodeQL default setup, run the fail-closed `scripts/codeql_preflight.py` and
 require explicit confirmation that no external or indirect uploader exists.
@@ -100,7 +120,8 @@ preflight in one invocation with both the gate and `freshness.yml` passed as
 `--workflow`, plus its matching `code-scanning-allowlist.json` passed as
 `--code-scanning-allowlist`. The preflight refuses an incomplete companion set.
 It also validates every schema-v3 exception before approval: exact selector
-fields, unique positive alert numbers, canonical POSIX paths, non-future ISO
+fields, unique positive alert numbers, canonical POSIX paths without traversal or
+control characters, non-future ISO
 review dates, review periods from 1 to 366 days, and only the
 `schema-version`/`allowlist` top-level fields.
 The gate is only a fail-closed enforcement layer for a verified CodeQL producer;
@@ -174,11 +195,15 @@ auto-merge workflow that relies on it; never retrieve or print the secret value.
 Before copying any GitHub Actions asset, run the fail-closed
 `scripts/workflow_installation_preflight.py`. Require external actions for an
 asset with `uses:` and require Issues for an asset that declares `issues: write`
-or `permissions: write-all`. Do not install an asset while Actions is disabled,
+or `permissions: write-all`. The preflight bounds the workflow input count and
+total bytes. Docker container actions count as external actions; a selected
+policy cannot approve an unlisted container reference. Do not install an asset
+while Actions is disabled,
 while its policy forbids external actions, or until a selected-actions policy has
 been verified against every exact action reference. When the policy is
-`selected`, pass every candidate asset with `--workflow`; the preflight retrieves
-the effective allowlist and fails closed unless each pinned `uses:` reference is
+`selected`, pass every candidate asset with `--workflow`; the preflight follows
+GitHub's advertised selected-actions endpoint, including organization or
+enterprise overrides, and fails closed unless each pinned `uses:` reference is
 allowed. It also derives external-action and issue-workflow requirements from
 every `--workflow` input, so a missing flag cannot bypass those checks. This
 preflight accepts pattern matches only for public repositories,
@@ -186,7 +211,30 @@ because it does not infer Enterprise Cloud eligibility. Do not treat Marketplace
 verified-creator access as proof for a specific action when it has no exact
 matching pattern. If a supplied workflow calls a local reusable workflow, pass
 that called workflow in the same invocation as well; the preflight fails closed
-when the local call cannot be resolved to one supplied input.
+when the local call cannot be resolved to one supplied input, or when the
+matching basename comes from another workflow directory. Local `./...`
+action references and local reusable-workflow call paths must use canonical
+repository-relative POSIX paths; traversal, backslash, and control-character
+forms are rejected.
+Every supplied local reusable workflow must declare `workflow_call`, and loops
+in the supplied local workflow graph are rejected. The supplied graph must also
+stay within GitHub's 10 workflow levels and 50 unique nested workflows per
+top-level caller.
+
+For public repositories, a supplied workflow that declares `pull_request_target`
+also needs an applicable GitHub Actions workflow-execution policy that explicitly
+allows that event. GitHub's default public-repository policy is scheduled to
+block `pull_request_target` on November 2, 2026. Review the [official policy
+guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
+The workflow-installation preflight reads inherited Actions policies and fails
+closed unless an active event rule allows the event for every supplied workflow
+path. Its selected-actions result does not prove event-policy eligibility, and
+this plugin does not change the remote policy.
+
+The community-health tracker registry must stay inside the repository and reject
+traversal, control characters, links, or reparse points before it is read.
+Directory inventories are bounded to 10,000 entries so large repositories fail
+closed instead of exhausting the runner.
 
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
 only scheduled and manual triggers. Each schedule entry must use a five-field
@@ -200,9 +248,14 @@ issues through real `gh issue create` or `gh issue edit --repo ... --body-file`
 commands. Every
 `create` or `edit` mutation must use `--body-file`, `create` must provide a
 non-empty `--title`, and any `gh issue close` mutation must also use an
-explicit `--repo` binding. The reminder must use a repository-scoped
-non-cancelling concurrency group so manual runs on another ref cannot race
-the scheduled run. The preflight rejects untrusted-trigger, comment-only,
+explicit `--repo` binding. The reminder must use the stable
+`repo-scaffold-freshness-${{ github.repository }}` repository-scoped,
+non-cancelling concurrency group so manual runs on another ref cannot race the
+scheduled run. Because `workflow_dispatch` can select another ref, every
+manually dispatched Issue-writing reminder must check out
+`${{ github.event.repository.default_branch }}` with
+`persist-credentials: false`; this keeps its checker and tracker on the
+trusted default branch. The preflight rejects untrusted-trigger, comment-only,
 shell-ambiguous, or otherwise incomplete reminder scaffolds. If the
 reconciliation job declares job-level permissions, it must retain effective
 `contents: read` and `issues: write` access so it can check out and reconcile
@@ -210,10 +263,12 @@ the repository.
 Every freshness API lookup and Issue mutation must bind directly to the runner's
 `$GITHUB_REPOSITORY` value, with `github.com/` explicit for `gh issue --repo`;
 hard-coded repositories and overrides of that variable are rejected. The lookup
-must be a paginated GET of open Issues, filter non-PR bodies for the freshness
-marker, and return their issue numbers so reruns remain idempotent. It must use
-the canonical marker-filtering JQ expression, exactly one lookup invocation, and
-no extra `gh api` arguments.
+must use the GitHub Issue Search API as a bounded GET for open Issues, with
+`is:issue`, `in:body`, the freshness marker, and `per_page=2`; it returns at most
+the first two matching issue numbers so reruns remain idempotent without an
+unbounded pagination loop. It must use `[.items[].number] | join(" ")` so the
+bounded result is one shell-safe line, exactly one lookup invocation, and no
+extra `gh api` arguments.
 The lookup result must be captured and flow into the Issue number passed to a
 `close` or `edit` mutation, directly or through an issue-number array; logging
 or testing the result alone is insufficient.
@@ -261,7 +316,10 @@ reconciliation), so the checker has its repository files and Python runtime.
 Any auxiliary direct job must be an inert `steps: []` mapping with no execution
 configuration.
 Any
-repository, ref, path, token, cache, or other input override is rejected.
+repository, path, token, cache, or other input override is rejected. The only
+allowed checkout ref is the exact default-branch expression above; an
+arbitrary or omitted ref is rejected for manually dispatched Issue-writing
+workflows.
 The job summary must publish only the checked Markdown report with
 `cat "$RUNNER_TEMP/freshness.md" >> "$GITHUB_STEP_SUMMARY"`.
 Within the reconciliation job, the audit must complete before the lookup, and
@@ -282,7 +340,20 @@ The checked-in tracker registry must retain every shipped workflow, release,
 allowlist, and requirement input; emptying a category to suppress a check is
 invalid. Its version-1 schema supports only known top-level fields and known
 requirement-source fields; lock paths cannot reference requirement sources, so
-new inputs cannot be silently ignored.
+new inputs cannot be silently ignored. The freshness checker bounds each
+tracked workflow read to 5 MiB and records an indeterminate check when a file
+exceeds that cap. It resolves independent upstream inputs with a bounded worker
+pool, preserving deterministic findings and fail-closed errors, and caps the
+tracked workflow inventory at 500 files and 64 MiB, plus the distinct action
+repositories it resolves at 500, so a large or hostile repository cannot force
+unbounded local reads or upstream lookups.
+The action-pin synchronizer applies the same 500-file and 64 MiB aggregate
+workflow budget before preparing maintenance changes.
+The tracker registry is also capped at 500 tracked input paths, including
+requirement locks. Each requirements file may contain at most 512 unique direct
+pins, and all tracked requirement sources and locks together at most 4096
+pins. Requirements and tracked JSON policy inputs are bounded to 1 MiB before
+parsing.
 The reconciliation job itself must inherit or declare `issues: write`; granting
 that permission only to a different job does not satisfy the companion contract.
 It must be named `freshness-audit` and set `timeout-minutes: 15`.
@@ -333,7 +404,7 @@ under the active project workflow. Before creating or editing a PR body, read
 ### 7. Verify
 
 - Run `python scripts/validate_scaffold.py --repository-root .`.
-- Run `python scripts/ci_toolchain.py run-markdownlint` when Node.js is
+- Run `python scripts/ci_toolchain.py run-markdownlint` when Node.js 22 or later is
   available; otherwise report it as skipped and verify `docs-contract` after
   push.
 - Parse installed workflows and verify real checks before branch protection.

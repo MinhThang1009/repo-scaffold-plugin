@@ -1,8 +1,9 @@
 # Contributing to repo-scaffold
 
-Thank you for helping improve `repo-scaffold`. This repository contains a Codex
-skill, community-health templates, GitHub Actions templates including CodeQL
-advanced setup, a Python CodeQL preflight helper, and regression tests.
+Thank you for helping improve `repo-scaffold`. This repository contains a shared
+Agent Skills skill for Codex and Claude Code, community-health templates, GitHub
+Actions templates including CodeQL advanced setup, a Python CodeQL preflight
+helper, and regression tests.
 
 ## Before you start
 
@@ -11,7 +12,7 @@ advanced setup, a Python CodeQL preflight helper, and regression tests.
   opening a public issue.
 - Keep changes focused. Do not combine unrelated template, workflow, and parser
   changes in one pull request.
-- Verify current GitHub or OpenAI requirements against their official
+- Verify current GitHub, OpenAI, or Anthropic requirements against their official
   documentation when a change depends on external behavior.
 
 ## Report a bug or request a feature
@@ -19,10 +20,11 @@ advanced setup, a Python CodeQL preflight helper, and regression tests.
 Use the repository's
 [issue template chooser](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/new/choose):
 
-- Bug reports should include the plugin version, Codex environment, target
-  repository stack, reproduction steps, expected behavior, and actual behavior.
+- Bug reports should include the plugin version, Codex or Claude Code
+  environment, target repository stack, reproduction steps, expected behavior,
+  and actual behavior.
 - Feature requests should explain the problem, proposed behavior, alternatives,
-  and any GitHub or Codex compatibility constraints.
+  and any GitHub, Codex, or Claude Code compatibility constraints.
 
 Do not include tokens, credentials, private repository content, or other
 sensitive information.
@@ -36,10 +38,10 @@ The plugin has no build step. Development checks require:
 - markdown-it-py, for CommonMark-compliant Markdown validation
 - PyYAML
 - pytest
-- mutmut, on Linux or Windows through WSL
+- mutmut, on Linux, macOS, or Windows through WSL
 - Ruff
 - mypy
-- Node.js with `npx` for markdownlint
+- Node.js 22 or later with `npx` for markdownlint
 - actionlint
 - ShellCheck
 - `pip-tools`, only when regenerating a lock; record the version used in the
@@ -77,7 +79,8 @@ releases even when Dependabot regenerates it on Linux with a newer interpreter.
 Keep every platform-conditional package needed by the support matrix explicit
 in `requirements-dev.in` because `pip-compile` resolves for its host platform.
 
-Mutation testing uses a separate Linux/WSL-only lock. After changing
+Mutation testing uses a separate lock because mutmut requires operating-system
+`fork` support. After changing
 `requirements-mutation.in`, regenerate `requirements-mutation.txt` with the
 same procedure: record `pip-compile --version` and preserve the lockfile
 header's hash-mode options. Its unconditional
@@ -131,7 +134,8 @@ Mutation testing runs daily and on manual dispatch because a complete run is
 substantially more expensive than the required pull-request checks. The workflow
 plans every mutant, runs 32 exact Linux shards, and merges only a complete,
 non-overlapping assignment before it applies the gate. Mutmut requires
-operating-system `fork` support, so run it on Linux or in WSL on Windows:
+operating-system `fork` support, so run it on Linux or macOS, or in WSL on
+Windows:
 
 ```bash
 python -m pip install --require-hashes --requirement requirements-mutation.txt
@@ -213,7 +217,8 @@ Releases are automated from `main` through Release Please.
    all required checks.
 2. Review the Release Please pull request. It updates `CHANGELOG.md`,
    `version.txt`, `.release-please-manifest.json`, and
-   `.codex-plugin/plugin.json` to the proposed SemVer.
+   `.codex-plugin/plugin.json` and `.claude-plugin/plugin.json` to the proposed
+   SemVer.
 3. Merge the release pull request after its checks pass. Release Please creates
    the tag and draft GitHub Release, then invokes the reusable release engine.
 4. Verify that the release asset is attached, its provenance attestation passes,

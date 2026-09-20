@@ -42,6 +42,16 @@
       "review-period-days": 90
     },
     {
+      "id": "mutmut-windows-support",
+      "label": "mutmut operating-system support",
+      "url": "https://raw.githubusercontent.com/boxed/mutmut/main/README.rst",
+      "allowed-hosts": ["raw.githubusercontent.com"],
+      "paths": ["README.md", "CONTRIBUTING.md"],
+      "required-markers": ["`fork` support", "WSL"],
+      "reviewed-on": "2026-09-15",
+      "review-period-days": 90
+    },
+    {
       "id": "github-cli-home",
       "label": "GitHub CLI availability",
       "url": "https://cli.github.com/",
@@ -197,11 +207,12 @@
       "url": "https://code.claude.com/docs/en/memory",
       "allowed-hosts": ["code.claude.com"],
       "paths": [
+        "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/agent-compatibility.md",
         "skills/repo-scaffold/references/agent-compatibility.vi.md"
       ],
-      "required-markers": ["CLAUDE.md"],
-      "reviewed-on": "2026-08-24",
+      "required-markers": ["CLAUDE.md", "AGENTS.md", "v2.1.277", "@AGENTS.md"],
+      "reviewed-on": "2026-09-19",
       "review-period-days": 90
     },
     {
@@ -242,6 +253,43 @@
       ],
       "required-markers": ["full-length commit SHA", "pull_request_target"],
       "reviewed-on": "2026-08-24",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-pull-request-target-policy",
+      "label": "GitHub Actions pull_request_target event policy",
+      "url": "https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "README.md",
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/references/workflow-contracts.md",
+        "skills/repo-scaffold/scripts/workflow_installation_preflight.py"
+      ],
+      "required-markers": [
+        "pull_request_target",
+        "November 2, 2026",
+        "default event policy"
+      ],
+      "reviewed-on": "2026-09-19",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-policies-api",
+      "label": "GitHub Actions workflow-execution policies API",
+      "url": "https://docs.github.com/en/rest/actions/policies",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/workflow_installation_preflight.py"
+      ],
+      "required-markers": [
+        "List repository Actions policies",
+        "restrict_action_events",
+        "pull_request_target"
+      ],
+      "reviewed-on": "2026-09-19",
       "review-period-days": 90
     },
     {
@@ -691,9 +739,9 @@
       "review-period-days": 90
     },
     {
-      "id": "github-reminder-issues-api",
-      "label": "GitHub Issues API for reminder workflows",
-      "url": "https://docs.github.com/en/rest/issues/issues",
+      "id": "github-reminder-issue-search-api",
+      "label": "GitHub Issue Search API for reminder workflows",
+      "url": "https://docs.github.com/en/rest/search/search",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
         ".github/workflows/ci.yml",
@@ -704,11 +752,11 @@
         "skills/repo-scaffold/assets/workflows/freshness.yml"
       ],
       "required-markers": [
-        "List repository issues",
-        "pull_request",
+        "Search issues and pull requests",
+        "is:issue",
         "per_page"
       ],
-      "reviewed-on": "2026-09-07",
+      "reviewed-on": "2026-09-17",
       "review-period-days": 90
     },
     {

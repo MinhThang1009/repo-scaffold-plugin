@@ -34,7 +34,7 @@ when you ask to set up a new repository's standard files. It:
 - Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue templates, a default PR template plus focused `feature.md`, `bugfix.md`, `documentation.md`, `security.md`, `deployment.md`, and `dependency-update.md` templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
 - For a verified GitHub.com remote, adds deterministic documentation checks, weekly community-health upstream reminders, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow with provenance attestations when the repository is eligible, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
-- Produces either English or Vietnamese project-facing content. An explicit request wins, followed by active project instructions and the established documentation convention; English is the default when no preference exists.
+- Produces either English or Vietnamese project-facing content. Before generation, it requires one explicit project-output language choice, `en` or `vi`; active project instructions and existing documentation can inform the choice but do not replace that confirmation.
 - Creates one shared `AGENTS.md` instruction entry point for supported agents and
   a minimal `CLAUDE.md` adapter that imports it, so Claude Code and agents that
   consume `AGENTS.md` follow the same project guidance without duplicated rules.
@@ -57,15 +57,24 @@ Shipped workflows do not delegate execution to a mutable container tag.
 CodeQL and Scorecard also support `workflow_dispatch` for an on-demand security
 scan; run Scorecard from the default branch because it evaluates default-branch
 repository policy.
+Public repositories that install an asset using `pull_request_target` also need
+an applicable GitHub Actions workflow-execution policy that explicitly allows
+that event. GitHub's default public-repository policy is scheduled to block
+`pull_request_target` on November 2, 2026; the workflow-installation preflight's
+selected-actions result does not prove event-policy eligibility. The
+workflow-installation preflight now reads inherited Actions policies and fails
+closed unless an active event rule allows the event for every supplied workflow
+path. Review the [official policy guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
+before installing those assets. This plugin does not change that remote policy.
 
 ## 2. Requirements
 
-- [`gh`](https://cli.github.com/) (GitHub CLI), authenticated to GitHub.com (`gh auth status --active --hostname github.com`) — used for every GitHub API call and configuration step.
+- [`gh`](https://cli.github.com/) (GitHub CLI), authenticated to GitHub.com (`gh auth status --active --hostname github.com`) — used for GitHub repository discovery, configuration, and user-approved remote mutations.
 - `git`.
 - `actionlint` and ShellCheck are required for local workflow validation. CI obtains their reviewed versions, release metadata, archive layout, and asset digests from the centralized [CI toolchain policy](.github/ci-toolchain.json).
 - Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with the hash-locked development dependencies, for deterministic tests, branch coverage, scaffold validation, and fail-closed preflights. The CodeQL preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime, and requires separate confirmation that no external or indirect process uploads CodeQL results. The classic branch-protection preflight binds the repository/default branch, proves an exact remote workflow producer, event coverage, recent successful Check Runs on both representative PR SHAs, a stable GitHub App ID, and no Commit Status collision before it permits a required context. It rejects inactive targets and requires current administration permission. The merge-settings preflight preserves methods required by effective rules, requires separate confirmation before disabling an enabled method, and rejects auto-merge assets when a merge queue applies or no effective required status-check gate can be verified. The security-features preflight binds the exact requested features to an active repository with administration permission, enforces the secret-scanning prerequisite for push protection, limits private vulnerability reporting to public non-forks, and proves Dependabot alerts are enabled before automated security fixes unless alerts were approved for prior enablement. The workflow-installation preflight compares each supplied, SHA-pinned `uses:` reference with the effective selected-actions policy before allowing a restricted workflow asset. Without the applicable proof, the plugin skips that mutation and reports the verification gap.
 - The repository-settings preflight independently binds description/topics, Issues/Discussions, and label creation to the exact GitHub.com repository, rejects archived or disabled targets, and requires current administration permission before `gh repo edit` or `gh label create` can run.
-- Node.js with `npx` is required only to reproduce the markdownlint package pinned by the [CI toolchain policy](.github/ci-toolchain.json).
+- Node.js 22 or later with `npx` is required only to reproduce the markdownlint package pinned by the [CI toolchain policy](.github/ci-toolchain.json).
 - Remote automation supports GitHub.com only. GitHub Enterprise Server and GHE.com repositories receive host-independent local community files, but bundled workflows, GitHub.com badges, and remote configuration are skipped.
 - Without a remote, the plugin can generate host-independent local files. It defers workflows, badges, and GitHub configuration until a GitHub.com remote exists; it never creates that remote without confirmation.
 
@@ -83,7 +92,7 @@ agent:
 - "set up the repo to production standard"
 - "dựng repo chuẩn GitHub bằng tiếng Việt"
 
-The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. It resolves one project language (`en` or `vi`) before generation and applies it consistently to documentation, templates, and release metadata. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
+The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. Before generation, it asks the user to confirm one supported project language (`en` or `vi`) and applies that choice consistently to documentation, templates, and release metadata. Requests for another language are reported as unsupported by the reviewed assets; the skill does not silently fall back or mix languages. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
 
 For supported adapters, invocation, and generic Agent Skills use, read the
 [agent compatibility guidance](skills/repo-scaffold/references/agent-compatibility.md)
@@ -293,11 +302,13 @@ repositories during release audits.
 
 The [Python support policy](.github/python-support.json) is the single source of
 truth for CI. GitHub Actions tests every declared feature release on Ubuntu and
-the minimum/latest boundaries on Windows. The quality job consumes the policy's
-latest value. A non-required weekly `3.x` canary tests the latest stable Python,
+the minimum/latest boundaries on Windows and macOS. The quality job consumes the
+policy's latest value. A non-required weekly `3.x` canary tests the latest stable Python,
 then fails on undeclared-version drift so support changes require a reviewed
-policy update. Repository validation rejects policy, workflow, scaffold, and
-documentation drift. Scheduled/manual canaries maintain one reminder Issue when
+policy update. The test job uses `matrix.os`, so the policy can exercise all
+declared hosted platforms without duplicating runner lists in workflow YAML.
+Repository validation rejects policy, workflow, scaffold, and documentation drift.
+Scheduled/manual canaries maintain one reminder Issue when
 either reviewed policy needs attention. The quality job also runs formatting, lint, type, compile,
 workflow, metadata, link, and release-archive checks.
 The [CI toolchain policy](.github/ci-toolchain.json) separately centralizes the
@@ -313,14 +324,18 @@ resolves every transitive dependency and records PyPI SHA-256 hashes used by CI.
 The conventional `.in` to `.txt` pairing lets Dependabot run `pip-compile` and
 update both files in one PR. Platform-conditional packages required by the
 supported matrix are pinned directly so a lock regenerated on Linux remains
-installable with hashes on Windows. A weekly PR-only version-maintenance
+installable with hashes on Windows and macOS. A weekly PR-only version-maintenance
 synchronizer creates one draft PR with immutable GitHub Action pins and Release
 Please schema URLs updated in lockstep across repository workflows,
 configuration, and scaffold assets. It uses a dedicated fine-grained PAT stored
 as `VERSION_SYNC_TOKEN`, so normal PR CI runs; it never auto-merges. Scope that
 token to this repository only, with **Contents: Read and write**, **Pull
 requests: Read and write**, and **Workflows: Read and write** because the
-synchronizer may update workflow files. Keep it separate from
+synchronizer may update workflow files. Manual synchronizer runs always check out
+the default branch with credentials disabled before running repository code, so a
+selected branch or tag cannot reach the PAT-backed PR mutation. All runs share a
+repository-scoped non-cancelling concurrency group because they update the same
+maintenance branch. Keep it separate from
 `RELEASE_PLEASE_TOKEN` to avoid granting release automation unnecessary workflow
 write access. Python updates are
 grouped by dependency across the root toolchain and
@@ -332,7 +347,9 @@ and independently reports direct-PyPI-pin and lock-consistency drift, plus any
 versioned input the PR synchronizer could not make current. It serializes
 scheduled and manual runs per repository, opens or updates one marker Issue
 when attention is required, and closes it only after a clean scheduled/manual
-result. The
+result. Manual dispatches may target another ref in GitHub, so the reminder
+always checks out and audits the repository's default branch before using its
+Issue-writing token. The
 scaffold ships the same registry-driven checker and workflow to generated
 repositories when Issues are available. Track only sources with an
 authoritative owner and deterministic version resolver. Its version-1 registry
@@ -342,13 +359,15 @@ community-health policy tracking remains in its separate registry.
 The non-required weekly [official-documentation workflow](.github/workflows/official-docs.yml)
 uses [its explicit tracker registry](.github/official-docs-trackers.json) to
 revalidate the authoritative source URLs and stable claim markers, then requires
-a reviewed registry-date update at least every 90 days. It covers the plugin's
+a reviewed registry-date update at least every 90 days. Scheduled and manual
+reminder runs audit the default branch, even when GitHub dispatches them from a
+different ref. It covers the plugin's
 Codex, Claude Code, GitHub Actions, Agent Skills, Conventional Commits, and
 Keep a Changelog claims. Generated repositories do not inherit those
 plugin-specific claims.
 Mutation testing extends that toolchain through the separate, hash-verified
-`requirements-mutation.txt`. Mutmut versions are not duplicated in validators
-or tests; a compatible Dependabot bump passes the runner integration tests,
+`requirements-mutation.txt`. The runner's reviewed `MUTMUT_VERSION` is checked
+against the direct pin, and a compatible Dependabot bump passes the runner integration tests,
 while an incompatible internal API change fails those behavioral checks. Its
 daily and manually dispatched workflow plans every mutant on Linux, executes
 each exact assignment in a 32-way matrix, then rejects missing, duplicate, or

@@ -26,11 +26,22 @@ destination:
 | `assets/workflows/documentation.yml` | `assets/requirements-docs.txt` | `requirements-docs.txt` |
 | `assets/workflows/freshness.yml` | `../scripts/audit_freshness.py` | `scripts/audit_freshness.py` |
 | `assets/workflows/freshness.yml` | `assets/freshness-trackers.json` | `.github/freshness-trackers.json` |
+| `assets/workflows/freshness.yml` | `assets/requirements-docs.txt` | `requirements-docs.txt` |
 | `assets/workflows/freshness.yml` | `../scripts/ci_toolchain.py` | `scripts/ci_toolchain.py` |
 | `assets/workflows/freshness.yml` | `assets/ci-toolchain.json` | `.github/ci-toolchain.json` |
 | `assets/workflows/freshness.yml` | `../scripts/sync_action_pins.py` | `scripts/sync_action_pins.py` |
 | `assets/workflows/labeler.yml` | `assets/labeler.yml` | `.github/labeler.yml` |
 | Pull-request preflight | `../scripts/pr_template_preflight.py` | `scripts/pr_template_preflight.py` |
+
+Workflow installation is an explicit generation decision. For a verified
+GitHub.com project with a runnable test or lint command, install a configured CI
+workflow before declaring the scaffold complete, unless the user explicitly
+defers it. For every applicable approved asset, run the read-only
+`workflow_installation_preflight.py` with the exact `--workflow` inputs, copy
+the companion files in the table, and verify the installed files. Record each
+optional asset as installed, not applicable, or explicitly deferred; never
+silently omit an applicable workflow or leave the generic CI sentinel in the
+finished project.
 
 When installing the CodeQL or code-scanning gate asset, also copy
 `assets/code-scanning-allowlist.json` to
@@ -54,12 +65,16 @@ the language-neutral `CLAUDE.md` adapter unchanged so it imports `AGENTS.md`.
 Render every project-authored, human-facing surface in one
 `SCAFFOLD_LANGUAGE`, either `en` or `vi`: documentation, templates, workflow
 messages, labels, changelog headings, release notes, and commit, pull-request,
-or release text created as part of an authorized scaffold. Resolve the language
-from the user's explicit language request, then active project instructions,
-then the dominant first-party human-facing documentation, then `en` as the
-fallback. Ask when higher-priority signals conflict. Never leave an
-English/Vietnamese hybrid, and do not infer English from identifiers or
-technical literals.
+or release text created as part of an authorized scaffold. Before generation, ask
+the user to choose exactly one supported language with: "Which project-output
+language should I use, en or vi?" A valid answer is required even when project
+evidence suggests a language. If the user requests another language, explain that
+the reviewed assets currently support only `en` and `vi`; do not silently fall
+back, mix languages, or generate until the user chooses a supported language or
+stops. Set `SCAFFOLD_LANGUAGE` from the confirmed answer. Project instructions
+and existing documentation may inform the recommendation but may not replace this
+confirmation. Never leave an English/Vietnamese hybrid, and do not infer English
+from identifiers or technical literals.
 
 The Vietnamese mappings are:
 

@@ -151,6 +151,7 @@ class ReleasePreflightTests(unittest.TestCase):
             (arguments(), repository(disabled=True), "Disabled"),
             (arguments(), repository(default_branch="trunk"), "does not match"),
             (arguments(), repository(visibility="unknown"), "invalid visibility"),
+            (arguments(), repository(visibility=[]), "invalid visibility"),
             (arguments(), repository(fork="no"), "invalid 'fork'"),
             (
                 arguments(),

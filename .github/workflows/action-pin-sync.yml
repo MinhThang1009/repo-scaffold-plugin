@@ -9,7 +9,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Manual dispatch can select a ref, but every run writes the same maintenance
+  # branch. Serialize by repository so selected refs cannot race that PR.
+  group: repo-scaffold-version-sync-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -23,6 +25,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Manual dispatch can select another branch or tag. Keep repository
+          # code and the token-backed PR mutation on the trusted default branch.
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Verify version-sync token

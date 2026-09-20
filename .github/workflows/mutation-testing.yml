@@ -17,7 +17,7 @@ jobs:
   mutation-plan:
     name: mutation-plan
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,6 +45,8 @@ jobs:
         run: python -m pip check
 
       - name: Generate exact mutation shards
+        env:
+          REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: ${{ github.workspace }}
         shell: bash
         run: python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32
 

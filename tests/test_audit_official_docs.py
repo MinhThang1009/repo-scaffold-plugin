@@ -116,6 +116,7 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
             r"docs\README.md",
             "docs/./README.md",
             "docs//README.md",
+            "docs/\nREADME.md",
             "C:/README.md",
             "docs/C:README.md",
         ):
@@ -141,6 +142,9 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                     official_docs.load_trackers(root)
             for document, fragment in (
                 ({"schema-version": 2, "claims": []}, "schema-version"),
+                ({"schema-version": 1.0, "claims": []}, "schema-version"),
+                ({"schema-version": True, "claims": []}, "schema-version"),
+                ({**valid, "unexpected": True}, "unsupported"),
                 ({"schema-version": 1, "claims": []}, "non-empty"),
                 ({"schema-version": 1, "claims": [None]}, "object"),
                 (
@@ -279,6 +283,49 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 "https://docs.example.test/guide", ("docs.example.test",)
             )
 
+    def test_audit_fetches_each_unique_document_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            registry = root / official_docs.DEFAULT_TRACKER_REGISTRY
+            document = registry_document()
+            document["claims"].append(
+                {
+                    **document["claims"][0],
+                    "id": "official-docs-second",
+                    "label": "Second official documentation claim",
+                }
+            )
+            registry.write_text(json.dumps(document), encoding="utf-8")
+            with mock.patch.object(
+                official_docs,
+                "read_document",
+                return_value=("https://docs.example.test/guide", "Supported contract"),
+            ) as read_document:
+                report = official_docs.audit(root, today=date(2026, 8, 25))
+
+        self.assertEqual(report["status"], "current")
+        read_document.assert_called_once_with(
+            "https://docs.example.test/guide", ("docs.example.test",)
+        )
+
+    def test_local_claim_sources_are_bounded_and_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "README.md"
+            path.write_bytes(b"x" * (official_docs.MAX_LOCAL_SOURCE_BYTES + 1))
+            with self.assertRaisesRegex(official_docs.AuditError, "safety cap"):
+                official_docs.read_local_source(path)
+
+            path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(official_docs.AuditError, "UTF-8"):
+                official_docs.read_local_source(path)
+
+            with (
+                mock.patch.object(Path, "open", side_effect=OSError("denied")),
+                self.assertRaisesRegex(official_docs.AuditError, "could not read"),
+            ):
+                official_docs.read_local_source(path)
+
     def test_github_rest_fetch_preserves_html_only_contract_markers(self) -> None:
         url = "https://docs.github.com/en/rest/git/refs"
         payload = b"<p>&quot;Contents&quot; permissions; tags/&lt;tag name&gt;</p>"
@@ -325,11 +372,15 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
         }
         for identifier, content in excerpts.items():
             claim = claims[identifier]
+            # This test validates endpoint excerpts and registry path identity.
+            # Mutmut can expand copied source files beyond the production local
+            # source cap; bounded-source behavior has focused coverage above.
             with (
                 self.subTest(identifier=identifier),
                 mock.patch.object(
                     official_docs, "read_document", return_value=(claim.url, content)
                 ),
+                mock.patch.object(official_docs, "read_local_source", return_value=""),
             ):
                 self.assertEqual(
                     official_docs.claim_findings(PLUGIN_ROOT, claim, date(2026, 9, 8)),
@@ -347,8 +398,11 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
         marker = "Send write tokens to workflows from pull requests"
         self.assertIn(marker, claim.markers)
         content = "\n".join(value for value in claim.markers if value != marker)
-        with mock.patch.object(
-            official_docs, "read_document", return_value=(claim.url, content)
+        with (
+            mock.patch.object(
+                official_docs, "read_document", return_value=(claim.url, content)
+            ),
+            mock.patch.object(official_docs, "read_local_source", return_value=""),
         ):
             findings = official_docs.claim_findings(
                 PLUGIN_ROOT, claim, date(2026, 9, 8)
@@ -488,6 +542,26 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 "Claim\\|text next | `old\\|value next` | `new\\|value next` |",
                 official_docs.markdown_report(report),
             )
+            backtick_report = {
+                **report,
+                "findings": [
+                    {
+                        "kind": "official-docs-review",
+                        "path": "README`guide.md",
+                        "subject": "Claim`text",
+                        "current": "old``value",
+                        "latest": "new`value",
+                    }
+                ],
+                "errors": ["offline`retry"],
+            }
+            rendered_backticks = official_docs.markdown_report(backtick_report)
+            self.assertIn(
+                "| official-docs-review | `` README`guide.md `` | Claim\\`text | "
+                "``` old``value ``` | `` new`value `` |",
+                rendered_backticks,
+            )
+            self.assertIn("- offline\\`retry", rendered_backticks)
             with mock.patch.object(
                 official_docs,
                 "read_document",

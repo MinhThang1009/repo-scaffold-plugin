@@ -11,6 +11,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -312,6 +313,8 @@ class GitHubClient:
             raise InspectionError(
                 "GitHub CLI is not installed or not on PATH."
             ) from exc
+        except OSError as exc:
+            raise InspectionError("GitHub CLI could not be executed.") from exc
         except subprocess.TimeoutExpired as exc:
             raise InspectionError(
                 f"GitHub API request timed out for {endpoint!r} after "
@@ -2554,9 +2557,13 @@ def contains_codeql_cli(
 
 def is_direct_workflow_path(path: str) -> bool:
     workflow_path = PurePosixPath(path)
-    return workflow_path.parent == PurePosixPath(
-        ".github/workflows"
-    ) and workflow_path.suffix.lower() in {".yml", ".yaml"}
+    return (
+        not any(ord(character) < 0x20 for character in path)
+        and "\\" not in path
+        and workflow_path.as_posix() == path
+        and workflow_path.parent == PurePosixPath(".github/workflows")
+        and workflow_path.suffix.lower() in {".yml", ".yaml"}
+    )
 
 
 def parse_workflow(
@@ -2645,6 +2652,20 @@ def is_reparse_point(path: Path) -> bool:
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
+def is_macos_system_alias(path: Path) -> bool:
+    """Allow Apple's stable system aliases when they resolve in place."""
+    if sys.platform != "darwin":
+        return False
+    expected_targets = {
+        Path("/var"): Path("/private/var"),
+        Path("/tmp"): Path("/private/tmp"),
+    }
+    target = expected_targets.get(path)
+    if target is None:
+        return False
+    return path.is_symlink() and Path(os.path.realpath(path)) == target
+
+
 def require_safe_root(root: Path) -> None:
     if not root.is_absolute():
         raise InspectionError("Repository root must be an absolute path.")
@@ -2658,10 +2679,11 @@ def require_safe_root(root: Path) -> None:
         current = current / component
         if not os.path.lexists(current):
             raise InspectionError(f"Repository root does not exist: {root}")
+        is_system_alias = is_macos_system_alias(current)
         if (
-            current.is_symlink()
+            (current.is_symlink() and not is_system_alias)
             or is_reparse_point(current)
-            or os.path.ismount(current)
+            or (os.path.ismount(current) and not is_system_alias)
         ):
             raise InspectionError(
                 f"Refusing to inspect linked, mounted, or reparse-point "
@@ -2714,6 +2736,8 @@ def load_local_workflows(
         if not path.is_file() or path.suffix.lower() not in {".yml", ".yaml"}:
             continue
         key = path.relative_to(repo_root).as_posix()
+        if not is_direct_workflow_path(key):
+            raise InspectionError(f"Local workflow path is not canonical: {key!r}")
         try:
             if path.stat().st_size > MAX_WORKFLOW_BYTES:
                 raise InspectionError(
@@ -2783,7 +2807,7 @@ class WorkflowResolver:
     def resolve(self, call: str, context: WorkflowContext) -> WorkflowNode:
         local_match = LOCAL_CALL.fullmatch(call)
         if local_match:
-            path = str(PurePosixPath(local_match.group("path")))
+            path = local_match.group("path")
             if ".." in PurePosixPath(path).parts:
                 raise InspectionError(
                     f"Reusable workflow path contains traversal: {call}"
@@ -2825,7 +2849,7 @@ class WorkflowResolver:
             raise InspectionError(
                 f"Reusable workflow has an invalid repository identifier: {call}"
             )
-        path = str(PurePosixPath(external_match.group("path")))
+        path = external_match.group("path")
         reference = external_match.group("ref")
         if ".." in PurePosixPath(path).parts:
             raise InspectionError(f"Reusable workflow path contains traversal: {call}")
@@ -2875,14 +2899,31 @@ def load_remote_default_branch(
     items = tree.get("tree")
     if not isinstance(items, list):
         raise InspectionError("Default-branch tree has no tree array.")
-    workflow_items = [
-        item
-        for item in items
-        if isinstance(item, dict)
-        and item.get("type") == "blob"
-        and isinstance(item.get("path"), str)
-        and is_direct_workflow_path(item["path"])
-    ]
+    workflow_items: list[dict[str, Any]] = []
+    seen_workflow_paths: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            continue
+        path = item["path"]
+        pure_path = PurePosixPath(path)
+        if pure_path.parent != PurePosixPath(".github/workflows"):
+            continue
+        if pure_path.suffix.lower() not in {".yml", ".yaml"}:
+            continue
+        if item.get("type") != "blob":
+            raise InspectionError(
+                f"Default-branch workflow entry is not a blob: {path!r}"
+            )
+        if not is_direct_workflow_path(path):
+            raise InspectionError(
+                f"Default-branch workflow path is not canonical: {path!r}"
+            )
+        if path in seen_workflow_paths:
+            raise InspectionError(
+                f"Default-branch workflow path appears more than once: {path!r}"
+            )
+        seen_workflow_paths.add(path)
+        workflow_items.append(item)
     if len(workflow_items) > MAX_REMOTE_WORKFLOWS:
         raise InspectionError(
             f"Remote workflow count exceeded the {MAX_REMOTE_WORKFLOWS}-file safety cap."

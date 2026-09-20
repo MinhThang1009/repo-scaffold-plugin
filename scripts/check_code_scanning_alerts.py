@@ -107,6 +107,7 @@ def safe_alert_path(value: str) -> str:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or any(ord(character) < 0x20 for character in value)
         or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
     ):
@@ -137,7 +138,11 @@ def load_allowlist(path: Path) -> tuple[AlertSelector, ...]:
         raise GateError(
             f"could not read code-scanning allowlist {path}: {error}"
         ) from error
-    if not isinstance(document, dict) or document.get("schema-version") not in {2, 3}:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schema-version")) is not int
+        or document.get("schema-version") not in {2, 3}
+    ):
         raise GateError("code-scanning allowlist must use schema-version 2 or 3")
     schema_version = document["schema-version"]
     entries = document.get("allowlist")
@@ -402,6 +407,8 @@ def open_alerts(repository: str, ref: str, token: str) -> tuple[Alert, ...]:
             path = location.get("path") if isinstance(location, dict) else None
             if path is not None and not isinstance(path, str):
                 raise GateError("GitHub alert path must be text or null")
+            if path is not None:
+                path = safe_alert_path(path)
             number = item.get("number")
             if type(number) is not int:
                 raise GateError("GitHub alert number must be an integer")

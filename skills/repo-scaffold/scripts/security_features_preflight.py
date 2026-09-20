@@ -43,10 +43,10 @@ def security_statuses(document: dict[str, Any]) -> dict[str, str | None]:
         if value is None:
             statuses[field] = None
             continue
-        if not isinstance(value, dict) or value.get("status") not in {
+        if not isinstance(value, dict) or value.get("status") not in (
             "enabled",
             "disabled",
-        }:
+        ):
             raise InspectionError(
                 f"Repository security_and_analysis has an invalid {field!r} value."
             )
@@ -115,13 +115,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     is_fork = require_boolean(repository, "fork")
     visibility = repository.get("visibility")
-    if visibility not in {"public", "private", "internal"}:
+    if visibility not in ("public", "private", "internal"):
         raise InspectionError("Repository response has an invalid visibility value.")
     owner_document = repository.get("owner")
     owner_type = (
         owner_document.get("type") if isinstance(owner_document, dict) else None
     )
-    if owner_type not in {"User", "Organization"}:
+    if owner_type not in ("User", "Organization"):
         raise InspectionError("Repository response has an unsupported owner type.")
     statuses = security_statuses(repository)
 

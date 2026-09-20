@@ -23,6 +23,7 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_POLICY_BYTES = 1024 * 1024
 MAX_REGISTRY_BYTES = 1024 * 1024
 MAX_REGISTRY_ENTRIES = 256
+MAX_DIRECTORY_ENTRIES = 10_000
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 VERSION_PATTERN = re.compile(r"\d+(?:\.\d+){1,2}\Z")
 CONTRIBUTOR_COVENANT_PATH = re.compile(
@@ -39,6 +40,7 @@ ALLOWED_SCOPES = {
     "github-community-profile",
     "repo-scaffold-extension",
 }
+COMMUNITY_HEALTH_TRACKER_KEYS = frozenset({"schema-version", "files"})
 
 
 class AuditError(RuntimeError):
@@ -151,6 +153,7 @@ def _safe_relative_path(value: object, location: str) -> str:
         or path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or any(ord(character) < 0x20 for character in value)
         or any(PureWindowsPath(part).drive for part in path.parts)
         or path.as_posix() != value
     ):
@@ -159,8 +162,14 @@ def _safe_relative_path(value: object, location: str) -> str:
 
 
 def parse_registry(document: object) -> list[RegistryEntry]:
-    if not isinstance(document, dict) or document.get("schema-version") != 1:
+    if (
+        not isinstance(document, dict)
+        or type(document.get("schema-version")) is not int
+        or document.get("schema-version") != 1
+    ):
         raise AuditError("tracker registry must use schema-version 1")
+    if set(document) != COMMUNITY_HEALTH_TRACKER_KEYS:
+        raise AuditError("tracker registry contains unsupported top-level fields")
     raw_files = document.get("files")
     if not isinstance(raw_files, list) or not raw_files:
         raise AuditError("tracker registry files must be a non-empty list")
@@ -214,6 +223,8 @@ def parse_registry(document: object) -> list[RegistryEntry]:
 
 def load_registry(path: Path) -> list[RegistryEntry]:
     try:
+        if is_link_or_reparse(path):
+            raise AuditError(f"tracker registry is linked or a reparse point: {path}")
         if path.stat().st_size > MAX_REGISTRY_BYTES:
             raise AuditError(f"tracker registry exceeds the size limit: {path}")
         document = json.loads(
@@ -246,21 +257,55 @@ def checked_repository_path(root: Path, relative: str) -> Path:
     return candidate
 
 
-def _directory_files(root: Path, directory: Path) -> list[str]:
-    try:
-        candidates = sorted(directory.rglob("*"))
-    except OSError as error:
+def checked_registry_path(root: Path, configured: Path) -> Path:
+    """Resolve a registry path only when it stays inside the repository."""
+    if configured.is_absolute():
+        try:
+            relative = configured.relative_to(root)
+        except ValueError as error:
+            raise AuditError(
+                f"tracker registry must stay within the repository root: {configured}"
+            ) from error
+    else:
+        relative = configured
+    relative_text = relative.as_posix()
+    path = PurePosixPath(relative_text)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in relative_text
+        or any(ord(character) < 0x20 for character in relative_text)
+        or any(PureWindowsPath(part).drive for part in path.parts)
+        or path.as_posix() != relative_text
+    ):
         raise AuditError(
-            f"could not enumerate community-health directory: {directory}"
-        ) from error
+            f"tracker registry must be a safe repository-relative path: {configured}"
+        )
+    return checked_repository_path(root, relative_text)
+
+
+def _directory_files(root: Path, directory: Path) -> list[str]:
     files: list[str] = []
-    for path in candidates:
-        relative = path.relative_to(root).as_posix()
-        if is_link_or_reparse(path):
-            raise AuditError(f"refusing linked or reparse-point path: {relative}")
-        if path.is_file():
-            files.append(relative)
-    return files
+    try:
+        for entry_count, path in enumerate(directory.rglob("*"), start=1):
+            if entry_count > MAX_DIRECTORY_ENTRIES:
+                raise AuditError(
+                    "community-health directory exceeds the "
+                    f"{MAX_DIRECTORY_ENTRIES}-entry safety cap: {directory}"
+                )
+            relative = path.relative_to(root).as_posix()
+            if is_link_or_reparse(path):
+                raise AuditError(f"refusing linked or reparse-point path: {relative}")
+            if path.is_file():
+                files.append(relative)
+    except AuditError:
+        raise
+    except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+        raise AuditError(
+            f"could not enumerate community-health directory: {directory}: {error}"
+        ) from error
+    return sorted(files)
 
 
 def inventory_entry(root: Path, entry: RegistryEntry) -> dict[str, Any]:
@@ -480,7 +525,30 @@ def audit(
 
 def markdown_table_cell(value: object) -> str:
     """Render one value without permitting it to add Markdown table cells/rows."""
-    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("`", "\\`")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def markdown_code_span(value: object) -> str:
+    """Render one value in a code span without allowing delimiter injection."""
+    text = (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+    longest_backtick_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    if longest_backtick_run:
+        delimiter = "`" * (longest_backtick_run + 1)
+        return f"{delimiter} {text} {delimiter}"
+    return f"`{text}`"
 
 
 def markdown_report(report: dict[str, Any]) -> str:
@@ -490,8 +558,8 @@ def markdown_report(report: dict[str, Any]) -> str:
         "<!-- repo-scaffold-community-health-drift -->",
         "# Community-health upstream report",
         "",
-        f"- Repository: `{report['repository']}`",
-        f"- Checked: `{report['checked-at']}`",
+        f"- Repository: {markdown_code_span(report['repository'])}",
+        f"- Checked: {markdown_code_span(report['checked-at'])}",
         f"- Overall status: **{summary['status']}**",
         f"- GitHub Community Profile: **{profile['status']}**"
         + (
@@ -506,7 +574,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     for result in report["files"]:
         paths = result["paths"]
         path_text = (
-            ", ".join(f"`{markdown_table_cell(path)}`" for path in paths)
+            ", ".join(markdown_code_span(path) for path in paths)
             if paths
             else "_absent_"
         )
@@ -523,7 +591,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     errors = report["errors"]
     if errors:
         lines.extend(["", "## Indeterminate checks", ""])
-        lines.extend(f"- {str(error).replace(chr(10), ' ')}" for error in errors)
+        lines.extend(f"- {markdown_table_cell(error)}" for error in errors)
     lines.extend(
         [
             "",
@@ -556,10 +624,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.repository_root.resolve()
-    registry_path = (
-        args.registry if args.registry.is_absolute() else root / args.registry
-    )
     try:
+        # Keep the caller's lexical root for registry containment.  On macOS,
+        # temporary directories can be exposed through a symlink such as
+        # ``/var`` -> ``/private/var``; resolving only the repository root
+        # would make an otherwise in-root absolute ``--registry`` path appear
+        # outside the root.
+        registry_path = checked_registry_path(
+            args.repository_root.absolute(), args.registry
+        )
         entries = load_registry(registry_path)
         report = audit(
             root,

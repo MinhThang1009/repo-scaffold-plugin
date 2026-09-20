@@ -209,7 +209,11 @@ class ActionPinSyncTests(unittest.TestCase):
                 root, ".github/workflows/ci.yml", "name: validated\n"
             )
 
-            with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
+            with mock.patch.object(
+                sync_action_pins,
+                "read_workflow_text",
+                side_effect=ValueError("denied"),
+            ):
                 with self.assertRaisesRegex(
                     ValueError, "could not reread workflow file before writing"
                 ):
@@ -218,6 +222,55 @@ class ActionPinSyncTests(unittest.TestCase):
                     )
 
             self.assertEqual(workflow.read_text(encoding="utf-8"), "name: validated\n")
+
+    def test_read_workflow_text_bounds_size_and_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ci.yml"
+            path.write_bytes(b"x" * (sync_action_pins.MAX_WORKFLOW_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, "exceeds the .* safety cap"):
+                sync_action_pins.read_workflow_text(path)
+
+            path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(ValueError, "not valid UTF-8"):
+                sync_action_pins.read_workflow_text(path)
+
+            with (
+                mock.patch.object(Path, "open", side_effect=OSError("denied")),
+                self.assertRaisesRegex(ValueError, "could not read workflow file"),
+            ):
+                sync_action_pins.read_workflow_text(path)
+
+    def test_synchronizer_rejects_oversized_workflows_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.write_workflow(root, ".github/workflows/ci.yml", "name: CI\n")
+            path.write_bytes(b"x" * (sync_action_pins.MAX_WORKFLOW_BYTES + 1))
+
+            with self.assertRaisesRegex(ValueError, "exceeds the .* safety cap"):
+                sync_action_pins.synchronize_action_pins(
+                    root,
+                    self.releases,
+                    write=False,
+                    workflow_directories=(Path(".github/workflows"),),
+                )
+
+    def test_synchronizer_bounds_total_workflow_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_workflow(root, ".github/workflows/ci.yml", "name: CI\n")
+
+            with mock.patch.object(
+                sync_action_pins, "MAX_TOTAL_WORKFLOW_BYTES", len("name: CI\n") - 1
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "workflow inventory exceeds the .* safety cap"
+                ):
+                    sync_action_pins.synchronize_action_pins(
+                        root,
+                        self.releases,
+                        write=False,
+                        workflow_directories=(Path(".github/workflows"),),
+                    )
 
     def test_synchronize_preserves_current_pin_comment_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1332,6 +1385,34 @@ class ActionPinSyncTests(unittest.TestCase):
             ),
             set(),
         )
+        for reference in ("./../outside-action", "./nested/../outside-action", "./"):
+            with self.subTest(reference=reference):
+                with self.assertRaisesRegex(
+                    ValueError, "safe repository-relative path"
+                ):
+                    sync_action_pins.auditable_action_repositories(
+                        path, f"  - uses: {reference}\n"
+                    )
+        with self.assertRaisesRegex(ValueError, "safe repository-relative path"):
+            sync_action_pins.auditable_action_repositories(
+                path, "  - uses: ./nested\\outside-action\n"
+            )
+
+    def test_local_action_reference_validation_is_canonical(self) -> None:
+        for reference, expected in (
+            ("./local-action", True),
+            ("./nested/action", True),
+            ("actions/checkout@" + "a" * 40, False),
+            ("./../outside-action", False),
+            ("./nested/../outside-action", False),
+            ("./nested\\outside-action", False),
+            ("./nested\x00outside-action", False),
+        ):
+            with self.subTest(reference=reference):
+                self.assertEqual(
+                    sync_action_pins.is_safe_local_action_reference(reference),
+                    expected,
+                )
 
     def test_action_repositories_reject_alias_mapping_keys(self) -> None:
         path = Path("workflow.yml")
@@ -1361,6 +1442,12 @@ class ActionPinSyncTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "mapping keys"):
                     sync_action_pins.auditable_action_repositories(path, content)
 
+    def test_action_repositories_reject_traversal_components(self) -> None:
+        path = Path("workflow.yml")
+        content = "jobs:\n  test:\n    steps:\n      - uses: ../evil@" + "a" * 40 + "\n"
+        with self.assertRaisesRegex(ValueError, "invalid repository"):
+            sync_action_pins.auditable_action_repositories(path, content)
+
     def test_workflow_paths_rejects_missing_unsafe_and_empty_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1379,6 +1466,10 @@ class ActionPinSyncTests(unittest.TestCase):
                 sync_action_pins.workflow_paths(root)
             workflow = root / sync_action_pins.WORKFLOW_DIRECTORIES[0] / "workflow.yml"
             workflow.write_text("jobs: {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "file safety cap"):
+                sync_action_pins.workflow_paths(root, max_files=0)
+            with self.assertRaisesRegex(ValueError, "must not be negative"):
+                sync_action_pins.workflow_paths(root, max_files=-1)
             original_is_symlink = Path.is_symlink
             with mock.patch.object(
                 Path,
@@ -1596,6 +1687,10 @@ class ActionPinSyncTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "invalid action repository"):
             client.latest_release("invalid")
+        for repository in ("../evil", "./evil", "evil/.."):
+            with self.subTest(repository=repository):
+                with self.assertRaisesRegex(ValueError, "invalid action repository"):
+                    client.latest_release(repository)
         with self.assertRaisesRegex(ValueError, "not an object"):
             client.get_json("/test")
         with self.assertRaisesRegex(ValueError, "bounded object list"):
