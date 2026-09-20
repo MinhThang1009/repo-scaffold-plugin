@@ -1011,20 +1011,28 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Validate the selected repository and report every problem."""
     args = parse_args()
-    root = Path(os.path.abspath(args.repository_root))
-    if not root.exists():
-        raise FileNotFoundError(root)
-    if not root.is_dir():
-        raise ValueError(f"repository root is not a directory: {root}")
-    template_root = (
-        Path(os.path.abspath(args.template_root)) if args.template_root else None
-    )
-    if template_root is not None:
-        if not template_root.exists():
-            raise FileNotFoundError(template_root)
-        if not template_root.is_dir():
-            raise ValueError(f"template root is not a directory: {template_root}")
-    problems = validate_scaffold(root, template_root=template_root)
+    try:
+        root = Path(os.path.abspath(args.repository_root))
+        if not root.exists():
+            raise FileNotFoundError(root)
+        if not root.is_dir():
+            raise ValueError(f"repository root is not a directory: {root}")
+        template_root = (
+            Path(os.path.abspath(args.template_root)) if args.template_root else None
+        )
+        if template_root is not None:
+            if not path_is_below(template_root, root):
+                raise ValueError("template root must remain within repository root")
+            if path_has_link_or_reparse(template_root, root):
+                raise ValueError("template root must not cross a link or reparse point")
+            if not template_root.exists():
+                raise FileNotFoundError(template_root)
+            if not template_root.is_dir():
+                raise ValueError(f"template root is not a directory: {template_root}")
+        problems = validate_scaffold(root, template_root=template_root)
+    except (FileNotFoundError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     if problems:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)

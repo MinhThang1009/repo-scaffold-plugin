@@ -9,6 +9,7 @@ import json
 import os
 import re
 import stat
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from html import unescape
@@ -564,17 +565,23 @@ def main(argv: list[str] | None = None) -> int:
     """Write reports and return current, attention, or indeterminate status."""
     arguments = parse_args(argv)
     repository_root = arguments.repository_root.resolve()
-    if arguments.validate_registry:
-        claims = load_trackers(repository_root, arguments.tracker_registry)
-        print(f"Official documentation tracker registry is valid: {len(claims)} claims")
-        return 0
-    if arguments.json_output is None or arguments.markdown_output is None:
-        raise AssertionError("argument parser must require report output paths")
-    report = audit(repository_root, arguments.tracker_registry)
-    arguments.json_output.write_text(
-        json.dumps(report, indent=2) + "\n", encoding="utf-8"
-    )
-    arguments.markdown_output.write_text(markdown_report(report), encoding="utf-8")
+    try:
+        if arguments.validate_registry:
+            claims = load_trackers(repository_root, arguments.tracker_registry)
+            print(
+                f"Official documentation tracker registry is valid: {len(claims)} claims"
+            )
+            return 0
+        if arguments.json_output is None or arguments.markdown_output is None:
+            raise AssertionError("argument parser must require report output paths")
+        report = audit(repository_root, arguments.tracker_registry)
+        arguments.json_output.write_text(
+            json.dumps(report, indent=2) + "\n", encoding="utf-8"
+        )
+        arguments.markdown_output.write_text(markdown_report(report), encoding="utf-8")
+    except AuditError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     print(f"Official documentation review status: {report['status']}")
     return {"current": 0, "attention": 1, "indeterminate": 2}[report["status"]]
 

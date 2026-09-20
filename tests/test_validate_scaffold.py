@@ -1453,11 +1453,13 @@ body:
             repository_root=Path("missing-repository-root"),
             template_root=None,
         )
+        error_output = StringIO()
         with (
             mock.patch.object(validate_scaffold, "parse_args", return_value=args),
-            self.assertRaises(FileNotFoundError),
+            redirect_stderr(error_output),
         ):
-            validate_scaffold.main()
+            self.assertEqual(validate_scaffold.main(), 2)
+        self.assertIn("error:", error_output.getvalue())
 
     def test_main_rejects_non_directories_and_missing_template_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1466,11 +1468,12 @@ body:
             regular_file.write_text("file", encoding="utf-8")
 
             cases = (
-                (regular_file, None, ValueError),
-                (root, root / "missing", FileNotFoundError),
-                (root, regular_file, ValueError),
+                (regular_file, None),
+                (root, root / "missing"),
+                (root, regular_file),
+                (root, root.parent / "outside-assets"),
             )
-            for repository_root, template_root, error_type in cases:
+            for repository_root, template_root in cases:
                 with self.subTest(
                     repository_root=repository_root, template_root=template_root
                 ):
@@ -1478,13 +1481,31 @@ body:
                         repository_root=repository_root,
                         template_root=template_root,
                     )
+                    error_output = StringIO()
                     with (
                         mock.patch.object(
                             validate_scaffold, "parse_args", return_value=args
                         ),
-                        self.assertRaises(error_type),
+                        redirect_stderr(error_output),
                     ):
-                        validate_scaffold.main()
+                        self.assertEqual(validate_scaffold.main(), 2)
+                    self.assertIn("error:", error_output.getvalue())
+
+            args = validate_scaffold.argparse.Namespace(
+                repository_root=root,
+                template_root=root / "assets",
+            )
+            (root / "assets").mkdir()
+            error_output = StringIO()
+            with (
+                mock.patch.object(validate_scaffold, "parse_args", return_value=args),
+                mock.patch.object(
+                    validate_scaffold, "path_has_link_or_reparse", return_value=True
+                ),
+                redirect_stderr(error_output),
+            ):
+                self.assertEqual(validate_scaffold.main(), 2)
+            self.assertIn("link or reparse point", error_output.getvalue())
 
     def test_parse_args_preserves_defaults_options_and_help(self) -> None:
         with mock.patch.object(sys, "argv", [str(SCRIPT_PATH)]):
