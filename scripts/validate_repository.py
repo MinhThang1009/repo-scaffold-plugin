@@ -4030,6 +4030,11 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
             ".github/workflows/ci.yml: policy drift reminder must use a "
             "repository-scoped non-cancelling concurrency group"
         ]
+    if not manual_issue_write_checkout_is_safe(workflow):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder must check out "
+            "the repository default branch with credentials disabled"
+        ]
     for fragment in (
         "repo-scaffold-ci-policy-drift",
         "CI policy review required",
