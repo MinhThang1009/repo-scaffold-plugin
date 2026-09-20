@@ -6,7 +6,7 @@ import runpy
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -617,6 +617,26 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                     0,
                 )
             self.assertIn("tracker registry is valid", stdout.getvalue())
+
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    official_docs.main(
+                        [
+                            "--repository-root",
+                            str(root),
+                            "--tracker-registry",
+                            "../outside-registry.json",
+                            "--validate-registry",
+                        ]
+                    ),
+                    2,
+                )
+            self.assertIn(
+                "error: registry must be a safe relative path", stderr.getvalue()
+            )
+            self.assertNotIn("Traceback", stderr.getvalue())
+
             with self.assertRaises(SystemExit):
                 official_docs.parse_args(["--repository-root", str(root)])
             malformed_arguments = official_docs.argparse.Namespace(
