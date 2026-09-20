@@ -11913,6 +11913,13 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                         ">&",
                         "2",
                     ],
+                    [
+                        "printf",
+                        "Freshness checker returned an unexpected exit status: %s\\n",
+                        "$CHECKER_EXIT",
+                        ">&",
+                        "2",
+                    ],
                 ],
             ),
             mock.patch.object(

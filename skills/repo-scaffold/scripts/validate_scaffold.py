@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import stat
@@ -859,6 +860,8 @@ def validate_pull_request_templates(repository_root: Path) -> list[str]:
 def validate_template_assets(template_root: Path) -> list[str]:
     """Validate Markdown-specific contracts in the plugin's source assets."""
     problems: list[str] = []
+    problems.extend(validate_citation_assets(template_root))
+    problems.extend(validate_release_please_locale_asset(template_root))
     header_path = template_root / "README-header.md"
     if path_has_link_or_reparse(header_path, template_root):
         problems.append(
@@ -973,6 +976,71 @@ def validate_template_assets(template_root: Path) -> list[str]:
             else:
                 problems.append(f"{label} must contain a required checklist item")
     return list(dict.fromkeys(problems))
+
+
+def validate_citation_assets(template_root: Path) -> list[str]:
+    """Require CFF author markers to render as person/entity mappings."""
+    marker = "{{REPO_SCAFFOLD_CITATION_AUTHORS_YAML}}"
+    problems: list[str] = []
+    for filename in ("CITATION.cff", "CITATION.vi.cff"):
+        path = template_root / filename
+        if not path.exists():
+            continue
+        relative = path.relative_to(template_root).as_posix()
+        if path_has_link_or_reparse(path, template_root):
+            problems.append(
+                f"{relative}: linked or reparse-point citation asset is not validated"
+            )
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(f"{relative}: could not read citation asset: {error}")
+            continue
+        if not re.search(rf"(?m)^  - {re.escape(marker)}$", text):
+            problems.append(
+                f"{relative}: citation authors marker must occupy a YAML mapping position"
+            )
+            continue
+        rendered = text.replace(marker, 'name: "Example Project"')
+        try:
+            document = load_yaml_text(rendered)
+        except yaml.YAMLError as error:
+            problems.append(f"{relative}: rendered citation YAML is invalid: {error}")
+            continue
+        authors = document.get("authors") if isinstance(document, dict) else None
+        if (
+            not isinstance(authors, list)
+            or not authors
+            or not all(isinstance(author, dict) for author in authors)
+        ):
+            problems.append(
+                f"{relative}: rendered authors must be a non-empty array of mappings"
+            )
+    return problems
+
+
+def validate_release_please_locale_asset(template_root: Path) -> list[str]:
+    """Keep the Vietnamese Release Please title pattern localized."""
+    path = template_root / "release-please-config.vi.json"
+    if not path.exists():
+        return []
+    relative = path.relative_to(template_root).as_posix()
+    if path_has_link_or_reparse(path, template_root):
+        return [f"{relative}: linked or reparse-point release config is not validated"]
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
+        return [f"{relative}: invalid JSON: {error}"]
+    expected = "chore${scope}: phát hành${component} ${version}"
+    if (
+        not isinstance(document, dict)
+        or document.get("pull-request-title-pattern") != expected
+    ):
+        return [
+            f"{relative}: pull-request-title-pattern must use the approved Vietnamese release text"
+        ]
+    return []
 
 
 def validate_scaffold(
