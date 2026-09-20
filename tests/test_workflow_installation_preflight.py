@@ -962,6 +962,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          fi\n"
                 "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
                 '          grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n'
+                "          if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then\n"
+                "            printf 'Freshness checker returned an unexpected exit status: %s\\n' \"$CHECKER_EXIT\" >&2\n"
+                "            exit 1\n"
+                "          fi\n"
                 "          if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
                 "            if (( ${#issue_numbers[@]} == 1 )); then\n"
                 '              gh issue close "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --comment clean\n'
@@ -1173,7 +1177,13 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "            exit 1\n"
             "          fi\n"
         )
-        valid += repository_lookup_command + body_command
+        status_guard = (
+            "          if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then\n"
+            "            printf 'Freshness checker returned an unexpected exit status: %s\\n' \"$CHECKER_EXIT\" >&2\n"
+            "            exit 1\n"
+            "          fi\n"
+        )
+        valid += repository_lookup_command + status_guard + body_command
         cases = {
             "valid": valid,
             "summary before audit": valid.replace(
@@ -4989,6 +4999,13 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     [
                         "printf",
                         "Found multiple open freshness reminder issues.\\n",
+                        ">&",
+                        "2",
+                    ],
+                    [
+                        "printf",
+                        "Freshness checker returned an unexpected exit status: %s\\n",
+                        "$CHECKER_EXIT",
                         ">&",
                         "2",
                     ],
