@@ -292,6 +292,10 @@ FRESHNESS_DUPLICATE_ISSUE_GUARD = (
     "exit 1",
     "fi",
 )
+FRESHNESS_CHECKER_STATUS_GUARD = (
+    "if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' "
+    "&& \"$CHECKER_EXIT\" != '2' ]]; then"
+)
 FRESHNESS_DUPLICATE_ISSUE_PRINTF = (
     "printf",
     "Found multiple open freshness reminder issues.\\n",
@@ -318,6 +322,13 @@ FRESHNESS_ALLOWED_PRINTF_COMMANDS = frozenset(
             "$RUNNER_TEMP/freshness.md",
         ),
         ("printf", "checker_exit=%s\\n", "$checker_exit", ">>", "$GITHUB_OUTPUT"),
+        (
+            "printf",
+            "Freshness checker returned an unexpected exit status: %s\\n",
+            "$CHECKER_EXIT",
+            ">&",
+            "2",
+        ),
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
     }
 )
@@ -326,6 +337,7 @@ FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
         f'if [[ ! -f "{FRESHNESS_AUDIT_MARKDOWN_OUTPUT}" ]]; then',
         'if [[ -n "$issue_numbers_output" ]]; then',
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
+        FRESHNESS_CHECKER_STATUS_GUARD,
         "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
         "if (( ${#issue_numbers[@]} == 1 )); then",
         "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
@@ -1445,8 +1457,9 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
         or not freshness_shell_expansions_are_safe(command)
     ):
         return False
+    command_without_status_guard = command.replace(FRESHNESS_CHECKER_STATUS_GUARD, "")
     segments: list[list[str]] = []
-    for logical_line in shell_logical_lines(command):
+    for logical_line in shell_logical_lines(command_without_status_guard):
         line_segments = shell_command_segments(logical_line)
         if line_segments is None:
             return False
@@ -1603,6 +1616,7 @@ def freshness_shell_control_flow_is_safe(command: str) -> bool:
         return False
     required_if_lines = (
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
+        FRESHNESS_CHECKER_STATUS_GUARD,
         "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
         "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
     )
@@ -1618,7 +1632,8 @@ def freshness_shell_control_flow_is_safe(command: str) -> bool:
     clean_index = if_lines.index("if [[ \"$CHECKER_EXIT\" == '0' ]]; then")
     stale_index = if_lines.index("if [[ \"$CHECKER_EXIT\" != '0' ]]; then")
     duplicate_index = if_lines.index(FRESHNESS_DUPLICATE_ISSUE_GUARD[0])
-    if not duplicate_index < clean_index < stale_index:
+    status_index = if_lines.index(FRESHNESS_CHECKER_STATUS_GUARD)
+    if not duplicate_index < status_index < clean_index < stale_index:
         return False
     nonempty_indices = [
         index
@@ -1801,7 +1816,16 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         if index >= reconciliation_start
         and (shell_command_prefix(segment) or [""])[0] == "printf"
     ]
-    if reconciliation_printf_commands != [FRESHNESS_DUPLICATE_ISSUE_PRINTF]:
+    if reconciliation_printf_commands != [
+        FRESHNESS_DUPLICATE_ISSUE_PRINTF,
+        (
+            "printf",
+            "Freshness checker returned an unexpected exit status: %s\\n",
+            "$CHECKER_EXIT",
+            ">&",
+            "2",
+        ),
+    ]:
         return False
     if_ranges = freshness_shell_if_block_ranges(segments)
     if if_ranges is None:
@@ -1886,8 +1910,9 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         and len(close_mutations) == 1
         and len(edit_mutations) == 1
         and len(create_mutations) == 1
-        # One failure exit guards duplicate issues; one propagates stale status.
-        and len(failure_exits) == 2
+        # One failure exit guards duplicate issues, one rejects an unexpected
+        # checker status, and one propagates stale status.
+        and len(failure_exits) == 3
     ):
         return False
     issue_numbers_initialization_indices = [
@@ -2178,11 +2203,14 @@ def has_freshness_repository_api_reads(
 
 def freshness_command_order_is_valid(command: str) -> bool:
     """Require the audit, lookup, and mutation phases to run in that order."""
+    command_without_status_guard = command.replace(FRESHNESS_CHECKER_STATUS_GUARD, "")
     audit_positions: list[int] = []
     api_positions: list[int] = []
     mutation_positions: list[int] = []
     command_index = 0
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer = shlex.shlex(
+        command_without_status_guard, posix=True, punctuation_chars=True
+    )
     lexer.whitespace_split = True
     lexer.commenters = "#"
     try:
@@ -2190,7 +2218,7 @@ def freshness_command_order_is_valid(command: str) -> bool:
             return False
     except ValueError:
         return False
-    for logical_line in shell_logical_lines(command):
+    for logical_line in shell_logical_lines(command_without_status_guard):
         segments = shell_command_segments(logical_line)
         if segments is None:
             return False
