@@ -388,9 +388,9 @@ The engine verifies the tag target, builds
 `repo-scaffold-plugin-<filesystem-safe-tag>.zip` from the immutable commit,
 generates signed SLSA build provenance in a separate no-checkout job, attaches
 the asset to the draft, and publishes only after attestation succeeds. The
-archive contains `.agents/`, `.codex-plugin/`, `.claude-plugin/`, `skills/`, `README.md`, and
-`LICENSE` under a
-`repo-scaffold/` directory. The workflow requires a fine-grained PAT stored as
+archive contains `.agents/`, `.codex-plugin/`, `.claude-plugin/`, `skills/`,
+the README-linked policy and support documents, and the reviewed policy files
+under a `repo-scaffold/` directory. The workflow requires a fine-grained PAT stored as
 `RELEASE_PLEASE_TOKEN`; see [CONTRIBUTING.md](CONTRIBUTING.md) for the release
 process and token scope.
 

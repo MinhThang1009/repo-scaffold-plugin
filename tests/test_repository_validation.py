@@ -3604,6 +3604,64 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 any("symbolic link 'repo-scaffold/link'" in item for item in problems)
             )
 
+    def test_release_archive_rejects_missing_markdown_link_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def write_archive(command: list[str], **_kwargs: object) -> mock.Mock:
+                if command[1] == "ls-tree":
+                    return mock.Mock(
+                        returncode=0,
+                        stderr="",
+                        stdout="README.md\0bad.md\0",
+                    )
+                archive = Path(command[command.index("--output") + 1])
+                with validate_repository.zipfile.ZipFile(archive, "w") as bundle:
+                    bundle.writestr(
+                        "repo-scaffold/README.md",
+                        "[missing](SUPPORT.md)\n"
+                        "[nul](%00)\n"
+                        "[escape](../../outside.md)\n",
+                    )
+                    bundle.writestr("repo-scaffold/bad.md", b"\xff")
+                return mock.Mock(returncode=0, stderr="")
+
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess, "run", side_effect=write_archive
+                ),
+            ):
+                problems = validate_repository.validate_release_archive(root)
+
+        self.assertIn(
+            "release archive: repo-scaffold/README.md: relative link is missing: SUPPORT.md",
+            problems,
+        )
+        self.assertTrue(
+            any(
+                "release archive: repo-scaffold/bad.md: could not read Markdown:"
+                in problem
+                for problem in problems
+            )
+        )
+        self.assertTrue(
+            any(
+                "release archive: repo-scaffold/README.md: relative link has an invalid path: %00"
+                in problem
+                for problem in problems
+            )
+        )
+        self.assertTrue(
+            any(
+                "release archive: repo-scaffold/README.md: relative link escapes archive: ../../outside.md"
+                in problem
+                for problem in problems
+            )
+        )
+
     def test_repository_aggregator_and_main_report_all_results(self) -> None:
         validator_names = (
             "validate_serialized_files",
@@ -4400,7 +4458,10 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "codex_manifest_version",
             "claude_manifest_version",
             "Codex and Claude plugin manifest versions must match.",
-            "HEAD -- .agents .claude-plugin .codex-plugin skills README.md LICENSE",
+            "HEAD -- .agents .claude-plugin .codex-plugin skills",
+            ".github/ci-toolchain.json",
+            ".github/workflows/official-docs.yml",
+            "SUPPORT.md TERMS.md",
         ):
             self.assertIn(fragment, workflow)
 
@@ -6430,7 +6491,10 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                     "steps": [
                         {
                             "name": "Build artifact",
-                            "run": "git archive --worktree-attributes HEAD",
+                            "run": (
+                                "git archive --worktree-attributes HEAD -- "
+                                + " ".join(validate_repository.RELEASE_ARCHIVE_PATHS)
+                            ),
                         }
                     ],
                 },
@@ -6516,6 +6580,27 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
         self.assertIn(
             ".github/workflows/release.yml: archive build must use git archive "
             "with --worktree-attributes",
+            problems,
+        )
+
+    def test_release_attestation_requires_plugin_archive_path_set(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            engine_path = root / ".github" / "workflows" / "release.yml"
+            engine = yaml.safe_load(engine_path.read_text(encoding="utf-8"))
+            engine["jobs"]["build"]["steps"][0]["run"] = (
+                "git archive --worktree-attributes HEAD -- .agents"
+            )
+            engine_path.write_text(
+                yaml.safe_dump(engine, sort_keys=False), encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_release_attestation(root)
+
+        self.assertIn(
+            ".github/workflows/release.yml: archive build must include the "
+            "canonical README-closure path set",
             problems,
         )
 
