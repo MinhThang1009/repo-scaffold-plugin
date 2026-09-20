@@ -13047,6 +13047,41 @@ class PolicyDriftReminderContractTests(unittest.TestCase):
             ],
         )
 
+    def test_policy_drift_reminder_requires_trusted_default_branch_checkout(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_directory = root / ".github" / "workflows"
+            workflow_directory.mkdir(parents=True)
+            workflow_text = (
+                PLUGIN_ROOT / ".github" / "workflows" / "ci.yml"
+            ).read_text(encoding="utf-8")
+            workflow_text = workflow_text.replace(
+                """      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+""",
+                "",
+                1,
+            )
+            (workflow_directory / "ci.yml").write_text(
+                workflow_text,
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_policy_drift_reminder_contract(root)
+
+        self.assertEqual(
+            problems,
+            [
+                ".github/workflows/ci.yml: policy drift reminder must check out "
+                "the repository default branch with credentials disabled"
+            ],
+        )
+
     def test_policy_drift_reminder_requires_repository_scoped_concurrency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
