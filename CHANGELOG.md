@@ -4,6 +4,15 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.6](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.5...v1.10.6) (2026-09-20)
+
+
+### Bug Fixes
+
+* **assets:** repair locale template contracts ([15753d8](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/15753d8125a1f82d933103753b21e976b09394f1))
+* **preflight:** reject linked template paths ([8f7d000](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/8f7d00073e516b0570fa5a4faf9d730690231b7f))
+* **workflows:** guard freshness status ([d887e05](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/d887e055e4dd6254ffa29f0c9a1f5357157767f7))
+
 ## [1.10.5](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.4...v1.10.5) (2026-09-20)
 
 
