@@ -12,6 +12,8 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = (
@@ -1162,6 +1164,98 @@ body:
         asset_root = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
 
         self.assertEqual(validate_scaffold.validate_template_assets(asset_root), [])
+
+    def test_citation_and_localized_release_assets_have_renderable_contracts(
+        self,
+    ) -> None:
+        asset_root = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
+
+        self.assertEqual(validate_scaffold.validate_citation_assets(asset_root), [])
+        self.assertEqual(
+            validate_scaffold.validate_release_please_locale_asset(asset_root), []
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CITATION.cff").write_text(
+                "cff-version: 1.2.0\n"
+                "authors:\n"
+                '  - "{{REPO_SCAFFOLD_CITATION_AUTHORS_YAML}}"\n',
+                encoding="utf-8",
+            )
+            (root / "release-please-config.vi.json").write_text(
+                '{"pull-request-title-pattern":"chore${scope}: release${component} ${version}"}\n',
+                encoding="utf-8",
+            )
+
+            citation_problems = validate_scaffold.validate_citation_assets(root)
+            release_problems = validate_scaffold.validate_release_please_locale_asset(
+                root
+            )
+
+        self.assertTrue(
+            any(
+                "authors marker must occupy a YAML mapping position" in item
+                for item in citation_problems
+            )
+        )
+        self.assertTrue(
+            any("approved Vietnamese release text" in item for item in release_problems)
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            citation = root / "CITATION.cff"
+            citation.write_text(
+                "cff-version: 1.2.0\n"
+                "authors:\n"
+                "  - {{REPO_SCAFFOLD_CITATION_AUTHORS_YAML}}\n",
+                encoding="utf-8",
+            )
+            release = root / "release-please-config.vi.json"
+            release.write_text(
+                '{"pull-request-title-pattern":"chore${scope}: phát hành${component} ${version}"}\n',
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                validate_scaffold,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path in {citation, release},
+            ):
+                self.assertTrue(validate_scaffold.validate_citation_assets(root))
+                self.assertTrue(
+                    validate_scaffold.validate_release_please_locale_asset(root)
+                )
+
+            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+                self.assertTrue(validate_scaffold.validate_citation_assets(root))
+                self.assertTrue(
+                    validate_scaffold.validate_release_please_locale_asset(root)
+                )
+
+            citation.write_text(
+                "cff-version: 1.2.0\n"
+                "authors:\n"
+                "  - {{REPO_SCAFFOLD_CITATION_AUTHORS_YAML}}\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                validate_scaffold,
+                "load_yaml_text",
+                side_effect=yaml.YAMLError("bad"),
+            ):
+                self.assertTrue(validate_scaffold.validate_citation_assets(root))
+            with mock.patch.object(
+                validate_scaffold,
+                "load_yaml_text",
+                return_value={"authors": []},
+            ):
+                self.assertTrue(validate_scaffold.validate_citation_assets(root))
+
+            release.write_text("{\n", encoding="utf-8")
+            self.assertTrue(
+                validate_scaffold.validate_release_please_locale_asset(root)
+            )
 
     def test_template_assets_report_missing_header_and_invalid_pull_template(
         self,
