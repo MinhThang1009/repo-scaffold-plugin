@@ -887,6 +887,49 @@ class CodeScanningGateTests(unittest.TestCase):
             arguments[arguments.index("a" * 40)] = "invalid"
             self.assertEqual(gate.main(arguments), 2)
 
+    def test_main_treats_empty_pull_request_context_as_merge_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            allowlist = self.write_allowlist(Path(directory), [])
+            arguments = [
+                "--repository",
+                "owner/repo",
+                "--ref",
+                "refs/heads/gh-readonly-queue/main/pr-1-abc123",
+                "--sha",
+                "a" * 40,
+                "--token",
+                "token",
+                "--allowlist",
+                str(allowlist),
+                "--expected-codeql-category",
+                "/language:python",
+            ]
+            with mock.patch.dict(
+                gate.os.environ,
+                {"PR_NUMBER": "", "PR_BASE_SHA": "", "PR_HEAD_SHA": ""},
+                clear=False,
+            ):
+                with (
+                    mock.patch.object(
+                        gate, "wait_for_analyses", return_value=None
+                    ) as ref_wait,
+                    mock.patch.object(
+                        gate, "wait_for_pull_request_analyses"
+                    ) as pull_request_wait,
+                    mock.patch.object(gate, "wait_for_open_alerts", return_value=()),
+                ):
+                    self.assertEqual(gate.main(arguments), 0)
+            ref_wait.assert_called_once_with(
+                "owner/repo",
+                "refs/heads/gh-readonly-queue/main/pr-1-abc123",
+                "a" * 40,
+                "token",
+                12,
+                5.0,
+                frozenset({"/language:python"}),
+            )
+            pull_request_wait.assert_not_called()
+
     def test_main_rejects_invalid_arguments_and_script_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             allowlist = self.write_allowlist(Path(directory), [])
