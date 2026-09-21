@@ -5683,6 +5683,36 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
                 2,
             )
 
+    def test_pr_template_contract_rejects_conditional_required_producers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                Path(".github/workflows/pr-template.yml"),
+                Path("skills/repo-scaffold/assets/workflows/pr-template.yml"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    (PLUGIN_ROOT / relative)
+                    .read_text(encoding="utf-8")
+                    .replace(
+                        "    name: pr-template\n    runs-on:",
+                        "    name: pr-template\n    if: false\n    runs-on:",
+                    ),
+                    encoding="utf-8",
+                )
+
+            problems = validate_repository.validate_required_check_concurrency(root)
+
+            self.assertEqual(
+                sum(
+                    "required pr-template check must use one unconditional producer"
+                    in item
+                    for item in problems
+                ),
+                2,
+            )
+
 
 class CodeScanningGateContractTests(unittest.TestCase):
     def test_validator_reports_missing_malformed_and_unsafe_gate_contracts(
@@ -6119,21 +6149,18 @@ class PullRequestTemplateContractTests(unittest.TestCase):
         )
         self.assertEqual(document["permissions"], {"contents": "read"})
         self.assertEqual(document["concurrency"]["cancel-in-progress"], "false")
+        self.assertEqual(set(document["jobs"]), {"pr_template"})
         self.assertEqual(document["jobs"]["pr_template"]["name"], "pr-template")
-        self.assertEqual(
-            document["jobs"]["merge_group_pr_template"]["name"], "pr-template"
-        )
-        self.assertEqual(
-            document["jobs"]["merge_group_pr_template"]["if"],
-            "${{ github.event_name == 'merge_group' }}",
-        )
 
         for fragment in (
-            "ref: ${{ github.event.pull_request.base.sha }}",
+            "ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}",
             "persist-credentials: false",
+            "EVENT_NAME: ${{ github.event_name }}",
             "PR_BODY: ${{ github.event.pull_request.body }}",
             "PR_TITLE: ${{ github.event.pull_request.title }}",
             "PR_IS_DRAFT: ${{ github.event.pull_request.draft }}",
+            "PR_USER: ${{ github.event.pull_request.user.login }}",
+            "PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}",
             'Path(".github/PULL_REQUEST_TEMPLATE.md")',
             'Path(".github/PULL_REQUEST_TEMPLATE")',
             "repo-scaffold:pr-template=",
@@ -6143,11 +6170,14 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "Pull request title type",
             "Pull request body must preserve every required heading and checklist",
             "Mark each required checklist item only after it is complete",
-            "github.event.pull_request.user.login != 'dependabot[bot]'",
-            "github.event_name == 'pull_request_target'",
+            'event_name == "merge_group"',
+            'event_name != "pull_request_target"',
+            'PR_USER") == "dependabot[bot]"',
             "release-please--branches--",
             "github.event.merge_group.head_sha",
             "Pull request template requirements were checked before merge-queue admission.",
+            "Pull request template validation is explicitly exempt for Dependabot.",
+            "Pull request template validation is explicitly exempt for Release Please.",
         ):
             self.assertIn(fragment, workflow_text)
 
@@ -6425,6 +6455,38 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(vietnamese_result.returncode, 0, vietnamese_result.stderr)
+
+            for environment, message in (
+                (
+                    {"EVENT_NAME": "merge_group"},
+                    "Pull request template requirements were checked before merge-queue admission.",
+                ),
+                (
+                    {
+                        "EVENT_NAME": "pull_request_target",
+                        "PR_USER": "dependabot[bot]",
+                    },
+                    "Pull request template validation is explicitly exempt for Dependabot.",
+                ),
+                (
+                    {
+                        "EVENT_NAME": "pull_request_target",
+                        "PR_HEAD_REF": "release-please--branches--main",
+                    },
+                    "Pull request template validation is explicitly exempt for Release Please.",
+                ),
+            ):
+                with self.subTest(environment=environment):
+                    exempt_result = subprocess.run(
+                        [sys.executable, "-c", script],
+                        cwd=root,
+                        env={**os.environ, **environment},
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                    )
+                    self.assertEqual(exempt_result.returncode, 0, exempt_result.stderr)
+                    self.assertIn(message, exempt_result.stdout)
 
             body_without_optional_items = re.sub(
                 r"\n## If applicable\n\n"
