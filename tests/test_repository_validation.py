@@ -5119,6 +5119,33 @@ jobs:
         )
         self.assertIn("test job uses `matrix.os`", readme)
 
+    def test_skill_verification_is_conditional_on_installed_companions(self) -> None:
+        skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        skill_flat = " ".join(skill.split())
+
+        self.assertIn(
+            "Run verification only for contracts and companion scripts that were actually installed",
+            skill_flat,
+        )
+        self.assertIn(
+            "If the `documentation.yml` contract was installed and copied `scripts/validate_scaffold.py`",
+            skill_flat,
+        )
+        self.assertIn(
+            "If the documentation or freshness contract copied `scripts/ci_toolchain.py`",
+            skill_flat,
+        )
+        self.assertIn(
+            "If the `community-health.yml` contract was installed and copied `scripts/check_community_health.py`",
+            skill_flat,
+        )
+        self.assertIn("`not-applicable` or `deferred`", skill_flat)
+        self.assertIn(
+            "do not infer that an uninstalled workflow or script passed", skill_flat
+        )
+
     def test_accepts_intentional_semver_build_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

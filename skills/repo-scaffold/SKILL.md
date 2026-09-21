@@ -403,13 +403,26 @@ under the active project workflow. Before creating or editing a PR body, read
 
 ### 7. Verify
 
-- Run `python scripts/validate_scaffold.py --repository-root .`.
-- Run `python scripts/ci_toolchain.py run-markdownlint` when Node.js 22 or later is
-  available; otherwise report it as skipped and verify `docs-contract` after
-  push.
+Run verification only for contracts and companion scripts that were actually
+installed. An unsupported host, an inapplicable optional workflow, or an
+explicit user deferral is `not-applicable` or `deferred`, not a missing-file
+validation failure.
+
+- If the `documentation.yml` contract was installed and copied
+  `scripts/validate_scaffold.py`, run
+  `python scripts/validate_scaffold.py --repository-root .`.
+- If the documentation or freshness contract copied `scripts/ci_toolchain.py`,
+  run `python scripts/ci_toolchain.py run-markdownlint` when Node.js 22 or later
+  is available. Otherwise report that check as skipped and verify
+  `docs-contract` after push when the documentation workflow is installed.
+- If the `community-health.yml` contract was installed and copied
+  `scripts/check_community_health.py`, run the community-health checker.
+- Record every absent companion as `not-applicable` or `deferred` with the
+  reason, and do not infer that an uninstalled workflow or script passed.
 - Parse installed workflows and verify real checks before branch protection.
-- For eligible GitHub.com repositories, run the community-health checker and
-  inspect every indeterminate, ambiguous, or outdated result.
+- For eligible GitHub.com repositories with the community-health contract
+  installed, run the community-health checker and inspect every indeterminate,
+  ambiguous, or outdated result.
 - Confirm GitHub's Community Profile and detected SPDX license after generation.
 
 ## Resources
