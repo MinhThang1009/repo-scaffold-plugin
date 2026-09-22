@@ -4,6 +4,20 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.8](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.7...v1.10.8) (2026-09-22)
+
+
+### Bug Fixes
+
+* **ci:** make PR template gate unconditional ([#114](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/114)) ([e848460](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/e848460a2cd5e7522877f5f13b6558b48766946b))
+
+## [1.10.7](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.6...v1.10.7) (2026-09-22)
+
+
+### Bug Fixes
+
+* **ci:** consolidate code scanning gate producer ([#113](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/113)) ([6bf43ac](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/6bf43ac7ef7a5de61452cb258a105b35df4a9e69))
+
 ## [1.10.6](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.5...v1.10.6) (2026-09-20)
 
 

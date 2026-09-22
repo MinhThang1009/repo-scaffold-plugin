@@ -42,36 +42,57 @@ def parse_workflow(text: str, source: str) -> dict[str, Any]:
     return document
 
 
-def event_covers(document: dict[str, Any], event: str) -> bool:
+def event_covers(
+    document: dict[str, Any], event: str, default_branch: str | None = None
+) -> bool:
+    """Return whether a required check covers the relevant protected events.
+
+    A trusted ``pull_request_target`` workflow is the safe equivalent of a
+    ``pull_request`` producer for this preflight. A branch filter is accepted
+    only when it is the verified default branch, and path filters remain
+    unsupported because they can silently suppress a required check.
+    """
+    candidate_events = (
+        ("pull_request", "pull_request_target") if event == "pull_request" else (event,)
+    )
     triggers = document.get("on")
     if isinstance(triggers, list):
-        return event in triggers
-    if not isinstance(triggers, dict) or event not in triggers:
+        return any(candidate in triggers for candidate in candidate_events)
+    if not isinstance(triggers, dict):
         return False
-    value = triggers[event]
-    if value is None or value == "":
-        return True
-    if not isinstance(value, dict):
-        return False
-    if any(
-        key in value for key in ("branches", "branches-ignore", "paths", "paths-ignore")
-    ):
-        return False
-    types = value.get("types")
-    if types is None:
-        return True
-    if not isinstance(types, list) or not all(
-        isinstance(event_type, str) for event_type in types
-    ):
-        return False
-    if event == "pull_request":
-        return {
-            "opened",
-            "edited",
-            "reopened",
-            "synchronize",
-        }.issubset(set(types))
-    return "checks_requested" in types
+    for candidate in candidate_events:
+        if candidate not in triggers:
+            continue
+        value = triggers[candidate]
+        if value is None or value == "":
+            return True
+        if not isinstance(value, dict):
+            continue
+        if any(key in value for key in ("paths", "paths-ignore", "branches-ignore")):
+            continue
+        branches = value.get("branches")
+        if branches is not None and (
+            default_branch is None or branches != [default_branch]
+        ):
+            continue
+        types = value.get("types")
+        if types is None:
+            return True
+        if not isinstance(types, list) or not all(
+            isinstance(event_type, str) for event_type in types
+        ):
+            continue
+        if event == "pull_request":
+            if {
+                "opened",
+                "edited",
+                "reopened",
+                "synchronize",
+            }.issubset(set(types)):
+                return True
+        elif "checks_requested" in types:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -85,7 +106,11 @@ class Producer:
 
 
 def workflow_producers(
-    client: GitHubClient, owner: str, repo: str, commit: str
+    client: GitHubClient,
+    owner: str,
+    repo: str,
+    commit: str,
+    default_branch: str | None = None,
 ) -> list[Producer]:
     tree = client.json(f"repos/{owner}/{repo}/git/trees/{commit}?recursive=1")
     if not isinstance(tree, dict) or tree.get("truncated") is not False:
@@ -131,8 +156,8 @@ def workflow_producers(
         jobs = document.get("jobs")
         if not isinstance(jobs, dict):
             raise InspectionError(f"Workflow {path!r} has no jobs mapping.")
-        pull_request_coverage = event_covers(document, "pull_request")
-        merge_group_coverage = event_covers(document, "merge_group")
+        pull_request_coverage = event_covers(document, "pull_request", default_branch)
+        merge_group_coverage = event_covers(document, "merge_group", default_branch)
         for job_id, job in jobs.items():
             if not isinstance(job_id, str) or not isinstance(job, dict):
                 raise InspectionError(f"Workflow {path!r} has an invalid job entry.")
@@ -373,7 +398,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ):
             raise InspectionError("Effective rule has an invalid or missing type.")
     queue_required = any(rule["type"] == "merge_queue" for rule in rules)
-    producers = workflow_producers(client, owner, repo, head_sha)
+    producers = workflow_producers(client, owner, repo, head_sha, args.default_branch)
     now = datetime.now(timezone.utc)
     verified: list[dict[str, Any]] = []
     for context in contexts:
