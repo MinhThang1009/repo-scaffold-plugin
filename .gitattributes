@@ -34,6 +34,7 @@
 /PLUGIN_SUBMISSION.md export-ignore
 /PLUGIN_SUBMISSION.md -export-ignore
 scripts/**        export-ignore
+/scripts/check_code_scanning_alerts.py -export-ignore
 tests/**          export-ignore
 
 # Plugin payload is complete source, including dotfile templates and scripts.

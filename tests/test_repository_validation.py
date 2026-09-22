@@ -3579,22 +3579,22 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
                 problems,
             )
             for script in (
-                "ci_toolchain.py",
-                "branch_protection_preflight.py",
-                "advanced_codeql_preflight.py",
-                "codeql_preflight.py",
-                "dependency_review_preflight.py",
-                "scorecard_preflight.py",
-                "merge_settings_preflight.py",
-                "release_preflight.py",
-                "repository_settings_preflight.py",
-                "security_features_preflight.py",
-                "workflow_installation_preflight.py",
-                "validate_scaffold.py",
+                "scripts/check_code_scanning_alerts.py",
+                "skills/repo-scaffold/scripts/ci_toolchain.py",
+                "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                "skills/repo-scaffold/scripts/codeql_preflight.py",
+                "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                "skills/repo-scaffold/scripts/scorecard_preflight.py",
+                "skills/repo-scaffold/scripts/merge_settings_preflight.py",
+                "skills/repo-scaffold/scripts/release_preflight.py",
+                "skills/repo-scaffold/scripts/repository_settings_preflight.py",
+                "skills/repo-scaffold/scripts/security_features_preflight.py",
+                "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+                "skills/repo-scaffold/scripts/validate_scaffold.py",
             ):
                 self.assertIn(
-                    "release archive: missing "
-                    f"repo-scaffold/skills/repo-scaffold/scripts/{script}",
+                    f"release archive: missing repo-scaffold/{script}",
                     problems,
                 )
             self.assertTrue(
@@ -3603,6 +3603,17 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             self.assertTrue(
                 any("symbolic link 'repo-scaffold/link'" in item for item in problems)
             )
+
+    def test_release_archive_retains_code_scanning_gate_companion(self) -> None:
+        self.assertIn(
+            "scripts/check_code_scanning_alerts.py",
+            validate_repository.RELEASE_ARCHIVE_PATHS,
+        )
+        attributes = (PLUGIN_ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertRegex(
+            attributes,
+            r"(?m)^/scripts/check_code_scanning_alerts\.py -export-ignore$",
+        )
 
     def test_release_archive_rejects_missing_markdown_link_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

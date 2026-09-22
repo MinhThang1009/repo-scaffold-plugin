@@ -165,6 +165,7 @@ jobs:
             --prefix="repo-scaffold/" \
             --output "dist/repo-scaffold-plugin-${artifact_tag}.zip" \
             HEAD -- .agents .claude-plugin .codex-plugin skills \
+              scripts/check_code_scanning_alerts.py \
               .github/ci-toolchain.json \
               .github/freshness-trackers.json \
               .github/official-docs-trackers.json \
