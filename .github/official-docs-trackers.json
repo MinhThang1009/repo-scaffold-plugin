@@ -87,9 +87,10 @@
       "required-markers": [
         ".codex-plugin/plugin.json",
         ".agents/plugins/marketplace.json",
-        "shared by ChatGPT and Codex"
+        "shared by ChatGPT and Codex",
+        "plugins/cache"
       ],
-      "reviewed-on": "2026-08-24",
+      "reviewed-on": "2026-09-22",
       "review-period-days": 90
     },
     {

@@ -4516,6 +4516,40 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         )
         self.assertNotIn("codex plugin remove repo-scaffold@personal", readme)
 
+    def test_codex_local_installation_uses_a_clean_package_source(self) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        english = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.md"
+        ).read_text(encoding="utf-8")
+        vietnamese = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.vi.md"
+        ).read_text(encoding="utf-8")
+
+        for text in (readme, english):
+            flattened = " ".join(text.split())
+            self.assertIn(
+                "Do not point a local marketplace at a live development working tree",
+                flattened,
+            )
+            self.assertIn("~/.codex/plugins/cache", flattened)
+            self.assertIn("ignored", flattened)
+            self.assertIn("canonical release path set", flattened)
+        vietnamese_flat = " ".join(vietnamese.split())
+        self.assertIn(
+            "Không trỏ local marketplace trực tiếp vào working tree đang phát triển",
+            vietnamese_flat,
+        )
+        self.assertIn("~/.codex/plugins/cache", vietnamese_flat)
+        self.assertIn("tập đường dẫn release chuẩn", vietnamese_flat)
+
     def test_scaffold_templates_support_language_and_host_adapters(self) -> None:
         asset_root = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
 
