@@ -19,7 +19,14 @@ codex plugin add repo-scaffold@repo-scaffold-plugins
 Restart Codex, then ask for a repository scaffold normally. The catalog's
 `source.path` resolves from the marketplace root and targets this plugin root.
 For a checkout private to one user, use a personal marketplace at
-`~/.agents/plugins/marketplace.json`. See the [official Codex plugin documentation](https://developers.openai.com/plugins/build/plugins).
+`~/.agents/plugins/marketplace.json`, but point its source at a clean plugin
+package. For a local installation, extract the release ZIP and add the extracted
+`repo-scaffold/` directory with `codex plugin marketplace add <path>`. Do not
+point a local marketplace at a live development working tree: Codex copies local
+plugin sources into its per-user cache (normally `~/.codex/plugins/cache`), and a
+working tree may include ignored caches, `.git` metadata, or private local files.
+Use the release package or an archive built from the canonical release path set.
+See the [official Codex plugin documentation](https://developers.openai.com/plugins/build/plugins).
 
 For an OpenAI public listing, submit the release ZIP through the [Skills-only
 plugin flow](https://developers.openai.com/plugins/guides/submit-claude-plugin).

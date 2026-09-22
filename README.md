@@ -126,6 +126,21 @@ The catalog is `.agents/plugins/marketplace.json`; its source path resolves from
 the marketplace root. A personal marketplace at `~/.agents/plugins/marketplace.json`
 is still appropriate when the checkout must remain local to one user.
 
+For a local installation, point the marketplace at a clean `repo-scaffold/`
+directory extracted from the release ZIP:
+
+```powershell
+$pluginRoot = Read-Host "Path to the extracted repo-scaffold directory"
+codex plugin marketplace add $pluginRoot
+codex plugin add repo-scaffold@repo-scaffold-plugins
+```
+
+Do not point a local marketplace at a live development working tree. Codex copies
+local plugin sources into its per-user plugin cache (normally
+`~/.codex/plugins/cache`), so a working tree can also copy ignored build/test
+caches, `.git` metadata, or private local files. Use the release package or an
+archive built from the canonical release path set.
+
 Claude Code distribution is separate. Public third-party listings are submitted
 to Anthropic's `claude-community` marketplace through its in-app forms.
 `claude-plugins-official` is Anthropic's separately curated marketplace. Until a
