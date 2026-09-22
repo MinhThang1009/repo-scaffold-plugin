@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.9](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.8...v1.10.9) (2026-09-22)
+
+
+### Bug Fixes
+
+* **release:** package code scanning gate companion ([#119](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/119)) ([f078b84](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/f078b84be14633401ae532a26caa0882cde2f541))
+
 ## [1.10.8](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.7...v1.10.8) (2026-09-22)
 
 
