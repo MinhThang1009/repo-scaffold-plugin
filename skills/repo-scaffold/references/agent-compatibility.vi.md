@@ -19,7 +19,15 @@ codex plugin add repo-scaffold@repo-scaffold-plugins
 Khởi động lại Codex, sau đó yêu cầu scaffold repository như bình thường.
 `source.path` của catalog được phân giải từ root của marketplace và trỏ đến
 plugin root này. Với checkout chỉ dành cho một người dùng, dùng personal
-marketplace tại `~/.agents/plugins/marketplace.json`. Xem [tài liệu plugin chính thức](https://developers.openai.com/plugins/build/plugins).
+marketplace tại `~/.agents/plugins/marketplace.json` nhưng trỏ source đến một
+plugin package sạch. Để cài local, giải nén release ZIP rồi thêm thư mục
+`repo-scaffold/` đã giải nén bằng `codex plugin marketplace add <path>`. Không
+trỏ local marketplace trực tiếp vào working tree đang phát triển: Codex sao chép
+local plugin source vào per-user cache (thường là `~/.codex/plugins/cache`), nên
+working tree có thể kéo theo cache build/test bị ignore, metadata `.git` hoặc
+file riêng tư trên máy. Hãy dùng release package hoặc archive theo tập đường dẫn
+release chuẩn. Xem [tài liệu plugin chính
+thức](https://developers.openai.com/plugins/build/plugins).
 
 Để public trên OpenAI, hãy nộp release ZIP theo [flow Skills-only cho
 plugin](https://developers.openai.com/plugins/guides/submit-claude-plugin).
