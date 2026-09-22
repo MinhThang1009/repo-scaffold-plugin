@@ -7,7 +7,8 @@ least privilege, set `persist-credentials: false` for checkout unless needed,
 pin every external action to a verified full SHA and job/service container images
 to a verified full SHA-256 digest, bound supplied workflow input count and total
 bytes, and keep generated workflows
-valid for `pull_request` and `merge_group` whenever their check can be required.
+valid for `pull_request` (or a trusted `pull_request_target` equivalent) and
+`merge_group` whenever their check can be required.
 Use `cancel-in-progress: false` for required-check concurrency.
 For a GitHub.com project with a runnable test or lint command, workflow setup
 must end with a configured CI workflow or an explicit user decision to defer it.
@@ -76,8 +77,11 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
 - PR template: trust only the base SHA on `pull_request_target`; never execute
   PR head code, and require one trusted marker plus all required headings/items.
 - Branch protection: required-check producers must be unique, executable, and
-  event-compatible; job or step `if` and `continue-on-error` controls that can
-  skip or mask the gate must fail closed.
+  event-compatible. A trusted `pull_request_target` producer may satisfy
+  protected default-branch pull-request coverage only when its exact default
+  branch filter and applicable Actions event policy are verified. Job or step
+  `if` and `continue-on-error` controls that can skip or mask the gate must
+  fail closed.
 - Links, community-health, and freshness: keep network/upstream checks advisory;
   reminder workflows run only on trusted scheduled/manual events with a
   five-field POSIX cron schedule with an optional valid IANA timezone, and a
@@ -241,5 +245,7 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   installing a known-failing gate.
 
 Before making any context required, confirm a real, unique producer, expected
-event coverage, no Check Run/commit-status collision, and the exact GitHub App
-identity. A skipped job or a workflow filename is not sufficient evidence.
+event coverage (including a trusted `pull_request_target` equivalent only for
+the verified default branch), no Check Run/commit-status collision, and the
+exact GitHub App identity. A skipped job or a workflow filename is not
+sufficient evidence.

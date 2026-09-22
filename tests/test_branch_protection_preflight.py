@@ -120,6 +120,31 @@ jobs: {}
             branch_protection_preflight.event_covers(filtered, "pull_request")
         )
 
+    def test_trusted_pull_request_target_covers_default_branch(self) -> None:
+        workflow = branch_protection_preflight.parse_workflow(
+            """on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+jobs: {}
+""",
+            "target.yml",
+        )
+
+        self.assertFalse(
+            branch_protection_preflight.event_covers(workflow, "pull_request")
+        )
+        self.assertTrue(
+            branch_protection_preflight.event_covers(workflow, "pull_request", "main")
+        )
+        self.assertFalse(
+            branch_protection_preflight.event_covers(
+                workflow, "pull_request", "develop"
+            )
+        )
+
     def test_parse_workflow_rejects_duplicate_keys(self) -> None:
         with self.assertRaisesRegex(
             branch_protection_preflight.InspectionError, "duplicate"
@@ -425,6 +450,18 @@ jobs:
                 }
             ],
         )
+
+    def test_run_accepts_trusted_pull_request_target_for_default_branch(self) -> None:
+        workflow = self.WORKFLOW.replace(
+            "  pull_request:\n",
+            "  pull_request_target:\n    branches: [main]\n",
+        )
+        self.configure(workflow)
+
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            result = branch_protection_preflight.run(preflight_args("ci-success"))
+
+        self.assertEqual(result["decision"], "may-configure-classic-protection")
 
     def test_run_rejects_stale_or_missing_default_branch(self) -> None:
         for branch in (None, "develop", "Main", 7):
