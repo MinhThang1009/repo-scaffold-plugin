@@ -137,9 +137,11 @@ preflight for the asset's exact action pins.
 Before configuring classic branch protection, run the fail-closed
 `scripts/branch_protection_preflight.py` against a mergeable representative PR
 whose head contains the final workflow set. Use only its returned contexts and
-GitHub App IDs. Its producer check rejects job or step conditions that can skip
-the gate or mask its failure, including `if` and `continue-on-error`. Do not
-configure required checks when it is inconclusive.
+GitHub App IDs. Its producer check accepts a trusted `pull_request_target`
+workflow only when it is filtered to the verified default branch, and rejects
+job or step conditions that can skip the gate or mask its failure, including
+`if` and `continue-on-error`. Do not configure required checks when it is
+inconclusive.
 
 Before installing `dependency-review.yml`, run the fail-closed
 `scripts/dependency_review_preflight.py` against the exact repository. It

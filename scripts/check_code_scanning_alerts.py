@@ -455,7 +455,10 @@ def unapproved_alerts(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY"))
-    parser.add_argument("--pull-request", default=os.environ.get("PR_NUMBER"))
+    # A shared workflow step exports this optional variable for both PR and
+    # merge-group events. GitHub resolves the unavailable PR property to an
+    # empty string, which must select the ref/SHA path instead of PR polling.
+    parser.add_argument("--pull-request", default=os.environ.get("PR_NUMBER") or None)
     parser.add_argument("--ref", default=os.environ.get("GITHUB_REF"))
     parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA"))
     parser.add_argument("--base-sha", default=os.environ.get("PR_BASE_SHA"))

@@ -5723,7 +5723,10 @@ class CodeScanningGateContractTests(unittest.TestCase):
             malformed = validate_repository.validate_code_scanning_gate_contract(root)
             self.assertTrue(any("require schema-version" in item for item in malformed))
             self.assertTrue(
-                any("trusted pull-request gate contract" in item for item in malformed)
+                any(
+                    "one unconditional trusted code-scanning gate contract" in item
+                    for item in malformed
+                )
             )
 
             allowlist.write_text(
@@ -5963,8 +5966,12 @@ class CodeScanningGateContractTests(unittest.TestCase):
             },
         )
         self.assertNotIn("ref: ${{ github.event.pull_request.base.sha }}", text)
-        self.assertIn("ref: ${{ github.event.merge_group.base_sha }}", text)
+        self.assertIn(
+            "ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.repository.default_branch }}",
+            text,
+        )
         self.assertIn("persist-credentials: false", text)
+        self.assertIn("EVENT_NAME: ${{ github.event_name }}", text)
         self.assertIn('--pull-request "$PR_NUMBER"', text)
         self.assertIn('--base-sha "$PR_BASE_SHA"', text)
         self.assertIn('--head-sha "$PR_HEAD_SHA"', text)
@@ -5978,8 +5985,9 @@ class CodeScanningGateContractTests(unittest.TestCase):
         )
         self.assertNotIn("merge_commit_sha", text)
         self.assertIn("github.event.pull_request.head.sha", text)
-        self.assertIn("github.event_name == 'pull_request_target'", text)
-        self.assertIn("github.event_name == 'merge_group'", text)
+        self.assertIn("if [[ \"$EVENT_NAME\" == 'pull_request_target' ]]; then", text)
+        self.assertIn("elif [[ \"$EVENT_NAME\" == 'merge_group' ]]; then", text)
+        self.assertIn("Unsupported event for the code-scanning gate.", text)
 
     def test_validator_rejects_gate_missing_merge_queue_alert_check(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -6000,8 +6008,8 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 path = root / relative
                 path.write_text(
                     path.read_text(encoding="utf-8").replace(
-                        "  merge_group_code_scanning_gate:\n",
-                        "  renamed_merge_group_code_scanning_gate:\n",
+                        "elif [[ \"$EVENT_NAME\" == 'merge_group' ]]; then",
+                        "elif [[ \"$EVENT_NAME\" == 'other' ]]; then",
                     ),
                     encoding="utf-8",
                 )
@@ -6009,11 +6017,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
             problems = validate_repository.validate_code_scanning_gate_contract(root)
 
             self.assertEqual(
-                sum(
-                    "trusted pull-request gate contract and merge-queue contract"
-                    in item
-                    for item in problems
-                ),
+                sum("only base-branch alert-gate code" in item for item in problems),
                 2,
             )
 
@@ -6044,10 +6048,7 @@ class CodeScanningGateContractTests(unittest.TestCase):
             problems = validate_repository.validate_code_scanning_gate_contract(root)
 
             self.assertEqual(
-                sum(
-                    "must execute trusted merge-queue alert-gate code" in item
-                    for item in problems
-                ),
+                sum("only base-branch alert-gate code" in item for item in problems),
                 2,
             )
 
@@ -6082,7 +6083,10 @@ class CodeScanningGateContractTests(unittest.TestCase):
             problems = validate_repository.validate_code_scanning_gate_contract(root)
 
             self.assertEqual(
-                sum("trusted pull-request gate contract" in item for item in problems),
+                sum(
+                    "one unconditional trusted code-scanning gate contract" in item
+                    for item in problems
+                ),
                 2,
             )
 
