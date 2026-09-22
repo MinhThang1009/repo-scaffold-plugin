@@ -172,7 +172,8 @@ FRESHNESS_REVIEWED_ACTION_REFERENCES = {
 }
 PULL_REQUEST_TARGET_EVENT = "pull_request_target"
 ACTION_POLICY_ENFORCEMENTS = frozenset({"disabled", "evaluate", "active"})
-ACTION_POLICIES_QUERY = "?has_parents=true&per_page=100"
+ACTION_POLICY_PAGE_SIZE = 100
+ACTION_POLICIES_QUERY = "?has_parents=true&per_page={page_size}"
 FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
     "actions/checkout": {
         "ref": "${{ github.event.repository.default_branch }}",
@@ -3208,6 +3209,73 @@ def workflow_event_is_configured(document: dict[str, Any], event: str) -> bool:
     raise InspectionError("Workflow event trigger is invalid.")
 
 
+def action_policy_condition_selector_is_valid(selector: str, value: Any) -> bool:
+    """Validate a documented inherited Actions policy selector."""
+    if not isinstance(value, dict):
+        return False
+    if selector in {"organization_name", "repository_name"}:
+        allowed_keys = {"include", "exclude"}
+        if selector == "repository_name":
+            allowed_keys.add("protected")
+        if (
+            not {"include", "exclude"}.issubset(value)
+            or set(value) - allowed_keys
+            or "protected" in value
+            and not isinstance(value["protected"], bool)
+        ):
+            return False
+        return all(
+            isinstance(value[key], list)
+            and all(
+                isinstance(pattern, str)
+                and pattern
+                and not any(ord(character) < 0x20 for character in pattern)
+                for pattern in value[key]
+            )
+            for key in ("include", "exclude")
+        )
+    if selector in {"organization_id", "repository_id"}:
+        id_key = (
+            "organization_ids" if selector == "organization_id" else "repository_ids"
+        )
+        identifiers = value.get(id_key)
+        return (
+            set(value) == {id_key}
+            and isinstance(identifiers, list)
+            and all(
+                type(identifier) is int and identifier > 0 for identifier in identifiers
+            )
+        )
+    if selector in {"organization_property", "repository_property"}:
+        allowed_property_keys = {"name", "property_values"}
+        if selector == "repository_property":
+            allowed_property_keys.add("source")
+        if set(value) != {"include", "exclude"}:
+            return False
+        for key in ("include", "exclude"):
+            properties = value[key]
+            if not isinstance(properties, list):
+                return False
+            for property_condition in properties:
+                if (
+                    not isinstance(property_condition, dict)
+                    or not {"name", "property_values"}.issubset(property_condition)
+                    or set(property_condition) - allowed_property_keys
+                    or not isinstance(property_condition["name"], str)
+                    or not property_condition["name"]
+                    or not isinstance(property_condition["property_values"], list)
+                    or any(
+                        not isinstance(property_value, str)
+                        for property_value in property_condition["property_values"]
+                    )
+                    or "source" in property_condition
+                    and property_condition["source"] not in {"custom", "system"}
+                ):
+                    return False
+        return True
+    return False
+
+
 def action_policy_workflow_path_applies(
     policy: dict[str, Any], workflow_name: str
 ) -> bool:
@@ -3215,7 +3283,39 @@ def action_policy_workflow_path_applies(
     conditions = policy.get("conditions")
     if conditions is None:
         return True
-    if not isinstance(conditions, dict) or set(conditions) - {"workflow_path"}:
+    selector_keys = {
+        "organization_name",
+        "organization_id",
+        "organization_property",
+        "repository_name",
+        "repository_id",
+        "repository_property",
+    }
+    if not isinstance(conditions, dict) or set(conditions) - selector_keys - {
+        "workflow_path"
+    }:
+        raise InspectionError("Actions policy conditions are invalid.")
+    organization_selectors = set(conditions) & {
+        "organization_name",
+        "organization_id",
+        "organization_property",
+    }
+    repository_selectors = set(conditions) & {
+        "repository_name",
+        "repository_id",
+        "repository_property",
+    }
+    if (
+        len(organization_selectors) > 1
+        or len(repository_selectors) > 1
+        or organization_selectors
+        and (not repository_selectors or "repository_id" in repository_selectors)
+    ):
+        raise InspectionError("Actions policy conditions are invalid.")
+    if any(
+        not action_policy_condition_selector_is_valid(key, conditions[key])
+        for key in organization_selectors | repository_selectors
+    ):
         raise InspectionError("Actions policy conditions are invalid.")
     workflow_condition = conditions.get("workflow_path")
     if workflow_condition is None:
@@ -3256,29 +3356,83 @@ def load_actions_policy_details(
     client: GitHubClient, owner: str, repo: str
 ) -> dict[str, Any]:
     """Expand the inherited policy index into validated policy documents."""
-    index = client.json(f"repos/{owner}/{repo}/actions/policies{ACTION_POLICIES_QUERY}")
-    if not isinstance(index, dict):
-        raise InspectionError("Actions policies response is invalid.")
-    policies = index.get("policies")
-    total_count = index.get("total_count")
-    if (
-        not isinstance(policies, list)
-        or len(policies) > MAX_ACTIONS_POLICY_ENTRIES
-        or type(total_count) is not int
-        or total_count != len(policies)
+    endpoint = f"repos/{owner}/{repo}/actions/policies"
+
+    def read_policy_index() -> tuple[int, list[int]]:
+        first_page = client.json(
+            f"{endpoint}{ACTION_POLICIES_QUERY.format(page_size=ACTION_POLICY_PAGE_SIZE)}"
+        )
+        if not isinstance(first_page, dict):
+            raise InspectionError("Actions policies response is invalid.")
+        total_count = first_page.get("total_count")
+        if (
+            type(total_count) is not int
+            or total_count < 0
+            or total_count > MAX_ACTIONS_POLICY_ENTRIES
+        ):
+            raise InspectionError("Actions policies response is incomplete or invalid.")
+
+        page_count = max(
+            1,
+            (total_count + ACTION_POLICY_PAGE_SIZE - 1) // ACTION_POLICY_PAGE_SIZE,
+        )
+        policy_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for page in range(1, page_count + 1):
+            index_page = (
+                first_page
+                if page == 1
+                else client.json(
+                    f"{endpoint}{ACTION_POLICIES_QUERY.format(page_size=ACTION_POLICY_PAGE_SIZE)}&page={page}"
+                )
+            )
+            if not isinstance(index_page, dict):
+                raise InspectionError("Actions policies response is invalid.")
+            page_total = index_page.get("total_count")
+            policies = index_page.get("policies")
+            expected_count = min(
+                ACTION_POLICY_PAGE_SIZE,
+                max(total_count - (page - 1) * ACTION_POLICY_PAGE_SIZE, 0),
+            )
+            if (
+                type(page_total) is not int
+                or page_total != total_count
+                or not isinstance(policies, list)
+                or len(policies) != expected_count
+            ):
+                raise InspectionError(
+                    "Actions policies response is incomplete or invalid."
+                )
+            for summary in policies:
+                policy_id = summary.get("id") if isinstance(summary, dict) else None
+                if type(policy_id) is not int or policy_id < 1:
+                    raise InspectionError("Actions policy summary has an invalid ID.")
+                if policy_id in seen_ids:
+                    raise InspectionError(
+                        "Actions policy index contains duplicate IDs."
+                    )
+                seen_ids.add(policy_id)
+                policy_ids.append(policy_id)
+        return total_count, policy_ids
+
+    total_count, policy_ids = read_policy_index()
+    confirmed_total_count, confirmed_policy_ids = read_policy_index()
+    if total_count != confirmed_total_count or set(policy_ids) != set(
+        confirmed_policy_ids
     ):
-        raise InspectionError("Actions policies response is incomplete or invalid.")
+        raise InspectionError("Actions policy index changed during inspection.")
 
     details: list[dict[str, Any]] = []
-    for summary in policies:
-        policy_id = summary.get("id") if isinstance(summary, dict) else None
-        if type(policy_id) is not int or policy_id < 1:
-            raise InspectionError("Actions policy summary has an invalid ID.")
+    for policy_id in confirmed_policy_ids:
         detail = client.json(f"repos/{owner}/{repo}/actions/policies/{policy_id}")
-        if not isinstance(detail, dict) or detail.get("id") != policy_id:
+        if (
+            not isinstance(detail, dict)
+            or type(detail.get("id")) is not int
+            or detail["id"] != policy_id
+        ):
             raise InspectionError("Actions policy detail does not match its summary.")
         details.append(detail)
-    return {"total_count": total_count, "policies": details}
+    return {"total_count": confirmed_total_count, "policies": details}
 
 
 def actions_event_policy_allows(document: Any, workflow_names: list[str]) -> bool:

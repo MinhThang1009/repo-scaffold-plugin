@@ -50,6 +50,7 @@ SPEC.loader.exec_module(workflow_installation_preflight)
 
 class FakeClient:
     responses: dict[str, object] = {}
+    response_sequences: dict[str, list[object]] = {}
 
     def __init__(self, hostname: str) -> None:
         self.hostname = hostname
@@ -59,6 +60,8 @@ class FakeClient:
         self.request_count += 1
         if endpoint == "repositories/42/actions/permissions/selected-actions":
             endpoint = "repos/octo/example/actions/permissions/selected-actions"
+        if endpoint in self.response_sequences:
+            return self.response_sequences[endpoint].pop(0)
         return self.responses[endpoint]
 
 
@@ -259,6 +262,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "policies": [],
             },
         }
+        FakeClient.response_sequences = {}
 
     def test_allows_confirmed_actions_and_issue_workflow_capabilities(self) -> None:
         self.configure()
@@ -5738,6 +5742,234 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                     workflow_installation_preflight.load_actions_policy_details(
                         client, "octo", "example"
                     )
+
+    def test_actions_policy_index_reads_every_page(self) -> None:
+        self.configure()
+        client = FakeClient("github.com")
+        page_one_endpoint = (
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+        )
+        page_two_endpoint = (
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100&page=2"
+        )
+        FakeClient.responses[page_one_endpoint] = {
+            "total_count": 101,
+            "policies": [{"id": policy_id} for policy_id in range(1, 101)],
+        }
+        FakeClient.responses[page_two_endpoint] = {
+            "total_count": 101,
+            "policies": [{"id": 101}],
+        }
+        for policy_id in range(1, 102):
+            FakeClient.responses[f"repos/octo/example/actions/policies/{policy_id}"] = {
+                "id": policy_id,
+                "enforcement": "active",
+                "rules": [],
+            }
+
+        result = workflow_installation_preflight.load_actions_policy_details(
+            client, "octo", "example"
+        )
+
+        self.assertEqual(result["total_count"], 101)
+        self.assertEqual(
+            [policy["id"] for policy in result["policies"]],
+            list(range(1, 102)),
+        )
+        self.assertEqual(client.request_count, 105)
+
+    def test_actions_policy_index_rejects_incomplete_or_duplicate_pages(self) -> None:
+        page_one_endpoint = (
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+        )
+        page_two_endpoint = (
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100&page=2"
+        )
+        invalid_pages: tuple[object, ...] = (
+            None,
+            {"total_count": 100, "policies": [{"id": 101}]},
+            {"total_count": 101, "policies": []},
+            {"total_count": 101, "policies": [{"id": 100}]},
+            {"total_count": 101, "policies": [None]},
+            {"total_count": 101, "policies": [{"id": True}]},
+        )
+        for invalid_page in invalid_pages:
+            with self.subTest(invalid_page=invalid_page):
+                self.configure()
+                FakeClient.responses[page_one_endpoint] = {
+                    "total_count": 101,
+                    "policies": [{"id": policy_id} for policy_id in range(1, 101)],
+                }
+                FakeClient.responses[page_two_endpoint] = invalid_page
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.load_actions_policy_details(
+                        FakeClient("github.com"), "octo", "example"
+                    )
+
+    def test_actions_policy_index_rejects_unstable_policy_ids(self) -> None:
+        self.configure()
+        client = FakeClient("github.com")
+        page_one_endpoint = (
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+        )
+        FakeClient.response_sequences[page_one_endpoint] = [
+            {"total_count": 1, "policies": [{"id": 7}]},
+            {"total_count": 1, "policies": [{"id": 8}]},
+        ]
+        FakeClient.responses["repos/octo/example/actions/policies/7"] = {
+            "id": 7,
+            "enforcement": "active",
+            "rules": [],
+        }
+
+        with self.assertRaises(workflow_installation_preflight.InspectionError):
+            workflow_installation_preflight.load_actions_policy_details(
+                client, "octo", "example"
+            )
+
+        self.assertEqual(client.request_count, 2)
+
+    def test_actions_policy_detail_rejects_boolean_id(self) -> None:
+        self.configure()
+        client = FakeClient("github.com")
+        page_one_endpoint = (
+            "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+        )
+        FakeClient.responses[page_one_endpoint] = {
+            "total_count": 1,
+            "policies": [{"id": 1}],
+        }
+        FakeClient.responses["repos/octo/example/actions/policies/1"] = {
+            "id": True,
+            "enforcement": "active",
+            "rules": [],
+        }
+
+        with self.assertRaises(workflow_installation_preflight.InspectionError):
+            workflow_installation_preflight.load_actions_policy_details(
+                client, "octo", "example"
+            )
+
+    def test_inherited_enterprise_action_policy_conditions_are_supported(self) -> None:
+        valid_conditions: tuple[dict[str, object], ...] = (
+            {
+                "organization_name": {"include": ["octo-org"], "exclude": []},
+                "repository_name": {
+                    "include": ["octo-repo"],
+                    "exclude": [],
+                    "protected": True,
+                },
+                "workflow_path": {
+                    "include": [".github/workflows/target.yml"],
+                    "exclude": [],
+                },
+            },
+            {
+                "organization_id": {"organization_ids": [123]},
+                "repository_property": {
+                    "include": [
+                        {
+                            "name": "tier",
+                            "property_values": ["production"],
+                            "source": "system",
+                        }
+                    ],
+                    "exclude": [],
+                },
+            },
+            {
+                "organization_property": {
+                    "include": [{"name": "tier", "property_values": ["production"]}],
+                    "exclude": [],
+                },
+                "repository_name": {"include": ["octo-repo"], "exclude": []},
+            },
+            {"repository_id": {"repository_ids": [456]}},
+        )
+        for conditions in valid_conditions:
+            with self.subTest(conditions=conditions):
+                self.assertTrue(
+                    workflow_installation_preflight.action_policy_workflow_path_applies(
+                        {"conditions": conditions}, "target.yml"
+                    )
+                )
+
+        invalid_conditions: tuple[dict[str, object], ...] = (
+            {"organization_name": {"include": ["octo-org"], "exclude": []}},
+            {
+                "organization_name": None,
+                "repository_name": {"include": ["octo-repo"], "exclude": []},
+            },
+            {
+                "organization_name": {"include": ["octo-org"], "exclude": []},
+                "repository_id": {"repository_ids": [456]},
+            },
+            {
+                "organization_id": {"organization_ids": [True]},
+                "repository_name": {"include": ["octo-repo"], "exclude": []},
+            },
+            {
+                "organization_name": {"include": ["octo-org"], "exclude": []},
+                "repository_name": {
+                    "include": ["octo-repo"],
+                    "exclude": [],
+                    "protected": "yes",
+                },
+            },
+            {
+                "organization_property": {
+                    "include": [
+                        {
+                            "name": "tier",
+                            "property_values": ["production"],
+                            "source": "custom",
+                        }
+                    ],
+                    "exclude": [],
+                },
+                "repository_name": {"include": ["octo-repo"], "exclude": []},
+            },
+            {
+                "repository_property": {
+                    "include": [
+                        {
+                            "name": "tier",
+                            "property_values": ["production"],
+                            "source": "unknown",
+                        }
+                    ],
+                    "exclude": [],
+                },
+            },
+            {
+                "organization_property": {
+                    "include": [{"name": "tier", "property_values": ["production"]}],
+                    "exclude": [],
+                },
+                "repository_property": {
+                    "include": [{"name": "tier", "property_values": ["production"]}],
+                },
+            },
+            {
+                "organization_property": {
+                    "include": [{"name": "tier", "property_values": ["production"]}],
+                    "exclude": [],
+                },
+                "repository_property": {"include": None, "exclude": []},
+            },
+        )
+        for conditions in invalid_conditions:
+            with self.subTest(conditions=conditions):
+                with self.assertRaises(workflow_installation_preflight.InspectionError):
+                    workflow_installation_preflight.action_policy_workflow_path_applies(
+                        {"conditions": conditions}, "target.yml"
+                    )
+
+        self.assertFalse(
+            workflow_installation_preflight.action_policy_condition_selector_is_valid(
+                "unexpected", {}
+            )
+        )
 
     def test_pull_request_target_policy_validation_rejects_ambiguous_shapes(
         self,
