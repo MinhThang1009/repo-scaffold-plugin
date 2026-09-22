@@ -6663,6 +6663,54 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
             problems.append(
                 f"{relative}: required-check workflow must run for merge_group"
             )
+        if relative.endswith("/pr-template.yml"):
+            jobs = document.get("jobs")
+            template_job = jobs.get("pr_template") if isinstance(jobs, dict) else None
+            steps = (
+                template_job.get("steps") if isinstance(template_job, dict) else None
+            )
+            checkout = steps[0] if isinstance(steps, list) and steps else None
+            run_step = steps[1] if isinstance(steps, list) and len(steps) == 2 else None
+            run_text = run_step.get("run") if isinstance(run_step, dict) else None
+            expected_ref = (
+                "${{ github.event_name == 'merge_group' && "
+                "github.event.merge_group.base_sha || "
+                "github.event.pull_request.base.sha }}"
+            )
+            if (
+                not isinstance(jobs, dict)
+                or set(jobs) != {"pr_template"}
+                or not isinstance(template_job, dict)
+                or template_job.get("name") != "pr-template"
+                or "if" in template_job
+                or template_job.get("timeout-minutes") != "5"
+                or not isinstance(steps, list)
+                or len(steps) != 2
+                or not isinstance(checkout, dict)
+                or checkout.get("with")
+                != {"ref": expected_ref, "persist-credentials": "false"}
+                or not isinstance(run_step, dict)
+                or run_step.get("env")
+                != {
+                    "EVENT_NAME": "${{ github.event_name }}",
+                    "PR_BODY": "${{ github.event.pull_request.body }}",
+                    "PR_TITLE": "${{ github.event.pull_request.title }}",
+                    "PR_IS_DRAFT": "${{ github.event.pull_request.draft }}",
+                    "PR_USER": "${{ github.event.pull_request.user.login }}",
+                    "PR_HEAD_REF": "${{ github.event.pull_request.head.ref }}",
+                }
+                or not isinstance(run_text, str)
+                or 'event_name == "merge_group"' not in run_text
+                or 'event_name != "pull_request_target"' not in run_text
+                or 'PR_USER") == "dependabot[bot]"' not in run_text
+                or 'PR_HEAD_REF", "").startswith("release-please--branches--")'
+                not in run_text
+                or "Pull request template requirements were checked before merge-queue admission."
+                not in run_text
+            ):
+                problems.append(
+                    f"{relative}: required pr-template check must use one unconditional producer"
+                )
     return problems
 
 
