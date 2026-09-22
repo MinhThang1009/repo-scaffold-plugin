@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.10](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.9...v1.10.10) (2026-09-22)
+
+
+### Bug Fixes
+
+* **actions:** paginate inherited policies ([#121](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/121)) ([c2570c7](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/c2570c76fcfb212470740f37fef8243f0c72a1bd))
+
 ## [1.10.9](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.8...v1.10.9) (2026-09-22)
 
 
