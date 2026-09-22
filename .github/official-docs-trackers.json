@@ -945,6 +945,16 @@
       "required-markers": ["REST API endpoints for repositories"],
       "reviewed-on": "2026-09-07",
       "review-period-days": 90
+    },
+    {
+      "id": "github-issue-pr-line-breaks",
+      "label": "GitHub issue and pull request line breaks",
+      "url": "https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": ["skills/repo-scaffold/references/pull-request-contract.md"],
+      "required-markers": ["Line breaks", "render a line break automatically"],
+      "reviewed-on": "2026-09-22",
+      "review-period-days": 90
     }
   ]
 }

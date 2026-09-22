@@ -22,3 +22,9 @@ required items unchecked; before ready-for-review, tick an item only after its
 work is complete. Write UTF-8 PR text to a file and use `gh pr create --body-file`
 or `gh pr edit --body-file`; do not bypass the template with `--fill` or a
 free-form body.
+
+In the body file, keep each prose paragraph on one physical line and each list
+item on a single line; separate paragraphs with blank lines and let GitHub wrap
+text to the viewer's width. GitHub renders line breaks in issue and PR bodies as
+line breaks, so do not hard-wrap prose at a fixed column; see [line-break
+guidance](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#line-breaks).
