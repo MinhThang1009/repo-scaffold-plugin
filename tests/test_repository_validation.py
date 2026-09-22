@@ -6210,6 +6210,8 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "PR_IS_DRAFT: ${{ github.event.pull_request.draft }}",
             "PR_USER: ${{ github.event.pull_request.user.login }}",
             "PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}",
+            "scripts/pr_template_preflight.py",
+            '"--body-file"',
             'Path(".github/PULL_REQUEST_TEMPLATE.md")',
             'Path(".github/PULL_REQUEST_TEMPLATE")',
             "repo-scaffold:pr-template=",
@@ -6331,6 +6333,17 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             root = Path(directory)
             template_root = root / ".github"
             template_root.mkdir()
+            for source in (
+                PLUGIN_ROOT / "scripts" / "pr_template_preflight.py",
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "pr_template_preflight.py",
+            ):
+                destination = root / source.relative_to(PLUGIN_ROOT)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
             shutil.copy2(
                 PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
                 template_root / "PULL_REQUEST_TEMPLATE.md",
@@ -6351,6 +6364,20 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+            hard_wrapped_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": feature_body + "\nThis prose is hard\nwrapped.\n",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(hard_wrapped_result.returncode, 0)
+            self.assertIn("hard-wrapped prose", hard_wrapped_result.stderr)
 
             deployment_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "deployment.md"
@@ -6476,6 +6503,8 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             vietnamese_root = root / "vietnamese"
             vietnamese_template_root = vietnamese_root / ".github"
             vietnamese_template_root.mkdir(parents=True)
+            shutil.copytree(root / "scripts", vietnamese_root / "scripts")
+            shutil.copytree(root / "skills", vietnamese_root / "skills")
             shutil.copy2(
                 PLUGIN_ROOT
                 / "skills"

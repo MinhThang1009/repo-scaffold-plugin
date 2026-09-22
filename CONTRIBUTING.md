@@ -172,6 +172,8 @@ Before creating or editing a pull request, run
 security, deployment, or dependency-update review whose title has no mandatory
 mapping, add `--template security`, `--template deployment`, or
 `--template dependency-update`.
+After preparing the UTF-8 body file, rerun the preflight with `--body-file <path>`;
+it rejects hard-wrapped prose before the GitHub mutation.
 
 Use the default PR template for ordinary changes. Choose a specialized template
 only when its review workflow applies:

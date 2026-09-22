@@ -30,6 +30,8 @@ draft PR may leave required items unchecked; before marking it ready for review,
 tick a required item only after it is complete. Use a UTF-8 body file with `gh
 pr create --body-file` or `gh pr edit --body-file`. Do not use `--fill` or a
 free-form `--body` value that bypasses the template.
+After preparing the body file, rerun the preflight with `--body-file <path>` to
+reject hard-wrapped prose before the GitHub mutation.
 
 ## Language
 

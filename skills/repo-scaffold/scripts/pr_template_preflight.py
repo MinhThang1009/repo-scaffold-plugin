@@ -22,6 +22,13 @@ TEMPLATE_MARKER_PATTERN = re.compile(
     r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",
     re.MULTILINE,
 )
+FENCED_CODE_START_PATTERN = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+FENCED_CODE_END_PATTERN = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$")
+STRUCTURAL_MARKDOWN_LINE_PATTERN = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]|[-+*][ \t]+|\d+[.)][ \t]+|>[ \t]?|\||"
+    r"(?:[-*_][ \t]*){3,}$|<)"
+)
+MAX_BODY_FILE_BYTES = 1024 * 1024
 
 
 def is_link_or_reparse(path: Path) -> bool:
@@ -147,8 +154,73 @@ def template_path(repository_root: Path, template: str) -> Path:
     return path
 
 
+def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
+    """Return line numbers where ordinary Markdown prose is hard-wrapped."""
+    wrapped: list[int] = []
+    previous_is_prose = False
+    fence_character: str | None = None
+    fence_length = 0
+    comment_open = False
+
+    for line_number, raw_line in enumerate(markdown.splitlines(), start=1):
+        line = raw_line.rstrip("\r\n")
+        fence_start = FENCED_CODE_START_PATTERN.match(line)
+        if fence_character is not None:
+            fence_end = FENCED_CODE_END_PATTERN.match(line)
+            if (
+                fence_end is not None
+                and fence_end.group(1)[0] == fence_character
+                and len(fence_end.group(1)) >= fence_length
+            ):
+                fence_character = None
+                fence_length = 0
+            previous_is_prose = False
+            continue
+        if fence_start is not None:
+            fence_character = fence_start.group(1)[0]
+            fence_length = len(fence_start.group(1))
+            previous_is_prose = False
+            continue
+        if comment_open:
+            if "-->" in line:
+                comment_open = False
+            previous_is_prose = False
+            continue
+        if "<!--" in line:
+            if "-->" not in line[line.find("<!--") + 4 :]:
+                comment_open = True
+            previous_is_prose = False
+            continue
+
+        stripped = line.strip()
+        is_prose = (
+            bool(stripped) and STRUCTURAL_MARKDOWN_LINE_PATTERN.match(line) is None
+        )
+        if previous_is_prose and is_prose:
+            wrapped.append(line_number)
+        previous_is_prose = is_prose and not line.endswith(("  ", "\\"))
+
+    return tuple(wrapped)
+
+
+def read_body_file(path: Path) -> str:
+    """Read a bounded regular UTF-8 body file without following links."""
+    if is_link_or_reparse(path) or not path.is_file():
+        raise ValueError(f"body file must be a regular non-linked file: {path}")
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"could not read body file {path}: {error}") from error
+    if len(payload) > MAX_BODY_FILE_BYTES:
+        raise ValueError(f"body file exceeds the {MAX_BODY_FILE_BYTES}-byte limit")
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"body file is not valid UTF-8: {path}") from error
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the proposed title, optional focused template, and repository location."""
+    """Parse the proposed title, optional body/template, and repository location."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--title", required=True, help="Proposed pull-request title")
     parser.add_argument(
@@ -164,6 +236,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("."),
         help="Repository containing the checked-in PR template catalog",
     )
+    parser.add_argument(
+        "--body-file",
+        type=Path,
+        help="UTF-8 pull-request body to reject when prose is hard-wrapped",
+    )
     return parser.parse_args(argv)
 
 
@@ -173,6 +250,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         template = select_template(arguments.title, arguments.template)
         path = template_path(arguments.repository_root, template)
+        if arguments.body_file is not None:
+            wrapped_lines = hard_wrapped_prose_lines(
+                read_body_file(arguments.body_file)
+            )
+            if wrapped_lines:
+                lines = ", ".join(str(line) for line in wrapped_lines)
+                raise ValueError(
+                    f"body file contains hard-wrapped prose at line(s): {lines}"
+                )
     except (OSError, UnicodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -183,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
         "Copy this UTF-8 template to a body file, complete its required checklist, "
         "then use gh pr create --body-file or gh pr edit --body-file."
     )
+    if arguments.body_file is not None:
+        print("PR body does not contain hard-wrapped prose.")
     return 0
 
 

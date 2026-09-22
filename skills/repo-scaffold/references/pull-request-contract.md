@@ -16,6 +16,8 @@ needs a focused review. Preserve exactly one
 `<!-- repo-scaffold:pr-template=<id> -->` marker, every required heading, and
 every required-checklist item. The optional checklist is guidance: include only
 applicable items.
+After preparing the UTF-8 body file, rerun the preflight with
+`--body-file <path>` to reject hard-wrapped prose before the GitHub mutation.
 
 Replace guidance with concrete verification evidence. A draft PR may leave
 required items unchecked; before ready-for-review, tick an item only after its

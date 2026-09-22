@@ -100,6 +100,83 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             output.getvalue(),
         )
 
+    def test_body_file_rejects_hard_wrapped_prose_but_not_markdown_structure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            wrapped = root / "wrapped.md"
+            wrapped.write_text(
+                "This paragraph is incorrectly\nwrapped onto a second line.\n",
+                encoding="utf-8",
+            )
+            errors = StringIO()
+            with redirect_stderr(errors):
+                rejected = pr_template_preflight.main(
+                    [
+                        "--title",
+                        "fix: reject wrapped prose",
+                        "--body-file",
+                        str(wrapped),
+                        "--repository-root",
+                        str(root),
+                    ]
+                )
+
+            structured = root / "structured.md"
+            structured.write_text(
+                "- A list item\n  with an intentional continuation.\n\n"
+                "| Name | Value |\n| --- | --- |\n| item | value |\n\n"
+                "```text\nfirst\nsecond\n```\n",
+                encoding="utf-8",
+            )
+            accepted = pr_template_preflight.main(
+                [
+                    "--title",
+                    "fix: allow markdown structure",
+                    "--body-file",
+                    str(structured),
+                    "--repository-root",
+                    str(root),
+                ]
+            )
+
+        self.assertEqual(rejected, 1)
+        self.assertIn("contains hard-wrapped prose at line(s): 2", errors.getvalue())
+        self.assertEqual(accepted, 0)
+
+    def test_body_file_parser_ignores_comments_and_rejects_invalid_input(self) -> None:
+        self.assertEqual(
+            pr_template_preflight.hard_wrapped_prose_lines(
+                "<!--\nhidden prose\ncontinues here\n-->\n"
+            ),
+            (),
+        )
+        self.assertEqual(
+            pr_template_preflight.hard_wrapped_prose_lines("<!-- inline comment -->\n"),
+            (),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            body = Path(directory) / "body.md"
+            body.write_text("body\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "regular non-linked"):
+                pr_template_preflight.read_body_file(body.parent / "missing.md")
+            with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(ValueError, "could not read body"):
+                    pr_template_preflight.read_body_file(body)
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                return_value=b"x" * (pr_template_preflight.MAX_BODY_FILE_BYTES + 1),
+            ):
+                with self.assertRaisesRegex(ValueError, "byte limit"):
+                    pr_template_preflight.read_body_file(body)
+            with mock.patch.object(Path, "read_bytes", return_value=b"\xff"):
+                with self.assertRaisesRegex(ValueError, "not valid UTF-8"):
+                    pr_template_preflight.read_body_file(body)
+
     def test_rejects_an_override_of_a_mandatory_template(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

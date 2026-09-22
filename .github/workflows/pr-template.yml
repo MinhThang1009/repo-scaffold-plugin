@@ -40,6 +40,9 @@ jobs:
           python - <<'PY'
           import os
           import re
+          import subprocess
+          import sys
+          import tempfile
           from pathlib import Path
 
           event_name = os.environ.get("EVENT_NAME", "pull_request_target")
@@ -58,6 +61,28 @@ jobs:
           body = os.environ.get("PR_BODY", "")
           title = os.environ.get("PR_TITLE", "")
           is_draft = os.environ.get("PR_IS_DRAFT", "true").lower() == "true"
+          with tempfile.NamedTemporaryFile(
+              mode="w", encoding="utf-8", suffix=".md", delete=False
+          ) as body_file:
+              body_file.write(body)
+          try:
+              preflight = subprocess.run(
+                  [
+                      sys.executable,
+                      "scripts/pr_template_preflight.py",
+                      "--title",
+                      title,
+                      "--body-file",
+                      body_file.name,
+                  ],
+                  capture_output=True,
+                  check=False,
+                  text=True,
+              )
+          finally:
+              Path(body_file.name).unlink(missing_ok=True)
+          if preflight.returncode != 0:
+              raise SystemExit(preflight.stderr)
           heading_pattern = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
           checklist_pattern = re.compile(r"^- \[[ xX]\] (.+?)\s*$", re.MULTILINE)
           checked_checklist_pattern = re.compile(r"^- \[[xX]\] (.+?)\s*$", re.MULTILINE)
