@@ -95,6 +95,43 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn(f"hard-wrapped prose at line(s): {line}", result.stderr)
 
+    def test_backticks_inside_inline_html_attributes_are_not_code_delimiters(
+        self,
+    ) -> None:
+        body = 'Inline <span title="`"> first line\ncontinued prose `literal`\n'
+
+        self.assertEqual(_bundled_lines(body), (2,))
+
+    def test_backticks_inside_multiline_inline_html_attributes_are_inert(self) -> None:
+        for body, expected in (
+            (
+                'Inline <span title="`\n'
+                'continued attribute"> first line\ncontinued prose `literal`\n',
+                (3,),
+            ),
+            (
+                '> Inline <span title="`\n'
+                '> continued attribute"> first line\n'
+                "> continued prose `literal`\n",
+                (3,),
+            ),
+            (
+                'Inline <span title="`\ncontinued\nattribute"> first line\n'
+                "continued prose `literal`\n",
+                (4,),
+            ),
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), expected)
+
+    def test_escaped_tag_like_text_does_not_mask_inline_code_delimiters(self) -> None:
+        body = (
+            'Escaped \\<span title="`"> first paragraph line\n'
+            "continued code span` after.\n"
+        )
+
+        self.assertEqual(_bundled_lines(body), ())
+
     def test_handles_nested_lists_code_spans_autolinks_and_code_blocks(self) -> None:
         rejected = "- outer\n  - inner\n    - third level\n      continuation\n"
         self.assertEqual(_bundled_lines(rejected), (4,))
@@ -224,6 +261,33 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             r"| escaped \| pipe | `literal|pipe` |"
         )
         self.assertEqual(len(escaped_and_code_pipes), 2)
+        html_attribute_pipe = _bundled_module().split_gfm_table_cells(
+            '| <span title="left|right">Header</span> | Value |'
+        )
+        self.assertEqual(len(html_attribute_pipe), 2)
+
+    def test_gfm_table_requires_a_block_boundary_before_header(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line\n| Header | Value |\n"
+                "| --- | --- |\n| row | value |\n"
+            ),
+            (2, 3, 4),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph.\n> Quoted blockquote.\n"
+                "New paragraph first line\ncontinued prose\n"
+            ),
+            (3, 4),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> > Inner paragraph.\n"
+                "> Parent paragraph first line\n> continued parent paragraph\n"
+            ),
+            (3,),
+        )
 
     def test_setext_headings_and_indented_list_like_code_remain_structural(
         self,
@@ -238,6 +302,14 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(
             _bundled_lines("    - literal code line\n    continuation\n"), ()
         )
+        self.assertEqual(_bundled_lines("===\ncontinued prose\n"), (2,))
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph before comment\n<!-- block comment -->\n"
+                "===\ncontinued prose\n"
+            ),
+            (4,),
+        )
 
     def test_only_valid_thematic_breaks_are_structural(self) -> None:
         self.assertEqual(
@@ -251,6 +323,33 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(
             _bundled_lines(
                 "First paragraph line\n1234567890. not a list\ncontinued prose\n"
+            ),
+            (2, 3),
+        )
+        self.assertEqual(_bundled_lines("Paragraph before empty list item\n-\n"), ())
+
+    def test_tabs_use_gfm_four_column_block_indentation(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line\n\t# not an ATX heading\ncontinued prose\n"
+            ),
+            (2, 3),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line\n\t```text\ncode-looking continuation\n````\n"
+            ),
+            (2, 3),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line\n\t> not a blockquote\ncontinued prose\n"
+            ),
+            (2, 3),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line\n\t<div>not an HTML block\ncontinued prose\n"
             ),
             (2, 3),
         )
@@ -297,6 +396,25 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertFalse(context_exited)
         self.assertEqual(context, [(0, 2), (3, 5)])
 
+    def test_inline_html_helpers_cover_default_and_blank_line_paths(self) -> None:
+        module = _bundled_module()
+        self.assertEqual(module.html_inline_tag_spans_by_line([]), ([], [], []))
+        masked, delimiter = module.mask_inline_code(
+            "text <span title='value'> and `literal`",
+            None,
+            module.Counter(),
+        )
+        self.assertIsNone(delimiter)
+        self.assertNotIn("`literal`", masked)
+
+        self.assertEqual(
+            module.html_inline_tag_spans_by_line(['<span title="open', "", 'close">']),
+            ([[], [], []], [False, False, False], [False, False, False]),
+        )
+        self.assertEqual(
+            module.backtick_run_lengths_by_line(["plain text"]), ([()], [0])
+        )
+
     def test_fences_and_raw_html_end_when_their_list_container_ends(self) -> None:
         self.assertEqual(
             _bundled_lines(
@@ -317,6 +435,11 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         body = "# Independent heading\n" * 45_000
 
         result = self.run_preflight(SKILL_PREFLIGHT, body)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        repeated_setext_headings = "Title\n===\n" * 5_000
+        result = self.run_preflight(SKILL_PREFLIGHT, repeated_setext_headings)
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
