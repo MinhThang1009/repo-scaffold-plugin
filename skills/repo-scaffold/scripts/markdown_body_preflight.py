@@ -24,6 +24,7 @@ HTML_BLOCK_START_PATTERN = re.compile(
     r"legend|li|link|main|menu|menuitem|nav|ol|p|pre|script|section|"
     r"summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t>/]|$)"
 )
+HTML_BLOCK_TAG_PATTERN = re.compile(r"^[ \t]{0,3}<([A-Za-z][A-Za-z0-9-]*)\b")
 AUTOLINK_PATTERN = re.compile(r"^<(?:https?://|mailto:|[^ <>@]+@[^ <>@]+>)")
 MAX_BODY_FILE_BYTES = 1024 * 1024
 
@@ -113,6 +114,7 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
     comment_open = False
     inline_code_length: int | None = None
     indented_code = False
+    html_block_tag: str | None = None
 
     raw_lines = markdown.splitlines()
     for line_index, raw_line in enumerate(raw_lines):
@@ -125,6 +127,16 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
                 previous_is_prose = False
                 previous_is_list_item = False
             continue
+        comment_start = line.find("<!--")
+        backtick_start = line.find("`")
+        if comment_start >= 0 and (
+            backtick_start < 0 or comment_start < backtick_start
+        ):
+            line, comment_open = strip_html_comments(line, False)
+            if not line.strip():
+                previous_is_prose = False
+                previous_is_list_item = False
+                continue
         fence_start = (
             FENCED_CODE_START_PATTERN.match(line) if not comment_open else None
         )
@@ -143,6 +155,12 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
         if fence_start is not None:
             fence_character = fence_start.group(1)[0]
             fence_length = len(fence_start.group(1))
+            previous_is_prose = False
+            previous_is_list_item = False
+            continue
+        if html_block_tag is not None:
+            if re.search(rf"</{re.escape(html_block_tag)}[ \t]*>", line, re.IGNORECASE):
+                html_block_tag = None
             previous_is_prose = False
             previous_is_list_item = False
             continue
@@ -179,6 +197,12 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             HTML_BLOCK_START_PATTERN.match(line) is not None
             and AUTOLINK_PATTERN.match(line) is None
         )
+        if is_html_block:
+            tag_match = HTML_BLOCK_TAG_PATTERN.match(line)
+            if tag_match is not None and not re.search(
+                rf"</{re.escape(tag_match.group(1))}[ \t]*>", line, re.IGNORECASE
+            ):
+                html_block_tag = tag_match.group(1)
         is_structural = (
             STRUCTURAL_MARKDOWN_LINE_PATTERN.match(line) is not None or is_html_block
         )

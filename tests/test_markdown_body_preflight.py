@@ -91,10 +91,22 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         accepted = (
             "Use `<!--` literally.\n\n"
             "<https://example.test> is a complete paragraph.\n\n"
+            "<div>inline HTML</div>\n\n"
+            "<div>\nFirst line inside HTML\ncontinued inside HTML\n</div>\n\n"
             "    print(1)\n    print(2)\n\n"
             "- Item\n```text\ncode\n```\nNew paragraph.\n"
         )
         self.assertEqual(_bundled_lines(accepted), ())
+
+    def test_html_comment_content_does_not_change_following_prose_state(self) -> None:
+        self.assertEqual(
+            _bundled_lines("<!-- hidden\ncontent -->\nFirst line\ncontinued line\n"),
+            (4,),
+        )
+        self.assertEqual(
+            _bundled_lines("<!-- ```\nhidden\n``` -->\nFirst\ncontinued\n"),
+            (5,),
+        )
 
     def test_handles_multiline_and_unmatched_inline_code(self) -> None:
         self.assertEqual(

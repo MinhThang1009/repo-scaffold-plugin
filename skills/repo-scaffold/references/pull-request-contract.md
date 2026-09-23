@@ -31,5 +31,5 @@ text to the viewer's width. GitHub renders line breaks in issue and PR bodies as
 line breaks, so do not hard-wrap prose at a fixed column; see [line-break
 guidance](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#line-breaks).
 The checker preserves fenced and indented code, code spans, autolinks, HTML
-comments, headings, tables, block quotes, and nested list structure while
+blocks and comments, headings, tables, block quotes, and nested list structure while
 rejecting prose or list continuations that introduce a physical line break.
