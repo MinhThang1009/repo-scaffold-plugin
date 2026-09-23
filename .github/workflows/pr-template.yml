@@ -59,6 +59,7 @@ jobs:
           sys.path.insert(0, str(markdown_preflight_source.parent))
           from markdown_body_preflight import (
               hard_wrapped_prose_lines,
+              strip_html_comments,
               split_gfm_lines,
           )
           from pr_template_preflight import template_catalog
@@ -201,14 +202,10 @@ jobs:
                   if template_comment_pattern.fullmatch(line):
                       visible_lines.append(line)
                       continue
-                  while "<!--" in line:
-                      comment_start = line.find("<!--")
-                      comment_end = line.find("-->", comment_start + 4)
-                      if comment_end < 0:
-                          line = line[:comment_start]
-                          comment_open = True
-                          break
-                      line = line[:comment_start] + line[comment_end + 3 :]
+                  if "<!--" in line:
+                      line, comment_open, _html_tag_spans = strip_html_comments(
+                          line, False
+                      )
                   visible_lines.append(line)
               return "\n".join(visible_lines)
 

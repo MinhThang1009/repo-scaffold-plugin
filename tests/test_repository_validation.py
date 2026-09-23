@@ -6837,6 +6837,21 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+            comment_heavy_body = feature_body.replace(
+                "## Purpose", "## Purpose " + "<!-- ignored -->" * 2000, 1
+            )
+            comment_heavy_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": comment_heavy_body},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(
+                comment_heavy_result.returncode, 0, comment_heavy_result.stderr
+            )
+
             cr_only_result = subprocess.run(
                 [sys.executable, "-c", script],
                 cwd=root,
