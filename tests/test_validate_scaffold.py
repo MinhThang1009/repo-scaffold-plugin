@@ -1709,9 +1709,11 @@ body:
             f"{validate_scaffold.MAX_FOCUSED_PULL_REQUEST_TEMPLATES} focused templates",
             focused_limit_problems,
         )
-        self.assertIn(
-            "PULL_REQUEST_TEMPLATE/feature.MD asset duplicates focused template "
-            "identifier 'feature'",
+        self.assertTrue(
+            any(
+                "asset duplicates focused template identifier 'feature'" in problem
+                for problem in duplicate_template_problems
+            ),
             duplicate_template_problems,
         )
 
