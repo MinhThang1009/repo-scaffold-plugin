@@ -970,12 +970,18 @@ def validate_pull_request_templates(repository_root: Path) -> list[str]:
             problems.append(problem)
             continue
         assert text is not None
-        wrapped_lines = hard_wrapped_prose_lines(text)
-        if wrapped_lines:
-            lines = ", ".join(str(number) for number in wrapped_lines)
+        try:
+            wrapped_lines = hard_wrapped_prose_lines(text)
+        except ValueError as error:
             problems.append(
-                f"{relative}: template contains hard-wrapped prose at line(s): {lines}"
+                f"{relative}: could not validate hard-wrapped prose: {error}"
             )
+        else:
+            if wrapped_lines:
+                lines = ", ".join(str(number) for number in wrapped_lines)
+                problems.append(
+                    f"{relative}: template contains hard-wrapped prose at line(s): {lines}"
+                )
         if not text.strip():
             problems.append(f"{relative}: template must be nonempty")
         if not re.search(r"(?m)^\s*[-*+]\s+\[ \]\s+\S", text):
@@ -1069,10 +1075,16 @@ def validate_template_assets(template_root: Path) -> list[str]:
             problems.append(problem)
             continue
         assert text is not None
-        wrapped_lines = hard_wrapped_prose_lines(text)
-        if wrapped_lines:
-            lines = ", ".join(str(number) for number in wrapped_lines)
-            problems.append(f"{label} contains hard-wrapped prose at line(s): {lines}")
+        try:
+            wrapped_lines = hard_wrapped_prose_lines(text)
+        except ValueError as error:
+            problems.append(f"{label}: could not validate hard-wrapped prose: {error}")
+        else:
+            if wrapped_lines:
+                lines = ", ".join(str(number) for number in wrapped_lines)
+                problems.append(
+                    f"{label} contains hard-wrapped prose at line(s): {lines}"
+                )
         if marker_pattern.findall(text) != [template_id]:
             problems.append(
                 f"{label} must contain exactly one matching repo-scaffold template marker"

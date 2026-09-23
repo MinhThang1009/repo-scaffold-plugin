@@ -1174,6 +1174,48 @@ body:
             problems,
         )
 
+    def test_preflight_lookahead_limit_fails_closed_for_repository_and_assets(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github").mkdir()
+            (root / ".github" / "PULL_REQUEST_TEMPLATE.md").write_text(
+                "- [ ] Verify the change\n", encoding="utf-8"
+            )
+            (root / "PULL_REQUEST_TEMPLATE.md").write_text(
+                "- [ ] Verify the change\n", encoding="utf-8"
+            )
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "README-header.md",
+                root / "README-header.md",
+            )
+
+            with mock.patch.object(
+                validate_scaffold,
+                "hard_wrapped_prose_lines",
+                side_effect=ValueError("test lookahead budget exceeded"),
+            ):
+                repository_problems = validate_scaffold.validate_pull_request_templates(
+                    root
+                )
+                asset_problems = validate_scaffold.validate_template_assets(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE.md: could not validate hard-wrapped "
+            "prose: test lookahead budget exceeded",
+            repository_problems,
+        )
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE.md asset: could not validate hard-wrapped "
+            "prose: test lookahead budget exceeded",
+            asset_problems,
+        )
+
     def test_pull_request_template_rejects_an_oversized_markdown_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

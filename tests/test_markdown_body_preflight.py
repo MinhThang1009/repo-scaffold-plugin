@@ -404,6 +404,13 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(module.setext_heading_line_indexes(["Title", "- "]), set())
         self.assertEqual(module.setext_heading_line_indexes(["# Title", "==="]), set())
         self.assertEqual(module.setext_heading_line_indexes(["==="]), set())
+        self.assertEqual(
+            module.strip_blockquote_markers("> " * 4096 + "body"),
+            ("body", 4096),
+        )
+        self.assertEqual(
+            module.strip_blockquote_markers("    > body"), ("    > body", 0)
+        )
         tick = chr(96)
         opening = f"opening {tick} before <!-- note -->\n"
         self.assertIsNone(
@@ -678,6 +685,38 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             _bundled_lines("Before `literal\ncontinued prose.\n"),
             (2,),
         )
+
+    def test_unmatched_inline_code_comment_lookahead_is_cached_and_bounded(
+        self,
+    ) -> None:
+        module = _bundled_module()
+        body = "opening `\n" + "continued <!-- inline note -->\n" * 300
+        original_lookahead = module.matching_backtick_run_ahead
+
+        with mock.patch.object(
+            module,
+            "matching_backtick_run_ahead",
+            wraps=original_lookahead,
+        ) as lookahead:
+            wrapped_lines = module.hard_wrapped_prose_lines(body)
+
+        self.assertEqual(wrapped_lines, tuple(range(2, 302)))
+        self.assertEqual(lookahead.call_count, 1)
+
+        with mock.patch.object(module, "MAX_INLINE_CODE_LOOKAHEAD_CHARACTERS", 100):
+            with self.assertRaisesRegex(ValueError, "lookahead exceeds"):
+                module.hard_wrapped_prose_lines(body)
+        with mock.patch.object(module, "MAX_INLINE_CODE_LOOKAHEAD_CHARACTERS", 5):
+            with self.assertRaisesRegex(ValueError, "lookahead exceeds"):
+                module.matching_backtick_run_ahead(
+                    ["opening", "> " * 10],
+                    0,
+                    0,
+                    {1},
+                    0,
+                    set(),
+                    work_budget=[5],
+                )
 
     def test_escaped_backticks_do_not_open_inline_code_spans(self) -> None:
         tick = chr(96)

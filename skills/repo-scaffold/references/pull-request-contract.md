@@ -37,3 +37,5 @@ The checker follows GFM block boundaries and preserves fenced and indented code,
 code spans, autolinks, inline and block HTML, comments, headings, tables, block
 quotes, and nested lists while rejecting hard-wrapped prose. In particular, it
 recognizes a table only at a valid block boundary with a matching delimiter row.
+Inline-code/comment disambiguation is bounded to 4,194,304 scanned characters
+per body or template; exceeding the budget fails validation closed.

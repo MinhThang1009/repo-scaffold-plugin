@@ -53,6 +53,7 @@ BACKTICK_RUN_PATTERN = re.compile(r"[\x60]+")
 GFM_TABLE_DELIMITER_CELL_PATTERN = re.compile(r":?-{3,}:?")
 SETEXT_HEADING_UNDERLINE_PATTERN = re.compile(r"^ {0,3}(?:=+[ \t]*|-+[ \t]*)$")
 MAX_BODY_FILE_BYTES = 1024 * 1024
+MAX_INLINE_CODE_LOOKAHEAD_CHARACTERS = 4 * MAX_BODY_FILE_BYTES
 GFM_LINE_ENDING_PATTERN = re.compile(r"\r\n|\r|\n")
 
 
@@ -74,12 +75,20 @@ def is_gfm_blank_line(line: str) -> bool:
 def strip_blockquote_markers(line: str) -> tuple[str, int]:
     """Remove nested block quote markers before inspecting their Markdown blocks."""
     depth = 0
-    while True:
-        match = re.match(r"^ {0,3}>[ \t]?", line)
-        if match is None:
-            return line, depth
+    cursor = 0
+    while cursor < len(line):
+        marker_start = cursor
+        spaces = 0
+        while cursor < len(line) and line[cursor] == " " and spaces < 3:
+            cursor += 1
+            spaces += 1
+        if cursor == len(line) or line[cursor] != ">":
+            return line[marker_start:], depth
+        cursor += 1
+        if cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
         depth += 1
-        line = line[match.end() :]
+    return line[cursor:], depth
 
 
 def is_link_or_reparse(path: Path) -> bool:
@@ -554,26 +563,45 @@ def matching_backtick_run_ahead(
     delimiter_lengths: set[int],
     quote_depth: int,
     table_lines: set[int],
+    *,
+    scan_end: list[int] | None = None,
+    work_budget: list[int] | None = None,
 ) -> tuple[int, int, int] | None:
     """Find a candidate code-span closer before the current Markdown block ends."""
+
+    def record_scan_end(line_index: int) -> None:
+        if scan_end is not None:
+            scan_end[:] = [line_index]
+
     if not delimiter_lengths:
+        record_scan_end(line_index - 1)
         return None
     for candidate_index in range(line_index, len(lines)):
+        if work_budget is not None:
+            work_budget[0] -= max(1, len(lines[candidate_index]))
+            if work_budget[0] < 0:
+                raise ValueError(
+                    "inline-code lookahead exceeds the "
+                    f"{MAX_INLINE_CODE_LOOKAHEAD_CHARACTERS}-character work budget"
+                )
         candidate_line, candidate_quote_depth = strip_blockquote_markers(
             lines[candidate_index].rstrip("\r\n")
         )
         if candidate_quote_depth != quote_depth or is_gfm_blank_line(candidate_line):
+            record_scan_end(candidate_index - 1)
             return None
         if candidate_index > line_index and (
             candidate_index in table_lines
             or SETEXT_HEADING_UNDERLINE_PATTERN.fullmatch(candidate_line) is not None
             or begins_markdown_block(candidate_line, allow_type_7=False)
         ):
+            record_scan_end(candidate_index - 1)
             return None
         search_start = start_offset if candidate_index == line_index else 0
         for match in BACKTICK_RUN_PATTERN.finditer(candidate_line, search_start):
             if len(match.group()) in delimiter_lengths:
                 return candidate_index, match.start(), match.end()
+    record_scan_end(len(lines) - 1)
     return None
 
 
@@ -635,6 +663,10 @@ def backtick_run_lengths_by_line(
     list_context: list[tuple[int, int]] = []
     pending_inline_backticks_by_group: dict[int, list[int]] = {}
     active_inline_code_closers: dict[int, tuple[int, int, int]] = {}
+    negative_inline_code_lookahead_ends: dict[
+        tuple[int, int, tuple[int, ...]], int
+    ] = {}
+    lookahead_work_budget = [MAX_INLINE_CODE_LOOKAHEAD_CHARACTERS]
     table_lines = gfm_table_line_indexes(lines)
 
     for line_index, raw_line in enumerate(lines):
@@ -728,14 +760,29 @@ def backtick_run_lengths_by_line(
                     pending_backticks = pending_inline_backticks_by_group.get(
                         group_id, []
                     )
-                    active_code_closer = matching_backtick_run_ahead(
-                        lines,
-                        line_index,
-                        comment_start + 4,
-                        set(pending_backticks),
-                        quote_depth,
-                        table_lines,
+                    delimiter_lengths = tuple(sorted(set(pending_backticks)))
+                    lookahead_key = (group_id, quote_depth, delimiter_lengths)
+                    negative_end = negative_inline_code_lookahead_ends.get(
+                        lookahead_key, -1
                     )
+                    scan_end: list[int] = []
+                    if line_index <= negative_end:
+                        active_code_closer = None
+                    else:
+                        active_code_closer = matching_backtick_run_ahead(
+                            lines,
+                            line_index,
+                            comment_start + 4,
+                            set(delimiter_lengths),
+                            quote_depth,
+                            table_lines,
+                            scan_end=scan_end,
+                            work_budget=lookahead_work_budget,
+                        )
+                        if active_code_closer is None and scan_end:
+                            negative_inline_code_lookahead_ends[lookahead_key] = (
+                                scan_end[0]
+                            )
                     if active_code_closer is not None:
                         active_inline_code_closers[group_id] = active_code_closer
                         comment_inside_code = True
