@@ -1328,7 +1328,7 @@ body:
                 root / ".github" / "PULL_REQUEST_TEMPLATE" / "focused.md",
                 root / "pull_request_template.TXT",
                 root / "docs" / "pull_request_template" / "focused.txt",
-                root / ".github" / "pull_request_template" / "lowercase.MD",
+                root / ".github" / "PULL_REQUEST_TEMPLATE" / "lowercase.MD",
                 root / "docs" / "PULL_REQUEST_TEMPLATE" / "focused.markdown",
             ]
             for path in paths:
