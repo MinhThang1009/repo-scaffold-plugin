@@ -318,7 +318,7 @@ class MarkdownSourceContractTests(unittest.TestCase):
         path = Path("linked.md")
         with (
             mock.patch.object(Path, "is_symlink", return_value=True),
-            mock.patch.object(Path, "read_text") as read_text,
+            mock.patch.object(Path, "open") as open_file,
         ):
             text, problem = validate_scaffold.read_markdown(path, label="linked.md")
 
@@ -327,8 +327,7 @@ class MarkdownSourceContractTests(unittest.TestCase):
             problem,
             "linked.md: symbolic-link Markdown is not dereferenced or validated",
         )
-        read_text.assert_not_called()
-
+        open_file.assert_not_called()
         root = mock.MagicMock(spec=Path)
         root.__truediv__.return_value = path
         with mock.patch.object(Path, "is_symlink", return_value=True):
@@ -336,6 +335,21 @@ class MarkdownSourceContractTests(unittest.TestCase):
                 validate_scaffold.validate_readme(root),
                 ["README.md: symbolic-link Markdown is not dereferenced or validated"],
             )
+
+    def test_markdown_reader_reports_open_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unreadable.md"
+            path.write_text("content", encoding="utf-8")
+            with mock.patch.object(Path, "open", side_effect=OSError("denied")):
+                text, problem = validate_scaffold.read_markdown(
+                    path, label="unreadable.md"
+                )
+
+        self.assertIsNone(text)
+        self.assertEqual(
+            problem,
+            "unreadable.md: unreadable UTF-8 Markdown: denied",
+        )
 
     def test_reports_unresolved_namespaced_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1146,6 +1160,41 @@ body:
         self.assertIn(
             ".github/PULL_REQUEST_TEMPLATE.md: template contains hard-wrapped "
             "prose at line(s): 4",
+            problems,
+        )
+
+    def test_pull_request_template_rejects_an_oversized_markdown_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / ".github" / "PULL_REQUEST_TEMPLATE.md"
+            template.parent.mkdir(parents=True)
+            template.write_bytes(
+                b"- [ ] Verify the change\n"
+                + b"x" * validate_scaffold.MAX_MARKDOWN_FILE_BYTES
+            )
+
+            problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE.md: exceeds the "
+            f"{validate_scaffold.MAX_MARKDOWN_FILE_BYTES}-byte limit",
+            problems,
+        )
+
+    def test_pull_request_template_rejects_linked_catalog_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            with mock.patch.object(
+                validate_scaffold,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path == template_directory,
+            ):
+                problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE: linked or reparse-point directory is "
+            "not dereferenced or validated",
             problems,
         )
 

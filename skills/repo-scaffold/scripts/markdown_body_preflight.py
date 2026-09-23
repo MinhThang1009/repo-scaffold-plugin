@@ -19,7 +19,7 @@ LIST_ITEM_CONTEXT_PATTERN = re.compile(
     r"^(?P<indent> *)(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)"
 )
 STRUCTURAL_MARKDOWN_LINE_PATTERN = re.compile(
-    r"^ {0,3}(?:#{1,6}[ \t]|>[ \t]?|"
+    r"^ {0,3}(?:#{1,6}(?:[ \t]|$)|>[ \t]?|"
     r"(?:(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})$)"
 )
 HTML_BLOCK_START_PATTERN = re.compile(
@@ -78,26 +78,147 @@ def is_link_or_reparse(path: Path) -> bool:
     )
 
 
-def strip_html_comments(line: str, comment_open: bool) -> tuple[str, bool]:
-    """Remove HTML comments while retaining visible text on either side."""
-    visible: list[str] = []
+def preceded_by_odd_backslashes(line: str, index: int) -> bool:
+    """Return whether a character is preceded by an odd run of backslashes."""
+    cursor = index - 1
+    while cursor >= 0 and line[cursor] == "\\":
+        cursor -= 1
+    return (index - cursor - 1) % 2 == 1
+
+
+def html_comment_start(
+    line: str,
+    start: int,
+    html_tag_spans: list[tuple[int, int]],
+) -> int | None:
+    """Find the next unescaped HTML comment opener outside complete HTML tags."""
+    cursor = start
+    tag_index = 0
+    while cursor < len(line):
+        comment_start = line.find("<!--", cursor)
+        if comment_start < 0:
+            return None
+        while (
+            tag_index < len(html_tag_spans)
+            and html_tag_spans[tag_index][1] <= comment_start
+        ):
+            tag_index += 1
+        if (
+            tag_index < len(html_tag_spans)
+            and html_tag_spans[tag_index][0]
+            <= comment_start
+            < html_tag_spans[tag_index][1]
+        ):
+            cursor = html_tag_spans[tag_index][1]
+            continue
+        if preceded_by_odd_backslashes(line, comment_start):
+            cursor = comment_start + 4
+            continue
+        return comment_start
+    return None
+
+
+def first_unescaped_backtick(
+    line: str,
+    html_tag_spans: list[tuple[int, int]],
+) -> int | None:
+    """Find the first unescaped code delimiter outside inline HTML tags."""
+    tag_index = 0
+    for match in BACKTICK_RUN_PATTERN.finditer(line):
+        while (
+            tag_index < len(html_tag_spans)
+            and html_tag_spans[tag_index][1] <= match.start()
+        ):
+            tag_index += 1
+        inside_html_tag = (
+            tag_index < len(html_tag_spans)
+            and html_tag_spans[tag_index][0]
+            <= match.start()
+            < html_tag_spans[tag_index][1]
+        )
+        if not inside_html_tag and not preceded_by_odd_backslashes(line, match.start()):
+            return match.start()
+    return None
+
+
+def line_ends_hard_break(
+    line: str,
+    html_tag_spans: list[tuple[int, int]],
+    *,
+    inline_code_open: bool,
+    html_comment_open: bool,
+) -> bool:
+    """Detect explicit GFM hard-break syntax outside inline code, tags, and comments."""
+    if inline_code_open or html_comment_open:
+        return False
+    trailing_spaces = len(line) - len(line.rstrip(" "))
+    if trailing_spaces >= 2:
+        marker_index = len(line) - trailing_spaces
+        return not any(start <= marker_index < end for start, end in html_tag_spans)
+    trailing_backslashes = len(line) - len(line.rstrip("\\"))
+    if trailing_backslashes % 2 == 0:
+        return False
+    marker_index = len(line) - 1
+    return not any(start <= marker_index < end for start, end in html_tag_spans)
+
+
+def strip_html_comments(
+    line: str,
+    comment_open: bool,
+    html_tag_spans: list[tuple[int, int]] | None = None,
+) -> tuple[str, bool, list[tuple[int, int]]]:
+    """Remove comments while adjusting the positions of surviving inline tags."""
+    if html_tag_spans is None:
+        html_tag_spans = html_inline_tag_spans(line)
     cursor = 0
+    comment_start = 0 if comment_open else None
+    hidden_ranges: list[tuple[int, int]] = []
     while cursor < len(line):
         if comment_open:
             comment_end = line.find("-->", cursor)
             if comment_end < 0:
-                return "".join(visible), True
+                assert comment_start is not None
+                hidden_ranges.append((comment_start, len(line)))
+                break
+            assert comment_start is not None
+            hidden_ranges.append((comment_start, comment_end + 3))
             comment_open = False
             cursor = comment_end + 3
+            comment_start = None
             continue
-        comment_start = line.find("<!--", cursor)
-        if comment_start < 0:
-            visible.append(line[cursor:])
+        next_comment_start = html_comment_start(line, cursor, html_tag_spans)
+        if next_comment_start is None:
             break
-        visible.append(line[cursor:comment_start])
+        comment_start = next_comment_start
         comment_open = True
-        cursor = comment_start + 4
-    return "".join(visible), comment_open
+        cursor = next_comment_start + 4
+
+    visible_parts: list[str] = []
+    visible_cursor = 0
+    for hidden_start, hidden_end in hidden_ranges:
+        visible_parts.append(line[visible_cursor:hidden_start])
+        visible_cursor = hidden_end
+    visible_parts.append(line[visible_cursor:])
+
+    shifted_spans: list[tuple[int, int]] = []
+    removed_before = 0
+    hidden_range_index = 0
+    for start, end in html_tag_spans:
+        while (
+            hidden_range_index < len(hidden_ranges)
+            and hidden_ranges[hidden_range_index][1] <= start
+        ):
+            hidden_start, hidden_end = hidden_ranges[hidden_range_index]
+            removed_before += hidden_end - hidden_start
+            hidden_range_index += 1
+        overlaps_hidden = (
+            hidden_range_index < len(hidden_ranges)
+            and hidden_ranges[hidden_range_index][0] < end
+            and hidden_ranges[hidden_range_index][1] > start
+        )
+        if not overlaps_hidden:
+            shifted_spans.append((start - removed_before, end - removed_before))
+    return "".join(visible_parts), comment_open, shifted_spans
 
 
 def mask_inline_code(
@@ -154,6 +275,10 @@ def mask_inline_code(
             while run_index < len(runs) and runs[run_index][0] < cursor:
                 run_index += 1
             tag_index += 1
+            continue
+        if active_length is None and preceded_by_odd_backslashes(line, start):
+            cursor = end
+            run_index += 1
             continue
         closing_run = next_same_run[start]
         if closing_run is not None:
@@ -404,6 +529,36 @@ def begins_markdown_block(line: str, *, allow_type_7: bool = True) -> bool:
     )
 
 
+def matching_backtick_run_ahead(
+    lines: list[str],
+    line_index: int,
+    start_offset: int,
+    delimiter_lengths: set[int],
+    quote_depth: int,
+    table_lines: set[int],
+) -> tuple[int, int, int] | None:
+    """Find a candidate code-span closer before the current Markdown block ends."""
+    if not delimiter_lengths:
+        return None
+    for candidate_index in range(line_index, len(lines)):
+        candidate_line, candidate_quote_depth = strip_blockquote_markers(
+            lines[candidate_index].rstrip("\r\n")
+        )
+        if candidate_quote_depth != quote_depth or not candidate_line.strip():
+            return None
+        if candidate_index > line_index and (
+            candidate_index in table_lines
+            or SETEXT_HEADING_UNDERLINE_PATTERN.fullmatch(candidate_line) is not None
+            or begins_markdown_block(candidate_line, allow_type_7=False)
+        ):
+            return None
+        search_start = start_offset if candidate_index == line_index else 0
+        for match in BACKTICK_RUN_PATTERN.finditer(candidate_line, search_start):
+            if len(match.group()) in delimiter_lengths:
+                return candidate_index, match.start(), match.end()
+    return None
+
+
 def advance_list_context(
     line: str,
     context: list[tuple[int, int]],
@@ -442,20 +597,10 @@ def advance_list_context(
 def backtick_run_lengths_by_line(
     lines: list[str],
     html_tag_spans_by_line: list[list[tuple[int, int]]] | None = None,
-    html_tag_starts_by_line: list[bool] | None = None,
-    html_tag_continuations_by_line: list[bool] | None = None,
 ) -> tuple[list[tuple[int, ...]], list[int]]:
     """Index inline-code delimiters while excluding comments and block code."""
-    if (
-        html_tag_spans_by_line is None
-        or html_tag_starts_by_line is None
-        or html_tag_continuations_by_line is None
-    ):
-        (
-            html_tag_spans_by_line,
-            html_tag_starts_by_line,
-            html_tag_continuations_by_line,
-        ) = html_inline_tag_spans_by_line(lines)
+    if html_tag_spans_by_line is None:
+        html_tag_spans_by_line, _, _ = html_inline_tag_spans_by_line(lines)
     indexed: list[tuple[int, ...]] = []
     group_ids: list[int] = []
     group_id = 0
@@ -470,16 +615,15 @@ def backtick_run_lengths_by_line(
     previous_is_list_item = False
     indented_code = False
     list_context: list[tuple[int, int]] = []
-    inline_html_tag_pending = False
+    pending_inline_backticks_by_group: dict[int, list[int]] = {}
+    active_inline_code_closers: dict[int, tuple[int, int, int]] = {}
     table_lines = gfm_table_line_indexes(lines)
 
     for line_index, raw_line in enumerate(lines):
         line = raw_line.rstrip("\r\n")
         line, quote_depth = strip_blockquote_markers(line)
-        inline_html_tag_continuation = (
-            inline_html_tag_pending and html_tag_continuations_by_line[line_index]
-        )
-        inline_html_tag_pending = False
+        html_tag_spans = html_tag_spans_by_line[line_index]
+        active_code_closer = active_inline_code_closers.get(group_id)
         expanded_line = line.expandtabs(4)
         leading_spaces = len(expanded_line) - len(expanded_line.lstrip(" "))
         if html_block is not None:
@@ -501,7 +645,6 @@ def backtick_run_lengths_by_line(
                     group_id += 1
                 previous_is_prose = False
                 previous_is_list_item = False
-                inline_html_tag_pending = False
                 previous_quote_depth = quote_depth
                 continue
         if fence_character is not None:
@@ -532,22 +675,60 @@ def backtick_run_lengths_by_line(
                 previous_quote_depth = quote_depth
                 previous_is_prose = False
                 previous_is_list_item = False
-                inline_html_tag_pending = False
                 continue
-        if comment_open and not inline_html_tag_continuation:
-            line, comment_open = strip_html_comments(line, True)
-        elif not inline_html_tag_continuation:
-            comment_start = line.find("<!--")
-            backtick_start = line.find(chr(96))
-            if comment_start >= 0 and (
-                backtick_start < 0 or comment_start < backtick_start
+        if active_code_closer is not None and line_index == active_code_closer[0]:
+            code_end = active_code_closer[2]
+            suffix_html_spans = [
+                (start - code_end, end - code_end)
+                for start, end in html_tag_spans
+                if start >= code_end
+            ]
+            visible_suffix, comment_open, suffix_html_spans = strip_html_comments(
+                line[code_end:], False, suffix_html_spans
+            )
+            line = line[:code_end] + visible_suffix
+            html_tag_spans = [
+                (start, end) for start, end in html_tag_spans if end <= code_end
+            ] + [(start + code_end, end + code_end) for start, end in suffix_html_spans]
+        elif comment_open:
+            line, comment_open, html_tag_spans = strip_html_comments(
+                line, True, html_tag_spans
+            )
+        else:
+            comment_start = html_comment_start(line, 0, html_tag_spans)
+            backtick_start = first_unescaped_backtick(line, html_tag_spans)
+            comment_inside_code = (
+                active_code_closer is not None and line_index <= active_code_closer[0]
+            )
+            if comment_start is not None and (
+                backtick_start is None or comment_start < backtick_start
             ):
-                line, comment_open = strip_html_comments(line, False)
+                if (
+                    not comment_inside_code
+                    and HTML_COMMENT_START_PATTERN.match(line) is None
+                ):
+                    pending_backticks = pending_inline_backticks_by_group.get(
+                        group_id, []
+                    )
+                    active_code_closer = matching_backtick_run_ahead(
+                        lines,
+                        line_index,
+                        comment_start + 4,
+                        set(pending_backticks),
+                        quote_depth,
+                        table_lines,
+                    )
+                    if active_code_closer is not None:
+                        active_inline_code_closers[group_id] = active_code_closer
+                        comment_inside_code = True
+                if not comment_inside_code:
+                    line, comment_open, html_tag_spans = strip_html_comments(
+                        line, False, html_tag_spans
+                    )
         if not line.strip():
             group_id += 1
             indexed.append(())
             group_ids.append(group_id)
-            inline_html_tag_pending = False
             previous_quote_depth = 0
             previous_is_prose = False
             previous_is_list_item = False
@@ -578,7 +759,6 @@ def backtick_run_lengths_by_line(
             fence_list_indent = list_indent
             indexed.append(())
             group_ids.append(group_id)
-            inline_html_tag_pending = False
             previous_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
@@ -595,13 +775,11 @@ def backtick_run_lengths_by_line(
                 group_id += 1
             indexed.append(())
             group_ids.append(group_id)
-            inline_html_tag_pending = False
             previous_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
             continue
         if line_index in table_lines:
-            inline_html_tag_pending = False
             group_id += 1
             indexed.append(
                 tuple(
@@ -609,7 +787,6 @@ def backtick_run_lengths_by_line(
                 )
             )
             group_ids.append(group_id)
-            inline_html_tag_pending = False
             group_id += 1
             previous_quote_depth = quote_depth
             previous_is_prose = False
@@ -619,7 +796,6 @@ def backtick_run_lengths_by_line(
             if leading_spaces >= 4:
                 indexed.append(())
                 group_ids.append(group_id)
-                inline_html_tag_pending = False
                 previous_quote_depth = quote_depth
                 previous_is_prose = False
                 previous_is_list_item = False
@@ -634,7 +810,6 @@ def backtick_run_lengths_by_line(
             indented_code = True
             indexed.append(())
             group_ids.append(group_id)
-            inline_html_tag_pending = False
             previous_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
@@ -653,11 +828,39 @@ def backtick_run_lengths_by_line(
         group_ids.append(group_id)
         if is_other_block:
             group_id += 1
+        line_group_id = group_ids[-1]
+        line_code_closer = active_inline_code_closers.get(line_group_id)
+        if line_code_closer is not None and line_index == line_code_closer[0]:
+            active_inline_code_closers.pop(line_group_id)
+            pending_inline_backticks_by_group.pop(line_group_id, None)
+        elif line_code_closer is None:
+            pending_backticks = pending_inline_backticks_by_group.setdefault(
+                line_group_id, []
+            )
+            tag_index = 0
+            for match in BACKTICK_RUN_PATTERN.finditer(line):
+                while (
+                    tag_index < len(html_tag_spans)
+                    and html_tag_spans[tag_index][1] <= match.start()
+                ):
+                    tag_index += 1
+                inside_html_tag = (
+                    tag_index < len(html_tag_spans)
+                    and html_tag_spans[tag_index][0]
+                    <= match.start()
+                    < html_tag_spans[tag_index][1]
+                )
+                if inside_html_tag:
+                    continue
+                run_length = len(match.group())
+                if run_length in pending_backticks:
+                    del pending_backticks[pending_backticks.index(run_length) :]
+                elif not preceded_by_odd_backslashes(line, match.start()):
+                    pending_backticks.append(run_length)
         previous_quote_depth = quote_depth
         is_structural = is_list_item or is_other_block
         previous_is_list_item = is_list_item
         previous_is_prose = not is_structural and not line.endswith(("  ", "\\"))
-        inline_html_tag_pending = html_tag_starts_by_line[line_index]
     return indexed, group_ids
 
 
@@ -686,8 +889,6 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
     run_lengths_by_line, group_ids = backtick_run_lengths_by_line(
         raw_lines,
         html_tag_spans_by_line,
-        html_tag_starts_by_line,
-        html_tag_continuations_by_line,
     )
     table_lines = gfm_table_line_indexes(raw_lines)
     setext_heading_lines = setext_heading_line_indexes(raw_lines)
@@ -706,27 +907,31 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             inline_code_length = None
             active_group = group_id
         line_number = line_index + 1
-        line = raw_line.rstrip("\r\n")
+        line, quote_depth = strip_blockquote_markers(raw_line.rstrip("\r\n"))
+        source_line = line
+        html_tag_spans = html_tag_spans_by_line[line_index]
         group_run_counts = future_run_counts[group_id]
         for run_length in run_lengths_by_line[line_index]:
             group_run_counts[run_length] -= 1
             if group_run_counts[run_length] <= 0:
                 del group_run_counts[run_length]
-        if comment_open and not inline_html_tag_continuation:
-            line, comment_open = strip_html_comments(line, True)
-        comment_start = line.find("<!--")
-        backtick_start = line.find("`")
-        if (
-            not inline_html_tag_continuation
-            and comment_start >= 0
-            and (backtick_start < 0 or comment_start < backtick_start)
-        ):
-            line, comment_open = strip_html_comments(line, False)
-            if not line.strip():
-                previous_is_prose = False
-                previous_is_list_item = False
-                continue
-        line, quote_depth = strip_blockquote_markers(line)
+        if comment_open:
+            line, comment_open, html_tag_spans = strip_html_comments(
+                line, True, html_tag_spans
+            )
+        elif inline_code_length is None:
+            comment_start = html_comment_start(line, 0, html_tag_spans)
+            backtick_start = first_unescaped_backtick(line, html_tag_spans)
+            if comment_start is not None and (
+                backtick_start is None or comment_start < backtick_start
+            ):
+                line, comment_open, html_tag_spans = strip_html_comments(
+                    line, False, html_tag_spans
+                )
+                if not line.strip():
+                    previous_is_prose = False
+                    previous_is_list_item = False
+                    continue
         expanded_line = line.expandtabs(4)
         leading_spaces = len(expanded_line) - len(expanded_line.lstrip(" "))
         if html_block is not None:
@@ -823,10 +1028,11 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             line,
             inline_code_length,
             group_run_counts,
-            html_tag_spans_by_line[line_index],
+            html_tag_spans,
         )
-        if not inline_html_tag_continuation:
-            line, comment_open = strip_html_comments(line, comment_open)
+        line, comment_open, html_tag_spans = strip_html_comments(
+            line, comment_open, html_tag_spans
+        )
 
         stripped = line.strip()
         if not stripped:
@@ -865,7 +1071,12 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
         ):
             wrapped.append(line_number)
         previous_is_list_item = is_list_item
-        previous_is_prose = is_prose and not line.endswith(("  ", "\\"))
+        previous_is_prose = is_prose and not line_ends_hard_break(
+            source_line,
+            html_tag_spans_by_line[line_index],
+            inline_code_open=inline_code_length is not None,
+            html_comment_open=comment_open,
+        )
         previous_quote_depth = quote_depth
         inline_html_tag_pending = html_tag_starts_by_line[line_index]
 

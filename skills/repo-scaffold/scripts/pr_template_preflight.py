@@ -16,6 +16,8 @@ from markdown_body_preflight import (
     read_body_file as _shared_read_body_file,
 )
 
+MAX_TEMPLATE_DIRECTORY_ENTRIES = 128
+
 
 TITLE_TYPE_PATTERN = re.compile(r"^(?P<type>feat|fix|docs)(?:\([^()\r\n]+\))?!?: ")
 TEMPLATE_BY_TITLE_TYPE = {
@@ -102,7 +104,15 @@ def template_catalog(repository_root: Path) -> dict[str, Path]:
     ):
         raise ValueError("trusted PR template catalog contains a linked path")
     if directory.is_dir():
-        for path in sorted(directory.glob("*.md")):
+        paths: list[Path] = []
+        for path in directory.glob("*.md"):
+            if len(paths) >= MAX_TEMPLATE_DIRECTORY_ENTRIES:
+                raise ValueError(
+                    "trusted PR template catalog exceeds "
+                    f"{MAX_TEMPLATE_DIRECTORY_ENTRIES} focused templates"
+                )
+            paths.append(path)
+        for path in sorted(paths):
             if path_has_link_or_reparse(path, root):
                 raise ValueError(f"trusted PR template path is linked: {path}")
             template_id = path.stem
@@ -140,8 +150,12 @@ def template_path(repository_root: Path, template: str) -> Path:
     if path_has_link_or_reparse(path, root):
         raise ValueError(f"trusted PR template path is linked: {path}")
     try:
-        markers = TEMPLATE_MARKER_PATTERN.findall(path.read_text(encoding="utf-8"))
-    except OSError as error:
+        template_text = read_body_file(path)
+        normalized_template_text = template_text.replace("\r\n", "\n").replace(
+            "\r", "\n"
+        )
+        markers = TEMPLATE_MARKER_PATTERN.findall(normalized_template_text)
+    except (OSError, UnicodeError, ValueError) as error:
         raise ValueError(
             f"could not read trusted PR template {path}: {error}"
         ) from error

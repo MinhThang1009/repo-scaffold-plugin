@@ -20,7 +20,10 @@ from markdown_it.rules_inline.backticks import backtick as parse_backtick
 from markdown_it.rules_inline.state_inline import StateInline
 from markdown_it.token import Token
 
-from markdown_body_preflight import hard_wrapped_prose_lines
+from markdown_body_preflight import (
+    MAX_BODY_FILE_BYTES as MAX_MARKDOWN_FILE_BYTES,
+    hard_wrapped_prose_lines,
+)
 
 
 SKIPPED_DIRECTORIES = {
@@ -180,7 +183,7 @@ def markdown_files(repository_root: Path) -> list[Path]:
 def read_markdown(
     path: Path, *, label: str, repository_root: Path | None = None
 ) -> tuple[str | None, str | None]:
-    """Read project Markdown without dereferencing symbolic links."""
+    """Read bounded project Markdown without dereferencing symbolic links."""
     if path.is_symlink():
         return None, f"{label}: symbolic-link Markdown is not dereferenced or validated"
     if (
@@ -193,9 +196,20 @@ def read_markdown(
             f"{label}: linked or reparse-point Markdown is not dereferenced or validated",
         )
     try:
-        return path.read_text(encoding="utf-8"), None
-    except (OSError, UnicodeError) as error:
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_MARKDOWN_FILE_BYTES + 1)
+    except OSError as error:
         return None, f"{label}: unreadable UTF-8 Markdown: {error}"
+    if len(payload) > MAX_MARKDOWN_FILE_BYTES:
+        return (
+            None,
+            f"{label}: exceeds the {MAX_MARKDOWN_FILE_BYTES}-byte limit",
+        )
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeError as error:
+        return None, f"{label}: unreadable UTF-8 Markdown: {error}"
+    return text.replace("\r\n", "\n").replace("\r", "\n"), None
 
 
 OPAQUE_HTML_BLOCK = re.compile(
@@ -843,6 +857,12 @@ def pull_request_templates(repository_root: Path) -> list[Path]:
 def validate_pull_request_templates(repository_root: Path) -> list[str]:
     """Require actionable content in every pull-request template."""
     problems: list[str] = []
+    template_directory = repository_root / ".github" / "PULL_REQUEST_TEMPLATE"
+    if path_has_link_or_reparse(template_directory, repository_root):
+        problems.append(
+            ".github/PULL_REQUEST_TEMPLATE: linked or reparse-point directory is "
+            "not dereferenced or validated"
+        )
     for path in pull_request_templates(repository_root):
         relative = path.relative_to(repository_root).as_posix()
         text, problem = read_markdown(

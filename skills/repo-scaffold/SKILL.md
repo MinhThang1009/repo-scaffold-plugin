@@ -236,7 +236,8 @@ this plugin does not change the remote policy.
 The community-health tracker registry must stay inside the repository and reject
 traversal, control characters, links, or reparse points before it is read.
 Directory inventories are bounded to 10,000 entries so large repositories fail
-closed instead of exhausting the runner.
+closed instead of exhausting the runner. Each Markdown file is read as strict
+UTF-8 and capped at 1 MiB.
 
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
 only scheduled and manual triggers. Each schedule entry must use a five-field

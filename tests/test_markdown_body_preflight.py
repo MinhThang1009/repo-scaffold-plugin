@@ -124,6 +124,33 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(_bundled_lines(body), expected)
 
+    def test_html_comment_markers_in_escaped_text_and_attributes_are_inert(
+        self,
+    ) -> None:
+        escaped_comment = (
+            r"Use \<!-- as a literal token"
+            "\n"
+            "First prose line\ncontinued prose\n"
+        )
+        self.assertEqual(_bundled_lines(escaped_comment), (2, 3))
+
+        attribute_comment = (
+            '<span title="<!--">First prose line\ncontinued prose</span>\n'
+        )
+        self.assertEqual(_bundled_lines(attribute_comment), (2,))
+
+        tick = chr(96)
+        comment_before_attribute = (
+            '<!-- hidden --> <span title="'
+            + tick
+            + '">First prose line\ncontinued prose '
+            + tick
+            + "literal"
+            + tick
+            + "\nthird prose line\n"
+        )
+        self.assertEqual(_bundled_lines(comment_before_attribute), (2, 3))
+
     def test_escaped_tag_like_text_does_not_mask_inline_code_delimiters(self) -> None:
         body = (
             'Escaped \\<span title="`"> first paragraph line\n'
@@ -328,6 +355,20 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         )
         self.assertEqual(_bundled_lines("Paragraph before empty list item\n-\n"), ())
 
+    def test_empty_atx_headings_are_structural(self) -> None:
+        for heading in ("#", "##", "######", "   ###   ", "> #"):
+            with self.subTest(heading=heading):
+                quote = "> " if heading.startswith(">") else ""
+                body = (
+                    f"{heading}\n{quote}First paragraph line\n{quote}continued prose\n"
+                )
+                self.assertEqual(_bundled_lines(body), (3,))
+
+        self.assertEqual(
+            _bundled_lines("#######\nFirst paragraph line\ncontinued prose\n"),
+            (2, 3),
+        )
+
     def test_tabs_use_gfm_four_column_block_indentation(self) -> None:
         self.assertEqual(
             _bundled_lines(
@@ -363,6 +404,77 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(module.setext_heading_line_indexes(["Title", "- "]), set())
         self.assertEqual(module.setext_heading_line_indexes(["# Title", "==="]), set())
         self.assertEqual(module.setext_heading_line_indexes(["==="]), set())
+        tick = chr(96)
+        opening = f"opening {tick} before <!-- note -->\n"
+        self.assertIsNone(
+            module.matching_backtick_run_ahead(["text"], 0, 0, set(), 0, set())
+        )
+        self.assertEqual(
+            module.matching_backtick_run_ahead(
+                [opening, "continued prose\n", f"closing {tick} after\n"],
+                0,
+                opening.index("<!--") + 4,
+                {1},
+                0,
+                set(),
+            ),
+            (2, 8, 9),
+        )
+        self.assertEqual(
+            module.matching_backtick_run_ahead(
+                [
+                    "opening\n",
+                    "other " + tick * 2 + "\n",
+                    "closing " + tick + "\n",
+                ],
+                0,
+                0,
+                {1},
+                0,
+                set(),
+            ),
+            (2, 8, 9),
+        )
+        self.assertIsNone(
+            module.matching_backtick_run_ahead(
+                ["opening\n", "", f"closing {tick}\n"], 0, 0, {1}, 0, set()
+            )
+        )
+        self.assertIsNone(
+            module.matching_backtick_run_ahead(
+                ["opening\n", "# New block\n", f"closing {tick}\n"],
+                0,
+                0,
+                {1},
+                0,
+                set(),
+            )
+        )
+        self.assertIsNone(
+            module.matching_backtick_run_ahead(
+                ["opening\n", "Title\n", "---\n", f"closing {tick}\n"],
+                0,
+                0,
+                {1},
+                0,
+                set(),
+            )
+        )
+        self.assertIsNone(
+            module.matching_backtick_run_ahead(
+                ["opening\n", f"> closing {tick}\n"], 0, 0, {1}, 0, set()
+            )
+        )
+        self.assertIsNone(
+            module.matching_backtick_run_ahead(
+                ["opening\n", "no closer\n"], 0, 0, {1}, 0, set()
+            )
+        )
+        self.assertIsNone(
+            module.matching_backtick_run_ahead(
+                ["opening\n", f"closing {tick}\n"], 0, 0, {1}, 0, {1}
+            )
+        )
 
         context = [(0, 2), (2, 4)]
         is_item, context_exited = module.advance_list_context(
@@ -415,6 +527,51 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             module.backtick_run_lengths_by_line(["plain text"]), ([()], [0])
         )
 
+    def test_comment_removal_rebases_surviving_inline_html_spans(self) -> None:
+        module = _bundled_module()
+        tick = chr(96)
+        line = (
+            '<span title="value">'
+            + tick
+            + "code"
+            + tick
+            + "</span><!--first--><!-- second <i>hidden</i> --> <b>visible</b>"
+        )
+        tag_spans = module.html_inline_tag_spans(line)
+
+        self.assertEqual(
+            module.html_comment_start(line, 0, tag_spans),
+            line.index("<!--first-->"),
+        )
+        self.assertEqual(
+            module.first_unescaped_backtick(line, tag_spans),
+            line.index(tick),
+        )
+
+        visible, comment_open, shifted_spans = module.strip_html_comments(line, False)
+
+        self.assertEqual(
+            visible,
+            '<span title="value">' + tick + "code" + tick + "</span> <b>visible</b>",
+        )
+        self.assertFalse(comment_open)
+        self.assertEqual(shifted_spans, module.html_inline_tag_spans(visible))
+
+        self.assertFalse(
+            module.line_ends_hard_break(
+                "text  ",
+                [(0, len("text  "))],
+                inline_code_open=False,
+                html_comment_open=False,
+            )
+        )
+        self.assertEqual(
+            module.backtick_run_lengths_by_line(
+                ["<span>inline</span> " + tick + "code" + tick]
+            ),
+            ([(1, 1)], [0]),
+        )
+
     def test_fences_and_raw_html_end_when_their_list_container_ends(self) -> None:
         self.assertEqual(
             _bundled_lines(
@@ -453,6 +610,61 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (5,),
         )
 
+    def test_html_comment_text_inside_multiline_code_spans_is_inert(self) -> None:
+        tick = chr(96)
+        comment = chr(60) + chr(33) + chr(45) * 2
+        body = (
+            tick
+            + "Code span begins\n"
+            + "and "
+            + comment
+            + " not a comment\n"
+            + "continues"
+            + tick
+            + " end\n"
+            + "First prose line\ncontinued prose\n"
+        )
+
+        self.assertEqual(_bundled_lines(body), (4, 5))
+
+        comment_after_close = (
+            tick
+            + "Code span begins\n"
+            + "and "
+            + comment
+            + " code text\n"
+            + "closes"
+            + tick
+            + " end "
+            + comment
+            + " actual "
+            + tick
+            + " note -->\n"
+            + "First prose line\ncontinued prose\n"
+        )
+        self.assertEqual(_bundled_lines(comment_after_close), (4, 5))
+
+    def test_unmatched_delimiters_inside_code_spans_do_not_hide_real_comments(
+        self,
+    ) -> None:
+        tick = chr(96)
+        comment = chr(60) + chr(33) + chr(45) * 2
+        body = (
+            tick
+            + "Outer "
+            + tick * 2
+            + " literal"
+            + tick
+            + " end\n"
+            + "Before "
+            + comment
+            + " actual comment "
+            + tick * 2
+            + "\ncomment ends -->\nFirst prose line\ncontinued prose\n"
+        )
+
+        self.assertEqual(_bundled_lines(body), (5,))
+
     def test_handles_multiline_and_unmatched_inline_code(self) -> None:
         self.assertEqual(
             _bundled_lines("Before `code\nspan` after.\n"),
@@ -464,6 +676,46 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         )
         self.assertEqual(
             _bundled_lines("Before `literal\ncontinued prose.\n"),
+            (2,),
+        )
+
+    def test_escaped_backticks_do_not_open_inline_code_spans(self) -> None:
+        tick = chr(96)
+        body = (
+            "First prose line with an escaped "
+            + chr(92)
+            + tick
+            + " marker\n"
+            + "second prose line with "
+            + tick
+            + "an inline code span"
+            + tick
+            + "\n"
+            + "continued prose\n"
+        )
+
+        self.assertEqual(_bundled_lines(body), (2, 3))
+
+    def test_hard_break_detection_uses_the_unmasked_source_line(self) -> None:
+        slash = chr(92)
+        tick = chr(96)
+        self.assertEqual(_bundled_lines("First line  \ncontinued prose\n"), ())
+        self.assertEqual(
+            _bundled_lines("First line" + slash + "\ncontinued prose\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("First line" + slash * 2 + "\ncontinued prose\n"),
+            (2,),
+        )
+        self.assertEqual(
+            _bundled_lines("First line  <!-- note -->\ncontinued prose\n"),
+            (2,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "First line " + tick + "code" + tick + "\ncontinued prose\n"
+            ),
             (2,),
         )
 
