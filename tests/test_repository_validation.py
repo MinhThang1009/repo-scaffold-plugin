@@ -6545,27 +6545,36 @@ class PullRequestTemplateContractTests(unittest.TestCase):
 
     def test_required_check_validator_rejects_pr_gate_step_bypasses(self) -> None:
         original_load_yaml = validate_repository.load_yaml
-
-        def tampered_load_yaml(path: Path) -> Any:
-            document = original_load_yaml(path)
-            if path.as_posix().endswith("workflows/pr-template.yml"):
-                document["jobs"]["pr_template"]["steps"][1]["if"] = "false"
-            return document
-
-        with mock.patch.object(
-            validate_repository, "load_yaml", side_effect=tampered_load_yaml
+        for target, value in (
+            ("step", {"if": "false"}),
+            ("step", {"shell": "pwsh"}),
+            ("job", {"continue-on-error": "true"}),
         ):
-            problems = validate_repository.validate_required_check_concurrency(
-                PLUGIN_ROOT
-            )
 
-        self.assertEqual(
-            sum(
-                "required pr-template check must use one unconditional producer" in p
-                for p in problems
-            ),
-            2,
-        )
+            def tampered_load_yaml(path: Path, target=target, value=value) -> Any:
+                document = original_load_yaml(path)
+                if path.as_posix().endswith("workflows/pr-template.yml"):
+                    if target == "step":
+                        document["jobs"]["pr_template"]["steps"][1].update(value)
+                    else:
+                        document["jobs"]["pr_template"].update(value)
+                return document
+
+            with self.subTest(target=target, value=value):
+                with mock.patch.object(
+                    validate_repository, "load_yaml", side_effect=tampered_load_yaml
+                ):
+                    problems = validate_repository.validate_required_check_concurrency(
+                        PLUGIN_ROOT
+                    )
+                self.assertEqual(
+                    sum(
+                        "required pr-template check must use one unconditional producer"
+                        in p
+                        for p in problems
+                    ),
+                    2,
+                )
 
     def test_gate_selects_the_marked_specialized_template(self) -> None:
         workflow = validate_repository.load_yaml(
@@ -13518,6 +13527,38 @@ class MarkdownBodyPreflightDistributionTests(unittest.TestCase):
 
 
 class ReminderBodyPreflightContractTests(unittest.TestCase):
+    def test_reminder_contracts_reject_job_execution_controls(self) -> None:
+        self.assertFalse(validate_repository.job_execution_controls_are_safe(None))
+        self.assertFalse(
+            validate_repository.job_execution_controls_are_safe(
+                {"continue-on-error": True, "steps": []}
+            )
+        )
+        validators = (
+            validate_repository.validate_policy_drift_reminder_contract,
+            validate_repository.validate_community_health_tracking_contract,
+            validate_repository.validate_official_docs_tracking_contract,
+            validate_repository.validate_freshness_tracking_contract,
+        )
+        for validator in validators:
+            with self.subTest(validator=validator.__name__):
+                helper_name = (
+                    "job_execution_controls_are_safe"
+                    if validator
+                    is validate_repository.validate_policy_drift_reminder_contract
+                    else "freshness_job_execution_is_unconditional"
+                )
+                with mock.patch.object(
+                    validate_repository,
+                    helper_name,
+                    return_value=False,
+                ):
+                    problems = validator(PLUGIN_ROOT)
+                self.assertTrue(
+                    problems,
+                    f"{validator.__name__} did not enforce unconditional execution",
+                )
+
     def test_invalid_yaml_or_shell_and_hidden_issue_commands_are_rejected(self) -> None:
         report_path = "$RUNNER_TEMP/report.md"
 

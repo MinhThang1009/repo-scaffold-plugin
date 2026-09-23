@@ -99,6 +99,11 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   Markdown body file, run
   `python scripts/markdown_body_preflight.py --body-file <same-path>` and fail
   before the GitHub mutation when the checker rejects hard-wrapped prose.
+  Reminder jobs and reconciliation steps must not use `if`, `needs`,
+  `strategy`, `continue-on-error`, `environment`, `timeout-minutes`,
+  `background`, `parallel`, `wait`, `wait-all`, or `cancel` controls that can
+  skip or mask the preflight; the policy-drift job may retain its required
+  schedule condition, dependencies, and concurrency declaration.
   Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
   Since `workflow_dispatch` can target a branch or tag, every manually

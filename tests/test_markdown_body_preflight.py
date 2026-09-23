@@ -93,7 +93,9 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             "<https://example.test> is a complete paragraph.\n\n"
             "<div>inline HTML</div>\n\n"
             "<div>\nFirst line inside HTML\ncontinued inside HTML\n</div>\n\n"
+            "<custom-element>\nFirst custom line\ncontinued custom line\n</custom-element>\n\n"
             "    print(1)\n    print(2)\n\n"
+            "\tprint(3)\n\tprint(4)\n\n"
             "- Item\n```text\ncode\n```\nNew paragraph.\n"
         )
         self.assertEqual(_bundled_lines(accepted), ())

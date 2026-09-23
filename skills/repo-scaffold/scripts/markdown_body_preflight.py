@@ -24,6 +24,9 @@ HTML_BLOCK_START_PATTERN = re.compile(
     r"legend|li|link|main|menu|menuitem|nav|ol|p|pre|script|section|"
     r"summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t>/]|$)"
 )
+CUSTOM_HTML_BLOCK_START_PATTERN = re.compile(
+    r"^[ \t]{0,3}</?[A-Za-z][A-Za-z0-9]*[-:][A-Za-z0-9:-]*(?:[ \t>/]|$)"
+)
 HTML_BLOCK_TAG_PATTERN = re.compile(r"^[ \t]{0,3}<([A-Za-z][A-Za-z0-9-]*)\b")
 AUTOLINK_PATTERN = re.compile(r"^<(?:https?://|mailto:|[^ <>@]+@[^ <>@]+>)")
 MAX_BODY_FILE_BYTES = 1024 * 1024
@@ -175,7 +178,8 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             previous_is_prose = False
             previous_is_list_item = False
             continue
-        leading_spaces = len(line) - len(line.lstrip(" "))
+        expanded_line = line.expandtabs(4)
+        leading_spaces = len(expanded_line) - len(expanded_line.lstrip(" "))
         is_list_item = LIST_ITEM_PATTERN.match(line) is not None
         if indented_code:
             if leading_spaces >= 4:
@@ -195,8 +199,8 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             continue
         is_html_block = (
             HTML_BLOCK_START_PATTERN.match(line) is not None
-            and AUTOLINK_PATTERN.match(line) is None
-        )
+            or CUSTOM_HTML_BLOCK_START_PATTERN.match(line) is not None
+        ) and AUTOLINK_PATTERN.match(line) is None
         if is_html_block:
             tag_match = HTML_BLOCK_TAG_PATTERN.match(line)
             if tag_match is not None and not re.search(

@@ -979,6 +979,23 @@ def freshness_job_execution_is_unconditional(job: object) -> bool:
     )
 
 
+def job_execution_controls_are_safe(
+    job: object, *, allowed_job_controls: frozenset[str] = frozenset()
+) -> bool:
+    """Reject execution controls except for explicitly required job controls."""
+    if not isinstance(job, dict) or any(
+        control in job
+        for control in FRESHNESS_JOB_EXECUTION_CONTROLS - allowed_job_controls
+    ):
+        return False
+    steps = job.get("steps")
+    return isinstance(steps, list) and all(
+        isinstance(step, dict)
+        and not FRESHNESS_STEP_EXECUTION_CONTROLS.intersection(step)
+        for step in steps
+    )
+
+
 def freshness_execution_context_is_bash(workflow: object, job: object) -> bool:
     """Require the inspected freshness commands to execute as Bash on Ubuntu."""
     if not isinstance(workflow, dict) or not isinstance(job, dict):
@@ -4188,6 +4205,13 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
             ".github/workflows/ci.yml: policy drift reminder must check out "
             "the repository default branch with credentials disabled"
         ]
+    if not job_execution_controls_are_safe(
+        job, allowed_job_controls=frozenset({"concurrency", "if", "needs"})
+    ):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder job and steps must "
+            "execute unconditionally"
+        ]
     # The trusted-checkout contract above already requires a list for every
     # manually dispatched Issue-writing job.
     steps = job["steps"]
@@ -6949,8 +6973,8 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                 or set(jobs) != {"pr_template"}
                 or not isinstance(template_job, dict)
                 or template_job.get("name") != "pr-template"
-                or "if" in template_job
                 or template_job.get("timeout-minutes") != "5"
+                or set(template_job) != {"name", "runs-on", "timeout-minutes", "steps"}
                 or not isinstance(steps, list)
                 or len(steps) != 2
                 or not isinstance(checkout, dict)
@@ -6958,6 +6982,7 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                 != {"ref": expected_ref, "persist-credentials": "false"}
                 or not isinstance(run_step, dict)
                 or set(run_step) != {"name", "env", "shell", "run"}
+                or run_step.get("shell") != "bash"
                 or run_step.get("env")
                 != {
                     "EVENT_NAME": "${{ github.event_name }}",
@@ -7810,6 +7835,10 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
             or job.get("timeout-minutes") != "10"
         ):
             problems.append(f"{relative}: upstream-drift job contract is invalid")
+        elif not freshness_job_execution_is_unconditional(job):
+            problems.append(
+                f"{relative}: upstream-drift job and steps must execute unconditionally"
+            )
         elif not job_effective_issue_write(workflow, job):
             problems.append(
                 f"{relative}: upstream-drift job must have effective issues: write permission"
@@ -8460,6 +8489,11 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
         problems.append(
             ".github/workflows/official-docs.yml: reminder runs must serialize "
             "repository issue state"
+        )
+    if isinstance(job, dict) and not freshness_job_execution_is_unconditional(job):
+        problems.append(
+            ".github/workflows/official-docs.yml: audit job and steps must execute "
+            "unconditionally"
         )
     elif not job_effective_issue_write(workflow, job):
         problems.append(
