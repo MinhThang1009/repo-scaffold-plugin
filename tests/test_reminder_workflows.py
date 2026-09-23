@@ -139,7 +139,7 @@ class ReminderWorkflowTests(unittest.TestCase):
                 self.assertIn(preflight_line, script)
                 script = script.replace(
                     preflight_line,
-                    'printf "%s\\n" "First line" "continued line" >> "$report"\n'
+                    'printf "%s\\n" "" "First line" "continued line" >> "$report"\n'
                     + preflight_line,
                     1,
                 )

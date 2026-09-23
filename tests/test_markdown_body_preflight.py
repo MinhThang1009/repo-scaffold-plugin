@@ -75,10 +75,18 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             self.assertIn("hard-wrapped prose at line(s): 2", error_output.getvalue())
 
     def test_rejects_list_continuations_and_inline_comment_prose(self) -> None:
+        self.assertEqual(
+            _bundled_lines("Paragraph ends here.\n> New quoted paragraph.\n"),
+            (),
+        )
         for body, line in (
             ("- First list item\n  continuation\n", 2),
             ("First part <!-- inline note -->\ncontinuation\n", 2),
             ("First <!-- inline note --> visible\ncontinuation\n", 2),
+            (
+                "Paragraph ends here.\n> First quoted line\n> continued quote\n",
+                3,
+            ),
             ("> First quoted line\n> continued quoted line\n", 2),
             ("> First quoted line\ncontinued lazy quote line\n", 2),
         ):
@@ -126,6 +134,185 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         )
         self.assertEqual(_bundled_lines(code_spans_do_not_cross_block_headings), (4,))
 
+    def test_html_blocks_follow_commonmark_start_and_end_conditions(self) -> None:
+        cases = (
+            (
+                "inline HTML does not start a block",
+                "<span>First paragraph line\ncontinued paragraph line\n",
+                (2,),
+            ),
+            (
+                "type 1 block closes on any matching family tag",
+                "<script>\nraw content\n</style>\n\n"
+                "First paragraph line\ncontinued paragraph line\n",
+                (6,),
+            ),
+            (
+                "type 6 block ends at a blank line",
+                "<div>\nraw content\n\n"
+                "First paragraph line\ncontinued paragraph line\n",
+                (5,),
+            ),
+            (
+                "type 7 block ends at a blank line",
+                "<custom-widget>\nraw content\n\n"
+                "First paragraph line\ncontinued paragraph line\n",
+                (5,),
+            ),
+            (
+                "textarea is type 7 in GFM and ends at a blank line",
+                "<textarea>\nraw content\n\n"
+                "First paragraph line\ncontinued paragraph line\n",
+                (5,),
+            ),
+            (
+                "type 7 block cannot interrupt an open paragraph",
+                "First paragraph line\n<custom-widget>\ncontinued paragraph\n",
+                (2, 3),
+            ),
+            (
+                "fence markers inside raw HTML do not extend the HTML block",
+                "<div>\n```text\nraw content\n\n"
+                "First paragraph line\ncontinued paragraph line\n",
+                (6,),
+            ),
+            (
+                "processing instruction content is raw HTML",
+                "<?processor\nraw content\n?>\n",
+                (),
+            ),
+            (
+                "single-line raw-text HTML blocks do not leak parser state",
+                "<script></script>\nFirst prose line\ncontinued prose\n",
+                (3,),
+            ),
+            (
+                "declaration content is raw HTML",
+                "<!DOCTYPE html\nraw content\n>\n",
+                (),
+            ),
+            (
+                "CDATA content is raw HTML",
+                "<![CDATA[\nraw content\ncontinued raw content\n]]>\n",
+                (),
+            ),
+        )
+        for name, body, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(_bundled_lines(body), expected)
+
+    def test_only_gfm_tables_are_structural_table_rows(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                "First paragraph line\n| this is not a table\ncontinued prose\n"
+            ),
+            (2, 3),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Header one | Header two\n--- | ---\nValue one | Value two\n"
+            ),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> Header one | Header two\n> --- | ---\n> Value one | Value two\n"
+            ),
+            (),
+        )
+        escaped_and_code_pipes = _bundled_module().split_gfm_table_cells(
+            r"| escaped \| pipe | `literal|pipe` |"
+        )
+        self.assertEqual(len(escaped_and_code_pipes), 2)
+
+    def test_setext_headings_and_indented_list_like_code_remain_structural(
+        self,
+    ) -> None:
+        self.assertEqual(_bundled_lines("Section heading\n================\n"), ())
+        self.assertEqual(
+            _bundled_lines(
+                "A multi-line setext heading\nwith a second heading line\n===\n"
+            ),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("    - literal code line\n    continuation\n"), ()
+        )
+
+    def test_only_valid_thematic_breaks_are_structural(self) -> None:
+        self.assertEqual(
+            _bundled_lines("First paragraph line\n_-_\ncontinued prose\n"),
+            (2, 3),
+        )
+        self.assertEqual(
+            _bundled_lines("Paragraph\n\n- - -\n\nNew paragraph\ncontinued\n"),
+            (6,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "First paragraph line\n1234567890. not a list\ncontinued prose\n"
+            ),
+            (2, 3),
+        )
+
+    def test_markdown_parser_boundary_helpers_fail_closed(self) -> None:
+        module = _bundled_module()
+        self.assertEqual(module.html_block_start("</pre>"), (False, None))
+        self.assertEqual(module.html_block_start("<script></script>"), (True, None))
+        with self.assertRaisesRegex(ValueError, "unknown HTML block end rule"):
+            module.html_block_end_reached("unknown", "line")
+        self.assertEqual(module.setext_heading_line_indexes(["Title", "- "]), set())
+        self.assertEqual(module.setext_heading_line_indexes(["# Title", "==="]), set())
+        self.assertEqual(module.setext_heading_line_indexes(["==="]), set())
+
+        context = [(0, 2), (2, 4)]
+        is_item, context_exited = module.advance_list_context(
+            "   - sibling",
+            context,
+            previous_is_prose=False,
+            previous_is_list_item=False,
+        )
+        self.assertTrue(is_item)
+        self.assertFalse(context_exited)
+        self.assertEqual(context, [(0, 2), (3, 5)])
+
+        is_item, context_exited = module.advance_list_context(
+            "# New block",
+            context,
+            previous_is_prose=True,
+            previous_is_list_item=False,
+        )
+        self.assertFalse(is_item)
+        self.assertTrue(context_exited)
+        self.assertEqual(context, [])
+
+        context = [(0, 2), (3, 5)]
+        is_item, context_exited = module.advance_list_context(
+            "lazy continuation",
+            context,
+            previous_is_prose=True,
+            previous_is_list_item=False,
+        )
+        self.assertFalse(is_item)
+        self.assertFalse(context_exited)
+        self.assertEqual(context, [(0, 2), (3, 5)])
+
+    def test_fences_and_raw_html_end_when_their_list_container_ends(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                "- item\n  ```text\n  raw code\n\n"
+                "First paragraph line\ncontinued paragraph line\n"
+            ),
+            (6,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "- item\n  <script>\n  raw content\n\n"
+                "First paragraph line\ncontinued paragraph line\n"
+            ),
+            (6,),
+        )
+
     def test_large_body_preflight_work_is_bounded_by_body_size(self) -> None:
         body = "# Independent heading\n" * 45_000
 
@@ -158,8 +345,8 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         )
 
 
-def _bundled_lines(body: str) -> tuple[int, ...]:
-    """Expose the bundled parser for focused semantic cases."""
+def _bundled_module():
+    """Load the bundled parser for focused semantic cases."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -168,7 +355,12 @@ def _bundled_lines(body: str) -> tuple[int, ...]:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.hard_wrapped_prose_lines(body)
+    return module
+
+
+def _bundled_lines(body: str) -> tuple[int, ...]:
+    """Return wrapped lines from the bundled parser."""
+    return _bundled_module().hard_wrapped_prose_lines(body)
 
 
 if __name__ == "__main__":

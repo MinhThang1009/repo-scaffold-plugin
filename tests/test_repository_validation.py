@@ -6413,6 +6413,24 @@ class CodeScanningGateContractTests(unittest.TestCase):
 
 
 class PullRequestTemplateContractTests(unittest.TestCase):
+    def test_release_please_owner_exception_matches_workflow_contract(self) -> None:
+        contract_text = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "workflow-contracts.md"
+        ).read_text(encoding="utf-8")
+        contracts = " ".join(contract_text.split())
+
+        self.assertIn("Dependabot exemptions require a bot user type.", contracts)
+        self.assertIn("a head repository matching the base repository", contracts)
+        self.assertIn(
+            "a bot user type or the base repository owner's account", contracts
+        )
+        self.assertIn("must run Markdown body preflight first", contracts)
+        self.assertIn("a branch name alone is never an exemption", contracts)
+
     def test_agents_and_trusted_workflows_enforce_the_template_contract(self) -> None:
         workflow = PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
         asset = (

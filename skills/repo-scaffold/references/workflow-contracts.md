@@ -80,9 +80,12 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   `validate_scaffold.py`; obtain its runtime from `ci-toolchain.json`.
 - PR template: trust only the base SHA on `pull_request_target`; never execute
   PR head code, and require one trusted marker plus all required headings/items.
-  Any Dependabot or Release Please structural exemption must require a bot user
-  type and must run the Markdown body preflight first; a branch name alone is
-  never an exemption.
+  Dependabot exemptions require a bot user type. A Release Please exemption
+  requires its branch prefix, a head repository matching the base repository,
+  and either a bot user type or the base repository owner's account, because the
+  configured Release Please token can open PRs as that owner. Both exemptions
+  must run Markdown body preflight first; a branch name alone is never an
+  exemption.
 - Branch protection: required-check producers must be unique, executable, and
   event-compatible. A trusted `pull_request_target` producer may satisfy
   protected default-branch pull-request coverage only when its exact default
