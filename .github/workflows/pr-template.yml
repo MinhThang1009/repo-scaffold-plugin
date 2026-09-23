@@ -36,6 +36,9 @@ jobs:
           PR_USER: ${{ github.event.pull_request.user.login }}
           PR_USER_TYPE: ${{ github.event.pull_request.user.type }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_REPOSITORY: ${{ github.repository }}
+          PR_REPOSITORY_OWNER: ${{ github.repository_owner }}
         shell: bash
         run: |
           python - <<'PY'
@@ -80,9 +83,13 @@ jobs:
                   print("Pull request template validation is explicitly exempt for Dependabot.")
                   raise SystemExit(0)
               if (
-                  os.environ.get("PR_USER_TYPE") == "Bot"
-                  and os.environ.get("PR_HEAD_REF", "").startswith(
-                      "release-please--branches--"
+                  os.environ.get("PR_HEAD_REF", "").startswith("release-please--branches--")
+                  and os.environ.get("PR_HEAD_REPOSITORY", "").casefold()
+                  == os.environ.get("PR_REPOSITORY", "").casefold()
+                  and (
+                      os.environ.get("PR_USER_TYPE") == "Bot"
+                      or os.environ.get("PR_USER", "").casefold()
+                      == os.environ.get("PR_REPOSITORY_OWNER", "").casefold()
                   )
               ):
                   print("Pull request template validation is explicitly exempt for Release Please.")

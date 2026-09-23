@@ -104,6 +104,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   `background`, `parallel`, `wait`, `wait-all`, or `cancel` controls that can
   skip or mask the preflight; the policy-drift job may retain its required
   schedule condition, dependencies, and concurrency declaration.
+  Reconciliation shells must retain `errexit`, `nounset`, and `pipefail`; they
+  may not disable them before or after the body preflight.
   Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
   Since `workflow_dispatch` can target a branch or tag, every manually

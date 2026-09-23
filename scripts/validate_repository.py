@@ -1791,6 +1791,13 @@ def reminder_body_preflight_is_safe(text: str, report_path: str) -> bool:
     segments = shell_command_segments(reconciliation_script)
     if segments is None:
         return False
+    set_commands = [
+        shell_command_prefix(segment)
+        for segment in segments
+        if shell_command_prefix(segment) and shell_command_prefix(segment)[0] == "set"
+    ]
+    if set_commands != [["set", "-euo", "pipefail"]]:
+        return False
     expected_preflight = [
         "python",
         "scripts/markdown_body_preflight.py",
@@ -6673,6 +6680,7 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     steps = job.get("steps") if isinstance(job, dict) else None
     if (
         not isinstance(job, dict)
+        or set(job) != {"name", "runs-on", "timeout-minutes", "permissions", "steps"}
         or job.get("name") != "synchronize-versioned-inputs"
         or job.get("runs-on") != "ubuntu-latest"
         or job.get("timeout-minutes") != "15"
@@ -6888,6 +6896,238 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     return problems
 
 
+def pr_template_gate_body_check_is_safe(run_text: str) -> bool:
+    """Require the PR body check before bot exemptions and template validation."""
+    opening = "python - <<'PY'\n"
+    closing = "\nPY\n"
+    if not run_text.startswith(opening) or not run_text.endswith(closing):
+        return False
+    source = run_text[len(opening) : -len(closing)]
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+
+    def expression(source_text: str) -> ast.expr:
+        return ast.parse(source_text, mode="eval").body
+
+    def expression_matches(node: ast.expr, source_text: str) -> bool:
+        expected = expression(source_text)
+        return ast.dump(node) == ast.dump(expected)
+
+    def assignment_to(statement: ast.stmt, name: str) -> bool:
+        return (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id == name
+        )
+
+    def exits_with_zero(statement: ast.stmt) -> bool:
+        return (
+            isinstance(statement, ast.Raise)
+            and isinstance(statement.exc, ast.Call)
+            and isinstance(statement.exc.func, ast.Name)
+            and statement.exc.func.id == "SystemExit"
+            and len(statement.exc.args) == 1
+            and isinstance(statement.exc.args[0], ast.Constant)
+            and statement.exc.args[0].value == 0
+        )
+
+    def exemption_is_exact(
+        statement: ast.stmt, expected_test: str, expected_message: str
+    ) -> bool:
+        return (
+            isinstance(statement, ast.If)
+            and expression_matches(statement.test, expected_test)
+            and not statement.orelse
+            and len(statement.body) == 2
+            and isinstance(statement.body[0], ast.Expr)
+            and isinstance(statement.body[0].value, ast.Call)
+            and isinstance(statement.body[0].value.func, ast.Name)
+            and statement.body[0].value.func.id == "print"
+            and len(statement.body[0].value.args) == 1
+            and isinstance(statement.body[0].value.args[0], ast.Constant)
+            and statement.body[0].value.args[0].value == expected_message
+            and exits_with_zero(statement.body[1])
+        )
+
+    bot_test = (
+        'os.environ.get("PR_USER") == "dependabot[bot]" '
+        'and os.environ.get("PR_USER_TYPE") == "Bot"'
+    )
+    release_please_test = (
+        'os.environ.get("PR_HEAD_REF", "").startswith("release-please--branches--") '
+        'and os.environ.get("PR_HEAD_REPOSITORY", "").casefold() '
+        '== os.environ.get("PR_REPOSITORY", "").casefold() '
+        'and (os.environ.get("PR_USER_TYPE") == "Bot" '
+        'or os.environ.get("PR_USER", "").casefold() '
+        '== os.environ.get("PR_REPOSITORY_OWNER", "").casefold())'
+    )
+    merge_group_steps = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.If)
+        and expression_matches(statement.test, 'event_name == "merge_group"')
+    ]
+    unsupported_event_steps = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.If)
+        and expression_matches(statement.test, 'event_name != "pull_request_target"')
+    ]
+    if len(merge_group_steps) != 1 or len(unsupported_event_steps) != 1:
+        return False
+    merge_group = merge_group_steps[0]
+    if (
+        len(merge_group.body) != 2
+        or not isinstance(merge_group.body[0], ast.Expr)
+        or not isinstance(merge_group.body[0].value, ast.Call)
+        or not isinstance(merge_group.body[0].value.func, ast.Name)
+        or merge_group.body[0].value.func.id != "print"
+        or not exits_with_zero(merge_group.body[1])
+    ):
+        return False
+    if merge_group.lineno > unsupported_event_steps[0].lineno:
+        return False
+
+    body_try_blocks = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.Try)
+        and any(assignment_to(child, "body_preflight") for child in statement.body)
+    ]
+    if len(body_try_blocks) != 1:
+        return False
+    body_file_contexts = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.With)
+        and len(statement.items) == 1
+        and isinstance(statement.items[0].context_expr, ast.Call)
+        and isinstance(statement.items[0].context_expr.func, ast.Attribute)
+        and isinstance(statement.items[0].context_expr.func.value, ast.Name)
+        and statement.items[0].context_expr.func.value.id == "tempfile"
+        and statement.items[0].context_expr.func.attr == "NamedTemporaryFile"
+    ]
+    body_assignments = [
+        (index, statement)
+        for index, statement in enumerate(tree.body)
+        if assignment_to(statement, "body")
+    ]
+    if len(body_file_contexts) != 1 or len(body_assignments) != 1:
+        return False
+    body_file_context = body_file_contexts[0]
+    body_context_item = body_file_context.items[0]
+    if (
+        not isinstance(body_context_item.optional_vars, ast.Name)
+        or body_context_item.optional_vars.id != "body_file"
+        or not expression_matches(
+            body_context_item.context_expr,
+            "tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.md', delete=False)",
+        )
+        or len(body_file_context.body) != 1
+        or not isinstance(body_file_context.body[0], ast.Expr)
+        or not expression_matches(
+            body_file_context.body[0].value, "body_file.write(body)"
+        )
+        or not isinstance(body_assignments[0][1], ast.Assign)
+        or not expression_matches(
+            body_assignments[0][1].value, 'os.environ.get("PR_BODY", "")'
+        )
+        or body_assignments[0][0] >= tree.body.index(body_file_context)
+    ):
+        return False
+    body_try = body_try_blocks[0]
+    if (
+        body_try.handlers
+        or body_try.orelse
+        or len(body_try.finalbody) != 1
+        or not isinstance(body_try.finalbody[0], ast.Expr)
+        or not expression_matches(
+            body_try.finalbody[0].value,
+            "Path(body_file.name).unlink(missing_ok=True)",
+        )
+        or len(body_try.body) != 5
+        or not assignment_to(body_try.body[0], "body_preflight")
+        or not isinstance(body_try.body[0], ast.Assign)
+        or not expression_matches(
+            body_try.body[0].value,
+            'subprocess.run([sys.executable, "scripts/markdown_body_preflight.py", '
+            '"--body-file", body_file.name], capture_output=True, check=False, text=True)',
+        )
+    ):
+        return False
+    body_failure = body_try.body[1]
+    if (
+        not isinstance(body_failure, ast.If)
+        or not expression_matches(body_failure.test, "body_preflight.returncode != 0")
+        or body_failure.orelse
+        or len(body_failure.body) != 1
+        or not isinstance(body_failure.body[0], ast.Raise)
+        or not isinstance(body_failure.body[0].exc, ast.Call)
+        or not isinstance(body_failure.body[0].exc.func, ast.Name)
+        or body_failure.body[0].exc.func.id != "SystemExit"
+        or len(body_failure.body[0].exc.args) != 1
+        or not expression_matches(
+            body_failure.body[0].exc.args[0], "body_preflight.stderr"
+        )
+        or not exemption_is_exact(
+            body_try.body[2],
+            bot_test,
+            "Pull request template validation is explicitly exempt for Dependabot.",
+        )
+        or not exemption_is_exact(
+            body_try.body[3],
+            release_please_test,
+            "Pull request template validation is explicitly exempt for Release Please.",
+        )
+        or not assignment_to(body_try.body[4], "preflight")
+        or not isinstance(body_try.body[4], ast.Assign)
+        or not expression_matches(
+            body_try.body[4].value,
+            'subprocess.run([sys.executable, "scripts/pr_template_preflight.py", '
+            '"--title", title, "--body-file", body_file.name], '
+            "capture_output=True, check=False, text=True)",
+        )
+    ):
+        return False
+    all_subprocess_runs = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+        and node.func.attr == "run"
+    ]
+    if len(all_subprocess_runs) != 2:
+        return False
+
+    zero_exit_count = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+            if isinstance(node.exc.func, ast.Name) and node.exc.func.id == "SystemExit":
+                if (
+                    not node.exc.args
+                    or isinstance(node.exc.args[0], ast.Constant)
+                    and node.exc.args[0].value == 0
+                ):
+                    zero_exit_count += 1
+    exit_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            isinstance(node.func, ast.Name)
+            and node.func.id in {"exit", "quit"}
+            or isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"exit", "_exit"}
+        )
+    ]
+    return zero_exit_count == 3 and not exit_calls
+
+
 def validate_required_check_concurrency(repository_root: Path) -> list[str]:
     """Keep required checks non-cancelling and available to merge queues."""
     paths = (
@@ -6983,6 +7223,8 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                 or not isinstance(run_step, dict)
                 or set(run_step) != {"name", "env", "shell", "run"}
                 or run_step.get("shell") != "bash"
+                or not isinstance(run_text, str)
+                or not pr_template_gate_body_check_is_safe(run_text)
                 or run_step.get("env")
                 != {
                     "EVENT_NAME": "${{ github.event_name }}",
@@ -6992,6 +7234,9 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                     "PR_USER": "${{ github.event.pull_request.user.login }}",
                     "PR_USER_TYPE": "${{ github.event.pull_request.user.type }}",
                     "PR_HEAD_REF": "${{ github.event.pull_request.head.ref }}",
+                    "PR_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
+                    "PR_REPOSITORY": "${{ github.repository }}",
+                    "PR_REPOSITORY_OWNER": "${{ github.repository_owner }}",
                 }
                 or not isinstance(run_text, str)
                 or 'event_name == "merge_group"' not in run_text

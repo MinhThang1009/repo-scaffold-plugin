@@ -79,6 +79,8 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             ("- First list item\n  continuation\n", 2),
             ("First part <!-- inline note -->\ncontinuation\n", 2),
             ("First <!-- inline note --> visible\ncontinuation\n", 2),
+            ("> First quoted line\n> continued quoted line\n", 2),
+            ("> First quoted line\ncontinued lazy quote line\n", 2),
         ):
             with self.subTest(body=body):
                 result = self.run_preflight(SKILL_PREFLIGHT, body)
@@ -93,12 +95,43 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             "<https://example.test> is a complete paragraph.\n\n"
             "<div>inline HTML</div>\n\n"
             "<div>\nFirst line inside HTML\ncontinued inside HTML\n</div>\n\n"
+            '<svg>\n<circle cx="1" cy="1" />\n<circle cx="2" cy="2" />\n</svg>\n\n'
             "<custom-element>\nFirst custom line\ncontinued custom line\n</custom-element>\n\n"
+            "> ```text\n> quoted code line\n> continued code line\n> ```\n\n"
+            "> First quote.\n>\n> A separate quote paragraph.\n\n"
             "    print(1)\n    print(2)\n\n"
             "\tprint(3)\n\tprint(4)\n\n"
             "- Item\n```text\ncode\n```\nNew paragraph.\n"
         )
         self.assertEqual(_bundled_lines(accepted), ())
+        prose_after_code = (
+            "Literal ``` marker.\n```text\ncode\n```\n"
+            "First paragraph line.\ncontinued paragraph line.\n"
+        )
+        self.assertEqual(_bundled_lines(prose_after_code), (6,))
+        prose_after_comment = (
+            "Literal ``` marker.\n<!-- ``` hidden -->\n"
+            "First paragraph line.\ncontinued paragraph line.\n"
+        )
+        self.assertEqual(_bundled_lines(prose_after_comment), (4,))
+        code_spans_do_not_cross_paragraphs = (
+            "First paragraph has " + chr(96) + "\n\n"
+            "Second paragraph has " + chr(96) + "literal\nand continues here.\n"
+        )
+        self.assertEqual(_bundled_lines(code_spans_do_not_cross_paragraphs), (4,))
+        code_spans_do_not_cross_block_headings = (
+            "First paragraph has " + chr(96) + "\n"
+            "# Heading has " + chr(96) + "\n"
+            "Second paragraph line one.\nsecond paragraph line two.\n"
+        )
+        self.assertEqual(_bundled_lines(code_spans_do_not_cross_block_headings), (4,))
+
+    def test_large_body_preflight_work_is_bounded_by_body_size(self) -> None:
+        body = "# Independent heading\n" * 45_000
+
+        result = self.run_preflight(SKILL_PREFLIGHT, body)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_html_comment_content_does_not_change_following_prose_state(self) -> None:
         self.assertEqual(

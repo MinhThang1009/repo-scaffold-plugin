@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import json
 import os
 import re
@@ -867,6 +868,33 @@ class ActionPinSyncContractTests(unittest.TestCase):
             validate_repository.validate_action_pin_sync_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_synchronizer_job_cannot_disable_its_body_preflight(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
+        original_load_yaml = validate_repository.load_yaml
+        base = original_load_yaml(workflow_path)
+        for key, value in (
+            ("if", "false"),
+            ("continue-on-error", "true"),
+            ("needs", "missing-job"),
+            ("strategy", {"matrix": {"probe": [1]}}),
+        ):
+            candidate = copy.deepcopy(base)
+            candidate["jobs"]["synchronize"][key] = value
+
+            def load_candidate(path: Path, candidate: Any = candidate) -> Any:
+                return candidate if path == workflow_path else original_load_yaml(path)
+
+            with self.subTest(control=key):
+                with mock.patch.object(
+                    validate_repository, "load_yaml", side_effect=load_candidate
+                ):
+                    problems = validate_repository.validate_action_pin_sync_contract(
+                        PLUGIN_ROOT
+                    )
+                self.assertTrue(
+                    any("synchronizer job contract is invalid" in p for p in problems)
+                )
 
     def test_synchronizer_manual_dispatch_checks_out_default_branch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -6429,6 +6457,9 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "PR_USER: ${{ github.event.pull_request.user.login }}",
             "PR_USER_TYPE: ${{ github.event.pull_request.user.type }}",
             "PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}",
+            "PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}",
+            "PR_REPOSITORY: ${{ github.repository }}",
+            "PR_REPOSITORY_OWNER: ${{ github.repository_owner }}",
             "scripts/markdown_body_preflight.py",
             "scripts/pr_template_preflight.py",
             '"--body-file"',
@@ -6567,6 +6598,170 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     problems = validate_repository.validate_required_check_concurrency(
                         PLUGIN_ROOT
                     )
+                self.assertEqual(
+                    sum(
+                        "required pr-template check must use one unconditional producer"
+                        in p
+                        for p in problems
+                    ),
+                    2,
+                )
+
+    def test_pr_gate_body_check_rejects_exit_reordering_and_false_exemptions(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
+        )
+        run = workflow["jobs"]["pr_template"]["steps"][1]["run"]
+        early_exit = run.replace(
+            'if event_name != "pull_request_target":\n',
+            'if event_name != "pull_request_target":\n    raise SystemExit(0)\n',
+            1,
+        )
+        body_start = run.index("    body_preflight = subprocess.run(")
+        block_end = run.index('    if (\n        os.environ.get("PR_USER")')
+        body_check_block = run[body_start:block_end]
+        reordered = run[:body_start] + run[block_end:]
+        insertion = reordered.index("    preflight = subprocess.run(")
+        reordered = reordered[:insertion] + body_check_block + reordered[insertion:]
+        unconditional_exemption = run.replace(
+            "if (\n"
+            '        os.environ.get("PR_USER") == "dependabot[bot]"\n'
+            '        and os.environ.get("PR_USER_TYPE") == "Bot"\n'
+            "    ):",
+            "if True:",
+            1,
+        )
+        unchecked_body_file = run.replace(
+            "body_file.write(body)", 'body_file.write("")', 1
+        )
+        invalid_wrapper = run.replace("python - <<'PY'", "python3 - <<'PY'", 1)
+        invalid_python = run.replace(
+            'event_name == "merge_group":', 'event_name == "merge_group"', 1
+        )
+        missing_merge_group = run.replace(
+            'event_name == "merge_group"', 'event_name == "pull_request"', 1
+        )
+        invalid_merge_group_exit = run.replace(
+            "raise SystemExit(0)", "raise SystemExit(1)", 1
+        )
+        merge_start = run.index('if event_name == "merge_group":')
+        unsupported_start = run.index('if event_name != "pull_request_target":')
+        body_start = run.index('body = os.environ.get("PR_BODY", "")')
+        reordered_event_guards = (
+            run[:merge_start]
+            + run[unsupported_start:body_start]
+            + run[merge_start:unsupported_start]
+            + run[body_start:]
+        )
+        missing_body_check = run.replace(
+            "body_preflight = subprocess.run(",
+            "unbound_preflight = subprocess.run(",
+            1,
+        )
+        missing_body_file = run.replace(
+            "tempfile.NamedTemporaryFile(", "tempfile.TemporaryFile(", 1
+        )
+        extra_subprocess = run.replace("\nPY\n", "\nsubprocess.run(['true'])\nPY\n", 1)
+        unchecked_success_exit = run.replace(
+            "heading_pattern = re.compile(",
+            "os._exit(0)\nheading_pattern = re.compile(",
+            1,
+        )
+        fail_closed_raise = run.replace(
+            "heading_pattern = re.compile(",
+            "raise RuntimeError('fail closed')\nheading_pattern = re.compile(",
+            1,
+        )
+        for mutation, candidate in (
+            ("invalid wrapper", invalid_wrapper),
+            ("invalid Python", invalid_python),
+            ("missing merge group guard", missing_merge_group),
+            ("invalid merge group exit", invalid_merge_group_exit),
+            ("reordered event guards", reordered_event_guards),
+            ("missing body check", missing_body_check),
+            ("missing body file", missing_body_file),
+            ("extra subprocess", extra_subprocess),
+            ("early exit", early_exit),
+            ("body preflight after exemption", reordered),
+            ("unconditional bot exemption", unconditional_exemption),
+            ("body source not bound", unchecked_body_file),
+            ("unchecked success exit", unchecked_success_exit),
+        ):
+            with self.subTest(mutation=mutation):
+                self.assertFalse(
+                    validate_repository.pr_template_gate_body_check_is_safe(candidate)
+                )
+        self.assertTrue(
+            validate_repository.pr_template_gate_body_check_is_safe(fail_closed_raise)
+        )
+
+    def test_required_check_validator_rejects_early_exit_and_reordered_body_gate(
+        self,
+    ) -> None:
+        paths = (
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "pr-template.yml",
+        )
+        original_load_yaml = validate_repository.load_yaml
+        base = {path: original_load_yaml(path) for path in paths}
+
+        def modified_documents(mutation: str) -> list[str]:
+            candidates = {
+                path: copy.deepcopy(document) for path, document in base.items()
+            }
+            for candidate in candidates.values():
+                run = candidate["jobs"]["pr_template"]["steps"][1]["run"]
+                if mutation == "early-exit":
+                    run = run.replace(
+                        'if event_name != "pull_request_target":\n',
+                        'if event_name != "pull_request_target":\n'
+                        "    raise SystemExit(0)\n",
+                        1,
+                    )
+                elif mutation == "reordered-body-preflight":
+                    block_start = run.index("    body_preflight = subprocess.run(")
+                    block_end = run.index('    if (\n        os.environ.get("PR_USER")')
+                    preflight_block = run[block_start:block_end]
+                    run = run[:block_start] + run[block_end:]
+                    insertion = run.index("    preflight = subprocess.run(")
+                    run = run[:insertion] + preflight_block + run[insertion:]
+                elif mutation == "unconditional-bot-exemption":
+                    run = run.replace(
+                        'if (\n        os.environ.get("PR_USER") == "dependabot[bot]"\n'
+                        '        and os.environ.get("PR_USER_TYPE") == "Bot"\n'
+                        "    ):",
+                        "if True:",
+                        1,
+                    )
+                elif mutation == "body-source-not-bound":
+                    run = run.replace("body_file.write(body)", 'body_file.write("")', 1)
+                candidate["jobs"]["pr_template"]["steps"][1]["run"] = run
+
+            def load_candidate(path: Path) -> Any:
+                return candidates.get(path, original_load_yaml(path))
+
+            with mock.patch.object(
+                validate_repository, "load_yaml", side_effect=load_candidate
+            ):
+                return validate_repository.validate_required_check_concurrency(
+                    PLUGIN_ROOT
+                )
+
+        for mutation in (
+            "early-exit",
+            "reordered-body-preflight",
+            "unconditional-bot-exemption",
+            "body-source-not-bound",
+        ):
+            with self.subTest(mutation=mutation):
+                problems = modified_documents(mutation)
                 self.assertEqual(
                     sum(
                         "required pr-template check must use one unconditional producer"
@@ -6809,8 +7004,24 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 (
                     {
                         "EVENT_NAME": "pull_request_target",
+                        "PR_USER": "MinhThang1009",
+                        "PR_USER_TYPE": "User",
+                        "PR_HEAD_REF": "release-please--branches--main",
+                        "PR_HEAD_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                        "PR_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                        "PR_REPOSITORY_OWNER": "MinhThang1009",
+                    },
+                    "Pull request template validation is explicitly exempt for Release Please.",
+                ),
+                (
+                    {
+                        "EVENT_NAME": "pull_request_target",
+                        "PR_USER": "release-helper[bot]",
                         "PR_USER_TYPE": "Bot",
                         "PR_HEAD_REF": "release-please--branches--main",
+                        "PR_HEAD_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                        "PR_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                        "PR_REPOSITORY_OWNER": "MinhThang1009",
                     },
                     "Pull request template validation is explicitly exempt for Release Please.",
                 ),
@@ -6830,8 +7041,12 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             for environment in (
                 {"PR_USER": "dependabot[bot]", "PR_USER_TYPE": "Bot"},
                 {
-                    "PR_HEAD_REF": "release-please--branches--main",
-                    "PR_USER_TYPE": "Bot",
+                    "PR_USER": "ordinary-user",
+                    "PR_USER_TYPE": "User",
+                    "PR_HEAD_REF": "release-please--branches--spoofed",
+                    "PR_HEAD_REPOSITORY": "fork-user/repo-scaffold-plugin",
+                    "PR_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                    "PR_REPOSITORY_OWNER": "MinhThang1009",
                 },
             ):
                 with self.subTest(hard_wrapped_environment=environment):
@@ -6850,6 +7065,26 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     )
                     self.assertNotEqual(hard_wrapped_exempt.returncode, 0)
                     self.assertIn("hard-wrapped prose", hard_wrapped_exempt.stderr)
+
+            unverified_release_prefix = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_USER": "ordinary-user",
+                    "PR_USER_TYPE": "User",
+                    "PR_HEAD_REF": "release-please--branches--spoofed",
+                    "PR_BODY": "No required template structure.",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(unverified_release_prefix.returncode, 0)
+            self.assertIn(
+                "must select exactly one trusted template",
+                unverified_release_prefix.stderr,
+            )
 
             body_without_optional_items = re.sub(
                 r"\n## If applicable\n\n"
@@ -13617,7 +13852,9 @@ class ReminderBodyPreflightContractTests(unittest.TestCase):
                         "steps": [
                             {
                                 "name": "Reconcile issue",
-                                "run": base + " || true\ngh issue edit 1",
+                                "run": "set -euo pipefail\n"
+                                + base
+                                + " || true\ngh issue edit 1",
                             }
                         ]
                     }
@@ -13627,6 +13864,62 @@ class ReminderBodyPreflightContractTests(unittest.TestCase):
         self.assertFalse(
             validate_repository.reminder_body_preflight_is_safe(masked, report_path)
         )
+        hidden_issue = yaml.safe_dump(
+            {
+                "jobs": {
+                    "audit": {
+                        "steps": [
+                            {
+                                "name": "Reconcile issue",
+                                "run": "set -euo pipefail\n"
+                                + base
+                                + "\ngh pr issue list\ngh issue edit 1",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        self.assertFalse(
+            validate_repository.reminder_body_preflight_is_safe(
+                hidden_issue, report_path
+            )
+        )
+        for shell_reset in (
+            "set +e",
+            "set +o errexit",
+            "set -e +o errexit",
+            "set +u",
+        ):
+            reset_script = (
+                "set -euo pipefail\n"
+                + shell_reset
+                + "\n"
+                + base
+                + '\ngh issue edit 1\ngh issue create --body-file "'
+                + report_path
+                + '" --title t'
+            )
+            reset_workflow = yaml.safe_dump(
+                {
+                    "jobs": {
+                        "audit": {
+                            "steps": [
+                                {
+                                    "name": "Reconcile issue",
+                                    "run": reset_script,
+                                }
+                            ]
+                        }
+                    }
+                }
+            )
+            with self.subTest(shell_reset=shell_reset):
+                self.assertFalse(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        reset_workflow, report_path
+                    )
+                )
 
     def test_all_reminder_body_preflights_are_exact_and_before_mutations(self) -> None:
         report_paths = {
