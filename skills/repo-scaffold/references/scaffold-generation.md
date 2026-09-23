@@ -19,12 +19,15 @@ destination:
 | `assets/workflows/code-scanning-gate.yml` | `assets/code-scanning-allowlist.json` | `.github/code-scanning-allowlist.json` |
 | `assets/workflows/code-scanning-gate.yml` | `../../../scripts/check_code_scanning_alerts.py` | `scripts/check_code_scanning_alerts.py` |
 | `assets/workflows/community-health.yml` | `../scripts/check_community_health.py` | `scripts/check_community_health.py` |
+| `assets/workflows/community-health.yml` | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |
 | `assets/workflows/community-health.yml` | `assets/community-health-trackers.json` | `.github/community-health-trackers.json` |
 | `assets/workflows/documentation.yml` | `../scripts/ci_toolchain.py` | `scripts/ci_toolchain.py` |
 | `assets/workflows/documentation.yml` | `assets/ci-toolchain.json` | `.github/ci-toolchain.json` |
 | `assets/workflows/documentation.yml` | `../scripts/validate_scaffold.py` | `scripts/validate_scaffold.py` |
+| `assets/workflows/documentation.yml` | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |
 | `assets/workflows/documentation.yml` | `assets/requirements-docs.txt` | `requirements-docs.txt` |
 | `assets/workflows/freshness.yml` | `../scripts/audit_freshness.py` | `scripts/audit_freshness.py` |
+| `assets/workflows/freshness.yml` | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |
 | `assets/workflows/freshness.yml` | `assets/freshness-trackers.json` | `.github/freshness-trackers.json` |
 | `assets/workflows/freshness.yml` | `assets/requirements-docs.txt` | `requirements-docs.txt` |
 | `assets/workflows/freshness.yml` | `../scripts/ci_toolchain.py` | `scripts/ci_toolchain.py` |
@@ -32,6 +35,7 @@ destination:
 | `assets/workflows/freshness.yml` | `../scripts/sync_action_pins.py` | `scripts/sync_action_pins.py` |
 | `assets/workflows/labeler.yml` | `assets/labeler.yml` | `.github/labeler.yml` |
 | Pull-request preflight | `../scripts/pr_template_preflight.py` | `scripts/pr_template_preflight.py` |
+| Pull-request preflight dependency | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |
 
 Workflow installation is an explicit generation decision. For a verified
 GitHub.com project with a runnable test or lint command, install a configured CI

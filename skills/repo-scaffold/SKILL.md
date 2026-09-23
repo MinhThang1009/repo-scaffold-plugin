@@ -350,7 +350,11 @@ tracked workflow inventory at 500 files and 64 MiB, plus the distinct action
 repositories it resolves at 500, so a large or hostile repository cannot force
 unbounded local reads or upstream lookups.
 The action-pin synchronizer applies the same 500-file and 64 MiB aggregate
-workflow budget before preparing maintenance changes.
+workflow budget before preparing maintenance changes. Its PR body is kept in
+`.github/action-pin-sync-pr-body.md`, preflighted with
+`python scripts/markdown_body_preflight.py --body-file
+.github/action-pin-sync-pr-body.md`, and passed to the PR action through
+`body-path`.
 The tracker registry is also capped at 500 tracked input paths, including
 requirement locks. Each requirements file may contain at most 512 unique direct
 pins, and all tracked requirement sources and locks together at most 4096

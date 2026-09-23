@@ -17,6 +17,7 @@ ROOT_ENTRYPOINT = PLUGIN_ROOT / "scripts" / "pr_template_preflight.py"
 SCRIPT_PATH = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "pr_template_preflight.py"
 )
+sys.path.insert(0, str(SCRIPT_PATH.parent))
 SPEC = importlib.util.spec_from_file_location("pr_template_preflight", SCRIPT_PATH)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load pr_template_preflight.py")
@@ -126,7 +127,7 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
 
             structured = root / "structured.md"
             structured.write_text(
-                "- A list item\n  with an intentional continuation.\n\n"
+                "- A list item\n- Another list item.\n\n"
                 "| Name | Value |\n| --- | --- |\n| item | value |\n\n"
                 "```text\nfirst\nsecond\n```\n",
                 encoding="utf-8",
@@ -145,6 +146,32 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
         self.assertEqual(rejected, 1)
         self.assertIn("contains hard-wrapped prose at line(s): 2", errors.getvalue())
         self.assertEqual(accepted, 0)
+
+    def test_body_file_rejects_list_continuation_and_inline_comment_wraps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            for body in (
+                "- First list item\n  continuation\n",
+                "First part <!-- inline note -->\ncontinuation\n",
+                "First <!-- inline note --> visible\ncontinuation\n",
+            ):
+                body_file = root / "body.md"
+                body_file.write_text(body, encoding="utf-8")
+                errors = StringIO()
+                with redirect_stderr(errors):
+                    result = pr_template_preflight.main(
+                        [
+                            "--title",
+                            "fix: reject wrapped structure",
+                            "--body-file",
+                            str(body_file),
+                            "--repository-root",
+                            str(root),
+                        ]
+                    )
+                self.assertEqual(result, 1)
+                self.assertIn("hard-wrapped prose at line(s): 2", errors.getvalue())
 
     def test_body_file_parser_ignores_comments_and_rejects_invalid_input(self) -> None:
         self.assertEqual(

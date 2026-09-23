@@ -10,6 +10,12 @@ import stat
 import sys
 from pathlib import Path
 
+from markdown_body_preflight import (
+    MAX_BODY_FILE_BYTES as MAX_BODY_FILE_BYTES,
+    hard_wrapped_prose_lines as _shared_hard_wrapped_prose_lines,
+    read_body_file as _shared_read_body_file,
+)
+
 
 TITLE_TYPE_PATTERN = re.compile(r"^(?P<type>feat|fix|docs)(?:\([^()\r\n]+\))?!?: ")
 TEMPLATE_BY_TITLE_TYPE = {
@@ -22,13 +28,6 @@ TEMPLATE_MARKER_PATTERN = re.compile(
     r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",
     re.MULTILINE,
 )
-FENCED_CODE_START_PATTERN = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
-FENCED_CODE_END_PATTERN = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$")
-STRUCTURAL_MARKDOWN_LINE_PATTERN = re.compile(
-    r"^[ \t]*(?:#{1,6}[ \t]|[-+*][ \t]+|\d+[.)][ \t]+|>[ \t]?|\||"
-    r"(?:[-*_][ \t]*){3,}$|<)"
-)
-MAX_BODY_FILE_BYTES = 1024 * 1024
 
 
 def is_link_or_reparse(path: Path) -> bool:
@@ -156,67 +155,12 @@ def template_path(repository_root: Path, template: str) -> Path:
 
 def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
     """Return line numbers where ordinary Markdown prose is hard-wrapped."""
-    wrapped: list[int] = []
-    previous_is_prose = False
-    fence_character: str | None = None
-    fence_length = 0
-    comment_open = False
-
-    for line_number, raw_line in enumerate(markdown.splitlines(), start=1):
-        line = raw_line.rstrip("\r\n")
-        fence_start = FENCED_CODE_START_PATTERN.match(line)
-        if fence_character is not None:
-            fence_end = FENCED_CODE_END_PATTERN.match(line)
-            if (
-                fence_end is not None
-                and fence_end.group(1)[0] == fence_character
-                and len(fence_end.group(1)) >= fence_length
-            ):
-                fence_character = None
-                fence_length = 0
-            previous_is_prose = False
-            continue
-        if fence_start is not None:
-            fence_character = fence_start.group(1)[0]
-            fence_length = len(fence_start.group(1))
-            previous_is_prose = False
-            continue
-        if comment_open:
-            if "-->" in line:
-                comment_open = False
-            previous_is_prose = False
-            continue
-        if "<!--" in line:
-            if "-->" not in line[line.find("<!--") + 4 :]:
-                comment_open = True
-            previous_is_prose = False
-            continue
-
-        stripped = line.strip()
-        is_prose = (
-            bool(stripped) and STRUCTURAL_MARKDOWN_LINE_PATTERN.match(line) is None
-        )
-        if previous_is_prose and is_prose:
-            wrapped.append(line_number)
-        previous_is_prose = is_prose and not line.endswith(("  ", "\\"))
-
-    return tuple(wrapped)
+    return _shared_hard_wrapped_prose_lines(markdown)
 
 
 def read_body_file(path: Path) -> str:
     """Read a bounded regular UTF-8 body file without following links."""
-    if is_link_or_reparse(path) or not path.is_file():
-        raise ValueError(f"body file must be a regular non-linked file: {path}")
-    try:
-        payload = path.read_bytes()
-    except OSError as error:
-        raise ValueError(f"could not read body file {path}: {error}") from error
-    if len(payload) > MAX_BODY_FILE_BYTES:
-        raise ValueError(f"body file exceeds the {MAX_BODY_FILE_BYTES}-byte limit")
-    try:
-        return payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ValueError(f"body file is not valid UTF-8: {path}") from error
+    return _shared_read_body_file(path)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

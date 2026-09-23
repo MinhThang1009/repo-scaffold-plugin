@@ -29,6 +29,155 @@ if BASH is None and os.name == "nt":
 
 
 class ReminderWorkflowTests(unittest.TestCase):
+    @staticmethod
+    def install_body_preflight(root: Path, *, root_entrypoint: bool = False) -> None:
+        script = root / "scripts" / "markdown_body_preflight.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        bundled_script = (
+            ROOT / "skills" / "repo-scaffold" / "scripts" / "markdown_body_preflight.py"
+        )
+        if root_entrypoint:
+            shutil.copyfile(ROOT / "scripts" / "markdown_body_preflight.py", script)
+            bundled_destination = (
+                root / "skills" / "repo-scaffold" / "scripts" / script.name
+            )
+            bundled_destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(bundled_script, bundled_destination)
+        else:
+            shutil.copyfile(bundled_script, script)
+
+    def test_every_issue_body_writer_preflights_before_edit_or_create(self) -> None:
+        report_paths = {
+            ".github/workflows/ci.yml": "$report",
+            ".github/workflows/community-health.yml": "$RUNNER_TEMP/community-health.md",
+            ".github/workflows/freshness.yml": "$RUNNER_TEMP/freshness.md",
+            ".github/workflows/official-docs.yml": "$RUNNER_TEMP/official-docs.md",
+            "skills/repo-scaffold/assets/workflows/community-health.yml": "$RUNNER_TEMP/community-health.md",
+            "skills/repo-scaffold/assets/workflows/freshness.yml": "$RUNNER_TEMP/freshness.md",
+        }
+        for relative, report_path in report_paths.items():
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            scripts = [
+                step["run"]
+                for job in document["jobs"].values()
+                for step in job["steps"]
+                if "Reconcile" in step.get("name", "") and "issue" in step["name"]
+            ]
+            self.assertEqual(len(scripts), 1, relative)
+            script = scripts[0]
+            preflight = (
+                f'python scripts/markdown_body_preflight.py --body-file "{report_path}"'
+            )
+            with self.subTest(workflow=relative):
+                self.assertIn(preflight, script)
+                self.assertLess(script.index(preflight), script.index("gh issue edit"))
+                self.assertLess(
+                    script.index(preflight), script.index("gh issue create")
+                )
+
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
+    def test_hard_wrapped_issue_reports_fail_before_mutation(self) -> None:
+        cases = (
+            (
+                ".github/workflows/ci.yml",
+                "ci-policy-drift.md",
+                "repo-scaffold-ci-policy-drift",
+                True,
+            ),
+            (
+                ".github/workflows/community-health.yml",
+                "community-health.md",
+                "repo-scaffold-community-health-drift",
+                False,
+            ),
+            (
+                ".github/workflows/freshness.yml",
+                "freshness.md",
+                "repo-scaffold-freshness-audit",
+                False,
+            ),
+            (
+                ".github/workflows/official-docs.yml",
+                "official-docs.md",
+                "repo-scaffold-official-docs-audit",
+                False,
+            ),
+            (
+                "skills/repo-scaffold/assets/workflows/community-health.yml",
+                "community-health.md",
+                "repo-scaffold-community-health-drift",
+                False,
+            ),
+            (
+                "skills/repo-scaffold/assets/workflows/freshness.yml",
+                "freshness.md",
+                "repo-scaffold-freshness-audit",
+                False,
+            ),
+        )
+        stub = """gh() {
+  if [[ "$1" == api ]]; then printf '41\\n'; return 0; fi
+  printf 'MUTATION:%s\\n' "$2"
+}
+"""
+        for relative, report_name, marker, root_entrypoint in cases:
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            script = next(
+                step["run"]
+                for job in document["jobs"].values()
+                for step in job["steps"]
+                if "Reconcile" in step.get("name", "") and "issue" in step["name"]
+            )
+            if root_entrypoint:
+                preflight_line = (
+                    'python scripts/markdown_body_preflight.py --body-file "$report"\n'
+                )
+                self.assertIn(preflight_line, script)
+                script = script.replace(
+                    preflight_line,
+                    'printf "%s\\n" "First line" "continued line" >> "$report"\n'
+                    + preflight_line,
+                    1,
+                )
+            with self.subTest(workflow=relative):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.install_body_preflight(root, root_entrypoint=root_entrypoint)
+                    (root / report_name).write_text(
+                        f"<!-- {marker} -->\nFirst line\ncontinued line\n",
+                        encoding="utf-8",
+                    )
+                    environment = {
+                        **os.environ,
+                        "REPOSITORY": "synthetic/example",
+                        "GITHUB_REPOSITORY": "synthetic/example",
+                        "RUNNER_TEMP": ".",
+                        "CHECKER_EXIT": "1",
+                        "PYTHON_CANARY_RESULT": "failure",
+                        "TOOLCHAIN_CANARY_RESULT": "success",
+                        "RUN_URL": "https://github.com/synthetic/example/actions/runs/1",
+                        "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
+                    }
+                    result = subprocess.run(
+                        [str(BASH), "--noprofile", "--norc", "-s"],
+                        input=stub + script,
+                        cwd=root,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=15,
+                        check=False,
+                    )
+
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn("hard-wrapped prose", result.stderr)
+                self.assertNotIn("MUTATION:", result.stdout)
+
     def test_reminder_workflows_serialize_repository_issue_state(self) -> None:
         for relative in WORKFLOWS:
             document = yaml.load(
@@ -125,6 +274,7 @@ class ReminderWorkflowTests(unittest.TestCase):
             with self.subTest(workflow=relative):
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
+                    self.install_body_preflight(root)
                     (root / report).write_text("wrong-marker\n", encoding="utf-8")
                     environment = {
                         **os.environ,
@@ -180,6 +330,7 @@ class ReminderWorkflowTests(unittest.TestCase):
                 ):
                     with tempfile.TemporaryDirectory() as directory:
                         root = Path(directory)
+                        self.install_body_preflight(root)
                         for name, marker in (
                             ("freshness", "repo-scaffold-freshness-audit"),
                             (
@@ -254,6 +405,7 @@ class ReminderWorkflowTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            self.install_body_preflight(root)
             (root / "community-health.md").write_text(
                 "<!-- repo-scaffold-community-health-drift -->\n", encoding="utf-8"
             )
@@ -303,6 +455,7 @@ class ReminderWorkflowTests(unittest.TestCase):
             with self.subTest(workflow=relative):
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
+                    self.install_body_preflight(root)
                     (root / "freshness.md").write_text(
                         "<!-- repo-scaffold-freshness-audit -->\n",
                         encoding="utf-8",

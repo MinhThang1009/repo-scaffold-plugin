@@ -51,13 +51,6 @@ jobs:
               raise SystemExit(0)
           if event_name != "pull_request_target":
               raise SystemExit(f"Unsupported event for the pull request template gate: {event_name!r}.")
-          if os.environ.get("PR_USER") == "dependabot[bot]":
-              print("Pull request template validation is explicitly exempt for Dependabot.")
-              raise SystemExit(0)
-          if os.environ.get("PR_HEAD_REF", "").startswith("release-please--branches--"):
-              print("Pull request template validation is explicitly exempt for Release Please.")
-              raise SystemExit(0)
-
           body = os.environ.get("PR_BODY", "")
           title = os.environ.get("PR_TITLE", "")
           is_draft = os.environ.get("PR_IS_DRAFT", "true").lower() == "true"
@@ -66,6 +59,25 @@ jobs:
           ) as body_file:
               body_file.write(body)
           try:
+              body_preflight = subprocess.run(
+                  [
+                      sys.executable,
+                      "scripts/markdown_body_preflight.py",
+                      "--body-file",
+                      body_file.name,
+                  ],
+                  capture_output=True,
+                  check=False,
+                  text=True,
+              )
+              if body_preflight.returncode != 0:
+                  raise SystemExit(body_preflight.stderr)
+              if os.environ.get("PR_USER") == "dependabot[bot]":
+                  print("Pull request template validation is explicitly exempt for Dependabot.")
+                  raise SystemExit(0)
+              if os.environ.get("PR_HEAD_REF", "").startswith("release-please--branches--"):
+                  print("Pull request template validation is explicitly exempt for Release Please.")
+                  raise SystemExit(0)
               preflight = subprocess.run(
                   [
                       sys.executable,

@@ -40,6 +40,12 @@ MAX_ACTIONS_POLICY_ENTRIES = 256
 CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
 CODE_SCANNING_GATE_COMMAND = "scripts/check_code_scanning_alerts.py"
 FRESHNESS_AUDIT_COMMAND = "python scripts/audit_freshness.py"
+FRESHNESS_BODY_PREFLIGHT_COMMAND = (
+    "python",
+    "scripts/markdown_body_preflight.py",
+    "--body-file",
+    "$RUNNER_TEMP/freshness.md",
+)
 FRESHNESS_REMINDER_MARKER = "repo-scaffold-freshness-audit"
 FRESHNESS_REMINDER_REPOSITORY_OPTION = "--repo"
 FRESHNESS_REMINDER_BODY_FILE = "--body-file"
@@ -1531,13 +1537,24 @@ def freshness_shell_definitions_are_safe(command: str) -> bool:
             executable_token = command_tokens[executable_index]
             executable = executable_basename(executable_token)
             if (
-                "/" in executable_token
-                or "\\" in executable_token
-                or executable not in FRESHNESS_ALLOWED_SHELL_COMMANDS
-            ) and not (
-                executable == "python"
-                and command_tokens[executable_index : executable_index + 2]
-                == FRESHNESS_AUDIT_COMMAND.split()
+                (
+                    "/" in executable_token
+                    or "\\" in executable_token
+                    or executable not in FRESHNESS_ALLOWED_SHELL_COMMANDS
+                )
+                and not (
+                    executable == "python"
+                    and command_tokens[executable_index : executable_index + 2]
+                    == FRESHNESS_AUDIT_COMMAND.split()
+                )
+                and not (
+                    executable == "python"
+                    and command_tokens[
+                        executable_index : executable_index
+                        + len(FRESHNESS_BODY_PREFLIGHT_COMMAND)
+                    ]
+                    == list(FRESHNESS_BODY_PREFLIGHT_COMMAND)
+                )
             ):
                 return False
             command_body = command_tokens[executable_index:]
@@ -2247,6 +2264,37 @@ def freshness_command_order_is_valid(command: str) -> bool:
     return bool(audit_positions and api_positions and mutation_positions) and (
         max(audit_positions) < min(api_positions) < min(mutation_positions)
         and max(api_positions) < min(mutation_positions)
+    )
+
+
+def freshness_body_preflight_is_safe(command: str) -> bool:
+    """Require the exact freshness body preflight before edit or create."""
+    segments: list[list[str]] = []
+    for logical_line in shell_logical_lines(command):
+        line_segments = shell_command_segments(logical_line)
+        if line_segments is None:
+            return False
+        segments.extend(line_segments)
+    preflight_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if shell_command_prefix(segment) == list(FRESHNESS_BODY_PREFLIGHT_COMMAND)
+    ]
+    mutation_indices: list[int] = []
+    for index, segment in enumerate(segments):
+        tokens = shell_command_prefix(segment)
+        issue_positions = issue_subcommand_positions(tokens)
+        if issue_positions is None:
+            return False
+        if any(
+            position + 1 < len(tokens) and tokens[position + 1] in {"edit", "create"}
+            for position in issue_positions
+        ):
+            mutation_indices.append(index)
+    return (
+        len(preflight_indices) == 1
+        and len(mutation_indices) == 2
+        and preflight_indices[0] < min(mutation_indices)
     )
 
 
@@ -2964,6 +3012,7 @@ def is_freshness_reminder_workflow(text: str, source: Path) -> bool:
                 or not freshness_authentication_bindings_are_safe(document, job)
                 or not freshness_checker_result_binding_is_safe(document, job)
                 or not freshness_shell_definitions_are_safe(job_text)
+                or not freshness_body_preflight_is_safe(job_text)
                 or not freshness_checker_result_controls_reconciliation(job_text)
                 or not freshness_api_result_controls_issue_selection(job_text)
                 or not freshness_summary_output_is_safe(job_text)

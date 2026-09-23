@@ -122,6 +122,61 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
         )
 
+    def test_freshness_requires_body_preflight_before_issue_mutations(self) -> None:
+        preflight = (
+            "python scripts/markdown_body_preflight.py --body-file "
+            '"$RUNNER_TEMP/freshness.md"'
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_body_preflight_is_safe(
+                "echo 'unterminated"
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_body_preflight_is_safe(
+                "bash -c gh issue edit 1\n" + preflight
+            )
+        )
+        for relative in (
+            ".github/workflows/freshness.yml",
+            "skills/repo-scaffold/assets/workflows/freshness.yml",
+        ):
+            path = PLUGIN_ROOT / relative
+            original = path.read_text(encoding="utf-8")
+            document = workflow_installation_preflight.workflow_document(original, path)
+            job = document["jobs"]["audit"]
+            job_text = "\n".join(
+                step["run"]
+                for step in job["steps"]
+                if isinstance(step, dict) and isinstance(step.get("run"), str)
+            )
+            self.assertTrue(
+                workflow_installation_preflight.freshness_body_preflight_is_safe(
+                    job_text
+                ),
+                relative,
+            )
+            without_preflight = job_text.replace(preflight, "", 1)
+            self.assertFalse(
+                workflow_installation_preflight.freshness_body_preflight_is_safe(
+                    without_preflight
+                ),
+                relative,
+            )
+            delayed_preflight = without_preflight + "\n" + preflight
+            self.assertFalse(
+                workflow_installation_preflight.freshness_body_preflight_is_safe(
+                    delayed_preflight
+                ),
+                relative,
+            )
+            self.assertFalse(
+                workflow_installation_preflight.is_freshness_reminder_workflow(
+                    original.replace(f"          {preflight}\n", "", 1), path
+                ),
+                relative,
+            )
+
     def test_freshness_requires_preparation_before_audit(self) -> None:
         for relative in (
             ".github/workflows/freshness.yml",
@@ -966,6 +1021,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          fi\n"
                 "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
                 '          grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n'
+                '          python scripts/markdown_body_preflight.py --body-file "$RUNNER_TEMP/freshness.md"\n'
                 "          if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then\n"
                 "            printf 'Freshness checker returned an unexpected exit status: %s\\n' \"$CHECKER_EXIT\" >&2\n"
                 "            exit 1\n"
@@ -1166,6 +1222,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "          fi\n"
         )
         body_command = (
+            '          python scripts/markdown_body_preflight.py --body-file "$RUNNER_TEMP/freshness.md"\n'
             "          if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
             "            if (( ${#issue_numbers[@]} == 1 )); then\n"
             '              gh issue close "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --comment clean\n'

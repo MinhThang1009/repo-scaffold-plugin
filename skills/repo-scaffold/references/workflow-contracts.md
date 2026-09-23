@@ -67,7 +67,11 @@ branch or tag, its checkout must pin the synchronizer to
 `persist-credentials: false` before running repository code; the PAT-backed PR
 mutation must never consume code from the selected ref. Its concurrency group
 must be repository-scoped and non-cancelling because every run updates the same
-maintenance branch.
+maintenance branch. Its static PR body must live at
+`.github/action-pin-sync-pr-body.md`, pass
+`python scripts/markdown_body_preflight.py --body-file
+.github/action-pin-sync-pr-body.md`, and be supplied to the action with
+`body-path` so the checked file is the file sent to GitHub.
 
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.
@@ -88,7 +92,11 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   valid manual trigger shape. An empty `workflow_dispatch` is allowed; when
   inputs are declared, it must contain at most 25 named input mappings using
   only supported fields and input types. Maintain one idempotent issue when
-  Issues are enabled. Serialize each reminder's shared
+  Issues are enabled. Before every Issue `create` or `edit` that passes a
+  Markdown body file, run
+  `python scripts/markdown_body_preflight.py --body-file <same-path>` and fail
+  before the GitHub mutation when the checker rejects hard-wrapped prose.
+  Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
   Since `workflow_dispatch` can target a branch or tag, every manually
   dispatched Issue-writing reminder must check out

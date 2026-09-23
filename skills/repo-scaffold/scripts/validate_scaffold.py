@@ -20,6 +20,8 @@ from markdown_it.rules_inline.backticks import backtick as parse_backtick
 from markdown_it.rules_inline.state_inline import StateInline
 from markdown_it.token import Token
 
+from markdown_body_preflight import hard_wrapped_prose_lines
+
 
 SKIPPED_DIRECTORIES = {
     ".git",
@@ -850,6 +852,12 @@ def validate_pull_request_templates(repository_root: Path) -> list[str]:
             problems.append(problem)
             continue
         assert text is not None
+        wrapped_lines = hard_wrapped_prose_lines(text)
+        if wrapped_lines:
+            lines = ", ".join(str(number) for number in wrapped_lines)
+            problems.append(
+                f"{relative}: template contains hard-wrapped prose at line(s): {lines}"
+            )
         if not text.strip():
             problems.append(f"{relative}: template must be nonempty")
         if not re.search(r"(?m)^\s*[-*+]\s+\[ \]\s+\S", text):
@@ -894,7 +902,10 @@ def validate_template_assets(template_root: Path) -> list[str]:
             template_root, template_directory=template_root / "ISSUE_TEMPLATE"
         )
     )
-    pull_templates = [("default", template_root / "PULL_REQUEST_TEMPLATE.md")]
+    pull_templates = [
+        ("default", template_root / "PULL_REQUEST_TEMPLATE.md"),
+        ("default", template_root / "PULL_REQUEST_TEMPLATE.vi.md"),
+    ]
     for directory_name in ("PULL_REQUEST_TEMPLATE", "PULL_REQUEST_TEMPLATE.vi"):
         template_directory = template_root / directory_name
         if path_has_link_or_reparse(template_directory, template_root):
@@ -940,6 +951,10 @@ def validate_template_assets(template_root: Path) -> list[str]:
             problems.append(problem)
             continue
         assert text is not None
+        wrapped_lines = hard_wrapped_prose_lines(text)
+        if wrapped_lines:
+            lines = ", ".join(str(number) for number in wrapped_lines)
+            problems.append(f"{label} contains hard-wrapped prose at line(s): {lines}")
         if marker_pattern.findall(text) != [template_id]:
             problems.append(
                 f"{label} must contain exactly one matching repo-scaffold template marker"

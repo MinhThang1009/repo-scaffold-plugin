@@ -93,6 +93,7 @@ jobs:
             fi
             exit 0
           fi
+          python scripts/markdown_body_preflight.py --body-file "$RUNNER_TEMP/freshness.md"
           if (( ${#issue_numbers[@]} == 1 )); then
             gh issue edit "${issue_numbers[0]}" \
               --repo "github.com/$GITHUB_REPOSITORY" \

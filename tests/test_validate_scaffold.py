@@ -19,6 +19,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "validate_scaffold.py"
 )
+sys.path.insert(0, str(SCRIPT_PATH.parent))
 SPEC = importlib.util.spec_from_file_location(
     "skills.repo-scaffold.scripts.validate_scaffold", SCRIPT_PATH
 )
@@ -1130,6 +1131,24 @@ body:
                 ],
             )
 
+    def test_pull_request_template_rejects_hard_wrapped_prose(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / ".github" / "PULL_REQUEST_TEMPLATE.md"
+            template.parent.mkdir(parents=True)
+            template.write_text(
+                "- [ ] Verify the change\n\nFirst line of prose\ncontinued prose\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE.md: template contains hard-wrapped "
+            "prose at line(s): 4",
+            problems,
+        )
+
     def test_pull_request_template_discovery_checks_all_supported_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1363,6 +1382,37 @@ body:
                     "one optional checklist section",
                 ],
             )
+
+    def test_template_assets_reject_hard_wrapped_prose(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            header_asset = (
+                PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "README-header.md"
+            )
+            shutil.copy2(header_asset, root / "README-header.md")
+            (root / "PULL_REQUEST_TEMPLATE.md").write_text(
+                "<!-- repo-scaffold:pr-template=default -->\n\n"
+                "First line of prose\ncontinued prose\n\n"
+                "- [ ] Verify the change\n",
+                encoding="utf-8",
+            )
+            (root / "PULL_REQUEST_TEMPLATE.vi.md").write_text(
+                "<!-- repo-scaffold:pr-template=default -->\n\n"
+                "Dòng đầu tiên\ndòng tiếp theo\n\n"
+                "- [ ] Xác minh thay đổi\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_scaffold.validate_template_assets(root)
+
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE.md asset contains hard-wrapped prose at line(s): 4",
+            problems,
+        )
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE.vi.md asset contains hard-wrapped prose at line(s): 4",
+            problems,
+        )
 
     def test_linked_template_boundaries_are_reported_without_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
