@@ -65,7 +65,7 @@ ISSUE_FORM_INPUT_TYPES = {
 }
 ISSUE_FORM_BODY_KEYS = {"attributes", "id", "type", "validations"}
 PULL_REQUEST_TEMPLATE_LOCATIONS = (Path("."), Path("docs"), Path(".github"))
-PULL_REQUEST_TEMPLATE_EXTENSIONS = {".md", ".txt"}
+PULL_REQUEST_TEMPLATE_EXTENSIONS = {".md", ".markdown", ".txt"}
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
