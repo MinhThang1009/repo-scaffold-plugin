@@ -411,6 +411,19 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(
             module.strip_blockquote_markers("    > body"), ("    > body", 0)
         )
+        html_block_lines: set[int] = set()
+        module.hard_wrapped_prose_lines(
+            "<pre>\n## hidden heading\n</pre>\n\n"
+            "<div>\n- [ ] hidden checklist\n\n## visible heading\n",
+            html_block_line_indexes=html_block_lines,
+        )
+        self.assertEqual(html_block_lines, {1, 2, 3, 5, 6, 7})
+        list_html_block_lines: set[int] = set()
+        module.hard_wrapped_prose_lines(
+            "- item\n  <pre>\ncontinued prose outside the list\n",
+            html_block_line_indexes=list_html_block_lines,
+        )
+        self.assertEqual(list_html_block_lines, {2})
         tick = chr(96)
         opening = f"opening {tick} before <!-- note -->\n"
         self.assertIsNone(

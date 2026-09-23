@@ -929,8 +929,12 @@ def backtick_run_lengths_by_line(
     return indexed, group_ids
 
 
-def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
-    """Return line numbers where ordinary Markdown prose is hard-wrapped."""
+def hard_wrapped_prose_lines(
+    markdown: str,
+    *,
+    html_block_line_indexes: set[int] | None = None,
+) -> tuple[int, ...]:
+    """Return wrapped-prose lines and optionally collect raw HTML block lines."""
     wrapped: list[int] = []
     previous_is_prose = False
     previous_is_list_item = False
@@ -975,6 +979,19 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
         line, quote_depth = strip_blockquote_markers(raw_line.rstrip("\r\n"))
         source_line = line
         html_tag_spans = html_tag_spans_by_line[line_index]
+        if html_block is not None and html_block_line_indexes is not None:
+            raw_expanded_line = line.expandtabs(4)
+            raw_leading_spaces = len(raw_expanded_line) - len(
+                raw_expanded_line.lstrip(" ")
+            )
+            _end_rule, start_quote_depth, list_indent = html_block
+            list_container_ended = (
+                list_indent is not None
+                and not is_gfm_blank_line(line)
+                and raw_leading_spaces < list_indent
+            )
+            if quote_depth >= start_quote_depth and not list_container_ended:
+                html_block_line_indexes.add(line_number)
         group_run_counts = future_run_counts[group_id]
         for run_length in run_lengths_by_line[line_index]:
             group_run_counts[run_length] -= 1
@@ -1010,6 +1027,8 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
                 html_block = None
                 inline_code_length = None
             else:
+                if html_block_line_indexes is not None:
+                    html_block_line_indexes.add(line_index + 1)
                 ended = html_block_end_reached(end_rule, line)
                 if ended:
                     html_block = None
@@ -1081,6 +1100,8 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             allow_type_7=not (previous_is_prose or previous_is_list_item),
         )
         if starts_html_block:
+            if html_block_line_indexes is not None:
+                html_block_line_indexes.add(line_index + 1)
             if new_html_end_rule is not None:
                 html_block = (new_html_end_rule, quote_depth, list_indent)
             previous_is_prose = False

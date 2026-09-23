@@ -6481,8 +6481,8 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "scripts/markdown_body_preflight.py",
             "scripts/pr_template_preflight.py",
             '"--body-file"',
-            'Path(".github/PULL_REQUEST_TEMPLATE.md")',
-            'Path(".github/PULL_REQUEST_TEMPLATE")',
+            "from pr_template_preflight import template_catalog",
+            'template_paths = template_catalog(Path("."))',
             "repo-scaffold:pr-template=",
             "repo-scaffold:required-checklist:start",
             "repo-scaffold:optional-checklist:start",
@@ -6837,6 +6837,16 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+            cr_only_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": feature_body.replace("\n", "\r")},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(cr_only_result.returncode, 0, cr_only_result.stderr)
+
             hard_wrapped_result = subprocess.run(
                 [sys.executable, "-c", script],
                 cwd=root,
@@ -7174,6 +7184,18 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     "<!-- repo-scaffold:pr-template=feature -->\n\n"
                     f"<!--\n{feature_payload}\n-->\n"
                 ),
+                "raw HTML block": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    f"<pre>\n{feature_payload}\n</pre>\n"
+                ),
+                "block HTML": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    "<div>\n"
+                    + "\n".join(
+                        line for line in feature_payload.splitlines() if line.strip()
+                    )
+                    + "\n</div>\n"
+                ),
             }
             for hiding_method, hidden_body in hidden_content_bodies.items():
                 with self.subTest(hiding_method=hiding_method):
@@ -7190,6 +7212,104 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                         "must contain exactly one required checklist section",
                         hidden_result.stderr,
                     )
+
+    def test_gate_discovers_focused_templates_with_uppercase_md_extension(self) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
+        )
+        run = workflow["jobs"]["pr_template"]["steps"][-1]["run"]
+        script = run.split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            templates = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            templates.mkdir(parents=True)
+            for name in ("markdown_body_preflight.py", "pr_template_preflight.py"):
+                shutil.copy2(
+                    PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / name,
+                    scripts / name,
+                )
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+                root / ".github" / "PULL_REQUEST_TEMPLATE.md",
+            )
+            security_template = templates / "security.MD"
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md",
+                security_template,
+            )
+
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": security_template.read_text(encoding="utf-8"),
+                    "PR_TITLE": "chore: check case-insensitive template extension",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gate_uses_generated_root_preflight_scripts_without_skill_source(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
+        )
+        run = workflow["jobs"]["pr_template"]["steps"][-1]["run"]
+        script = run.split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            templates = root / ".github"
+            templates.mkdir()
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "markdown_body_preflight.py",
+                scripts / "markdown_body_preflight.py",
+            )
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "pr_template_preflight.py",
+                scripts / "pr_template_preflight.py",
+            )
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+                templates / "PULL_REQUEST_TEMPLATE.md",
+            )
+            shutil.copytree(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE",
+                templates / "PULL_REQUEST_TEMPLATE",
+            )
+            feature_body = (
+                templates / "PULL_REQUEST_TEMPLATE" / "feature.md"
+            ).read_text(encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": feature_body,
+                    "PR_TITLE": "feat: use generated preflight scripts",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_workflow_never_checks_out_or_executes_the_pull_request_head(self) -> None:
         workflow = (

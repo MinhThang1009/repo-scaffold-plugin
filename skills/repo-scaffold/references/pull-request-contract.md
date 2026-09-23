@@ -16,6 +16,9 @@ needs a focused review. Preserve exactly one
 `<!-- repo-scaffold:pr-template=<id> -->` marker, every required heading, and
 every required-checklist item. The optional checklist is guidance: include only
 applicable items.
+The gate ignores fenced code, comments, and raw HTML blocks when checking for
+required headings and checklist items; hidden content cannot satisfy that
+structure contract.
 After preparing the UTF-8 body file, rerun the preflight with
 `--body-file <path>` to reject hard-wrapped prose before the GitHub mutation.
 Template discovery scans at most 10,000 entries in each candidate directory and

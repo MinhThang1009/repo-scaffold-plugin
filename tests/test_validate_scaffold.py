@@ -1371,7 +1371,7 @@ body:
                 root / "pull_request_template.TXT",
                 root / "docs" / "pull_request_template" / "focused.txt",
                 root / ".github" / "PULL_REQUEST_TEMPLATE" / "lowercase.MD",
-                root / "docs" / "PULL_REQUEST_TEMPLATE" / "focused.markdown",
+                root / "docs" / "pull_request_template" / "focused.markdown",
             ]
             for path in paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
