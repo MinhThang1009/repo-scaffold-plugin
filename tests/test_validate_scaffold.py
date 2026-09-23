@@ -152,6 +152,17 @@ class ReadmeContractTests(unittest.TestCase):
             validate_scaffold.validate_readme_text(no_tagline),
         )
 
+    def test_unicode_line_separator_does_not_create_a_header_tagline(self) -> None:
+        no_tagline = readme().replace(
+            "# Example\n\nA real project tagline.\n\n",
+            "# Example\u2028A fake tagline.\n\n",
+        )
+
+        self.assertIn(
+            "README.md: centered header must contain a nonempty tagline",
+            validate_scaffold.validate_readme_text(no_tagline),
+        )
+
     def test_requires_numbered_sections_and_restricts_unnumbered_h2s(self) -> None:
         header_only = readme(section_count=1).split("## Contents", maxsplit=1)[0]
         self.assertIn(
@@ -1233,6 +1244,80 @@ body:
             problems,
         )
 
+    def test_pull_request_template_discovery_caps_catalog_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            catalog.mkdir(parents=True)
+            for index in range(
+                validate_scaffold.MAX_FOCUSED_PULL_REQUEST_TEMPLATES + 1
+            ):
+                (catalog / f"extra-{index:03}.md").write_text(
+                    "- [ ] Verify the change\n", encoding="utf-8"
+                )
+
+            problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE: PR template inventory exceeds "
+            f"{validate_scaffold.MAX_FOCUSED_PULL_REQUEST_TEMPLATES} focused templates",
+            problems,
+        )
+
+    def test_pull_request_template_discovery_deduplicates_candidate_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            github = root / ".github"
+            github.mkdir()
+            default = github / "PULL_REQUEST_TEMPLATE.md"
+            default.write_text("- [ ] Verify the change\n", encoding="utf-8")
+
+            def duplicate_default(parent: Path, _repository_root: Path) -> list[Path]:
+                return [default, default] if parent == github else []
+
+            with mock.patch.object(
+                validate_scaffold,
+                "bounded_template_directory_entries",
+                side_effect=duplicate_default,
+            ):
+                templates = validate_scaffold.pull_request_templates(root)
+
+        self.assertEqual(templates, [default])
+
+    def test_pull_request_template_discovery_bounds_raw_catalog_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            catalog.mkdir(parents=True)
+            original_iterdir = Path.iterdir
+
+            def many_unrelated_entries(path: Path):
+                if path == catalog:
+                    return (
+                        catalog / f"asset-{index}.bin"
+                        for index in range(
+                            validate_scaffold.MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES + 1
+                        )
+                    )
+                return original_iterdir(path)
+
+            with mock.patch.object(Path, "iterdir", new=many_unrelated_entries):
+                with self.assertRaisesRegex(ValueError, "directory scan exceeds"):
+                    validate_scaffold.pull_request_templates(root)
+
+            def denied_catalog(path: Path):
+                if path == catalog:
+                    raise PermissionError("denied")
+                return original_iterdir(path)
+
+            with mock.patch.object(Path, "iterdir", new=denied_catalog):
+                problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE: could not scan template directory: denied",
+            problems,
+        )
+
     def test_pull_request_template_discovery_checks_all_supported_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1249,6 +1334,10 @@ body:
             for path in paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("- [ ] Verify the change\n", encoding="utf-8")
+            unsupported_asset = (
+                root / ".github" / "PULL_REQUEST_TEMPLATE" / "diagram.png"
+            )
+            unsupported_asset.write_bytes(b"\x89PNG\r\n\x1a\n")
 
             self.assertEqual(
                 validate_scaffold.pull_request_templates(root), sorted(paths)

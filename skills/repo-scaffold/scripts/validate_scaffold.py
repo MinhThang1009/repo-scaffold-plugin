@@ -23,6 +23,7 @@ from markdown_it.token import Token
 from markdown_body_preflight import (
     MAX_BODY_FILE_BYTES as MAX_MARKDOWN_FILE_BYTES,
     hard_wrapped_prose_lines,
+    split_gfm_lines,
 )
 
 
@@ -66,6 +67,8 @@ ISSUE_FORM_INPUT_TYPES = {
 ISSUE_FORM_BODY_KEYS = {"attributes", "id", "type", "validations"}
 PULL_REQUEST_TEMPLATE_LOCATIONS = (Path("."), Path("docs"), Path(".github"))
 PULL_REQUEST_TEMPLATE_EXTENSIONS = {".md", ".markdown", ".txt"}
+MAX_FOCUSED_PULL_REQUEST_TEMPLATES = 128
+MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES = 10_000
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -526,7 +529,7 @@ def validate_readme_text(text: str, *, label: str = "README.md") -> list[str]:
         problems.append(f"{label}: H1 must be inside the centered header")
     tagline_lines = [
         line.strip()
-        for line in header.splitlines()
+        for line in split_gfm_lines(header)
         if line.strip()
         and not line.lstrip().startswith(("#", "![", "[![", "<!--", "-->", "<"))
     ]
@@ -839,16 +842,52 @@ def validate_issue_forms(
     return problems
 
 
+def bounded_template_directory_entries(
+    directory: Path, repository_root: Path
+) -> list[Path]:
+    """Return a bounded directory inventory for PR-template discovery."""
+    relative = directory.relative_to(repository_root).as_posix()
+    entries: list[Path] = []
+    try:
+        for entry in directory.iterdir():
+            if len(entries) >= MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES:
+                raise ValueError(
+                    f"{relative}: template directory scan exceeds "
+                    f"{MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES} entries"
+                )
+            entries.append(entry)
+    except OSError as error:
+        raise ValueError(
+            f"{relative}: could not scan template directory: {error}"
+        ) from error
+    return entries
+
+
 def pull_request_templates(repository_root: Path) -> list[Path]:
     """Return GitHub-supported single and multi-template Markdown paths."""
     candidates: set[Path] = set()
+    focused_candidates: set[Path] = set()
+
+    def add_candidate(path: Path, *, focused: bool = False) -> None:
+        if path in candidates:
+            return
+        if focused and len(focused_candidates) >= MAX_FOCUSED_PULL_REQUEST_TEMPLATES:
+            relative = path.parent.relative_to(repository_root).as_posix()
+            raise ValueError(
+                f"{relative}: PR template inventory exceeds "
+                f"{MAX_FOCUSED_PULL_REQUEST_TEMPLATES} focused templates"
+            )
+        candidates.add(path)
+        if focused:
+            focused_candidates.add(path)
+
     for location in PULL_REQUEST_TEMPLATE_LOCATIONS:
         parent = repository_root / location
         if location != Path(".") and path_has_link_or_reparse(parent, repository_root):
             continue
         if not parent.is_dir():
             continue
-        for entry in parent.iterdir():
+        for entry in bounded_template_directory_entries(parent, repository_root):
             if (
                 Path(entry.name).stem.casefold() == "pull_request_template"
                 and Path(entry.name).suffix.casefold()
@@ -857,20 +896,17 @@ def pull_request_templates(repository_root: Path) -> list[Path]:
                     path_has_link_or_reparse(entry, repository_root) or entry.is_file()
                 )
             ):
-                candidates.add(entry)
+                add_candidate(entry)
             if entry.name.casefold() != "pull_request_template":
                 continue
             if path_has_link_or_reparse(entry, repository_root) or not entry.is_dir():
                 continue
-            candidates.update(
-                template
-                for template in entry.iterdir()
-                if template.suffix.casefold() in PULL_REQUEST_TEMPLATE_EXTENSIONS
-                and (
+            for template in bounded_template_directory_entries(entry, repository_root):
+                if template.suffix.casefold() in PULL_REQUEST_TEMPLATE_EXTENSIONS and (
                     path_has_link_or_reparse(template, repository_root)
                     or template.is_file()
-                )
-            )
+                ):
+                    add_candidate(template, focused=True)
     return sorted(candidates)
 
 
@@ -892,7 +928,7 @@ def pull_request_template_directories(repository_root: Path) -> list[Path]:
             continue
         directories.update(
             entry
-            for entry in parent.iterdir()
+            for entry in bounded_template_directory_entries(parent, repository_root)
             if entry.name.casefold() == "pull_request_template"
         )
     return sorted(directories)
@@ -908,7 +944,13 @@ def validate_pull_request_templates(repository_root: Path) -> list[str]:
                 f"{location.as_posix()}: linked or reparse-point template location "
                 "is not dereferenced or validated"
             )
-    for template_directory in pull_request_template_directories(repository_root):
+    try:
+        template_directories = pull_request_template_directories(repository_root)
+        templates = pull_request_templates(repository_root)
+    except ValueError as error:
+        problems.append(str(error))
+        return problems
+    for template_directory in template_directories:
         relative = template_directory.relative_to(repository_root).as_posix()
         if path_has_link_or_reparse(template_directory, repository_root):
             problems.append(
@@ -919,7 +961,7 @@ def validate_pull_request_templates(repository_root: Path) -> list[str]:
             problems.append(
                 f"{relative}: pull-request template catalog is not a directory"
             )
-    for path in pull_request_templates(repository_root):
+    for path in templates:
         relative = path.relative_to(repository_root).as_posix()
         text, problem = read_markdown(
             path, label=relative, repository_root=repository_root

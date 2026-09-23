@@ -17,6 +17,7 @@ from markdown_body_preflight import (
 )
 
 MAX_TEMPLATE_DIRECTORY_ENTRIES = 128
+MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES = 10_000
 
 
 TITLE_TYPE_PATTERN = re.compile(r"^(?P<type>feat|fix|docs)(?:\([^()\r\n]+\))?!?: ")
@@ -105,7 +106,14 @@ def template_catalog(repository_root: Path) -> dict[str, Path]:
         raise ValueError("trusted PR template catalog contains a linked path")
     if directory.is_dir():
         paths: list[Path] = []
-        for path in directory.glob("*.md"):
+        for entry_index, path in enumerate(directory.iterdir()):
+            if entry_index >= MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES:
+                raise ValueError(
+                    "trusted PR template catalog scan exceeds "
+                    f"{MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES} directory entries"
+                )
+            if path.suffix.casefold() != ".md":
+                continue
             if len(paths) >= MAX_TEMPLATE_DIRECTORY_ENTRIES:
                 raise ValueError(
                     "trusted PR template catalog exceeds "

@@ -719,6 +719,32 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (2,),
         )
 
+    def test_only_gfm_cr_and_lf_sequences_start_physical_lines(self) -> None:
+        module = _bundled_module()
+        self.assertEqual(module.split_gfm_lines(""), [])
+        self.assertEqual(
+            module.split_gfm_lines("first\u2028second\r\nthird\rfourth\n"),
+            ["first\u2028second", "third", "fourth"],
+        )
+        self.assertEqual(
+            module.split_gfm_lines("final line without newline"),
+            ["final line without newline"],
+        )
+        self.assertTrue(module.is_gfm_blank_line(" \t"))
+        self.assertFalse(module.is_gfm_blank_line("\u2028"))
+        for separator in ("\v", "\f", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=ord(separator)):
+                self.assertEqual(
+                    _bundled_lines(f"First line{separator}continued prose\n"),
+                    (),
+                )
+
+    def test_unicode_whitespace_only_lines_do_not_separate_gfm_paragraphs(self) -> None:
+        for separator in ("\v", "\f", "\x85", "\u2028", "\u2029", "\u00a0"):
+            body = f"First line\n{separator}\ncontinued prose\n"
+            with self.subTest(separator=ord(separator)):
+                self.assertEqual(_bundled_lines(body), (2, 3))
+
     def test_explicit_gfm_hard_breaks_do_not_flag_list_continuations(self) -> None:
         slash = chr(92)
         cases = (

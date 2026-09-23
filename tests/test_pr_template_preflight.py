@@ -303,6 +303,44 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "catalog exceeds"):
                 pr_template_preflight.template_catalog(root)
 
+    def test_bounds_raw_template_catalog_directory_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            template_directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            original_iterdir = Path.iterdir
+
+            def many_unrelated_entries(path: Path):
+                if path == template_directory:
+                    return (
+                        template_directory / f"asset-{index}.bin"
+                        for index in range(
+                            pr_template_preflight.MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES
+                            + 1
+                        )
+                    )
+                return original_iterdir(path)
+
+            with mock.patch.object(Path, "iterdir", new=many_unrelated_entries):
+                with self.assertRaisesRegex(ValueError, "directory entries"):
+                    pr_template_preflight.template_catalog(root)
+
+    def test_reports_unreadable_template_catalog_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            template_directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            original_iterdir = Path.iterdir
+
+            def denied_catalog(path: Path):
+                if path == template_directory:
+                    raise PermissionError("denied")
+                return original_iterdir(path)
+
+            with mock.patch.object(Path, "iterdir", new=denied_catalog):
+                with self.assertRaisesRegex(PermissionError, "denied"):
+                    pr_template_preflight.template_catalog(root)
+
     def test_rejects_oversized_selected_template(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

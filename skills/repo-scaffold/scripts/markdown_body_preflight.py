@@ -53,6 +53,22 @@ BACKTICK_RUN_PATTERN = re.compile(r"[\x60]+")
 GFM_TABLE_DELIMITER_CELL_PATTERN = re.compile(r":?-{3,}:?")
 SETEXT_HEADING_UNDERLINE_PATTERN = re.compile(r"^ {0,3}(?:=+[ \t]*|-+[ \t]*)$")
 MAX_BODY_FILE_BYTES = 1024 * 1024
+GFM_LINE_ENDING_PATTERN = re.compile(r"\r\n|\r|\n")
+
+
+def split_gfm_lines(markdown: str) -> list[str]:
+    """Split only physical line endings recognized by the GFM specification."""
+    if not markdown:
+        return []
+    lines = GFM_LINE_ENDING_PATTERN.split(markdown)
+    if lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def is_gfm_blank_line(line: str) -> bool:
+    """Return whether a line is empty or contains only GFM blank-line spaces."""
+    return all(character in " \t" for character in line)
 
 
 def strip_blockquote_markers(line: str) -> tuple[str, int]:
@@ -330,7 +346,7 @@ def html_block_start(
 def html_block_end_reached(end_rule: str, line: str) -> bool:
     """Return whether a raw HTML block has met its type-specific end condition."""
     if end_rule == "blank-line":
-        return not line.strip()
+        return is_gfm_blank_line(line)
     if end_rule == "raw-text":
         return HTML_RAW_TEXT_END_PATTERN.search(line) is not None
     if end_rule == "processing-instruction":
@@ -414,17 +430,17 @@ def split_gfm_table_cells(line: str) -> tuple[str, ...] | None:
             current.append(character)
             escaped = True
         elif character == "|" and not inside_html_tag:
-            cells.append("".join(current).strip())
+            cells.append("".join(current).strip(" \t"))
             current = []
             found_pipe = True
         else:
             current.append(character)
-    cells.append("".join(current).strip())
+    cells.append("".join(current).strip(" \t"))
     if not found_pipe:
         return None
-    if masked_line.lstrip().startswith("|") and cells and not cells[0]:
+    if masked_line.lstrip(" \t").startswith("|") and cells and not cells[0]:
         cells.pop(0)
-    if masked_line.rstrip().endswith("|") and cells and not cells[-1]:
+    if masked_line.rstrip(" \t").endswith("|") and cells and not cells[-1]:
         cells.pop()
     return tuple(cells)
 
@@ -434,7 +450,9 @@ def gfm_table_line_indexes(lines: list[str]) -> set[int]:
     table_lines: set[int] = set()
     index = 0
     while index + 1 < len(lines):
-        if index and strip_blockquote_markers(lines[index - 1])[0].strip():
+        if index and not is_gfm_blank_line(
+            strip_blockquote_markers(lines[index - 1])[0]
+        ):
             index += 1
             continue
         header, header_quote_depth = strip_blockquote_markers(lines[index])
@@ -458,7 +476,7 @@ def gfm_table_line_indexes(lines: list[str]) -> set[int]:
         while row_index < len(lines):
             row, row_quote_depth = strip_blockquote_markers(lines[row_index])
             if (
-                not row.strip()
+                is_gfm_blank_line(row)
                 or row_quote_depth != header_quote_depth
                 or begins_markdown_block(row)
             ):
@@ -477,7 +495,7 @@ def setext_heading_line_indexes(lines: list[str]) -> set[int]:
     table_lines = gfm_table_line_indexes(lines)
     for line_index, raw_line in enumerate(lines):
         line, quote_depth = strip_blockquote_markers(raw_line)
-        if not line.strip() or line_index in table_lines:
+        if is_gfm_blank_line(line) or line_index in table_lines:
             paragraph_lines.clear()
             paragraph_quote_depth = None
             continue
@@ -544,7 +562,7 @@ def matching_backtick_run_ahead(
         candidate_line, candidate_quote_depth = strip_blockquote_markers(
             lines[candidate_index].rstrip("\r\n")
         )
-        if candidate_quote_depth != quote_depth or not candidate_line.strip():
+        if candidate_quote_depth != quote_depth or is_gfm_blank_line(candidate_line):
             return None
         if candidate_index > line_index and (
             candidate_index in table_lines
@@ -583,7 +601,7 @@ def advance_list_context(
                 context.pop()
             context.append((marker_indent, marker.end()))
             return True, len(context) < previous_depth
-    if line.strip() and context and leading_spaces < context[-1][1]:
+    if not is_gfm_blank_line(line) and context and leading_spaces < context[-1][1]:
         allow_type_7 = not (previous_is_prose or previous_is_list_item)
         lazy_continuation = (
             previous_is_prose or previous_is_list_item
@@ -630,7 +648,7 @@ def backtick_run_lengths_by_line(
             end_rule, start_quote_depth, list_indent = html_block
             list_container_ended = (
                 list_indent is not None
-                and bool(line.strip())
+                and not is_gfm_blank_line(line)
                 and leading_spaces < list_indent
             )
             if quote_depth < start_quote_depth or list_container_ended:
@@ -650,7 +668,7 @@ def backtick_run_lengths_by_line(
         if fence_character is not None:
             list_container_ended = (
                 fence_list_indent is not None
-                and bool(line.strip())
+                and not is_gfm_blank_line(line)
                 and leading_spaces < fence_list_indent
             )
             if quote_depth < fence_quote_depth or list_container_ended:
@@ -725,7 +743,7 @@ def backtick_run_lengths_by_line(
                     line, comment_open, html_tag_spans = strip_html_comments(
                         line, False, html_tag_spans
                     )
-        if not line.strip():
+        if is_gfm_blank_line(line):
             group_id += 1
             indexed.append(())
             group_ids.append(group_id)
@@ -880,7 +898,7 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
     previous_quote_depth = 0
     list_context: list[tuple[int, int]] = []
 
-    raw_lines = markdown.splitlines()
+    raw_lines = split_gfm_lines(markdown)
     (
         html_tag_spans_by_line,
         html_tag_starts_by_line,
@@ -928,7 +946,7 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
                 line, comment_open, html_tag_spans = strip_html_comments(
                     line, False, html_tag_spans
                 )
-                if not line.strip():
+                if is_gfm_blank_line(line):
                     previous_is_prose = False
                     previous_is_list_item = False
                     continue
@@ -938,7 +956,7 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             end_rule, start_quote_depth, list_indent = html_block
             list_container_ended = (
                 list_indent is not None
-                and bool(line.strip())
+                and not is_gfm_blank_line(line)
                 and leading_spaces < list_indent
             )
             if quote_depth < start_quote_depth or list_container_ended:
@@ -952,7 +970,7 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
                 previous_is_list_item = False
                 previous_quote_depth = quote_depth
                 continue
-        if not line.strip():
+        if is_gfm_blank_line(line):
             inline_html_tag_pending = False
             if not indented_code:
                 previous_is_prose = False
@@ -1034,8 +1052,7 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             line, comment_open, html_tag_spans
         )
 
-        stripped = line.strip()
-        if not stripped:
+        if is_gfm_blank_line(line):
             previous_is_prose = False
             previous_is_list_item = False
             continue
