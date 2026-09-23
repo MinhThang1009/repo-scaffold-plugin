@@ -719,6 +719,20 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (2,),
         )
 
+    def test_explicit_gfm_hard_breaks_do_not_flag_list_continuations(self) -> None:
+        slash = chr(92)
+        cases = (
+            ("- First item  \n  continued text\n", ()),
+            (f"- First item{slash}\n  continued text\n", ()),
+            ("1. First item  \n   continued text\n", ()),
+            ("> - First item  \n>   continued text\n", ()),
+            ("- First item\n  continued text\n", (2,)),
+        )
+
+        for body, expected in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), expected)
+
 
 def _bundled_module():
     """Load the bundled parser for focused semantic cases."""

@@ -6851,6 +6851,22 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             self.assertNotEqual(hard_wrapped_result.returncode, 0)
             self.assertIn("hard-wrapped prose", hard_wrapped_result.stderr)
 
+            explicit_list_break = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": feature_body
+                    + "\n- Explicit hard break  \n  continuation of the same item.\n",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(
+                explicit_list_break.returncode, 0, explicit_list_break.stderr
+            )
+
             deployment_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "deployment.md"
             ).read_text(encoding="utf-8")

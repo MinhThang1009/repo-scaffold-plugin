@@ -1198,6 +1198,41 @@ body:
             problems,
         )
 
+    def test_pull_request_template_rejects_a_non_directory_catalog_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            catalog.parent.mkdir(parents=True)
+            catalog.write_text("not a template directory\n", encoding="utf-8")
+
+            problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE: pull-request template catalog is not "
+            "a directory",
+            problems,
+        )
+
+    def test_pull_request_template_discovery_skips_linked_search_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            docs = root / "docs"
+            (root / ".github").mkdir()
+            with mock.patch.object(
+                validate_scaffold,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path == docs,
+            ):
+                templates = validate_scaffold.pull_request_templates(root)
+                problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertEqual(templates, [])
+        self.assertIn(
+            "docs: linked or reparse-point template location is not dereferenced "
+            "or validated",
+            problems,
+        )
+
     def test_pull_request_template_discovery_checks_all_supported_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1206,6 +1241,9 @@ body:
                 root / "docs" / "PULL_REQUEST_TEMPLATE.md",
                 root / ".github" / "PULL_REQUEST_TEMPLATE.md",
                 root / ".github" / "PULL_REQUEST_TEMPLATE" / "focused.md",
+                root / "pull_request_template.TXT",
+                root / "docs" / "pull_request_template" / "focused.txt",
+                root / ".github" / "pull_request_template" / "lowercase.MD",
             ]
             for path in paths:
                 path.parent.mkdir(parents=True, exist_ok=True)

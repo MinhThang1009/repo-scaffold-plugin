@@ -1063,6 +1063,12 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             or STRUCTURAL_MARKDOWN_LINE_PATTERN.match(line) is not None
         )
         is_prose = not is_structural
+        hard_break = line_ends_hard_break(
+            source_line,
+            html_tag_spans_by_line[line_index],
+            inline_code_open=inline_code_length is not None,
+            html_comment_open=comment_open,
+        )
         if (
             not continued_inline_code
             and not inline_html_tag_continuation
@@ -1070,13 +1076,8 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
             and is_prose
         ):
             wrapped.append(line_number)
-        previous_is_list_item = is_list_item
-        previous_is_prose = is_prose and not line_ends_hard_break(
-            source_line,
-            html_tag_spans_by_line[line_index],
-            inline_code_open=inline_code_length is not None,
-            html_comment_open=comment_open,
-        )
+        previous_is_list_item = is_list_item and not hard_break
+        previous_is_prose = is_prose and not hard_break
         previous_quote_depth = quote_depth
         inline_html_tag_pending = html_tag_starts_by_line[line_index]
 

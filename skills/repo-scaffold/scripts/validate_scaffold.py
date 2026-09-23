@@ -64,6 +64,8 @@ ISSUE_FORM_INPUT_TYPES = {
     "upload",
 }
 ISSUE_FORM_BODY_KEYS = {"attributes", "id", "type", "validations"}
+PULL_REQUEST_TEMPLATE_LOCATIONS = (Path("."), Path("docs"), Path(".github"))
+PULL_REQUEST_TEMPLATE_EXTENSIONS = {".md", ".txt"}
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -838,31 +840,85 @@ def validate_issue_forms(
 
 
 def pull_request_templates(repository_root: Path) -> list[Path]:
-    """Return supported single and multi-template Markdown paths."""
-    candidates = {
-        repository_root / "PULL_REQUEST_TEMPLATE.md",
-        repository_root / "docs" / "PULL_REQUEST_TEMPLATE.md",
-        repository_root / ".github" / "PULL_REQUEST_TEMPLATE.md",
+    """Return GitHub-supported single and multi-template Markdown paths."""
+    candidates: set[Path] = set()
+    for location in PULL_REQUEST_TEMPLATE_LOCATIONS:
+        parent = repository_root / location
+        if location != Path(".") and path_has_link_or_reparse(parent, repository_root):
+            continue
+        if not parent.is_dir():
+            continue
+        for entry in parent.iterdir():
+            if (
+                Path(entry.name).stem.casefold() == "pull_request_template"
+                and Path(entry.name).suffix.casefold()
+                in PULL_REQUEST_TEMPLATE_EXTENSIONS
+                and (
+                    path_has_link_or_reparse(entry, repository_root) or entry.is_file()
+                )
+            ):
+                candidates.add(entry)
+            if entry.name.casefold() != "pull_request_template":
+                continue
+            if path_has_link_or_reparse(entry, repository_root) or not entry.is_dir():
+                continue
+            candidates.update(
+                template
+                for template in entry.iterdir()
+                if template.suffix.casefold() in PULL_REQUEST_TEMPLATE_EXTENSIONS
+                and (
+                    path_has_link_or_reparse(template, repository_root)
+                    or template.is_file()
+                )
+            )
+    return sorted(candidates)
+
+
+def pull_request_template_directories(repository_root: Path) -> list[Path]:
+    """Return supported multi-template directories without following links."""
+    directories = {
+        repository_root / location / "PULL_REQUEST_TEMPLATE"
+        for location in PULL_REQUEST_TEMPLATE_LOCATIONS
+        if path_has_link_or_reparse(
+            repository_root / location / "PULL_REQUEST_TEMPLATE", repository_root
+        )
+        or (repository_root / location / "PULL_REQUEST_TEMPLATE").exists()
     }
-    template_directory = repository_root / ".github" / "PULL_REQUEST_TEMPLATE"
-    if not path_has_link_or_reparse(template_directory, repository_root):
-        candidates.update(template_directory.glob("*.md"))
-    return sorted(
-        path
-        for path in candidates
-        if path_has_link_or_reparse(path, repository_root) or path.is_file()
-    )
+    for location in PULL_REQUEST_TEMPLATE_LOCATIONS:
+        parent = repository_root / location
+        if location != Path(".") and path_has_link_or_reparse(parent, repository_root):
+            continue
+        if not parent.is_dir():
+            continue
+        directories.update(
+            entry
+            for entry in parent.iterdir()
+            if entry.name.casefold() == "pull_request_template"
+        )
+    return sorted(directories)
 
 
 def validate_pull_request_templates(repository_root: Path) -> list[str]:
     """Require actionable content in every pull-request template."""
     problems: list[str] = []
-    template_directory = repository_root / ".github" / "PULL_REQUEST_TEMPLATE"
-    if path_has_link_or_reparse(template_directory, repository_root):
-        problems.append(
-            ".github/PULL_REQUEST_TEMPLATE: linked or reparse-point directory is "
-            "not dereferenced or validated"
-        )
+    for location in PULL_REQUEST_TEMPLATE_LOCATIONS[1:]:
+        parent = repository_root / location
+        if path_has_link_or_reparse(parent, repository_root):
+            problems.append(
+                f"{location.as_posix()}: linked or reparse-point template location "
+                "is not dereferenced or validated"
+            )
+    for template_directory in pull_request_template_directories(repository_root):
+        relative = template_directory.relative_to(repository_root).as_posix()
+        if path_has_link_or_reparse(template_directory, repository_root):
+            problems.append(
+                f"{relative}: linked or reparse-point directory is not dereferenced "
+                "or validated"
+            )
+        elif not template_directory.is_dir():
+            problems.append(
+                f"{relative}: pull-request template catalog is not a directory"
+            )
     for path in pull_request_templates(repository_root):
         relative = path.relative_to(repository_root).as_posix()
         text, problem = read_markdown(
