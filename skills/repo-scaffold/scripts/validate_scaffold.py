@@ -1039,9 +1039,35 @@ def validate_template_assets(template_root: Path) -> list[str]:
             )
             continue
         if template_directory.is_dir():
-            pull_templates.extend(
-                (path.stem, path) for path in sorted(template_directory.glob("*.md"))
-            )
+            try:
+                template_entries = bounded_template_directory_entries(
+                    template_directory, template_root
+                )
+            except ValueError as error:
+                problems.append(str(error))
+                continue
+            focused_template_count = 0
+            focused_template_ids: set[str] = set()
+            for path in sorted(template_entries):
+                if path.suffix.casefold() != ".md":
+                    continue
+                if focused_template_count >= MAX_FOCUSED_PULL_REQUEST_TEMPLATES:
+                    problems.append(
+                        f"{directory_name} asset directory exceeds "
+                        f"{MAX_FOCUSED_PULL_REQUEST_TEMPLATES} focused templates"
+                    )
+                    break
+                focused_template_count += 1
+                template_id = path.stem
+                if template_id in focused_template_ids:
+                    relative = path.relative_to(template_root).as_posix()
+                    problems.append(
+                        f"{relative} asset duplicates focused template identifier "
+                        f"{template_id!r}"
+                    )
+                    continue
+                focused_template_ids.add(template_id)
+                pull_templates.append((path.stem, path))
 
     marker_pattern = re.compile(
         r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",

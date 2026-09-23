@@ -1602,6 +1602,119 @@ body:
                 ],
             )
 
+    def test_template_assets_discover_uppercase_md_extensions_case_insensitively(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "README-header.md",
+                root / "README-header.md",
+            )
+            template = root / "PULL_REQUEST_TEMPLATE" / "security.MD"
+            template.parent.mkdir()
+            template.write_text(
+                "<!-- repo-scaffold:pr-template=wrong -->\n\n"
+                "## Required checklist\n\n"
+                "<!-- repo-scaffold:required-checklist:start -->\n"
+                "- [ ] Verify the change\n"
+                "<!-- repo-scaffold:required-checklist:end -->\n\n"
+                "## If applicable\n\n"
+                "<!-- repo-scaffold:optional-checklist:start -->\n"
+                "- [ ] Update documentation\n"
+                "<!-- repo-scaffold:optional-checklist:end -->\n",
+                encoding="utf-8",
+            )
+            problems = validate_scaffold.validate_template_assets(root)
+
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE/security.MD asset must contain exactly one "
+            "matching repo-scaffold template marker",
+            problems,
+        )
+
+    def test_template_asset_catalog_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "README-header.md",
+                root / "README-header.md",
+            )
+            template_directory = root / "PULL_REQUEST_TEMPLATE"
+            template_directory.mkdir()
+            original_inventory = validate_scaffold.bounded_template_directory_entries
+
+            def oversized_inventory(path: Path, repository_root: Path):
+                if path == template_directory:
+                    raise ValueError("PULL_REQUEST_TEMPLATE: scan cap reached")
+                return original_inventory(path, repository_root)
+
+            with mock.patch.object(
+                validate_scaffold,
+                "bounded_template_directory_entries",
+                side_effect=oversized_inventory,
+            ):
+                raw_limit_problems = validate_scaffold.validate_template_assets(root)
+
+            def excessive_focused_templates(path: Path, repository_root: Path):
+                if path == template_directory:
+                    return [
+                        path / "diagram.png",
+                        *(
+                            path / f"focused-{index}.md"
+                            for index in range(
+                                validate_scaffold.MAX_FOCUSED_PULL_REQUEST_TEMPLATES + 1
+                            )
+                        ),
+                    ]
+                return original_inventory(path, repository_root)
+
+            with mock.patch.object(
+                validate_scaffold,
+                "bounded_template_directory_entries",
+                side_effect=excessive_focused_templates,
+            ):
+                focused_limit_problems = validate_scaffold.validate_template_assets(
+                    root
+                )
+
+            def duplicate_focused_templates(path: Path, repository_root: Path):
+                if path == template_directory:
+                    return [path / "feature.md", path / "feature.MD"]
+                return original_inventory(path, repository_root)
+
+            with mock.patch.object(
+                validate_scaffold,
+                "bounded_template_directory_entries",
+                side_effect=duplicate_focused_templates,
+            ):
+                duplicate_template_problems = (
+                    validate_scaffold.validate_template_assets(root)
+                )
+
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE: scan cap reached",
+            raw_limit_problems,
+        )
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE asset directory exceeds "
+            f"{validate_scaffold.MAX_FOCUSED_PULL_REQUEST_TEMPLATES} focused templates",
+            focused_limit_problems,
+        )
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE/feature.MD asset duplicates focused template "
+            "identifier 'feature'",
+            duplicate_template_problems,
+        )
+
     def test_template_assets_reject_hard_wrapped_prose(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
