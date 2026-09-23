@@ -34,6 +34,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
           PR_USER: ${{ github.event.pull_request.user.login }}
+          PR_USER_TYPE: ${{ github.event.pull_request.user.type }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
@@ -72,10 +73,18 @@ jobs:
               )
               if body_preflight.returncode != 0:
                   raise SystemExit(body_preflight.stderr)
-              if os.environ.get("PR_USER") == "dependabot[bot]":
+              if (
+                  os.environ.get("PR_USER") == "dependabot[bot]"
+                  and os.environ.get("PR_USER_TYPE") == "Bot"
+              ):
                   print("Pull request template validation is explicitly exempt for Dependabot.")
                   raise SystemExit(0)
-              if os.environ.get("PR_HEAD_REF", "").startswith("release-please--branches--"):
+              if (
+                  os.environ.get("PR_USER_TYPE") == "Bot"
+                  and os.environ.get("PR_HEAD_REF", "").startswith(
+                      "release-please--branches--"
+                  )
+              ):
                   print("Pull request template validation is explicitly exempt for Release Please.")
                   raise SystemExit(0)
               preflight = subprocess.run(

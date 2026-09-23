@@ -85,6 +85,44 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn(f"hard-wrapped prose at line(s): {line}", result.stderr)
 
+    def test_handles_nested_lists_code_spans_autolinks_and_code_blocks(self) -> None:
+        rejected = "- outer\n  - inner\n    - third level\n      continuation\n"
+        self.assertEqual(_bundled_lines(rejected), (4,))
+        accepted = (
+            "Use `<!--` literally.\n\n"
+            "<https://example.test> is a complete paragraph.\n\n"
+            "    print(1)\n    print(2)\n\n"
+            "- Item\n```text\ncode\n```\nNew paragraph.\n"
+        )
+        self.assertEqual(_bundled_lines(accepted), ())
+
+    def test_handles_multiline_and_unmatched_inline_code(self) -> None:
+        self.assertEqual(
+            _bundled_lines("Before `code\nspan` after.\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("Before `code\ncontinued line\nclose` after.\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("Before `literal\ncontinued prose.\n"),
+            (2,),
+        )
+
+
+def _bundled_lines(body: str) -> tuple[int, ...]:
+    """Expose the bundled parser for focused semantic cases."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "markdown_body_preflight", SKILL_PREFLIGHT
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.hard_wrapped_prose_lines(body)
+
 
 if __name__ == "__main__":
     unittest.main()

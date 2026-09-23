@@ -1753,8 +1753,8 @@ def reminder_body_preflight_is_safe(text: str, report_path: str) -> bool:
     jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
     if not isinstance(jobs, dict):
         return False
-    reconciliation_scripts = [
-        step.get("run")
+    reconciliation_steps = [
+        step
         for job in jobs.values()
         if isinstance(job, dict) and isinstance(job.get("steps"), list)
         for step in job["steps"]
@@ -1763,11 +1763,15 @@ def reminder_body_preflight_is_safe(text: str, report_path: str) -> bool:
         and "Reconcile" in step["name"]
         and "issue" in step["name"]
     ]
-    if len(reconciliation_scripts) != 1 or not isinstance(
-        reconciliation_scripts[0], str
-    ):
+    if len(reconciliation_steps) != 1:
         return False
-    segments = shell_command_segments(reconciliation_scripts[0])
+    reconciliation_step = reconciliation_steps[0]
+    if not isinstance(
+        reconciliation_step.get("run"), str
+    ) or FRESHNESS_STEP_EXECUTION_CONTROLS.intersection(reconciliation_step):
+        return False
+    reconciliation_script = reconciliation_step["run"]
+    segments = shell_command_segments(reconciliation_script)
     if segments is None:
         return False
     expected_preflight = [
@@ -1781,6 +1785,12 @@ def reminder_body_preflight_is_safe(text: str, report_path: str) -> bool:
         for index, segment in enumerate(segments)
         if shell_command_prefix(segment) == expected_preflight
     ]
+    normalized_script = re.sub(r"\\\r?\n", " ", reconciliation_script)
+    for logical_line in normalized_script.splitlines():
+        if "scripts/markdown_body_preflight.py" in logical_line and any(
+            operator in logical_line for operator in ("||", "&&", ";", "|", "&")
+        ):
+            return False
     mutation_indices: list[int] = []
     for index, segment in enumerate(segments):
         tokens = shell_command_prefix(segment)
@@ -6712,8 +6722,11 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         if isinstance(step, dict)
         and step.get("name") == "Validate version-maintenance pull request body"
     ]
-    if len(body_preflight_steps) != 1 or body_preflight_step.get("run") != " ".join(
-        VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND
+    if (
+        len(body_preflight_steps) != 1
+        or body_preflight_step.get("run")
+        != " ".join(VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND)
+        or set(body_preflight_step) != {"name", "run"}
     ):
         problems.append(
             f"{relative}: synchronizer must preflight its pull-request body "
@@ -6836,6 +6849,7 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         or re.fullmatch(r"peter-evans/create-pull-request@[0-9a-f]{40}", pr_reference)
         is None
         or not isinstance(pr_step.get("with"), dict)
+        or set(pr_step) != {"name", "uses", "with"}
         or any(
             pr_step["with"].get(key) != value
             for key, value in expected_pr_inputs.items()
@@ -6943,6 +6957,7 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                 or checkout.get("with")
                 != {"ref": expected_ref, "persist-credentials": "false"}
                 or not isinstance(run_step, dict)
+                or set(run_step) != {"name", "env", "shell", "run"}
                 or run_step.get("env")
                 != {
                     "EVENT_NAME": "${{ github.event_name }}",
@@ -6950,14 +6965,15 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                     "PR_TITLE": "${{ github.event.pull_request.title }}",
                     "PR_IS_DRAFT": "${{ github.event.pull_request.draft }}",
                     "PR_USER": "${{ github.event.pull_request.user.login }}",
+                    "PR_USER_TYPE": "${{ github.event.pull_request.user.type }}",
                     "PR_HEAD_REF": "${{ github.event.pull_request.head.ref }}",
                 }
                 or not isinstance(run_text, str)
                 or 'event_name == "merge_group"' not in run_text
                 or 'event_name != "pull_request_target"' not in run_text
                 or 'PR_USER") == "dependabot[bot]"' not in run_text
-                or 'PR_HEAD_REF", "").startswith("release-please--branches--")'
-                not in run_text
+                or 'PR_USER_TYPE") == "Bot"' not in run_text
+                or "release-please--branches--" not in run_text
                 or "Pull request template requirements were checked before merge-queue admission."
                 not in run_text
             ):

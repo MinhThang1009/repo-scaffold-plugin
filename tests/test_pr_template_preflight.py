@@ -190,17 +190,23 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "regular non-linked"):
                 pr_template_preflight.read_body_file(body.parent / "missing.md")
-            with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
+            with mock.patch.object(Path, "open", side_effect=OSError("denied")):
                 with self.assertRaisesRegex(ValueError, "could not read body"):
                     pr_template_preflight.read_body_file(body)
             with mock.patch.object(
                 Path,
-                "read_bytes",
-                return_value=b"x" * (pr_template_preflight.MAX_BODY_FILE_BYTES + 1),
+                "open",
+                return_value=mock.mock_open(
+                    read_data=b"x" * (pr_template_preflight.MAX_BODY_FILE_BYTES + 1)
+                ).return_value,
             ):
                 with self.assertRaisesRegex(ValueError, "byte limit"):
                     pr_template_preflight.read_body_file(body)
-            with mock.patch.object(Path, "read_bytes", return_value=b"\xff"):
+            with mock.patch.object(
+                Path,
+                "open",
+                return_value=mock.mock_open(read_data=b"\xff").return_value,
+            ):
                 with self.assertRaisesRegex(ValueError, "not valid UTF-8"):
                     pr_template_preflight.read_body_file(body)
 

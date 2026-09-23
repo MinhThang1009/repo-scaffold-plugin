@@ -12,11 +12,19 @@ from pathlib import Path
 
 FENCED_CODE_START_PATTERN = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 FENCED_CODE_END_PATTERN = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$")
-LIST_ITEM_PATTERN = re.compile(r"^[ \t]{0,3}(?:[-+*][ \t]+|\d+[.)][ \t]+)")
+LIST_ITEM_PATTERN = re.compile(r"^[ \t]*(?:[-+*][ \t]+|\d+[.)][ \t]+)")
 STRUCTURAL_MARKDOWN_LINE_PATTERN = re.compile(
     r"^[ \t]*(?:#{1,6}[ \t]|[-+*][ \t]+|\d+[.)][ \t]+|>[ \t]?|\||"
-    r"(?:[-*_][ \t]*){3,}$|<)"
+    r"(?:[-*_][ \t]*){3,}$)"
 )
+HTML_BLOCK_START_PATTERN = re.compile(
+    r"^[ \t]{0,3}</?(?:address|article|aside|base|blockquote|body|caption|"
+    r"center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|"
+    r"figcaption|figure|footer|form|h[1-6]|head|header|hr|html|iframe|"
+    r"legend|li|link|main|menu|menuitem|nav|ol|p|pre|script|section|"
+    r"summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t>/]|$)"
+)
+AUTOLINK_PATTERN = re.compile(r"^<(?:https?://|mailto:|[^ <>@]+@[^ <>@]+>)")
 MAX_BODY_FILE_BYTES = 1024 * 1024
 
 
@@ -54,6 +62,47 @@ def strip_html_comments(line: str, comment_open: bool) -> tuple[str, bool]:
     return "".join(visible), comment_open
 
 
+def mask_inline_code(
+    line: str,
+    delimiter_length: int | None,
+    remaining_markdown: str = "",
+) -> tuple[str, int | None]:
+    """Mask inline-code spans so their Markdown-looking text stays inert."""
+    masked = list(line)
+    cursor = 0
+    active_length = delimiter_length
+    while cursor < len(line):
+        if active_length is not None:
+            delimiter = "`" * active_length
+            close = line.find(delimiter, cursor)
+            end = len(line) if close < 0 else close + active_length
+            masked[cursor:end] = " " * (end - cursor)
+            cursor = end
+            if close < 0:
+                return "".join(masked), active_length
+            active_length = None
+            continue
+        if line[cursor] != "`":
+            cursor += 1
+            continue
+        end = cursor
+        while end < len(line) and line[end] == "`":
+            end += 1
+        length = end - cursor
+        delimiter = "`" * length
+        close = line.find(delimiter, end)
+        if close < 0:
+            if delimiter not in remaining_markdown:
+                cursor = end
+                continue
+            masked[cursor:] = " " * (len(line) - cursor)
+            return "".join(masked), length
+        mask_end = close + length
+        masked[cursor:mask_end] = " " * (mask_end - cursor)
+        cursor = mask_end
+    return "".join(masked), active_length
+
+
 def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
     """Return line numbers where ordinary Markdown prose is hard-wrapped."""
     wrapped: list[int] = []
@@ -62,10 +111,23 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
     fence_character: str | None = None
     fence_length = 0
     comment_open = False
+    inline_code_length: int | None = None
+    indented_code = False
 
-    for line_number, raw_line in enumerate(markdown.splitlines(), start=1):
+    raw_lines = markdown.splitlines()
+    for line_index, raw_line in enumerate(raw_lines):
+        line_number = line_index + 1
         line = raw_line.rstrip("\r\n")
-        fence_start = FENCED_CODE_START_PATTERN.match(line)
+        if comment_open:
+            line, comment_open = strip_html_comments(line, True)
+        if not line.strip():
+            if not indented_code:
+                previous_is_prose = False
+                previous_is_list_item = False
+            continue
+        fence_start = (
+            FENCED_CODE_START_PATTERN.match(line) if not comment_open else None
+        )
         if fence_character is not None:
             fence_end = FENCED_CODE_END_PATTERN.match(line)
             if (
@@ -76,24 +138,56 @@ def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
                 fence_character = None
                 fence_length = 0
             previous_is_prose = False
+            previous_is_list_item = False
             continue
         if fence_start is not None:
             fence_character = fence_start.group(1)[0]
             fence_length = len(fence_start.group(1))
             previous_is_prose = False
+            previous_is_list_item = False
             continue
-        if comment_open or "<!--" in line:
-            line, comment_open = strip_html_comments(line, comment_open)
+        continued_inline_code = inline_code_length is not None
+        line, inline_code_length = mask_inline_code(
+            line, inline_code_length, "\n".join(raw_lines[line_index + 1 :])
+        )
+        line, comment_open = strip_html_comments(line, comment_open)
 
         stripped = line.strip()
         if not stripped:
             previous_is_prose = False
             previous_is_list_item = False
             continue
-        is_structural = STRUCTURAL_MARKDOWN_LINE_PATTERN.match(line) is not None
+        leading_spaces = len(line) - len(line.lstrip(" "))
         is_list_item = LIST_ITEM_PATTERN.match(line) is not None
+        if indented_code:
+            if leading_spaces >= 4:
+                previous_is_prose = False
+                previous_is_list_item = False
+                continue
+            indented_code = False
+        if (
+            leading_spaces >= 4
+            and not previous_is_prose
+            and not previous_is_list_item
+            and not is_list_item
+        ):
+            indented_code = True
+            previous_is_prose = False
+            previous_is_list_item = False
+            continue
+        is_html_block = (
+            HTML_BLOCK_START_PATTERN.match(line) is not None
+            and AUTOLINK_PATTERN.match(line) is None
+        )
+        is_structural = (
+            STRUCTURAL_MARKDOWN_LINE_PATTERN.match(line) is not None or is_html_block
+        )
         is_prose = not is_structural
-        if (previous_is_prose or previous_is_list_item) and is_prose:
+        if (
+            not continued_inline_code
+            and (previous_is_prose or previous_is_list_item)
+            and is_prose
+        ):
             wrapped.append(line_number)
         previous_is_list_item = is_list_item
         previous_is_prose = is_prose and not line.endswith(("  ", "\\"))
@@ -106,7 +200,8 @@ def read_body_file(path: Path) -> str:
     if is_link_or_reparse(path) or not path.is_file():
         raise ValueError(f"body file must be a regular non-linked file: {path}")
     try:
-        payload = path.read_bytes()
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_BODY_FILE_BYTES + 1)
     except OSError as error:
         raise ValueError(f"could not read body file {path}: {error}") from error
     if len(payload) > MAX_BODY_FILE_BYTES:

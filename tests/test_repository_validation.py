@@ -1093,6 +1093,21 @@ class ActionPinSyncContractTests(unittest.TestCase):
                 validate_repository.validate_action_pin_sync_contract(root)
             )
 
+            invalid_body_step_controls = []
+            for control in ("if: false", "continue-on-error: true"):
+                workflow.write_text(
+                    original.replace(
+                        "      - name: Validate version-maintenance pull request body\n",
+                        "      - name: Validate version-maintenance pull request body\n"
+                        f"        {control}\n",
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+                invalid_body_step_controls.append(
+                    validate_repository.validate_action_pin_sync_contract(root)
+                )
+
             workflow.write_text(original, encoding="utf-8")
             body_file = root / ".github" / "action-pin-sync-pr-body.md"
             body_file.write_text(
@@ -1222,6 +1237,13 @@ class ActionPinSyncContractTests(unittest.TestCase):
                 for problem in invalid_body_preflight
             )
         )
+        for problems in invalid_body_step_controls:
+            self.assertTrue(
+                any(
+                    "must preflight its pull-request body" in problem
+                    for problem in problems
+                )
+            )
         self.assertTrue(
             any(
                 "pull-request body preflight failed" in problem
@@ -6405,6 +6427,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "PR_TITLE: ${{ github.event.pull_request.title }}",
             "PR_IS_DRAFT: ${{ github.event.pull_request.draft }}",
             "PR_USER: ${{ github.event.pull_request.user.login }}",
+            "PR_USER_TYPE: ${{ github.event.pull_request.user.type }}",
             "PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}",
             "scripts/markdown_body_preflight.py",
             "scripts/pr_template_preflight.py",
@@ -6518,6 +6541,30 @@ class PullRequestTemplateContractTests(unittest.TestCase):
         self.assertRegex(
             pull_request_reference,
             r"ready(?:\s+|_|-)for(?:\s+|_|-)review",
+        )
+
+    def test_required_check_validator_rejects_pr_gate_step_bypasses(self) -> None:
+        original_load_yaml = validate_repository.load_yaml
+
+        def tampered_load_yaml(path: Path) -> Any:
+            document = original_load_yaml(path)
+            if path.as_posix().endswith("workflows/pr-template.yml"):
+                document["jobs"]["pr_template"]["steps"][1]["if"] = "false"
+            return document
+
+        with mock.patch.object(
+            validate_repository, "load_yaml", side_effect=tampered_load_yaml
+        ):
+            problems = validate_repository.validate_required_check_concurrency(
+                PLUGIN_ROOT
+            )
+
+        self.assertEqual(
+            sum(
+                "required pr-template check must use one unconditional producer" in p
+                for p in problems
+            ),
+            2,
         )
 
     def test_gate_selects_the_marked_specialized_template(self) -> None:
@@ -6746,12 +6793,14 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     {
                         "EVENT_NAME": "pull_request_target",
                         "PR_USER": "dependabot[bot]",
+                        "PR_USER_TYPE": "Bot",
                     },
                     "Pull request template validation is explicitly exempt for Dependabot.",
                 ),
                 (
                     {
                         "EVENT_NAME": "pull_request_target",
+                        "PR_USER_TYPE": "Bot",
                         "PR_HEAD_REF": "release-please--branches--main",
                     },
                     "Pull request template validation is explicitly exempt for Release Please.",
@@ -6770,8 +6819,11 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     self.assertIn(message, exempt_result.stdout)
 
             for environment in (
-                {"PR_USER": "dependabot[bot]"},
-                {"PR_HEAD_REF": "release-please--branches--main"},
+                {"PR_USER": "dependabot[bot]", "PR_USER_TYPE": "Bot"},
+                {
+                    "PR_HEAD_REF": "release-please--branches--main",
+                    "PR_USER_TYPE": "Bot",
+                },
             ):
                 with self.subTest(hard_wrapped_environment=environment):
                     hard_wrapped_exempt = subprocess.run(
@@ -13489,6 +13541,51 @@ class ReminderBodyPreflightContractTests(unittest.TestCase):
                         workflow_text, report_path
                     )
                 )
+
+    def test_preflight_cannot_be_conditionally_skipped_or_masked(self) -> None:
+        report_path = "$RUNNER_TEMP/report.md"
+        base = f'python scripts/markdown_body_preflight.py --body-file "{report_path}"'
+        for control in ("if: false", "continue-on-error: true"):
+            workflow_text = yaml.safe_dump(
+                {
+                    "jobs": {
+                        "audit": {
+                            "steps": [
+                                {
+                                    "name": "Reconcile issue",
+                                    "run": base + "\n" + "gh issue edit 1",
+                                    control.split(": ", 1)[0]: control.split(": ", 1)[
+                                        1
+                                    ],
+                                }
+                            ]
+                        }
+                    }
+                }
+            )
+            with self.subTest(control=control):
+                self.assertFalse(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        workflow_text, report_path
+                    )
+                )
+        masked = yaml.safe_dump(
+            {
+                "jobs": {
+                    "audit": {
+                        "steps": [
+                            {
+                                "name": "Reconcile issue",
+                                "run": base + " || true\ngh issue edit 1",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        self.assertFalse(
+            validate_repository.reminder_body_preflight_is_safe(masked, report_path)
+        )
 
     def test_all_reminder_body_preflights_are_exact_and_before_mutations(self) -> None:
         report_paths = {
