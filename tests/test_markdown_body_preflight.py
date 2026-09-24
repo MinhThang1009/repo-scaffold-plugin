@@ -355,8 +355,115 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
                 "> > Inner paragraph.\n"
                 "> Parent paragraph first line\n> continued parent paragraph\n"
             ),
+            (2, 3),
+        )
+
+    def test_lazy_blockquote_continuations_keep_paragraph_context(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                "> > First paragraph line\n"
+                "> continued paragraph line\n"
+                "> final paragraph line\n"
+            ),
+            (2, 3),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> > First paragraph line  \n"
+                "> continued paragraph line\n"
+                "> final paragraph line\n"
+            ),
             (3,),
         )
+        self.assertEqual(
+            _bundled_lines("> `inline code starts\ncode ends`\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> > First paragraph line\n"
+                "continued paragraph line\n"
+                "final paragraph line\n"
+            ),
+            (2, 3),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> > First paragraph line\n"
+                "> # New heading\n"
+                "New paragraph first line\n"
+                "continued paragraph line\n"
+            ),
+            (4,),
+        )
+        self.assertEqual(
+            _bundled_lines("> > `inline code starts\n> code ends`\n"),
+            (),
+        )
+
+    def test_lazy_blockquote_boundary_classification(self) -> None:
+        module = _bundled_module()
+        self.assertTrue(
+            module.is_lazy_blockquote_continuation(
+                "continuation",
+                quote_depth=1,
+                previous_quote_depth=2,
+                previous_paragraph_open=True,
+            )
+        )
+        self.assertFalse(
+            module.is_lazy_blockquote_continuation(
+                "# Heading",
+                quote_depth=1,
+                previous_quote_depth=2,
+                previous_paragraph_open=True,
+            )
+        )
+        self.assertFalse(
+            module.is_lazy_blockquote_continuation(
+                "continuation",
+                quote_depth=1,
+                previous_quote_depth=2,
+                previous_paragraph_open=False,
+            )
+        )
+        self.assertFalse(
+            module.is_lazy_blockquote_continuation(
+                "continuation",
+                quote_depth=2,
+                previous_quote_depth=2,
+                previous_paragraph_open=True,
+            )
+        )
+        self.assertFalse(
+            module.is_lazy_blockquote_continuation(
+                "",
+                quote_depth=1,
+                previous_quote_depth=2,
+                previous_paragraph_open=True,
+            )
+        )
+        for line in (
+            "",
+            "plain text",
+            "2. item",
+            "1.",
+            "    - code",
+            "<custom-tag>",
+        ):
+            with self.subTest(line=line):
+                self.assertFalse(module.ends_open_paragraph(line))
+        for line in (
+            "# heading",
+            "---",
+            "===",
+            "```text",
+            "- item",
+            "1. item",
+            "<div>",
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(module.ends_open_paragraph(line))
 
     def test_setext_headings_and_indented_list_like_code_remain_structural(
         self,

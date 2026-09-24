@@ -547,6 +547,42 @@ def begins_markdown_block(line: str, *, allow_type_7: bool = True) -> bool:
     )
 
 
+def ends_open_paragraph(line: str) -> bool:
+    """Return whether a line ends an open paragraph under GFM block rules."""
+    if is_gfm_blank_line(line):
+        return False
+    expanded_line = line.expandtabs(4)
+    leading_spaces = len(expanded_line) - len(expanded_line.lstrip(" "))
+    list_marker = LIST_ITEM_CONTEXT_PATTERN.match(expanded_line)
+    if list_marker is not None:
+        if leading_spaces >= 4 or not expanded_line[list_marker.end() :].strip():
+            return False
+        marker = list_marker.group("marker")
+        return marker[0] in "-*+" or int(marker[:-1]) == 1
+    return (
+        FENCED_CODE_START_PATTERN.match(line) is not None
+        or STRUCTURAL_MARKDOWN_LINE_PATTERN.match(line) is not None
+        or SETEXT_HEADING_UNDERLINE_PATTERN.fullmatch(line) is not None
+        or html_block_start(line, allow_type_7=False)[0]
+    )
+
+
+def is_lazy_blockquote_continuation(
+    line: str,
+    *,
+    quote_depth: int,
+    previous_quote_depth: int,
+    previous_paragraph_open: bool,
+) -> bool:
+    """Return whether omitted quote markers lazily continue an open paragraph."""
+    return (
+        quote_depth < previous_quote_depth
+        and previous_paragraph_open
+        and not is_gfm_blank_line(line)
+        and not ends_open_paragraph(line)
+    )
+
+
 def matching_backtick_run_ahead(
     lines: list[str],
     line_index: int,
@@ -578,13 +614,16 @@ def matching_backtick_run_ahead(
         candidate_line, candidate_quote_depth = strip_blockquote_markers(
             lines[candidate_index].rstrip("\r\n")
         )
-        if candidate_quote_depth != quote_depth or is_gfm_blank_line(candidate_line):
+        candidate_ends_paragraph = ends_open_paragraph(candidate_line)
+        if (
+            candidate_quote_depth > quote_depth
+            or is_gfm_blank_line(candidate_line)
+            or (candidate_quote_depth < quote_depth and candidate_ends_paragraph)
+        ):
             record_scan_end(candidate_index - 1)
             return None
         if candidate_index > line_index and (
-            candidate_index in table_lines
-            or SETEXT_HEADING_UNDERLINE_PATTERN.fullmatch(candidate_line) is not None
-            or begins_markdown_block(candidate_line, allow_type_7=False)
+            candidate_index in table_lines or candidate_ends_paragraph
         ):
             record_scan_end(candidate_index - 1)
             return None
@@ -848,9 +887,16 @@ def backtick_run_lengths_by_line(
                 continue
             indented_code_indent = None
             group_id += 1
-        quote_context_changed = quote_depth > previous_quote_depth or (
-            0 < quote_depth < previous_quote_depth
+        lazy_quote_continuation = is_lazy_blockquote_continuation(
+            line,
+            quote_depth=quote_depth,
+            previous_quote_depth=previous_quote_depth,
+            previous_paragraph_open=previous_paragraph_open,
         )
+        effective_quote_depth = (
+            previous_quote_depth if lazy_quote_continuation else quote_depth
+        )
+        quote_context_changed = effective_quote_depth != previous_quote_depth
         line_previous_is_list_item = (
             previous_is_list_item if not quote_context_changed else False
         )
@@ -930,7 +976,11 @@ def backtick_run_lengths_by_line(
                         group_id, []
                     )
                     delimiter_lengths = tuple(sorted(set(pending_backticks)))
-                    lookahead_key = (group_id, quote_depth, delimiter_lengths)
+                    lookahead_key = (
+                        group_id,
+                        effective_quote_depth,
+                        delimiter_lengths,
+                    )
                     negative_end = negative_inline_code_lookahead_ends.get(
                         lookahead_key, -1
                     )
@@ -943,7 +993,7 @@ def backtick_run_lengths_by_line(
                             line_index,
                             comment_start + 4,
                             set(delimiter_lengths),
-                            quote_depth,
+                            effective_quote_depth,
                             table_lines,
                             scan_end=scan_end,
                             work_budget=lookahead_work_budget,
@@ -968,11 +1018,11 @@ def backtick_run_lengths_by_line(
             previous_is_list_item = False
             previous_paragraph_open = False
             continue
-        if quote_depth > previous_quote_depth:
+        if effective_quote_depth > previous_quote_depth:
             previous_is_prose = False
             previous_is_list_item = False
             group_id += 1
-        elif 0 < quote_depth < previous_quote_depth:
+        elif effective_quote_depth < previous_quote_depth:
             previous_is_prose = False
             previous_is_list_item = False
             group_id += 1
@@ -1065,7 +1115,7 @@ def backtick_run_lengths_by_line(
             STRUCTURAL_MARKDOWN_LINE_PATTERN.match(line) is not None
             and not is_list_item
         )
-        if quote_depth and not previous_quote_depth:
+        if effective_quote_depth and not previous_quote_depth:
             group_id += 1
         if is_list_item or is_other_block:
             group_id += 1
@@ -1104,7 +1154,7 @@ def backtick_run_lengths_by_line(
                     del pending_backticks[pending_backticks.index(run_length) :]
                 elif not preceded_by_odd_backslashes(line, match.start()):
                     pending_backticks.append(run_length)
-        previous_quote_depth = quote_depth
+        previous_quote_depth = effective_quote_depth
         is_structural = is_list_item or is_other_block
         previous_is_list_item = is_list_item and list_item_starts_with_paragraph(line)
         previous_is_prose = not is_structural and not line.endswith(("  ", "\\"))
@@ -1197,9 +1247,16 @@ def hard_wrapped_prose_lines(
             )
             if quote_depth >= start_quote_depth and not list_container_ended:
                 html_block_line_indexes.add(line_number)
-        quote_context_changed = quote_depth > previous_quote_depth or (
-            0 < quote_depth < previous_quote_depth
+        lazy_quote_continuation = is_lazy_blockquote_continuation(
+            line,
+            quote_depth=quote_depth,
+            previous_quote_depth=previous_quote_depth,
+            previous_paragraph_open=previous_paragraph_open,
         )
+        effective_quote_depth = (
+            previous_quote_depth if lazy_quote_continuation else quote_depth
+        )
+        quote_context_changed = effective_quote_depth != previous_quote_depth
         line_previous_paragraph_open = (
             previous_paragraph_open if not quote_context_changed else False
         )
@@ -1291,11 +1348,11 @@ def hard_wrapped_prose_lines(
                 previous_paragraph_open = False
                 previous_quote_depth = quote_depth
                 continue
-        if quote_depth > previous_quote_depth:
+        if effective_quote_depth > previous_quote_depth:
             previous_is_prose = False
             previous_is_list_item = False
             inline_code_length = None
-        elif 0 < quote_depth < previous_quote_depth:
+        elif effective_quote_depth < previous_quote_depth:
             previous_is_prose = False
             previous_is_list_item = False
             inline_code_length = None
@@ -1413,7 +1470,7 @@ def hard_wrapped_prose_lines(
             )
         else:
             previous_paragraph_open = False
-        previous_quote_depth = quote_depth
+        previous_quote_depth = effective_quote_depth
         inline_html_tag_pending = html_tag_starts_by_line[line_index]
 
     return tuple(wrapped)
