@@ -28,11 +28,11 @@ HTML_BLOCK_START_PATTERN = re.compile(
     r"fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|"
     r"header|hr|html|iframe|legend|li|link|main|map|menu|menuitem|nav|"
     r"noframes|ol|optgroup|option|p|param|search|section|summary|table|"
-    r"source|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t>/]|$)",
+    r"source|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t]|/?>|$)",
     re.IGNORECASE,
 )
 HTML_RAW_TEXT_START_PATTERN = re.compile(
-    r"^ {0,3}<(?:pre|script|style)(?:[ \t>/]|$)", re.IGNORECASE
+    r"^ {0,3}<(?:pre|script|style)(?:[ \t>]|$)", re.IGNORECASE
 )
 HTML_RAW_TEXT_END_PATTERN = re.compile(r"</(?:pre|script|style)[ \t]*>", re.IGNORECASE)
 HTML_PROCESSING_INSTRUCTION_START_PATTERN = re.compile(r"^ {0,3}<\?")

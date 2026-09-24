@@ -6876,6 +6876,20 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             self.assertNotEqual(hard_wrapped_result.returncode, 0)
             self.assertIn("hard-wrapped prose", hard_wrapped_result.stderr)
 
+            malformed_html_body = (
+                feature_body + "\n<div/x>\nwrapped prose line\ncontinued prose line\n\n"
+            )
+            malformed_html_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": malformed_html_body},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(malformed_html_result.returncode, 0)
+            self.assertIn("hard-wrapped prose", malformed_html_result.stderr)
+
             explicit_list_break = subprocess.run(
                 [sys.executable, "-c", script],
                 cwd=root,

@@ -206,6 +206,21 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
                 (2,),
             ),
             (
+                "a slash must complete a self-closing type 6 tag",
+                "<div/x>\nFirst prose line\ncontinued prose line\n\n",
+                (2, 3),
+            ),
+            (
+                "a slash is not a raw-text type 1 delimiter",
+                "<pre/x>\nFirst prose line\ncontinued prose line\n\n",
+                (2, 3),
+            ),
+            (
+                "a complete self-closing type 6 tag starts a block",
+                "<div/>\nraw content\ncontinued raw content\n\n",
+                (),
+            ),
+            (
                 "type 1 block closes on any matching family tag",
                 "<script>\nraw content\n</style>\n\n"
                 "First paragraph line\ncontinued paragraph line\n",
