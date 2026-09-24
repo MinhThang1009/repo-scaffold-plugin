@@ -24,7 +24,10 @@ After preparing the UTF-8 body file, rerun the preflight with
 Template discovery scans at most 10,000 entries in each candidate directory and
 accepts at most 128 focused templates with `.md`, `.markdown`, or `.txt`
 extensions (case-insensitive). The selected template and supplied body file are
-each limited to 1 MiB of valid UTF-8.
+each limited to 1 MiB of valid UTF-8. Catalog discovery checks `.github/`, the
+repository root, and `docs/` in GitHub's default-template precedence order. If a
+location contains multiple default templates, preflight rejects the catalog as
+ambiguous.
 
 Replace guidance with concrete verification evidence. A draft PR may leave
 required items unchecked; before ready-for-review, tick an item only after its

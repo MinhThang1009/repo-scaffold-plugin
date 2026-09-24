@@ -7319,7 +7319,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
 
         self.assertEqual(txt_result.returncode, 0, txt_result.stderr)
 
-    def test_gate_uses_generated_root_preflight_scripts_without_skill_source(
+    def test_gate_uses_generated_scripts_and_discovers_docs_templates(
         self,
     ) -> None:
         workflow = validate_repository.load_yaml(
@@ -7333,6 +7333,8 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             scripts.mkdir()
             templates = root / ".github"
             templates.mkdir()
+            docs_template = root / "docs" / "PULL_REQUEST_TEMPLATE" / "feature.txt"
+            docs_template.parent.mkdir(parents=True)
             shutil.copy2(
                 PLUGIN_ROOT
                 / "skills"
@@ -7353,13 +7355,11 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
                 templates / "PULL_REQUEST_TEMPLATE.md",
             )
-            shutil.copytree(
-                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE",
-                templates / "PULL_REQUEST_TEMPLATE",
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE" / "feature.md",
+                docs_template,
             )
-            feature_body = (
-                templates / "PULL_REQUEST_TEMPLATE" / "feature.md"
-            ).read_text(encoding="utf-8")
+            feature_body = docs_template.read_text(encoding="utf-8")
             result = subprocess.run(
                 [sys.executable, "-c", script],
                 cwd=root,

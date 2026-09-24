@@ -19,6 +19,8 @@ from markdown_body_preflight import (
 MAX_TEMPLATE_DIRECTORY_ENTRIES = 128
 MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES = 10_000
 TEMPLATE_EXTENSIONS = frozenset({".markdown", ".md", ".txt"})
+# GitHub resolves supported community-health files in this precedence order.
+TEMPLATE_LOCATIONS = (Path(".github"), Path("."), Path("docs"))
 
 
 TITLE_TYPE_PATTERN = re.compile(r"^(?P<type>feat|fix|docs)(?:\([^()\r\n]+\))?!?: ")
@@ -97,43 +99,80 @@ def select_template(title: str, requested_template: str | None = None) -> str:
 
 
 def template_catalog(repository_root: Path) -> dict[str, Path]:
-    """Return the checked-in template catalog and reject ambiguous identifiers."""
+    """Discover supported PR templates and reject ambiguous catalog entries."""
     root = safe_repository_root(repository_root)
-    catalog = {"default": root / ".github" / "PULL_REQUEST_TEMPLATE.md"}
-    directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
-    if path_has_link_or_reparse(catalog["default"], root) or path_has_link_or_reparse(
-        directory, root
-    ):
-        raise ValueError("trusted PR template catalog contains a linked path")
-    if directory.is_dir():
-        paths: list[Path] = []
+    default_templates_by_location: dict[Path, list[Path]] = {}
+    focused_templates: list[Path] = []
+
+    def directory_entries(directory: Path) -> list[Path]:
+        entries: list[Path] = []
         for entry_index, path in enumerate(directory.iterdir()):
             if entry_index >= MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES:
                 raise ValueError(
                     "trusted PR template catalog scan exceeds "
-                    f"{MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES} directory entries"
+                    f"{MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES} directory entries: "
+                    f"{directory}"
                 )
-            if path.suffix.casefold() not in TEMPLATE_EXTENSIONS:
+            entries.append(path)
+        return entries
+
+    for location in TEMPLATE_LOCATIONS:
+        parent = root / location
+        if location != Path(".") and path_has_link_or_reparse(parent, root):
+            raise ValueError("trusted PR template catalog contains a linked path")
+        if not parent.is_dir():
+            continue
+        for entry in directory_entries(parent):
+            if Path(entry.name).stem.casefold() == "pull_request_template" and (
+                Path(entry.name).suffix.casefold() in TEMPLATE_EXTENSIONS
+            ):
+                if path_has_link_or_reparse(entry, root):
+                    raise ValueError(f"trusted PR template path is linked: {entry}")
+                if entry.is_file():
+                    default_templates_by_location.setdefault(location, []).append(entry)
+            if entry.name.casefold() != "pull_request_template":
                 continue
-            if len(paths) >= MAX_TEMPLATE_DIRECTORY_ENTRIES:
-                raise ValueError(
-                    "trusted PR template catalog exceeds "
-                    f"{MAX_TEMPLATE_DIRECTORY_ENTRIES} focused templates"
-                )
-            paths.append(path)
-        for path in sorted(paths):
-            if path_has_link_or_reparse(path, root):
-                raise ValueError(f"trusted PR template path is linked: {path}")
-            template_id = path.stem
-            if TEMPLATE_ID_PATTERN.fullmatch(template_id) is None:
-                raise ValueError(
-                    f"unsupported pull-request template identifier: {template_id!r}"
-                )
-            if template_id in catalog:
-                raise ValueError(
-                    f"duplicate pull-request template identifier: {template_id!r}"
-                )
-            catalog[template_id] = path
+            if path_has_link_or_reparse(entry, root):
+                raise ValueError("trusted PR template catalog contains a linked path")
+            if not entry.is_dir():
+                continue
+            for path in directory_entries(entry):
+                if path.suffix.casefold() not in TEMPLATE_EXTENSIONS:
+                    continue
+                if path_has_link_or_reparse(path, root):
+                    raise ValueError(f"trusted PR template path is linked: {path}")
+                if not path.is_file():
+                    continue
+                if len(focused_templates) >= MAX_TEMPLATE_DIRECTORY_ENTRIES:
+                    raise ValueError(
+                        "trusted PR template catalog exceeds "
+                        f"{MAX_TEMPLATE_DIRECTORY_ENTRIES} focused templates"
+                    )
+                focused_templates.append(path)
+
+    default_template = root / ".github" / "PULL_REQUEST_TEMPLATE.md"
+    for location in TEMPLATE_LOCATIONS:
+        candidates = default_templates_by_location.get(location, [])
+        if len(candidates) > 1:
+            paths = ", ".join(str(path) for path in sorted(candidates))
+            raise ValueError(
+                f"ambiguous trusted PR default templates in {location}: {paths}"
+            )
+        if candidates:
+            default_template = candidates[0]
+            break
+    catalog = {"default": default_template}
+    for path in sorted(focused_templates):
+        template_id = path.stem
+        if TEMPLATE_ID_PATTERN.fullmatch(template_id) is None:
+            raise ValueError(
+                f"unsupported pull-request template identifier: {template_id!r}"
+            )
+        if template_id in catalog:
+            raise ValueError(
+                f"duplicate pull-request template identifier: {template_id!r}"
+            )
+        catalog[template_id] = path
     return catalog
 
 
