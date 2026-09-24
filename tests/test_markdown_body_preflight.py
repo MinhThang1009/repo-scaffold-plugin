@@ -421,6 +421,61 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (4,),
         )
 
+    def test_list_items_starting_with_indented_code_keep_content_context(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                " 1.     indented code\n\n"
+                "    first paragraph line\n"
+                "    second paragraph line\n\n"
+                "        more code\n"
+            ),
+            (4,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "1.     first code line\n"
+                "       second code line\n\n"
+                "   first paragraph line\n"
+                "   continued paragraph line\n"
+            ),
+            (5,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "1.     <!-- literal code\n"
+                "       continued literal code\n\n"
+                "   first paragraph line\n"
+                "   continued paragraph line\n"
+            ),
+            (5,),
+        )
+        self.assertEqual(
+            _bundled_lines("-\n      first code line\n      second code line\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("-    \n      first code line\n      second code line\n"),
+            (),
+        )
+
+    def test_ordered_list_start_number_one_is_required_to_interrupt_prose(self) -> None:
+        self.assertEqual(
+            _bundled_lines("First paragraph line\n2. second paragraph line\n"),
+            (2,),
+        )
+        self.assertEqual(
+            _bundled_lines("First paragraph line\n1. first list item\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("First paragraph line\n01. first list item\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("First paragraph line\n\n2. first list item\n"),
+            (),
+        )
+
     def test_comments_inside_non_prose_blocks_do_not_hide_later_wrapping(self) -> None:
         fence = chr(96) * 3
         cases = (
