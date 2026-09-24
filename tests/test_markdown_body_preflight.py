@@ -380,6 +380,72 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (4,),
         )
 
+    def test_list_continuation_indent_is_relative_to_item_content(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                "- item\n\n    First continuation line\n    second continuation line\n"
+            ),
+            (4,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "- outer\n  - inner\n\n"
+                "      First nested continuation\n"
+                "      second nested continuation\n"
+            ),
+            (5,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "- item\n\n      literal code line\n      literal code continuation\n"
+            ),
+            (),
+        )
+        tick = chr(96)
+        code_span_body = (
+            "- item\n\n"
+            f"    First line with {tick}code\n"
+            f"    closing {tick} and more text\n"
+            "    final continuation line\n"
+        )
+        self.assertEqual(
+            _bundled_lines(code_span_body),
+            (5,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "-    padded marker\n\n"
+                "     first continuation\n"
+                "     second continuation\n"
+            ),
+            (4,),
+        )
+
+    def test_comments_inside_non_prose_blocks_do_not_hide_later_wrapping(self) -> None:
+        fence = chr(96) * 3
+        cases = (
+            (
+                "fenced code",
+                f"{fence}text\n<!-- literal in code\n{fence}\n"
+                "First prose line\ncontinued prose line\n",
+                (5,),
+            ),
+            (
+                "indented code",
+                "    <!-- literal in code\nFirst prose line\ncontinued prose line\n",
+                (3,),
+            ),
+            (
+                "raw HTML block",
+                "<script>\n<!-- literal raw text\n</script>\n"
+                "First prose line\ncontinued prose line\n",
+                (5,),
+            ),
+        )
+        for name, body, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(_bundled_lines(body), expected)
+
     def test_only_valid_thematic_breaks_are_structural(self) -> None:
         self.assertEqual(
             _bundled_lines("First paragraph line\n_-_\ncontinued prose\n"),
@@ -588,6 +654,21 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(
             module.backtick_run_lengths_by_line(["plain text"]), ([()], [0])
         )
+        fence = chr(96) * 3
+        fenced_lines = [f"{fence}text", "literal ` backticks", fence]
+        self.assertEqual(
+            module.backtick_run_lengths_by_line(fenced_lines)[0],
+            [(), (), ()],
+        )
+        excluded_line_indexes: set[int] = set()
+        self.assertEqual(
+            module.backtick_run_lengths_by_line(
+                fenced_lines,
+                excluded_line_indexes=excluded_line_indexes,
+            )[0],
+            [(), (), ()],
+        )
+        self.assertEqual(excluded_line_indexes, {0, 1, 2})
 
     def test_comment_removal_rebases_surviving_inline_html_spans(self) -> None:
         module = _bundled_module()
