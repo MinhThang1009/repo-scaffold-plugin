@@ -50,7 +50,7 @@ HTML_COMPLETE_TAG_LINE_PATTERN = re.compile(
 )
 AUTOLINK_PATTERN = re.compile(r"^<(?:https?://|mailto:|[^ <>@]+@[^ <>@]+>)")
 BACKTICK_RUN_PATTERN = re.compile(r"[\x60]+")
-GFM_TABLE_DELIMITER_CELL_PATTERN = re.compile(r":?-{3,}:?")
+GFM_TABLE_DELIMITER_CELL_PATTERN = re.compile(r":?-+:?")
 SETEXT_HEADING_UNDERLINE_PATTERN = re.compile(r"^ {0,3}(?:=+[ \t]*|-+[ \t]*)$")
 MAX_BODY_FILE_BYTES = 1024 * 1024
 MAX_INLINE_CODE_LOOKAHEAD_CHARACTERS = 4 * MAX_BODY_FILE_BYTES

@@ -294,6 +294,10 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (),
         )
         self.assertEqual(
+            _bundled_lines("| Header | Value |\n| - | - |\n| row | value |\n"),
+            (),
+        )
+        self.assertEqual(
             _bundled_lines(
                 "> Header one | Header two\n> --- | ---\n> Value one | Value two\n"
             ),
