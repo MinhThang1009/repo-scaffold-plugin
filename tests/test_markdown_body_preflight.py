@@ -335,13 +335,45 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             _bundled_lines(invalid_table_with_html_attribute_pipe), (2, 3, 4)
         )
 
-    def test_gfm_table_requires_a_block_boundary_before_header(self) -> None:
+    def test_gfm_table_can_start_inside_an_open_paragraph(self) -> None:
         self.assertEqual(
             _bundled_lines(
                 "Paragraph first line\n| Header | Value |\n"
                 "| --- | --- |\n| row | value |\n"
             ),
-            (2, 3, 4),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line\nHeader | Value\n--- | ---\nrow | value\n"
+            ),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line\ncontinued paragraph line\n"
+                "| Header | Value |\n| --- | --- |\n| row | value |\n"
+            ),
+            (2,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> Paragraph first line\n> | Header | Value |\n"
+                "> | --- | --- |\n> | row | value |\n"
+            ),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("- Header | Value |\n  | --- | --- |\n  | row | value |\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("```text\n\n| Header | Value |\n| --- | --- |\n````\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("# Header | Value |\n| --- | --- |\n| row | value |\n"),
+            (3,),
         )
         self.assertEqual(
             _bundled_lines(

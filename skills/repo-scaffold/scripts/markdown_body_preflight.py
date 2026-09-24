@@ -450,13 +450,17 @@ def gfm_table_line_indexes(lines: list[str]) -> set[int]:
     table_lines: set[int] = set()
     index = 0
     while index + 1 < len(lines):
-        if index and not is_gfm_blank_line(
-            strip_blockquote_markers(lines[index - 1])[0]
+        # A matching header and delimiter row can split a table from an
+        # already-open paragraph, so a preceding blank line is not required.
+        header, header_quote_depth = strip_blockquote_markers(lines[index])
+        delimiter, delimiter_quote_depth = strip_blockquote_markers(lines[index + 1])
+        if (
+            FENCED_CODE_START_PATTERN.match(header) is not None
+            or STRUCTURAL_MARKDOWN_LINE_PATTERN.match(header) is not None
+            or html_block_start(header, allow_type_7=False)[0]
         ):
             index += 1
             continue
-        header, header_quote_depth = strip_blockquote_markers(lines[index])
-        delimiter, delimiter_quote_depth = strip_blockquote_markers(lines[index + 1])
         header_cells = split_gfm_table_cells(header)
         delimiter_cells = split_gfm_table_cells(delimiter)
         if (

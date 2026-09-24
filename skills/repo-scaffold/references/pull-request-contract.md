@@ -40,9 +40,10 @@ item on a single line; separate paragraphs with blank lines and let GitHub wrap
 text to the viewer's width. GitHub renders line breaks in issue and PR bodies as
 line breaks, so do not hard-wrap prose at a fixed column; see [line-break
 guidance](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#line-breaks).
-The checker follows GFM block boundaries and preserves fenced and indented code,
+The checker follows GFM block parsing and preserves fenced and indented code,
 code spans, autolinks, inline and block HTML, comments, headings, tables, block
-quotes, and nested lists while rejecting hard-wrapped prose. In particular, it
-recognizes a table only at a valid block boundary with a matching delimiter row.
+quotes, and nested lists while rejecting hard-wrapped prose. A table is
+recognized when a matching delimiter row confirms its header, including when
+the table starts inside an open paragraph without a separating blank line.
 Inline-code/comment disambiguation is bounded to 4,194,304 scanned characters
 per body or template; exceeding the budget fails validation closed.
