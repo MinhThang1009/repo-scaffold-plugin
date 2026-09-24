@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.11](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.10...v1.10.11) (2026-09-24)
+
+
+### Bug Fixes
+
+* **preflight:** reject hard-wrapped PR prose ([#122](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/122)) ([e452122](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/e45212227628bbd2274c139ece3ac05a0831d3df))
+
 ## [1.10.10](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.9...v1.10.10) (2026-09-22)
 
 
