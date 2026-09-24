@@ -417,28 +417,19 @@ def html_inline_tag_spans_by_line(
 
 
 def split_gfm_table_cells(line: str) -> tuple[str, ...] | None:
-    """Split a GFM table row at unescaped pipes outside inline code spans."""
-    html_tag_spans = html_inline_tag_spans(line)
-    masked_line, _ = mask_inline_code(line, None, Counter(), html_tag_spans)
+    """Split a GFM table row at unescaped pipe delimiters."""
     cells: list[str] = []
     current: list[str] = []
     escaped = False
     found_pipe = False
-    tag_index = 0
-    for index, character in enumerate(masked_line):
-        while tag_index < len(html_tag_spans) and html_tag_spans[tag_index][1] <= index:
-            tag_index += 1
-        inside_html_tag = (
-            tag_index < len(html_tag_spans)
-            and html_tag_spans[tag_index][0] <= index < html_tag_spans[tag_index][1]
-        )
+    for character in line:
         if escaped:
             current.append(character)
             escaped = False
         elif character == "\\":
             current.append(character)
             escaped = True
-        elif character == "|" and not inside_html_tag:
+        elif character == "|":
             cells.append("".join(current).strip(" \t"))
             current = []
             found_pipe = True
@@ -447,9 +438,9 @@ def split_gfm_table_cells(line: str) -> tuple[str, ...] | None:
     cells.append("".join(current).strip(" \t"))
     if not found_pipe:
         return None
-    if masked_line.lstrip(" \t").startswith("|") and cells and not cells[0]:
+    if line.lstrip(" \t").startswith("|") and cells and not cells[0]:
         cells.pop(0)
-    if masked_line.rstrip(" \t").endswith("|") and cells and not cells[-1]:
+    if line.rstrip(" \t").endswith("|") and cells and not cells[-1]:
         cells.pop()
     return tuple(cells)
 

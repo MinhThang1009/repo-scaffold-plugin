@@ -299,14 +299,37 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             ),
             (),
         )
-        escaped_and_code_pipes = _bundled_module().split_gfm_table_cells(
-            r"| escaped \| pipe | `literal|pipe` |"
+        split_table_cells = _bundled_module().split_gfm_table_cells
+        escaped_and_code_pipes = split_table_cells(
+            r"| escaped \| pipe | `literal\|pipe` |"
         )
         self.assertEqual(len(escaped_and_code_pipes), 2)
+        unescaped_code_pipe = split_table_cells(r"| `literal|pipe` |")
+        self.assertEqual(len(unescaped_code_pipe), 2)
         html_attribute_pipe = _bundled_module().split_gfm_table_cells(
             '| <span title="left|right">Header</span> | Value |'
         )
-        self.assertEqual(len(html_attribute_pipe), 2)
+        self.assertEqual(len(html_attribute_pipe), 3)
+        escaped_html_attribute_pipe = split_table_cells(
+            r'| <span title="left\|right">Header</span> | Value |'
+        )
+        self.assertEqual(len(escaped_html_attribute_pipe), 2)
+
+        invalid_table_with_code_pipe = (
+            "| `Header|inside` | Value |\n"
+            "| --- | --- |\n"
+            "First prose line\ncontinued prose line\n"
+        )
+        self.assertEqual(_bundled_lines(invalid_table_with_code_pipe), (2, 3, 4))
+
+        invalid_table_with_html_attribute_pipe = (
+            '| <span title="left|right">Header | Value |\n'
+            "| --- | --- |\n"
+            "First prose line\ncontinued prose line\n"
+        )
+        self.assertEqual(
+            _bundled_lines(invalid_table_with_html_attribute_pipe), (2, 3, 4)
+        )
 
     def test_gfm_table_requires_a_block_boundary_before_header(self) -> None:
         self.assertEqual(
