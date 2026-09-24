@@ -751,11 +751,15 @@ The bundled `scripts/branch_protection_preflight.py` turns this proof into a
 read-only, fail-closed gate. Run it after the final workflows are pushed to a
 open, mergeable representative PR and before any branch-protection mutation. It reads
 the exact workflow blobs at that PR head, rejects duplicate YAML keys and
-ambiguous producers, verifies unfiltered `pull_request` coverage plus
+ambiguous producers, verifies unfiltered `pull_request` coverage (or a trusted
+`pull_request_target` producer from the verified default branch) plus
 `merge_group` coverage when an effective merge queue applies, requires an
 unconditional executable job, and verifies a successful Check Run no older than
-seven days on both the head and test-merge SHAs. It also rejects a changing or
-missing GitHub App ID and every same-name Commit Status collision. It never
+seven days on both the head and test-merge SHAs. For `pull_request_target`, it
+also requires the exact workflow blob to match at the PR base commit because
+GitHub runs that event from the base repository's default branch. Merge any new
+or changed target workflow before running this preflight. It rejects a changing
+or missing GitHub App ID and every same-name Commit Status collision. It never
 modifies GitHub state. It also binds the exact repository/default branch,
 rejects archived or disabled targets, and requires current administration
 permission. Any API, parsing, pagination, mergeability, or evidence gap is
@@ -1463,7 +1467,9 @@ feature.
 - **Code scanning default setup**: requires an eligible repository and supported detected language. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
 
   The bundled preflight requires PyYAML and a Python feature release at or above
-  `tooling-python-minimum` in `.github/ci-toolchain.json`.
+  `tooling-python-minimum` in `.github/ci-toolchain.json`. When default setup is
+  not configured, it verifies the exact repository and current default branch
+  from GitHub before inspecting remote workflows.
 
   Resolve `REPO_SCAFFOLD_SKILL_ROOT` to the installed/source directory that contains this skill's `SKILL.md`; do not guess it from the current working directory. Run the bundled structural preflight with an available Python interpreter. It uses PyYAML's non-coercing `BaseLoader`, rejects duplicate keys, inspects only direct files under `.github/workflows`, inspects semantic `jobs.*.uses`, `jobs.*.steps[*].uses`, and shell-aware executable `run` content, and honors step, job, and workflow shell selection. For recognized Bash and PowerShell shells it masks inert heredoc, here-string, arithmetic-shift, literal, comment, and uninvoked function content, including function definitions whose opening brace is on the following line. It retains transitively invoked function bodies, literal `eval` and trap handlers, exported functions invoked by literal nested-shell commands, statically resolvable Bash/PowerShell aliases, direct shell-heredoc, recognized command wrappers, GNU `env` split strings, `xargs` with supported GNU/BSD options, direct `find` executors, shell `-c`, pipeline-fed shells, backtick/`$()` command substitution, Bash process substitution, PowerShell scriptblocks, nested PowerShell `-Command`, `Invoke-Expression`, `Start-Process`, direct `cmd /c` or `/k` CodeQL commands, quoted call-operator commands, and PowerShell `$()` execution. An unresolved command position, call-operator expression, recognized dynamic executor or alias target, encoded PowerShell command with a non-literal payload, or a malformed or unterminated construct fails closed. An unsupported or unresolved effective shell also fails closed instead of falling back to raw-text inspection. If default setup is already configured, it returns the safe preserve decision without the unnecessary workflow/analysis queries, sets those uninspected evidence fields to `null`, and sets `workflow_inspection_performed` and `analysis_inspection_performed` to false. Any other state must be exactly `not-configured`; an unknown default-setup state fails closed. It follows reusable workflows per top-level caller, rejects cycles, enforces GitHub's limit of 50 unique called workflows and 10 total levels on every call path, retains a separate 500-edge traversal safety cap, bounds API requests, and applies a timeout to each `gh api` subprocess. If Python, PyYAML, the effective shell, shell syntax, a workflow, a linked path, an API response, or the separate external/indirect CodeQL confirmation is unavailable, it exits inconclusive and mutation remains forbidden.
 

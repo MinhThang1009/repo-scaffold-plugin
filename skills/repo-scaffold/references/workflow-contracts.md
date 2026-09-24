@@ -89,9 +89,10 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
 - Branch protection: required-check producers must be unique, executable, and
   event-compatible. A trusted `pull_request_target` producer may satisfy
   protected default-branch pull-request coverage only when its exact default
-  branch filter and applicable Actions event policy are verified. Job or step
-  `if` and `continue-on-error` controls that can skip or mask the gate must
-  fail closed.
+  branch filter, unchanged workflow blob at the representative PR's base, and
+  applicable Actions event policy are verified. Merge new or changed target
+  workflows before running this preflight. Job or step `if` and
+  `continue-on-error` controls that can skip or mask the gate must fail closed.
 - Links, community-health, and freshness: keep network/upstream checks advisory;
   reminder workflows run only on trusted scheduled/manual events with a
   five-field POSIX cron schedule with an optional valid IANA timezone, and a

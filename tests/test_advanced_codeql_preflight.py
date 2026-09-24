@@ -70,6 +70,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
 def repository(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "full_name": "octo/example",
+        "default_branch": "main",
         "archived": False,
         "disabled": False,
         "visibility": "public",
@@ -197,6 +198,12 @@ class AdvancedCodeqlPreflightTests(unittest.TestCase):
                 repository(full_name="octo/other"),
                 {"enabled": True},
                 "different repository",
+            ),
+            (
+                arguments(default_branch="develop"),
+                repository(),
+                {"enabled": True},
+                "verified current default branch",
             ),
             (arguments(), repository(archived=True), {"enabled": True}, "Archived"),
             (arguments(), repository(disabled=True), {"enabled": True}, "Disabled"),

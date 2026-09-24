@@ -40,6 +40,8 @@ REPOSITORY = "example"
 HEAD_SHA = "a" * 40
 MERGE_SHA = "b" * 40
 BLOB_SHA = "c" * 40
+BASE_SHA = "d" * 40
+BASE_BLOB_SHA = "e" * 40
 
 
 class FakeClient:
@@ -391,8 +393,12 @@ jobs:
       - run: echo checked
 """
 
-    def configure(self, workflow: str | None = None) -> None:
+    def configure(
+        self, workflow: str | None = None, *, base_workflow: str | None = None
+    ) -> None:
         workflow = self.WORKFLOW if workflow is None else workflow
+        base_workflow = workflow if base_workflow is None else base_workflow
+        base_blob_sha = BLOB_SHA if base_workflow == workflow else BASE_BLOB_SHA
         tree_path = f"repos/{OWNER}/{REPOSITORY}/git/trees/{HEAD_SHA}?recursive=1"
         FakeClient.responses = {
             f"repos/{OWNER}/{REPOSITORY}": {
@@ -404,12 +410,17 @@ jobs:
             },
             f"repos/{OWNER}/{REPOSITORY}/pulls/7": {
                 "state": "open",
-                "base": {"ref": "main", "repo": {"full_name": f"{OWNER}/{REPOSITORY}"}},
+                "base": {
+                    "ref": "main",
+                    "sha": BASE_SHA,
+                    "repo": {"full_name": f"{OWNER}/{REPOSITORY}"},
+                },
                 "head": {"sha": HEAD_SHA},
                 "merge_commit_sha": MERGE_SHA,
                 "mergeable": True,
             },
             f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100": [],
+            f"repos/{OWNER}/{REPOSITORY}/commits/main": {"sha": BASE_SHA},
             tree_path: {
                 "truncated": False,
                 "tree": [
@@ -421,6 +432,17 @@ jobs:
                 ],
             },
             f"repos/{OWNER}/{REPOSITORY}/git/blobs/{BLOB_SHA}": workflow,
+            f"repos/{OWNER}/{REPOSITORY}/git/trees/{BASE_SHA}?recursive=1": {
+                "truncated": False,
+                "tree": [
+                    {
+                        "type": "blob",
+                        "path": ".github/workflows/ci.yml",
+                        "sha": base_blob_sha,
+                    }
+                ],
+            },
+            f"repos/{OWNER}/{REPOSITORY}/git/blobs/{base_blob_sha}": base_workflow,
         }
         for sha in (HEAD_SHA, MERGE_SHA):
             FakeClient.responses[
@@ -462,6 +484,81 @@ jobs:
             result = branch_protection_preflight.run(preflight_args("ci-success"))
 
         self.assertEqual(result["decision"], "may-configure-classic-protection")
+
+    def test_run_rejects_pull_request_target_changed_from_verified_base(self) -> None:
+        trusted_workflow = self.WORKFLOW.replace(
+            "  pull_request:\n",
+            "  pull_request_target:\n    branches: [main]\n",
+        )
+        changed_workflow = trusted_workflow.replace(
+            "run: echo checked", "run: echo bypass"
+        )
+        self.configure(changed_workflow, base_workflow=trusted_workflow)
+
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "differs from the verified base branch",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_rejects_pull_request_target_added_only_in_the_pr(self) -> None:
+        target_workflow = self.WORKFLOW.replace(
+            "  pull_request:\n",
+            "  pull_request_target:\n    branches: [main]\n",
+        )
+        self.configure(target_workflow, base_workflow=self.WORKFLOW)
+
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "missing from or differs from the verified base branch",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_rejects_stale_pull_request_target_base(self) -> None:
+        target_workflow = self.WORKFLOW.replace(
+            "  pull_request:\n",
+            "  pull_request_target:\n    branches: [main]\n",
+        )
+        self.configure(target_workflow)
+        pull_request = cast(
+            dict[str, Any], FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/pulls/7"]
+        )
+        pull_request["base"]["sha"] = "f" * 40
+
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "does not match the current default branch commit",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_rejects_missing_pull_request_base_sha_for_target(self) -> None:
+        target_workflow = self.WORKFLOW.replace(
+            "  pull_request:\n",
+            "  pull_request_target:\n    branches: [main]\n",
+        )
+        self.configure(target_workflow)
+        pull_request = cast(
+            dict[str, Any], FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}/pulls/7"]
+        )
+        pull_request["base"]["sha"] = None
+
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "no verified base commit",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
 
     def test_run_rejects_stale_or_missing_default_branch(self) -> None:
         for branch in (None, "develop", "Main", 7):

@@ -82,7 +82,7 @@ def event_covers(
             isinstance(event_type, str) for event_type in types
         ):
             continue
-        if event == "pull_request":
+        if candidate in {"pull_request", "pull_request_target"}:
             if {
                 "opened",
                 "edited",
@@ -99,7 +99,9 @@ def event_covers(
 class Producer:
     context: str
     identity: str
+    workflow_blob_sha: str
     pull_request_coverage: bool
+    pull_request_target_coverage: bool
     merge_group_coverage: bool
     unconditional: bool
     executable: bool
@@ -157,6 +159,9 @@ def workflow_producers(
         if not isinstance(jobs, dict):
             raise InspectionError(f"Workflow {path!r} has no jobs mapping.")
         pull_request_coverage = event_covers(document, "pull_request", default_branch)
+        pull_request_target_coverage = event_covers(
+            document, "pull_request_target", default_branch
+        )
         merge_group_coverage = event_covers(document, "merge_group", default_branch)
         for job_id, job in jobs.items():
             if not isinstance(job_id, str) or not isinstance(job, dict):
@@ -186,7 +191,9 @@ def workflow_producers(
                 Producer(
                     context=context,
                     identity=f"{path}#{job_id}",
+                    workflow_blob_sha=blob,
                     pull_request_coverage=pull_request_coverage,
+                    pull_request_target_coverage=pull_request_target_coverage,
                     merge_group_coverage=merge_group_coverage,
                     unconditional=job.get("if")
                     in (None, "${{ always() }}", "always()"),
@@ -380,6 +387,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Representative pull request does not verify the target repository and branch."
         )
+    base_sha = base.get("sha") if isinstance(base, dict) else None
     rules = client.json(
         f"repos/{owner}/{repo}/rules/branches/"
         f"{quote(args.default_branch, safe='')}?per_page=100"
@@ -399,6 +407,38 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise InspectionError("Effective rule has an invalid or missing type.")
     queue_required = any(rule["type"] == "merge_queue" for rule in rules)
     producers = workflow_producers(client, owner, repo, head_sha, args.default_branch)
+    target_contexts = {
+        context.casefold()
+        for context in contexts
+        if any(
+            producer.context.casefold() == context.casefold()
+            and producer.pull_request_target_coverage
+            for producer in producers
+        )
+    }
+    base_producers: list[Producer] | None = None
+    if target_contexts:
+        if not isinstance(base_sha, str) or not FULL_OBJECT_ID.fullmatch(base_sha):
+            raise InspectionError(
+                "Representative pull request has no verified base commit for its "
+                "pull_request_target producer."
+            )
+        current_default_commit = client.json(
+            f"repos/{owner}/{repo}/commits/{quote(args.default_branch, safe='')}"
+        )
+        current_default_sha = (
+            current_default_commit.get("sha")
+            if isinstance(current_default_commit, dict)
+            else None
+        )
+        if current_default_sha != base_sha:
+            raise InspectionError(
+                "Representative pull request base does not match the current "
+                "default branch commit."
+            )
+        base_producers = workflow_producers(
+            client, owner, repo, base_sha, args.default_branch
+        )
     now = datetime.now(timezone.utc)
     verified: list[dict[str, Any]] = []
     for context in contexts:
@@ -420,6 +460,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise InspectionError(
                 f"Required check {context!r} is not an unconditional executable pull-request gate."
             )
+        if producer.pull_request_target_coverage:
+            matching_base_producers = [
+                candidate
+                for candidate in base_producers or []
+                if candidate.context.casefold() == context.casefold()
+            ]
+            if (
+                len(matching_base_producers) != 1
+                or matching_base_producers[0].identity != producer.identity
+                or matching_base_producers[0].workflow_blob_sha
+                != producer.workflow_blob_sha
+            ):
+                raise InspectionError(
+                    f"Required check {context!r} has a pull_request_target producer "
+                    "that is missing from or differs from the verified base branch."
+                )
         if queue_required and not producer.merge_group_coverage:
             raise InspectionError(
                 f"Required check {context!r} lacks merge_group coverage."
