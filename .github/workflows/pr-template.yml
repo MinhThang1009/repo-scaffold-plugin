@@ -126,9 +126,9 @@ jobs:
               Path(body_file.name).unlink(missing_ok=True)
           if preflight.returncode != 0:
               raise SystemExit(preflight.stderr)
-          html_block_line_indexes = set()
+          non_prose_line_numbers = set()
           hard_wrapped_prose_lines(
-              body, html_block_line_indexes=html_block_line_indexes
+              body, non_prose_line_numbers=non_prose_line_numbers
           )
           heading_pattern = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
           checklist_pattern = re.compile(r"^- \[[ xX]\] (.+?)\s*$", re.MULTILINE)
@@ -172,7 +172,7 @@ jobs:
               for line_number, line in enumerate(
                   split_gfm_lines(markdown), start=1
               ):
-                  if line_number in html_block_line_indexes:
+                  if line_number in non_prose_line_numbers:
                       visible_lines.append("")
                       continue
                   fence_start_match = fenced_code_start_pattern.match(line)

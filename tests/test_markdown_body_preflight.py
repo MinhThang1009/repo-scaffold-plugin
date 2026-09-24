@@ -849,6 +849,36 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertFalse(context_exited)
         self.assertEqual(context, [(0, 2), (3, 5)])
 
+    def test_non_prose_line_collection_includes_code_and_html_blocks(self) -> None:
+        module = _bundled_module()
+        non_prose_lines: set[int] = set()
+        html_block_lines: set[int] = set()
+        markdown = (
+            "<!-- repo-scaffold:pr-template=feature -->\n"
+            "\n"
+            "    <!-- repo-scaffold:required-checklist:start -->\n"
+            "    - [x] literal code, not a checklist section\n"
+            "\n"
+            "```markdown\n"
+            "## hidden heading\n"
+            "```\n"
+            "<pre>\n"
+            "raw HTML content\n"
+            "</pre>\n"
+            "## Visible heading\n"
+        )
+
+        self.assertEqual(
+            module.hard_wrapped_prose_lines(
+                markdown,
+                html_block_line_indexes=html_block_lines,
+                non_prose_line_numbers=non_prose_lines,
+            ),
+            (),
+        )
+        self.assertEqual(non_prose_lines, {3, 4, 6, 7, 8, 9, 10, 11})
+        self.assertEqual(html_block_lines, {9, 10, 11})
+
     def test_inline_html_helpers_cover_default_and_blank_line_paths(self) -> None:
         module = _bundled_module()
         self.assertEqual(module.html_inline_tag_spans_by_line([]), ([], [], []))

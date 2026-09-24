@@ -1178,8 +1178,9 @@ def hard_wrapped_prose_lines(
     markdown: str,
     *,
     html_block_line_indexes: set[int] | None = None,
+    non_prose_line_numbers: set[int] | None = None,
 ) -> tuple[int, ...]:
-    """Return wrapped-prose lines and optionally collect raw HTML block lines."""
+    """Return wrapped-prose lines and optionally collect opaque Markdown lines."""
     wrapped: list[int] = []
     previous_is_prose = False
     previous_is_list_item = False
@@ -1476,6 +1477,11 @@ def hard_wrapped_prose_lines(
             previous_paragraph_open = False
         previous_quote_depth = effective_quote_depth
         inline_html_tag_pending = html_tag_starts_by_line[line_index]
+
+    if non_prose_line_numbers is not None:
+        non_prose_line_numbers.update(index + 1 for index in raw_block_line_indexes)
+        if html_block_line_indexes is not None:
+            non_prose_line_numbers.update(html_block_line_indexes)
 
     return tuple(wrapped)
 

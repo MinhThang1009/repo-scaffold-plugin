@@ -7225,6 +7225,15 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     )
                     + "\n</div>\n"
                 ),
+                "indented checklist section markers": (
+                    feature_body.replace(
+                        "<!-- repo-scaffold:required-checklist:start -->",
+                        "    <!-- repo-scaffold:required-checklist:start -->",
+                    ).replace(
+                        "<!-- repo-scaffold:required-checklist:end -->",
+                        "    <!-- repo-scaffold:required-checklist:end -->",
+                    )
+                ),
             }
             for hiding_method, hidden_body in hidden_content_bodies.items():
                 with self.subTest(hiding_method=hiding_method):
