@@ -879,6 +879,16 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(non_prose_lines, {3, 4, 6, 7, 8, 9, 10, 11})
         self.assertEqual(html_block_lines, {9, 10, 11})
 
+        non_prose_without_html_indexes: set[int] = set()
+        module.hard_wrapped_prose_lines(
+            markdown,
+            non_prose_line_numbers=non_prose_without_html_indexes,
+        )
+        self.assertEqual(
+            non_prose_without_html_indexes,
+            {3, 4, 6, 7, 8, 9, 10, 11},
+        )
+
     def test_inline_html_helpers_cover_default_and_blank_line_paths(self) -> None:
         module = _bundled_module()
         self.assertEqual(module.html_inline_tag_spans_by_line([]), ([], [], []))
