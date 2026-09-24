@@ -2914,6 +2914,10 @@ def load_remote_default_branch(
             raise InspectionError(
                 f"Default-branch workflow entry is not a blob: {path!r}"
             )
+        if item.get("mode") not in {"100644", "100755"}:
+            raise InspectionError(
+                f"Default-branch workflow entry is not a regular file: {path!r}"
+            )
         if not is_direct_workflow_path(path):
             raise InspectionError(
                 f"Default-branch workflow path is not canonical: {path!r}"

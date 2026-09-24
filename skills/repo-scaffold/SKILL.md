@@ -143,7 +143,10 @@ workflow only when it is filtered to the verified default branch and its exact
 workflow blob is unchanged from the pull request's base commit. Merge any new or
 changed target workflow before running this check. It rejects job or step
 conditions that can skip the gate or mask its failure, including `if` and
-`continue-on-error`. Do not configure required checks when it is inconclusive.
+`continue-on-error`. It binds Check Run evidence to the exact Actions workflow
+path through `check_suite.id`, commit SHA, and an event GitHub accepts for
+required status checks; a `workflow_dispatch` result is not sufficient. Do not
+configure required checks when it is inconclusive.
 
 Before installing `dependency-review.yml`, run the fail-closed
 `scripts/dependency_review_preflight.py` against the exact repository. It

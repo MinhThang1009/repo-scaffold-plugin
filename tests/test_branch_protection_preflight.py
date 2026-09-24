@@ -42,6 +42,8 @@ MERGE_SHA = "b" * 40
 BLOB_SHA = "c" * 40
 BASE_SHA = "d" * 40
 BASE_BLOB_SHA = "e" * 40
+CHECK_SUITE_ID = 98765
+HEAD_CHECK_SUITE_ID = 98764
 
 
 class FakeClient:
@@ -63,12 +65,20 @@ class FakeClient:
         return value
 
 
-def check_runs(context: str, app_id: int = 15368) -> dict[str, Any]:
+def check_runs(
+    context: str,
+    app_id: int = 15368,
+    *,
+    head_sha: str = HEAD_SHA,
+    suite_id: int = CHECK_SUITE_ID,
+) -> dict[str, Any]:
     return {
         "total_count": 1,
         "check_runs": [
             {
                 "name": context,
+                "head_sha": head_sha,
+                "check_suite": {"id": suite_id},
                 "app": {"id": app_id},
                 "completed_at": datetime.now(timezone.utc).isoformat(),
                 "conclusion": "success",
@@ -239,6 +249,7 @@ jobs: {}
 
         entry = {
             "type": "blob",
+            "mode": "100644",
             "path": ".github/workflows/ci.yml",
             "sha": BLOB_SHA,
         }
@@ -284,6 +295,15 @@ jobs: {}
         FakeClient.responses = {endpoint: {"truncated": False, "tree": [invalid_entry]}}
         with self.assertRaisesRegex(
             branch_protection_preflight.InspectionError, "invalid blob"
+        ):
+            branch_protection_preflight.workflow_producers(
+                client, OWNER, REPOSITORY, HEAD_SHA
+            )
+
+        symlink_entry = dict(entry, mode="120000")
+        FakeClient.responses = {endpoint: {"truncated": False, "tree": [symlink_entry]}}
+        with self.assertRaisesRegex(
+            branch_protection_preflight.InspectionError, "not a regular file"
         ):
             branch_protection_preflight.workflow_producers(
                 client, OWNER, REPOSITORY, HEAD_SHA
@@ -426,6 +446,7 @@ jobs:
                 "tree": [
                     {
                         "type": "blob",
+                        "mode": "100644",
                         "path": ".github/workflows/ci.yml",
                         "sha": BLOB_SHA,
                     }
@@ -437,6 +458,7 @@ jobs:
                 "tree": [
                     {
                         "type": "blob",
+                        "mode": "100644",
                         "path": ".github/workflows/ci.yml",
                         "sha": base_blob_sha,
                     }
@@ -444,13 +466,34 @@ jobs:
             },
             f"repos/{OWNER}/{REPOSITORY}/git/blobs/{base_blob_sha}": base_workflow,
         }
-        for sha in (HEAD_SHA, MERGE_SHA):
+        workflow_event = (
+            "pull_request_target"
+            if "pull_request_target:" in workflow
+            else "pull_request"
+        )
+        for sha, suite_id in (
+            (HEAD_SHA, HEAD_CHECK_SUITE_ID),
+            (MERGE_SHA, CHECK_SUITE_ID),
+        ):
             FakeClient.responses[
                 f"repos/{OWNER}/{REPOSITORY}/commits/{sha}/check-runs?per_page=100"
-            ] = check_runs("ci-success")
+            ] = check_runs("ci-success", head_sha=sha, suite_id=suite_id)
             FakeClient.responses[
                 f"repos/{OWNER}/{REPOSITORY}/commits/{sha}/status?per_page=100"
             ] = {"total_count": 0, "statuses": []}
+            FakeClient.responses[
+                f"repos/{OWNER}/{REPOSITORY}/actions/runs?check_suite_id={suite_id}&per_page=100"
+            ] = {
+                "total_count": 1,
+                "workflow_runs": [
+                    {
+                        "check_suite_id": suite_id,
+                        "head_sha": sha,
+                        "event": workflow_event,
+                        "path": ".github/workflows/ci.yml",
+                    }
+                ],
+            }
 
     def test_run_produces_app_bound_protection_input(self) -> None:
         self.configure()
@@ -741,6 +784,9 @@ jobs:
         self.assertIn("$requiredCheckPreflight.repository", protection)
         self.assertIn("$requiredCheckPreflight.default_branch", protection)
         self.assertIn("changed after preflight", protection)
+        self.assertIn("check_suite.id", protection)
+        self.assertIn("workflow_dispatch", protection)
+        self.assertIn("Actions: read", protection)
 
     def test_run_rejects_multiple_workflow_producers(self) -> None:
         self.configure(
@@ -762,7 +808,7 @@ jobs:
     def test_run_rejects_commit_status_collision(self) -> None:
         self.configure()
         FakeClient.responses[
-            f"repos/{OWNER}/{REPOSITORY}/commits/{HEAD_SHA}/status?per_page=100"
+            f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_SHA}/status?per_page=100"
         ] = {"total_count": 1, "statuses": [{"context": "ci-success"}]}
 
         with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
@@ -770,6 +816,202 @@ jobs:
                 branch_protection_preflight.InspectionError, "Commit Status"
             ):
                 branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_uses_the_head_when_the_test_merge_has_no_statuses(self) -> None:
+        self.configure()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_SHA}/check-runs?per_page=100"
+        ] = {"total_count": 0, "check_runs": []}
+
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            result = branch_protection_preflight.run(preflight_args("ci-success"))
+
+        self.assertEqual(result["decision"], "may-configure-classic-protection")
+        self.assertEqual(result["required_checks"][0]["app_id"], 15368)
+
+    def test_run_uses_test_merge_evidence_without_requiring_head_evidence(self) -> None:
+        self.configure()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{HEAD_SHA}/check-runs?per_page=100"
+        ] = {"total_count": 0, "check_runs": []}
+
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            result = branch_protection_preflight.run(preflight_args("ci-success"))
+
+        self.assertEqual(result["decision"], "may-configure-classic-protection")
+        self.assertEqual(result["required_checks"][0]["app_id"], 15368)
+
+    def test_run_does_not_fall_back_to_head_when_merge_has_other_checks(self) -> None:
+        self.configure()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_SHA}/check-runs?per_page=100"
+        ] = check_runs("different-check")
+
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "no Check Run evidence on the controlling test-merge SHA",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_binds_check_run_to_eligible_workflow_run(self) -> None:
+        self.configure()
+        endpoint = f"repos/{OWNER}/{REPOSITORY}/actions/runs?check_suite_id={CHECK_SUITE_ID}&per_page=100"
+        original = cast(dict[str, Any], FakeClient.responses[endpoint])
+        original_run = cast(dict[str, Any], original["workflow_runs"][0])
+        invalid_runs = [
+            ({**original_run, "event": "workflow_dispatch"}, "eligible for required"),
+            (
+                {**original_run, "event": "pull_request_review_comment"},
+                "eligible for required",
+            ),
+            ({**original_run, "path": ".github/workflows/other.yml"}, "workflow path"),
+            ({**original_run, "head_sha": HEAD_SHA}, "workflow path"),
+        ]
+        for invalid_run, message in invalid_runs:
+            FakeClient.responses[endpoint] = {
+                "total_count": 1,
+                "workflow_runs": [invalid_run],
+            }
+            with (
+                self.subTest(invalid_run=invalid_run),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError, message
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+        FakeClient.responses[endpoint] = {"total_count": 0, "workflow_runs": []}
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "no unique Actions workflow run",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
+
+        for invalid_suite_id in (True, CHECK_SUITE_ID + 1):
+            FakeClient.responses[endpoint] = {
+                "total_count": 1,
+                "workflow_runs": [{**original_run, "check_suite_id": invalid_suite_id}],
+            }
+            with (
+                self.subTest(check_suite_id=invalid_suite_id),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "invalid Actions workflow-run Check Suite ID",
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+        FakeClient.responses[endpoint] = {"total_count": 101, "workflow_runs": []}
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "workflow-runs response has an invalid or incomplete",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
+
+        invalid_payloads: list[tuple[object, str]] = [
+            ([], "Actions workflow-runs response is invalid"),
+            ({"total_count": True, "workflow_runs": []}, "invalid or incomplete"),
+            ({"total_count": 1, "workflow_runs": [None]}, "invalid or incomplete"),
+        ]
+        for payload, message in invalid_payloads:
+            FakeClient.responses[endpoint] = payload
+            with (
+                self.subTest(workflow_runs=payload),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError, message
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+        valid_run = cast(dict[str, Any], original_run)
+        FakeClient.responses[endpoint] = {
+            "total_count": 2,
+            "workflow_runs": [valid_run, dict(valid_run)],
+        }
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "no unique Actions workflow run",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_accepts_action_run_path_with_ref_suffix(self) -> None:
+        self.configure()
+        endpoint = f"repos/{OWNER}/{REPOSITORY}/actions/runs?check_suite_id={CHECK_SUITE_ID}&per_page=100"
+        action_run_response = cast(dict[str, Any], FakeClient.responses[endpoint])
+        action_runs = cast(list[dict[str, Any]], action_run_response["workflow_runs"])
+        action_runs[0]["path"] = ".github/workflows/ci.yml@refs/pull/7/merge"
+
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            result = branch_protection_preflight.run(preflight_args("ci-success"))
+
+        self.assertEqual(result["decision"], "may-configure-classic-protection")
+
+    def test_run_rejects_check_run_without_valid_sha_or_suite(self) -> None:
+        self.configure()
+        endpoint = (
+            f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_SHA}/check-runs?per_page=100"
+        )
+        original = cast(dict[str, Any], FakeClient.responses[endpoint])
+        original_run = cast(dict[str, Any], original["check_runs"][0])
+        invalid_runs = [
+            ({**original_run, "head_sha": "f" * 40}),
+            ({**original_run, "check_suite": {"id": True}}),
+            (
+                {
+                    key: value
+                    for key, value in original_run.items()
+                    if key != "check_suite"
+                }
+            ),
+        ]
+        for invalid_run in invalid_runs:
+            FakeClient.responses[endpoint] = {
+                "total_count": 1,
+                "check_runs": [invalid_run],
+            }
+            with (
+                self.subTest(check_run=invalid_run),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "no valid Check Run SHA or suite ID",
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_run_ignores_noncontrolling_head_status_collisions(self) -> None:
+        self.configure()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{HEAD_SHA}/status?per_page=100"
+        ] = {"total_count": 1, "statuses": [{"context": "ci-success"}]}
+
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            result = branch_protection_preflight.run(preflight_args("ci-success"))
+
+        self.assertEqual(result["decision"], "may-configure-classic-protection")
 
     def test_run_requires_merge_group_coverage_when_queue_applies(self) -> None:
         self.configure(
@@ -884,7 +1126,7 @@ jobs:
                     )
         conflict = dict(base, app={"id": 2})
         with self.assertRaisesRegex(
-            branch_protection_preflight.InspectionError, "conflicting"
+            branch_protection_preflight.InspectionError, "multiple matching Check Runs"
         ):
             branch_protection_preflight.app_id_for_check(
                 {"total_count": 2, "check_runs": [base, conflict]}, "ci-success", now
@@ -916,6 +1158,7 @@ jobs:
                 "short",
                 "ci-success",
                 datetime.now(timezone.utc),
+                ".github/workflows/ci.yml",
             )
         for status in [
             {},
@@ -936,7 +1179,88 @@ jobs:
                         HEAD_SHA,
                         "ci-success",
                         datetime.now(timezone.utc),
+                        ".github/workflows/ci.yml",
                     )
+
+    def test_inspect_evidence_requires_a_check_run(self) -> None:
+        client = FakeClient("github.com")
+        FakeClient.responses = {
+            f"repos/{OWNER}/{REPOSITORY}/commits/{HEAD_SHA}/check-runs?per_page=100": {
+                "total_count": 0,
+                "check_runs": [],
+            },
+            f"repos/{OWNER}/{REPOSITORY}/commits/{HEAD_SHA}/status?per_page=100": {
+                "total_count": 0,
+                "statuses": [],
+            },
+        }
+
+        with self.assertRaisesRegex(
+            branch_protection_preflight.InspectionError,
+            "has no Check Run evidence",
+        ):
+            branch_protection_preflight.inspect_evidence(
+                client,
+                OWNER,
+                REPOSITORY,
+                HEAD_SHA,
+                "ci-success",
+                datetime.now(timezone.utc),
+                ".github/workflows/ci.yml",
+            )
+
+    def test_inspect_evidence_returns_the_verified_app_id(self) -> None:
+        client = FakeClient("github.com")
+        FakeClient.responses = {
+            f"repos/{OWNER}/{REPOSITORY}/commits/{HEAD_SHA}/check-runs?per_page=100": check_runs(
+                "ci-success", head_sha=HEAD_SHA, suite_id=HEAD_CHECK_SUITE_ID
+            ),
+            f"repos/{OWNER}/{REPOSITORY}/commits/{HEAD_SHA}/status?per_page=100": {
+                "total_count": 0,
+                "statuses": [],
+            },
+            f"repos/{OWNER}/{REPOSITORY}/actions/runs?check_suite_id={HEAD_CHECK_SUITE_ID}&per_page=100": {
+                "total_count": 1,
+                "workflow_runs": [
+                    {
+                        "check_suite_id": HEAD_CHECK_SUITE_ID,
+                        "head_sha": HEAD_SHA,
+                        "event": "pull_request",
+                        "path": ".github/workflows/ci.yml",
+                    }
+                ],
+            },
+        }
+
+        app_id = branch_protection_preflight.inspect_evidence(
+            client,
+            OWNER,
+            REPOSITORY,
+            HEAD_SHA,
+            "ci-success",
+            datetime.now(timezone.utc),
+            ".github/workflows/ci.yml",
+        )
+
+        self.assertEqual(app_id, 15368)
+
+    def test_run_requires_check_run_on_the_controlling_head(self) -> None:
+        self.configure()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_SHA}/check-runs?per_page=100"
+        ] = {"total_count": 0, "check_runs": []}
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{HEAD_SHA}/check-runs?per_page=100"
+        ] = {"total_count": 0, "check_runs": []}
+
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "no Check Run evidence on the controlling head SHA",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
 
     def test_run_rejects_invalid_representative_pull_request_data(self) -> None:
         invalid_arguments: list[tuple[dict[str, object], str]] = [
@@ -998,7 +1322,7 @@ jobs:
             ):
                 branch_protection_preflight.run(preflight_args("ci-success"))
 
-    def test_run_rejects_non_gate_producer_and_app_mismatch(self) -> None:
+    def test_run_rejects_non_gate_producer_and_uses_controlling_app(self) -> None:
         self.configure(self.WORKFLOW.replace("if: ${{ always() }}", "if: false"))
         with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
             with self.assertRaisesRegex(
@@ -1033,12 +1357,10 @@ jobs:
         self.configure()
         FakeClient.responses[
             f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_SHA}/check-runs?per_page=100"
-        ] = check_runs("ci-success", app_id=1)
+        ] = check_runs("ci-success", app_id=1, head_sha=MERGE_SHA)
         with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
-            with self.assertRaisesRegex(
-                branch_protection_preflight.InspectionError, "changes GitHub App"
-            ):
-                branch_protection_preflight.run(preflight_args("ci-success"))
+            result = branch_protection_preflight.run(preflight_args("ci-success"))
+        self.assertEqual(result["required_checks"][0]["app_id"], 1)
 
     def test_cli_reports_success_and_inconclusive_result(self) -> None:
         self.configure()

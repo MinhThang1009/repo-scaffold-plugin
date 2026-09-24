@@ -28,6 +28,16 @@ MAX_WORKFLOWS = 500
 MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
 MAX_TOTAL_WORKFLOW_BYTES = 64 * 1024 * 1024
 CONTEXT = re.compile(r"^[^\r\n\x00]{1,256}$")
+CHECK_RUN_WORKFLOW_EVENTS = frozenset(
+    {
+        "push",
+        "pull_request",
+        "pull_request_review",
+        "pull_request_target",
+        "deployment",
+        "deployment_status",
+    }
+)
 
 
 def parse_workflow(text: str, source: str) -> dict[str, Any]:
@@ -99,6 +109,7 @@ def event_covers(
 class Producer:
     context: str
     identity: str
+    workflow_path: str
     workflow_blob_sha: str
     pull_request_coverage: bool
     pull_request_target_coverage: bool
@@ -133,6 +144,8 @@ def workflow_producers(
             continue
         if entry.get("type") != "blob":
             raise InspectionError(f"Workflow entry is not a blob: {path!r}")
+        if entry.get("mode") not in {"100644", "100755"}:
+            raise InspectionError(f"Workflow entry is not a regular file: {path!r}")
         if not is_direct_workflow_path(path):
             raise InspectionError(f"Workflow path is not canonical: {path!r}")
         if path in seen_workflow_paths:
@@ -191,6 +204,7 @@ def workflow_producers(
                 Producer(
                     context=context,
                     identity=f"{path}#{job_id}",
+                    workflow_path=path,
                     workflow_blob_sha=blob,
                     pull_request_coverage=pull_request_coverage,
                     pull_request_target_coverage=pull_request_target_coverage,
@@ -203,7 +217,7 @@ def workflow_producers(
     return producers
 
 
-def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
+def check_runs_from_payload(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, dict) or not isinstance(payload.get("check_runs"), list):
         raise InspectionError("Check Runs response is invalid.")
     check_runs = payload["check_runs"]
@@ -219,6 +233,106 @@ def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
         raise InspectionError(
             "Check Runs response has an invalid or incomplete bounded result."
         )
+    return [item for item in check_runs if isinstance(item, dict)]
+
+
+def status_entries_from_payload(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("statuses"), list):
+        raise InspectionError("Combined status response is invalid.")
+    statuses = payload["statuses"]
+    total = payload.get("total_count")
+    if (
+        not isinstance(total, int)
+        or isinstance(total, bool)
+        or total < 0
+        or total > 100
+        or total != len(statuses)
+        or not all(isinstance(status, dict) for status in statuses)
+    ):
+        raise InspectionError(
+            "Combined status response has an invalid or incomplete bounded result."
+        )
+    return [status for status in statuses if isinstance(status, dict)]
+
+
+def workflow_runs_from_payload(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("workflow_runs"), list
+    ):
+        raise InspectionError("Actions workflow-runs response is invalid.")
+    workflow_runs = payload["workflow_runs"]
+    total = payload.get("total_count")
+    if (
+        not isinstance(total, int)
+        or isinstance(total, bool)
+        or total < 0
+        or total > 100
+        or total != len(workflow_runs)
+        or not all(isinstance(run, dict) for run in workflow_runs)
+    ):
+        raise InspectionError(
+            "Actions workflow-runs response has an invalid or incomplete bounded result."
+        )
+    return [run for run in workflow_runs if isinstance(run, dict)]
+
+
+def verify_check_run_workflow_source(
+    client: GitHubClient,
+    owner: str,
+    repo: str,
+    sha: str,
+    context: str,
+    workflow_path: str,
+    check_run: dict[str, Any],
+) -> None:
+    check_head_sha = check_run.get("head_sha")
+    suite = check_run.get("check_suite")
+    suite_id = suite.get("id") if isinstance(suite, dict) else None
+    if (
+        not isinstance(check_head_sha, str)
+        or check_head_sha.casefold() != sha.casefold()
+        or not isinstance(suite_id, int)
+        or isinstance(suite_id, bool)
+        or suite_id <= 0
+    ):
+        raise InspectionError(
+            f"Required check {context!r} has no valid Check Run SHA or suite ID."
+        )
+
+    payload = client.json(
+        f"repos/{owner}/{repo}/actions/runs?check_suite_id={suite_id}&per_page=100"
+    )
+    workflow_runs = workflow_runs_from_payload(payload)
+    if any(
+        type(run.get("check_suite_id")) is not int or run["check_suite_id"] != suite_id
+        for run in workflow_runs
+    ):
+        raise InspectionError(
+            f"Required check {context!r} has an invalid Actions workflow-run Check Suite ID."
+        )
+    if len(workflow_runs) != 1:
+        raise InspectionError(
+            f"Required check {context!r} has no unique Actions workflow run for its Check Suite."
+        )
+    workflow_run = workflow_runs[0]
+    event = workflow_run.get("event")
+    path = workflow_run.get("path")
+    if (
+        not isinstance(workflow_run.get("head_sha"), str)
+        or workflow_run["head_sha"].casefold() != sha.casefold()
+        or not isinstance(event, str)
+        or event.casefold() not in CHECK_RUN_WORKFLOW_EVENTS
+        or not isinstance(path, str)
+        or not (path == workflow_path or path.startswith(workflow_path + "@"))
+    ):
+        raise InspectionError(
+            f"Required check {context!r} was not produced by the verified workflow "
+            "path on an event eligible for required status checks."
+        )
+
+
+def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
+    check_runs = check_runs_from_payload(payload)
     matches = [
         item
         for item in check_runs
@@ -226,44 +340,40 @@ def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
     ]
     if not matches:
         raise InspectionError(f"Required check {context!r} has no Check Run evidence.")
-    app_ids: set[int] = set()
-    success = False
-    for item in matches:
-        app = item.get("app")
-        app_id = app.get("id") if isinstance(app, dict) else None
-        completed_at = item.get("completed_at")
-        if (
-            not isinstance(app_id, int)
-            or isinstance(app_id, bool)
-            or app_id <= 0
-            or not isinstance(completed_at, str)
-        ):
-            raise InspectionError(
-                f"Required check {context!r} has incomplete Check Run evidence."
-            )
-        try:
-            completed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise InspectionError(
-                f"Required check {context!r} has an invalid completion time."
-            ) from exc
-        if completed.tzinfo is None:
-            raise InspectionError(
-                f"Required check {context!r} has a timezone-less completion time."
-            )
-        app_ids.add(app_id)
-        success |= item.get("conclusion") == "success" and (
-            now - timedelta(days=7) <= completed <= now
-        )
-    if len(app_ids) != 1:
+    if len(matches) != 1:
         raise InspectionError(
-            f"Required check {context!r} has conflicting GitHub App IDs."
+            f"Required check {context!r} has multiple matching Check Runs."
         )
-    if not success:
+    item = matches[0]
+    app = item.get("app")
+    app_id = app.get("id") if isinstance(app, dict) else None
+    completed_at = item.get("completed_at")
+    if (
+        not isinstance(app_id, int)
+        or isinstance(app_id, bool)
+        or app_id <= 0
+        or not isinstance(completed_at, str)
+    ):
+        raise InspectionError(
+            f"Required check {context!r} has incomplete Check Run evidence."
+        )
+    try:
+        completed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise InspectionError(
+            f"Required check {context!r} has an invalid completion time."
+        ) from exc
+    if completed.tzinfo is None:
+        raise InspectionError(
+            f"Required check {context!r} has a timezone-less completion time."
+        )
+    if item.get("conclusion") != "success" or not (
+        now - timedelta(days=7) <= completed <= now
+    ):
         raise InspectionError(
             f"Required check {context!r} has no successful recent Check Run."
         )
-    return next(iter(app_ids))
+    return app_id
 
 
 def inspect_evidence(
@@ -273,26 +383,32 @@ def inspect_evidence(
     sha: str,
     context: str,
     now: datetime,
+    workflow_path: str,
 ) -> int:
+    app_id, _has_status = inspect_commit_evidence(
+        client, owner, repo, sha, context, now, workflow_path
+    )
+    if app_id is None:
+        raise InspectionError(f"Required check {context!r} has no Check Run evidence.")
+    return app_id
+
+
+def inspect_commit_evidence(
+    client: GitHubClient,
+    owner: str,
+    repo: str,
+    sha: str,
+    context: str,
+    now: datetime,
+    workflow_path: str,
+) -> tuple[int | None, bool]:
+    """Read one commit and report its source app and whether it has any status."""
     if not FULL_OBJECT_ID.fullmatch(sha):
         raise InspectionError("A controlling SHA is not a full Git object ID.")
     checks = client.json(f"repos/{owner}/{repo}/commits/{sha}/check-runs?per_page=100")
     statuses = client.json(f"repos/{owner}/{repo}/commits/{sha}/status?per_page=100")
-    if not isinstance(statuses, dict) or not isinstance(statuses.get("statuses"), list):
-        raise InspectionError("Combined status response is invalid.")
-    status_entries = statuses["statuses"]
-    total = statuses.get("total_count")
-    if (
-        not isinstance(total, int)
-        or isinstance(total, bool)
-        or total < 0
-        or total > 100
-        or total != len(status_entries)
-        or not all(isinstance(status, dict) for status in status_entries)
-    ):
-        raise InspectionError(
-            "Combined status response has an invalid or incomplete bounded result."
-        )
+    check_runs = check_runs_from_payload(checks)
+    status_entries = status_entries_from_payload(statuses)
     if any(
         str(status.get("context", "")).casefold() == context.casefold()
         for status in status_entries
@@ -300,7 +416,18 @@ def inspect_evidence(
         raise InspectionError(
             f"Required check {context!r} collides with a Commit Status on a controlling SHA."
         )
-    return app_id_for_check(checks, context, now)
+    matches = [
+        check_run
+        for check_run in check_runs
+        if str(check_run.get("name", "")).casefold() == context.casefold()
+    ]
+    app_id: int | None = None
+    if matches:
+        app_id = app_id_for_check(checks, context, now)
+        verify_check_run_workflow_source(
+            client, owner, repo, sha, context, workflow_path, matches[0]
+        )
+    return app_id, bool(check_runs or status_entries)
 
 
 def validate_contexts(values: list[str]) -> list[str]:
@@ -480,14 +607,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise InspectionError(
                 f"Required check {context!r} lacks merge_group coverage."
             )
-        head_app = inspect_evidence(client, owner, repo, head_sha, context, now)
-        merge_app = inspect_evidence(client, owner, repo, merge_sha, context, now)
-        if head_app != merge_app:
-            raise InspectionError(
-                f"Required check {context!r} changes GitHub App between controlling SHAs."
+        merge_app, merge_has_status = inspect_commit_evidence(
+            client, owner, repo, merge_sha, context, now, producer.workflow_path
+        )
+        if merge_has_status:
+            if merge_app is None:
+                raise InspectionError(
+                    f"Required check {context!r} has no Check Run evidence on the "
+                    "controlling test-merge SHA."
+                )
+            controlling_app = merge_app
+        else:
+            head_app, _head_has_status = inspect_commit_evidence(
+                client, owner, repo, head_sha, context, now, producer.workflow_path
             )
+            if head_app is None:
+                raise InspectionError(
+                    f"Required check {context!r} has no Check Run evidence on the "
+                    "controlling head SHA."
+                )
+            controlling_app = head_app
         verified.append(
-            {"context": context, "app_id": head_app, "producer": producer.identity}
+            {
+                "context": context,
+                "app_id": controlling_app,
+                "producer": producer.identity,
+            }
         )
     return {
         "inspection_complete": True,

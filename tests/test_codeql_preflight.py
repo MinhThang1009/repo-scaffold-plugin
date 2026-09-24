@@ -3063,6 +3063,7 @@ class WorkflowResolverTests(unittest.TestCase):
                     {"type": "blob", "path": "README.md", "sha": "c" * 40},
                     {
                         "type": "blob",
+                        "mode": "100644",
                         "path": ".github/workflows/ci.yml",
                         "sha": blob,
                     },
@@ -3096,6 +3097,7 @@ class WorkflowResolverTests(unittest.TestCase):
                         "tree": [
                             {
                                 "type": "blob",
+                                "mode": "100644",
                                 "path": ".github/workflows/ci.yml",
                                 "sha": "short",
                             }
@@ -3112,6 +3114,7 @@ class WorkflowResolverTests(unittest.TestCase):
                         "tree": [
                             {
                                 "type": "blob",
+                                "mode": "100644",
                                 "path": ".github/workflows/a\n.yml",
                                 "sha": blob,
                             }
@@ -3119,6 +3122,23 @@ class WorkflowResolverTests(unittest.TestCase):
                     },
                 ],
                 "not canonical",
+            ),
+            (
+                [
+                    {"sha": commit},
+                    {
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "type": "blob",
+                                "mode": "120000",
+                                "path": ".github/workflows/ci.yml",
+                                "sha": blob,
+                            }
+                        ],
+                    },
+                ],
+                "not a regular file",
             ),
             (
                 [
@@ -3143,11 +3163,13 @@ class WorkflowResolverTests(unittest.TestCase):
                         "tree": [
                             {
                                 "type": "blob",
+                                "mode": "100644",
                                 "path": ".github/workflows/ci.yml",
                                 "sha": blob,
                             },
                             {
                                 "type": "blob",
+                                "mode": "100644",
                                 "path": ".github/workflows/ci.yml",
                                 "sha": "c" * 40,
                             },
@@ -3174,6 +3196,7 @@ class WorkflowResolverTests(unittest.TestCase):
                 "tree": [
                     {
                         "type": "blob",
+                        "mode": "100644",
                         "path": ".github/workflows/ci.yml",
                         "sha": blob,
                     }

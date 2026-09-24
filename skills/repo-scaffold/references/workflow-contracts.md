@@ -87,7 +87,10 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   must run Markdown body preflight first; a branch name alone is never an
   exemption.
 - Branch protection: required-check producers must be unique, executable, and
-  event-compatible. A trusted `pull_request_target` producer may satisfy
+  event-compatible and backed by regular workflow files; Check Run evidence
+  must resolve to one Actions workflow run with the producer's exact path,
+  controlling SHA, and an eligible event. A
+  trusted `pull_request_target` producer may satisfy
   protected default-branch pull-request coverage only when its exact default
   branch filter, unchanged workflow blob at the representative PR's base, and
   applicable Actions event policy are verified. Merge new or changed target
