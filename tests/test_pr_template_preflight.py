@@ -101,6 +101,39 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             output.getvalue(),
         )
 
+    def test_selects_focused_templates_with_supported_text_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            catalog = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            canonical = catalog / "security.md"
+            template_text = canonical.read_text(encoding="utf-8")
+            canonical.unlink()
+
+            for extension in (".TXT", ".markdown"):
+                with self.subTest(extension=extension):
+                    candidate = catalog / f"security{extension}"
+                    candidate.write_text(template_text, encoding="utf-8")
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        result = pr_template_preflight.main(
+                            [
+                                "--title",
+                                "chore: inspect focused template",
+                                "--template",
+                                "security",
+                                "--repository-root",
+                                str(root),
+                            ]
+                        )
+
+                    self.assertEqual(result, 0)
+                    self.assertIn(
+                        f"Selected PR template: .github/PULL_REQUEST_TEMPLATE/security{extension}",
+                        output.getvalue(),
+                    )
+                    candidate.unlink()
+
     def test_body_file_rejects_hard_wrapped_prose_but_not_markdown_structure(
         self,
     ) -> None:

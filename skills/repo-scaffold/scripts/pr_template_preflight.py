@@ -18,6 +18,7 @@ from markdown_body_preflight import (
 
 MAX_TEMPLATE_DIRECTORY_ENTRIES = 128
 MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES = 10_000
+TEMPLATE_EXTENSIONS = frozenset({".markdown", ".md", ".txt"})
 
 
 TITLE_TYPE_PATTERN = re.compile(r"^(?P<type>feat|fix|docs)(?:\([^()\r\n]+\))?!?: ")
@@ -112,7 +113,7 @@ def template_catalog(repository_root: Path) -> dict[str, Path]:
                     "trusted PR template catalog scan exceeds "
                     f"{MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES} directory entries"
                 )
-            if path.suffix.casefold() != ".md":
+            if path.suffix.casefold() not in TEMPLATE_EXTENSIONS:
                 continue
             if len(paths) >= MAX_TEMPLATE_DIRECTORY_ENTRIES:
                 raise ValueError(

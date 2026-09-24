@@ -7284,6 +7284,41 @@ class PullRequestTemplateContractTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            templates = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            templates.mkdir(parents=True)
+            for name in ("markdown_body_preflight.py", "pr_template_preflight.py"):
+                shutil.copy2(
+                    PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / name,
+                    scripts / name,
+                )
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+                root / ".github" / "PULL_REQUEST_TEMPLATE.md",
+            )
+            security_template = templates / "security.txt"
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md",
+                security_template,
+            )
+            txt_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": security_template.read_text(encoding="utf-8"),
+                    "PR_TITLE": "chore: check txt focused template",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+        self.assertEqual(txt_result.returncode, 0, txt_result.stderr)
+
     def test_gate_uses_generated_root_preflight_scripts_without_skill_source(
         self,
     ) -> None:
