@@ -52,6 +52,18 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
                 self.assertIn("hard-wrapped prose at line(s): 3", result.stderr)
                 self.assertNotIn("hard-wrapped prose at line(s): 2, 3", result.stderr)
 
+    def test_body_file_reader_removes_only_a_leading_utf8_bom(self) -> None:
+        body = "\ufefffirst line\n\ufeffembedded marker\n"
+
+        with tempfile.TemporaryDirectory() as directory:
+            body_file = Path(directory) / "body.md"
+            body_file.write_bytes(body.encode("utf-8"))
+
+            self.assertEqual(
+                _bundled_module().read_body_file(body_file),
+                "first line\n\ufeffembedded marker\n",
+            )
+
     def test_bundled_entrypoint_accepts_structural_markdown(self) -> None:
         result = self.run_preflight(
             SKILL_PREFLIGHT,

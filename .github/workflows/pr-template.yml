@@ -60,6 +60,7 @@ jobs:
           from markdown_body_preflight import (
               hard_wrapped_prose_lines,
               strip_html_comments,
+              strip_utf8_bom,
               split_gfm_lines,
           )
           from pr_template_preflight import template_catalog
@@ -214,7 +215,7 @@ jobs:
           trusted_templates = {}
           for template_id, template_path in template_paths.items():
               try:
-                  template = template_path.read_text(encoding="utf-8")
+                  template = strip_utf8_bom(template_path.read_text(encoding="utf-8"))
               except OSError as error:
                   raise SystemExit(
                       f"Could not read trusted pull request template {template_path}: {error}"

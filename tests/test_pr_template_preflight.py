@@ -77,6 +77,32 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
         )
         self.assertIn("gh pr create --body-file", output.getvalue())
 
+    def test_template_with_utf8_bom_before_marker_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            bugfix = root / ".github" / "PULL_REQUEST_TEMPLATE" / "bugfix.md"
+            bugfix.write_bytes(
+                "\ufeff<!-- repo-scaffold:pr-template=bugfix -->\n".encode("utf-8")
+            )
+            output = StringIO()
+
+            with redirect_stdout(output):
+                result = pr_template_preflight.main(
+                    [
+                        "--title",
+                        "fix: accept a BOM template",
+                        "--repository-root",
+                        str(root),
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertIn(
+            "Selected PR template: .github/PULL_REQUEST_TEMPLATE/bugfix.md",
+            output.getvalue(),
+        )
+
     def test_selects_an_explicit_focused_template_for_an_unmapped_title(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

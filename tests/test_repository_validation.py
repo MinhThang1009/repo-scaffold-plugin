@@ -6482,6 +6482,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "scripts/pr_template_preflight.py",
             '"--body-file"',
             "from pr_template_preflight import template_catalog",
+            'template = strip_utf8_bom(template_path.read_text(encoding="utf-8"))',
             'template_paths = template_catalog(Path("."))',
             "repo-scaffold:pr-template=",
             "repo-scaffold:required-checklist:start",
@@ -6500,6 +6501,13 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "Pull request template validation is explicitly exempt for Release Please.",
         ):
             self.assertIn(fragment, workflow_text)
+
+        validate_step = document["jobs"]["pr_template"]["steps"][1]
+        run = validate_step["run"]
+        python_source = run.split("python - <<'PY'\n", maxsplit=1)[1].rsplit(
+            "\nPY", maxsplit=1
+        )[0]
+        compile(python_source, str(workflow), "exec")
 
         template_ids = (
             "default",

@@ -82,11 +82,16 @@ def _fenced_code_end(line: str, list_indent: int | None) -> re.Match[str] | None
     )
 
 
+def strip_utf8_bom(markdown: str) -> str:
+    """Remove a UTF-8 encoding signature before interpreting document text."""
+    return markdown.removeprefix("\ufeff")
+
+
 def split_gfm_lines(markdown: str) -> list[str]:
     """Split GFM lines, ignoring a UTF-8 BOM at the start of the document."""
     if not markdown:
         return []
-    markdown = markdown.removeprefix("\ufeff")
+    markdown = strip_utf8_bom(markdown)
     lines = GFM_LINE_ENDING_PATTERN.split(markdown)
     if lines[-1] == "":
         lines.pop()
@@ -1571,7 +1576,7 @@ def read_body_file(path: Path) -> str:
     if len(payload) > MAX_BODY_FILE_BYTES:
         raise ValueError(f"body file exceeds the {MAX_BODY_FILE_BYTES}-byte limit")
     try:
-        return payload.decode("utf-8")
+        return strip_utf8_bom(payload.decode("utf-8"))
     except UnicodeDecodeError as error:
         raise ValueError(f"body file is not valid UTF-8: {path}") from error
 
