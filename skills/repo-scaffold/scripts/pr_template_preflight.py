@@ -19,7 +19,7 @@ from markdown_body_preflight import (
 MAX_TEMPLATE_DIRECTORY_ENTRIES = 128
 MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES = 10_000
 TEMPLATE_EXTENSIONS = frozenset({".markdown", ".md", ".txt"})
-# GitHub resolves supported community-health files in this precedence order.
+# Keep the preflight's default-template search order explicit and deterministic.
 TEMPLATE_LOCATIONS = (Path(".github"), Path("."), Path("docs"))
 
 

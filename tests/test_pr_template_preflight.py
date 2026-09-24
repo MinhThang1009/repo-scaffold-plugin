@@ -168,7 +168,7 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
                 pr_template_preflight.template_path(root, "security"), github_template
             )
 
-    def test_default_template_matches_github_location_precedence(self) -> None:
+    def test_default_template_uses_local_location_search_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             root_default = root / "PULL_REQUEST_TEMPLATE.md"
@@ -244,6 +244,7 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             structured = root / "structured.md"
             structured.write_text(
                 "- A list item\n- Another list item.\n\n"
+                "Paragraph before the table.\n"
                 "| Name | Value |\n| --- | --- |\n| item | value |\n\n"
                 "```text\nfirst\nsecond\n```\n",
                 encoding="utf-8",
