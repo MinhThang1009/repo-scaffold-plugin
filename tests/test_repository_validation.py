@@ -7200,6 +7200,29 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             feature_payload = feature_body.replace(
                 "<!-- repo-scaffold:pr-template=feature -->\n\n", "", 1
             )
+            required_checklist = re.search(
+                r"<!-- repo-scaffold:required-checklist:start -->.*?"
+                r"<!-- repo-scaffold:required-checklist:end -->",
+                feature_body,
+                flags=re.DOTALL,
+            )
+            if required_checklist is None:
+                self.fail("feature template is missing its required checklist")
+            nested_code_checklist = (
+                "- outer\n"
+                "  - inner\n"
+                "    ```markdown\n"
+                + "".join(
+                    "    " + line + "\n"
+                    for line in required_checklist.group(0).splitlines()
+                )
+                + "    ```\n"
+            )
+            nested_fenced_code_body = (
+                feature_body[: required_checklist.start()]
+                + nested_code_checklist
+                + feature_body[required_checklist.end() :]
+            )
             hidden_content_bodies = {
                 "fenced code": (
                     "<!-- repo-scaffold:pr-template=feature -->\n\n"
@@ -7234,6 +7257,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                         "    <!-- repo-scaffold:required-checklist:end -->",
                     )
                 ),
+                "nested-list fenced checklist": nested_fenced_code_body,
             }
             for hiding_method, hidden_body in hidden_content_bodies.items():
                 with self.subTest(hiding_method=hiding_method):

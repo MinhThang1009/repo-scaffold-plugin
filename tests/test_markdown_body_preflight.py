@@ -560,6 +560,28 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (4,),
         )
 
+    def test_fenced_code_uses_nested_list_content_indentation(self) -> None:
+        body = (
+            "- outer\n"
+            "  - inner\n"
+            "    ```text\n"
+            "    - [ ] literal task example\n"
+            "    - [x] another literal task example\n"
+            "    ```\n"
+            "    First prose line\n"
+            "    continued prose line\n"
+        )
+        non_prose_lines: set[int] = set()
+
+        self.assertEqual(
+            _bundled_module().hard_wrapped_prose_lines(
+                body,
+                non_prose_line_numbers=non_prose_lines,
+            ),
+            (8,),
+        )
+        self.assertEqual(non_prose_lines, {3, 4, 5, 6})
+
     def test_list_items_starting_with_indented_code_keep_content_context(self) -> None:
         self.assertEqual(
             _bundled_lines(

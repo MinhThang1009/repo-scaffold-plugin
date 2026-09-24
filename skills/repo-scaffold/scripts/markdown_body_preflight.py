@@ -57,6 +57,31 @@ MAX_INLINE_CODE_LOOKAHEAD_CHARACTERS = 4 * MAX_BODY_FILE_BYTES
 GFM_LINE_ENDING_PATTERN = re.compile(r"\r\n|\r|\n")
 
 
+def _line_after_list_content_indent(line: str, list_indent: int | None) -> str:
+    """Remove the active list item's content indentation for block matching."""
+    expanded_line = line.expandtabs(4)
+    if list_indent is None:
+        return expanded_line
+    leading_spaces = len(expanded_line) - len(expanded_line.lstrip(" "))
+    if leading_spaces < list_indent:
+        return expanded_line
+    return expanded_line[list_indent:]
+
+
+def _fenced_code_start(line: str, list_indent: int | None) -> re.Match[str] | None:
+    """Match a fence relative to its list container, when present."""
+    return FENCED_CODE_START_PATTERN.match(
+        _line_after_list_content_indent(line, list_indent)
+    )
+
+
+def _fenced_code_end(line: str, list_indent: int | None) -> re.Match[str] | None:
+    """Match a closing fence relative to its list container, when present."""
+    return FENCED_CODE_END_PATTERN.match(
+        _line_after_list_content_indent(line, list_indent)
+    )
+
+
 def split_gfm_lines(markdown: str) -> list[str]:
     """Split only physical line endings recognized by the GFM specification."""
     if not markdown:
@@ -857,7 +882,7 @@ def backtick_run_lengths_by_line(
                 fence_list_indent = None
                 group_id += 1
             else:
-                fence_end = FENCED_CODE_END_PATTERN.match(line)
+                fence_end = _fenced_code_end(line, fence_list_indent)
                 if (
                     quote_depth == fence_quote_depth
                     and fence_end is not None
@@ -917,7 +942,9 @@ def backtick_run_lengths_by_line(
             )
         )
         line_fence_start = (
-            not comment_open and FENCED_CODE_START_PATTERN.match(line) is not None
+            not comment_open
+            and _fenced_code_start(line, list_context[-1][1] if list_context else None)
+            is not None
         )
         line_html_block_start = (
             not comment_open
@@ -1052,7 +1079,7 @@ def backtick_run_lengths_by_line(
             previous_is_list_item = False
             previous_paragraph_open = False
             continue
-        fence_start = FENCED_CODE_START_PATTERN.match(line)
+        fence_start = _fenced_code_start(line, list_indent)
         if fence_start is not None:
             group_id += 1
             fence_character = fence_start.group(1)[0]
@@ -1338,7 +1365,7 @@ def hard_wrapped_prose_lines(
                 fence_list_indent = None
                 inline_code_length = None
             else:
-                fence_end = FENCED_CODE_END_PATTERN.match(line)
+                fence_end = _fenced_code_end(line, fence_list_indent)
                 if (
                     quote_depth == fence_quote_depth
                     and fence_end is not None
@@ -1379,7 +1406,7 @@ def hard_wrapped_prose_lines(
             inline_html_tag_pending = False
             continue
         fence_start = (
-            FENCED_CODE_START_PATTERN.match(line) if not comment_open else None
+            _fenced_code_start(line, list_indent) if not comment_open else None
         )
         if fence_start is not None:
             fence_character = fence_start.group(1)[0]
