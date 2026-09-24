@@ -41,6 +41,17 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("hard-wrapped prose at line(s): 2", result.stderr)
 
+    def test_utf8_bom_does_not_hide_the_first_structural_markdown_block(self) -> None:
+        body = "\ufeff# Heading\nFirst paragraph line\ncontinued prose\n"
+
+        for script in (ROOT_PREFLIGHT, SKILL_PREFLIGHT):
+            with self.subTest(script=script):
+                result = self.run_preflight(script, body)
+
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("hard-wrapped prose at line(s): 3", result.stderr)
+                self.assertNotIn("hard-wrapped prose at line(s): 2, 3", result.stderr)
+
     def test_bundled_entrypoint_accepts_structural_markdown(self) -> None:
         result = self.run_preflight(
             SKILL_PREFLIGHT,

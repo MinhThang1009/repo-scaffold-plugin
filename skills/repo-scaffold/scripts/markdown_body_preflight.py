@@ -83,9 +83,10 @@ def _fenced_code_end(line: str, list_indent: int | None) -> re.Match[str] | None
 
 
 def split_gfm_lines(markdown: str) -> list[str]:
-    """Split only physical line endings recognized by the GFM specification."""
+    """Split GFM lines, ignoring a UTF-8 BOM at the start of the document."""
     if not markdown:
         return []
+    markdown = markdown.removeprefix("\ufeff")
     lines = GFM_LINE_ENDING_PATTERN.split(markdown)
     if lines[-1] == "":
         lines.pop()
