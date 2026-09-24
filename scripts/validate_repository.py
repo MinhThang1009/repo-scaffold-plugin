@@ -116,6 +116,13 @@ FRESHNESS_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-freshness-${{ github.repository }}"
 )
 VERSION_SYNC_CONCURRENCY_GROUP = "repo-scaffold-version-sync-${{ github.repository }}"
+VERSION_SYNC_PR_BODY_PATH = Path(".github/action-pin-sync-pr-body.md")
+VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND = (
+    "python",
+    "scripts/markdown_body_preflight.py",
+    "--body-file",
+    VERSION_SYNC_PR_BODY_PATH.as_posix(),
+)
 FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
 FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
 FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
@@ -151,6 +158,12 @@ POLICY_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-ci-policy-drift-${{ github.repository }}"
 )
 FRESHNESS_AUDIT_COMMAND = ("python", "scripts/audit_freshness.py")
+FRESHNESS_BODY_PREFLIGHT_COMMAND = (
+    "python",
+    "scripts/markdown_body_preflight.py",
+    "--body-file",
+    "$RUNNER_TEMP/freshness.md",
+)
 FRESHNESS_AUDIT_REQUIRED_OPTIONS = (
     "--repository-root",
     "--json-output",
@@ -634,6 +647,13 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
     ),
     (
         Path("skills/repo-scaffold/assets/workflows/community-health.yml"),
+        Path("skills/repo-scaffold/scripts/markdown_body_preflight.py"),
+        "../scripts/markdown_body_preflight.py",
+        Path("scripts/markdown_body_preflight.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/community-health.yml"),
         Path("skills/repo-scaffold/assets/community-health-trackers.json"),
         "assets/community-health-trackers.json",
         Path(".github/community-health-trackers.json"),
@@ -662,6 +682,13 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
     ),
     (
         Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/scripts/markdown_body_preflight.py"),
+        "../scripts/markdown_body_preflight.py",
+        Path("scripts/markdown_body_preflight.py"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
         Path("skills/repo-scaffold/assets/requirements-docs.txt"),
         "assets/requirements-docs.txt",
         Path("requirements-docs.txt"),
@@ -672,6 +699,13 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
         Path("skills/repo-scaffold/scripts/audit_freshness.py"),
         "../scripts/audit_freshness.py",
         Path("scripts/audit_freshness.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/freshness.yml"),
+        Path("skills/repo-scaffold/scripts/markdown_body_preflight.py"),
+        "../scripts/markdown_body_preflight.py",
+        Path("scripts/markdown_body_preflight.py"),
         True,
     ),
     (
@@ -725,6 +759,10 @@ PR_TEMPLATE_PREFLIGHT_SKILL_SCRIPT = Path(
     "skills/repo-scaffold/scripts/pr_template_preflight.py"
 )
 PR_TEMPLATE_PREFLIGHT_DESTINATION = Path("scripts/pr_template_preflight.py")
+MARKDOWN_BODY_PREFLIGHT_ROOT_SCRIPT = Path("scripts/markdown_body_preflight.py")
+MARKDOWN_BODY_PREFLIGHT_SKILL_SCRIPT = Path(
+    "skills/repo-scaffold/scripts/markdown_body_preflight.py"
+)
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -931,6 +969,23 @@ def freshness_job_execution_is_unconditional(job: object) -> bool:
     """Reject job or step controls that can silently skip reconciliation."""
     if not isinstance(job, dict) or any(
         control in job for control in FRESHNESS_JOB_EXECUTION_CONTROLS
+    ):
+        return False
+    steps = job.get("steps")
+    return isinstance(steps, list) and all(
+        isinstance(step, dict)
+        and not FRESHNESS_STEP_EXECUTION_CONTROLS.intersection(step)
+        for step in steps
+    )
+
+
+def job_execution_controls_are_safe(
+    job: object, *, allowed_job_controls: frozenset[str] = frozenset()
+) -> bool:
+    """Reject execution controls except for explicitly required job controls."""
+    if not isinstance(job, dict) or any(
+        control in job
+        for control in FRESHNESS_JOB_EXECUTION_CONTROLS - allowed_job_controls
     ):
         return False
     steps = job.get("steps")
@@ -1483,13 +1538,24 @@ def freshness_shell_definitions_are_safe(text: str) -> bool:
             executable_token = command[executable_index]
             executable = executable_basename(executable_token)
             if (
-                "/" in executable_token
-                or "\\" in executable_token
-                or executable not in FRESHNESS_ALLOWED_SHELL_COMMANDS
-            ) and not (
-                executable == "python"
-                and command[executable_index : executable_index + 2]
-                == list(FRESHNESS_AUDIT_COMMAND)
+                (
+                    "/" in executable_token
+                    or "\\" in executable_token
+                    or executable not in FRESHNESS_ALLOWED_SHELL_COMMANDS
+                )
+                and not (
+                    executable == "python"
+                    and command[executable_index : executable_index + 2]
+                    == list(FRESHNESS_AUDIT_COMMAND)
+                )
+                and not (
+                    executable == "python"
+                    and command[
+                        executable_index : executable_index
+                        + len(FRESHNESS_BODY_PREFLIGHT_COMMAND)
+                    ]
+                    == list(FRESHNESS_BODY_PREFLIGHT_COMMAND)
+                )
             ):
                 return False
             command_body = command[executable_index:]
@@ -1692,6 +1758,91 @@ def reminder_report_marker_check_is_safe(
         and len(grep_indices) == 1
         and len(clean_indices) == 1
         and marker_indices[0] < grep_indices[0] < clean_indices[0]
+    )
+
+
+def reminder_body_preflight_is_safe(text: str, report_path: str) -> bool:
+    """Require body validation before every reminder create or edit mutation."""
+    try:
+        workflow = load_yaml_text(text)
+    except yaml.YAMLError:
+        return False
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if not isinstance(jobs, dict):
+        return False
+    reconciliation_steps = [
+        step
+        for job in jobs.values()
+        if isinstance(job, dict) and isinstance(job.get("steps"), list)
+        for step in job["steps"]
+        if isinstance(step, dict)
+        and isinstance(step.get("name"), str)
+        and "Reconcile" in step["name"]
+        and "issue" in step["name"]
+    ]
+    if len(reconciliation_steps) != 1:
+        return False
+    reconciliation_step = reconciliation_steps[0]
+    if not isinstance(
+        reconciliation_step.get("run"), str
+    ) or FRESHNESS_STEP_EXECUTION_CONTROLS.intersection(reconciliation_step):
+        return False
+    reconciliation_script = reconciliation_step["run"]
+    segments = shell_command_segments(reconciliation_script)
+    if segments is None:
+        return False
+    set_commands = [
+        shell_command_prefix(segment)
+        for segment in segments
+        if shell_command_prefix(segment) and shell_command_prefix(segment)[0] == "set"
+    ]
+    if set_commands != [["set", "-euo", "pipefail"]]:
+        return False
+    expected_preflight = [
+        "python",
+        "scripts/markdown_body_preflight.py",
+        "--body-file",
+        report_path,
+    ]
+    preflight_indices = [
+        index
+        for index, segment in enumerate(segments)
+        if shell_command_prefix(segment) == expected_preflight
+    ]
+    normalized_script = re.sub(r"\\\r?\n", " ", reconciliation_script)
+    for logical_line in normalized_script.splitlines():
+        if "scripts/markdown_body_preflight.py" in logical_line and any(
+            operator in logical_line for operator in ("||", "&&", ";", "|", "&")
+        ):
+            return False
+    mutation_indices: list[int] = []
+    for index, segment in enumerate(segments):
+        tokens = shell_command_prefix(segment)
+        issue_positions = issue_subcommand_positions(tokens)
+        if issue_positions is None:
+            return False
+        for position in issue_positions:
+            if position + 1 >= len(tokens) or tokens[position + 1] not in {
+                "edit",
+                "create",
+            }:
+                continue
+            body_file_positions = [
+                token_index
+                for token_index in range(position + 2, len(tokens))
+                if tokens[token_index] == "--body-file"
+            ]
+            if (
+                len(body_file_positions) != 1
+                or body_file_positions[0] + 1 >= len(tokens)
+                or tokens[body_file_positions[0] + 1] != report_path
+            ):
+                return False
+            mutation_indices.append(index)
+    return (
+        len(preflight_indices) == 1
+        and len(mutation_indices) == 2
+        and preflight_indices[0] < min(mutation_indices)
     )
 
 
@@ -4061,6 +4212,39 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
             ".github/workflows/ci.yml: policy drift reminder must check out "
             "the repository default branch with credentials disabled"
         ]
+    if not job_execution_controls_are_safe(
+        job, allowed_job_controls=frozenset({"concurrency", "if", "needs"})
+    ):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder job and steps must "
+            "execute unconditionally"
+        ]
+    # The trusted-checkout contract above already requires a list for every
+    # manually dispatched Issue-writing job.
+    steps = job["steps"]
+    python_setup_indices = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/setup-python@")
+        and step.get("with") == {"python-version": "3.x"}
+    ]
+    reconcile_indices = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and step.get("name") == "Reconcile policy-drift reminder issue"
+    ]
+    if (
+        len(python_setup_indices) != 1
+        or len(reconcile_indices) != 1
+        or python_setup_indices[0] >= reconcile_indices[0]
+    ):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder must set up Python "
+            "before running the Markdown body preflight"
+        ]
     for fragment in (
         "repo-scaffold-ci-policy-drift",
         "CI policy review required",
@@ -4078,6 +4262,11 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
         return [
             ".github/workflows/ci.yml: policy drift reminder must reconcile "
             "one marker issue from both canary results"
+        ]
+    if not reminder_body_preflight_is_safe(workflow_text, "$report"):
+        return [
+            ".github/workflows/ci.yml: policy drift reminder must preflight the "
+            "Markdown body before Issue mutations"
         ]
     return []
 
@@ -6491,6 +6680,7 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     steps = job.get("steps") if isinstance(job, dict) else None
     if (
         not isinstance(job, dict)
+        or set(job) != {"name", "runs-on", "timeout-minutes", "permissions", "steps"}
         or job.get("name") != "synchronize-versioned-inputs"
         or job.get("runs-on") != "ubuntu-latest"
         or job.get("timeout-minutes") != "15"
@@ -6549,6 +6739,31 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         problems.append(
             f"{relative}: synchronizer must update pins only through the reviewed script"
         )
+    body_preflight_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("name") == "Validate version-maintenance pull request body"
+    ]
+    body_preflight_step = (
+        body_preflight_steps[0] if len(body_preflight_steps) == 1 else {}
+    )
+    body_preflight_indices = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and step.get("name") == "Validate version-maintenance pull request body"
+    ]
+    if (
+        len(body_preflight_steps) != 1
+        or body_preflight_step.get("run")
+        != " ".join(VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND)
+        or set(body_preflight_step) != {"name", "run"}
+    ):
+        problems.append(
+            f"{relative}: synchronizer must preflight its pull-request body "
+            "before the GitHub mutation"
+        )
     pr_steps = [
         step
         for step in steps
@@ -6556,6 +6771,21 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         and step.get("name") == "Create version-maintenance pull request"
     ]
     pr_step = pr_steps[0] if len(pr_steps) == 1 else {}
+    pr_indices = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and step.get("name") == "Create version-maintenance pull request"
+    ]
+    if (
+        len(body_preflight_indices) == 1
+        and len(pr_indices) == 1
+        and body_preflight_indices[0] >= pr_indices[0]
+    ):
+        problems.append(
+            f"{relative}: synchronizer pull-request body preflight must run "
+            "before the pull-request action"
+        )
     pr_reference = pr_step.get("uses")
     expected_pr_inputs = {
         "token": "${{ secrets.VERSION_SYNC_TOKEN }}",
@@ -6564,8 +6794,75 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         "draft": "true",
         "commit-message": "chore(ci): synchronize versioned inputs",
         "title": "chore(ci): synchronize versioned inputs",
+        "body-path": VERSION_SYNC_PR_BODY_PATH.as_posix(),
     }
-    body = pr_step.get("with", {}).get("body") if isinstance(pr_step, dict) else None
+    pr_with = pr_step.get("with") if isinstance(pr_step, dict) else None
+    body = None
+    body_path = pr_with.get("body-path") if isinstance(pr_with, dict) else None
+    body_file = repository_root / VERSION_SYNC_PR_BODY_PATH
+    if body_path != VERSION_SYNC_PR_BODY_PATH.as_posix():
+        problems.append(
+            f"{relative}: synchronizer must load its pull-request body from "
+            f"{VERSION_SYNC_PR_BODY_PATH.as_posix()}"
+        )
+    elif (
+        path_has_link_or_reparse(body_file, repository_root) or not body_file.is_file()
+    ):
+        problems.append(
+            f"{VERSION_SYNC_PR_BODY_PATH.as_posix()}: pull-request body file is "
+            "missing or linked"
+        )
+    else:
+        try:
+            body = body_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"{VERSION_SYNC_PR_BODY_PATH.as_posix()}: pull-request body is "
+                f"unreadable: {error}"
+            )
+    if body is not None:
+        body_preflight_script = repository_root / MARKDOWN_BODY_PREFLIGHT_SKILL_SCRIPT
+        if not body_preflight_script.is_file():
+            problems.append(
+                f"{MARKDOWN_BODY_PREFLIGHT_SKILL_SCRIPT.as_posix()}: body "
+                "preflight script is missing for the synchronizer"
+            )
+        else:
+            try:
+                body_preflight_result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(body_preflight_script),
+                        "--body-file",
+                        str(body_file),
+                    ],
+                    cwd=repository_root,
+                    env=child_process_environment(),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except subprocess.TimeoutExpired:
+                problems.append(
+                    f"{relative}: synchronizer pull-request body preflight timed out"
+                )
+            except OSError as error:
+                problems.append(
+                    f"{relative}: synchronizer pull-request body preflight could "
+                    f"not run: {error}"
+                )
+            else:
+                if body_preflight_result.returncode != 0:
+                    detail = (
+                        body_preflight_result.stderr.strip()
+                        or body_preflight_result.stdout.strip()
+                        or "validation failed"
+                    )
+                    problems.append(
+                        f"{relative}: synchronizer pull-request body preflight "
+                        f"failed: {detail}"
+                    )
     required_body_fragments = (
         "<!-- repo-scaffold:pr-template=default -->",
         "## Purpose",
@@ -6584,6 +6881,7 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         or re.fullmatch(r"peter-evans/create-pull-request@[0-9a-f]{40}", pr_reference)
         is None
         or not isinstance(pr_step.get("with"), dict)
+        or set(pr_step) != {"name", "uses", "with"}
         or any(
             pr_step["with"].get(key) != value
             for key, value in expected_pr_inputs.items()
@@ -6596,6 +6894,238 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
             "that follows the trusted default template"
         )
     return problems
+
+
+def pr_template_gate_body_check_is_safe(run_text: str) -> bool:
+    """Require the PR body check before bot exemptions and template validation."""
+    opening = "python - <<'PY'\n"
+    closing = "\nPY\n"
+    if not run_text.startswith(opening) or not run_text.endswith(closing):
+        return False
+    source = run_text[len(opening) : -len(closing)]
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+
+    def expression(source_text: str) -> ast.expr:
+        return ast.parse(source_text, mode="eval").body
+
+    def expression_matches(node: ast.expr, source_text: str) -> bool:
+        expected = expression(source_text)
+        return ast.dump(node) == ast.dump(expected)
+
+    def assignment_to(statement: ast.stmt, name: str) -> bool:
+        return (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id == name
+        )
+
+    def exits_with_zero(statement: ast.stmt) -> bool:
+        return (
+            isinstance(statement, ast.Raise)
+            and isinstance(statement.exc, ast.Call)
+            and isinstance(statement.exc.func, ast.Name)
+            and statement.exc.func.id == "SystemExit"
+            and len(statement.exc.args) == 1
+            and isinstance(statement.exc.args[0], ast.Constant)
+            and statement.exc.args[0].value == 0
+        )
+
+    def exemption_is_exact(
+        statement: ast.stmt, expected_test: str, expected_message: str
+    ) -> bool:
+        return (
+            isinstance(statement, ast.If)
+            and expression_matches(statement.test, expected_test)
+            and not statement.orelse
+            and len(statement.body) == 2
+            and isinstance(statement.body[0], ast.Expr)
+            and isinstance(statement.body[0].value, ast.Call)
+            and isinstance(statement.body[0].value.func, ast.Name)
+            and statement.body[0].value.func.id == "print"
+            and len(statement.body[0].value.args) == 1
+            and isinstance(statement.body[0].value.args[0], ast.Constant)
+            and statement.body[0].value.args[0].value == expected_message
+            and exits_with_zero(statement.body[1])
+        )
+
+    bot_test = (
+        'os.environ.get("PR_USER") == "dependabot[bot]" '
+        'and os.environ.get("PR_USER_TYPE") == "Bot"'
+    )
+    release_please_test = (
+        'os.environ.get("PR_HEAD_REF", "").startswith("release-please--branches--") '
+        'and os.environ.get("PR_HEAD_REPOSITORY", "").casefold() '
+        '== os.environ.get("PR_REPOSITORY", "").casefold() '
+        'and (os.environ.get("PR_USER_TYPE") == "Bot" '
+        'or os.environ.get("PR_USER", "").casefold() '
+        '== os.environ.get("PR_REPOSITORY_OWNER", "").casefold())'
+    )
+    merge_group_steps = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.If)
+        and expression_matches(statement.test, 'event_name == "merge_group"')
+    ]
+    unsupported_event_steps = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.If)
+        and expression_matches(statement.test, 'event_name != "pull_request_target"')
+    ]
+    if len(merge_group_steps) != 1 or len(unsupported_event_steps) != 1:
+        return False
+    merge_group = merge_group_steps[0]
+    if (
+        len(merge_group.body) != 2
+        or not isinstance(merge_group.body[0], ast.Expr)
+        or not isinstance(merge_group.body[0].value, ast.Call)
+        or not isinstance(merge_group.body[0].value.func, ast.Name)
+        or merge_group.body[0].value.func.id != "print"
+        or not exits_with_zero(merge_group.body[1])
+    ):
+        return False
+    if merge_group.lineno > unsupported_event_steps[0].lineno:
+        return False
+
+    body_try_blocks = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.Try)
+        and any(assignment_to(child, "body_preflight") for child in statement.body)
+    ]
+    if len(body_try_blocks) != 1:
+        return False
+    body_file_contexts = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.With)
+        and len(statement.items) == 1
+        and isinstance(statement.items[0].context_expr, ast.Call)
+        and isinstance(statement.items[0].context_expr.func, ast.Attribute)
+        and isinstance(statement.items[0].context_expr.func.value, ast.Name)
+        and statement.items[0].context_expr.func.value.id == "tempfile"
+        and statement.items[0].context_expr.func.attr == "NamedTemporaryFile"
+    ]
+    body_assignments = [
+        (index, statement)
+        for index, statement in enumerate(tree.body)
+        if assignment_to(statement, "body")
+    ]
+    if len(body_file_contexts) != 1 or len(body_assignments) != 1:
+        return False
+    body_file_context = body_file_contexts[0]
+    body_context_item = body_file_context.items[0]
+    if (
+        not isinstance(body_context_item.optional_vars, ast.Name)
+        or body_context_item.optional_vars.id != "body_file"
+        or not expression_matches(
+            body_context_item.context_expr,
+            "tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.md', delete=False)",
+        )
+        or len(body_file_context.body) != 1
+        or not isinstance(body_file_context.body[0], ast.Expr)
+        or not expression_matches(
+            body_file_context.body[0].value, "body_file.write(body)"
+        )
+        or not isinstance(body_assignments[0][1], ast.Assign)
+        or not expression_matches(
+            body_assignments[0][1].value, 'os.environ.get("PR_BODY", "")'
+        )
+        or body_assignments[0][0] >= tree.body.index(body_file_context)
+    ):
+        return False
+    body_try = body_try_blocks[0]
+    if (
+        body_try.handlers
+        or body_try.orelse
+        or len(body_try.finalbody) != 1
+        or not isinstance(body_try.finalbody[0], ast.Expr)
+        or not expression_matches(
+            body_try.finalbody[0].value,
+            "Path(body_file.name).unlink(missing_ok=True)",
+        )
+        or len(body_try.body) != 5
+        or not assignment_to(body_try.body[0], "body_preflight")
+        or not isinstance(body_try.body[0], ast.Assign)
+        or not expression_matches(
+            body_try.body[0].value,
+            'subprocess.run([sys.executable, "scripts/markdown_body_preflight.py", '
+            '"--body-file", body_file.name], capture_output=True, check=False, text=True)',
+        )
+    ):
+        return False
+    body_failure = body_try.body[1]
+    if (
+        not isinstance(body_failure, ast.If)
+        or not expression_matches(body_failure.test, "body_preflight.returncode != 0")
+        or body_failure.orelse
+        or len(body_failure.body) != 1
+        or not isinstance(body_failure.body[0], ast.Raise)
+        or not isinstance(body_failure.body[0].exc, ast.Call)
+        or not isinstance(body_failure.body[0].exc.func, ast.Name)
+        or body_failure.body[0].exc.func.id != "SystemExit"
+        or len(body_failure.body[0].exc.args) != 1
+        or not expression_matches(
+            body_failure.body[0].exc.args[0], "body_preflight.stderr"
+        )
+        or not exemption_is_exact(
+            body_try.body[2],
+            bot_test,
+            "Pull request template validation is explicitly exempt for Dependabot.",
+        )
+        or not exemption_is_exact(
+            body_try.body[3],
+            release_please_test,
+            "Pull request template validation is explicitly exempt for Release Please.",
+        )
+        or not assignment_to(body_try.body[4], "preflight")
+        or not isinstance(body_try.body[4], ast.Assign)
+        or not expression_matches(
+            body_try.body[4].value,
+            'subprocess.run([sys.executable, "scripts/pr_template_preflight.py", '
+            '"--title", title, "--body-file", body_file.name], '
+            "capture_output=True, check=False, text=True)",
+        )
+    ):
+        return False
+    all_subprocess_runs = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+        and node.func.attr == "run"
+    ]
+    if len(all_subprocess_runs) != 2:
+        return False
+
+    zero_exit_count = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+            if isinstance(node.exc.func, ast.Name) and node.exc.func.id == "SystemExit":
+                if (
+                    not node.exc.args
+                    or isinstance(node.exc.args[0], ast.Constant)
+                    and node.exc.args[0].value == 0
+                ):
+                    zero_exit_count += 1
+    exit_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            isinstance(node.func, ast.Name)
+            and node.func.id in {"exit", "quit"}
+            or isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"exit", "_exit"}
+        )
+    ]
+    return zero_exit_count == 3 and not exit_calls
 
 
 def validate_required_check_concurrency(repository_root: Path) -> list[str]:
@@ -6683,14 +7213,18 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                 or set(jobs) != {"pr_template"}
                 or not isinstance(template_job, dict)
                 or template_job.get("name") != "pr-template"
-                or "if" in template_job
                 or template_job.get("timeout-minutes") != "5"
+                or set(template_job) != {"name", "runs-on", "timeout-minutes", "steps"}
                 or not isinstance(steps, list)
                 or len(steps) != 2
                 or not isinstance(checkout, dict)
                 or checkout.get("with")
                 != {"ref": expected_ref, "persist-credentials": "false"}
                 or not isinstance(run_step, dict)
+                or set(run_step) != {"name", "env", "shell", "run"}
+                or run_step.get("shell") != "bash"
+                or not isinstance(run_text, str)
+                or not pr_template_gate_body_check_is_safe(run_text)
                 or run_step.get("env")
                 != {
                     "EVENT_NAME": "${{ github.event_name }}",
@@ -6698,14 +7232,18 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                     "PR_TITLE": "${{ github.event.pull_request.title }}",
                     "PR_IS_DRAFT": "${{ github.event.pull_request.draft }}",
                     "PR_USER": "${{ github.event.pull_request.user.login }}",
+                    "PR_USER_TYPE": "${{ github.event.pull_request.user.type }}",
                     "PR_HEAD_REF": "${{ github.event.pull_request.head.ref }}",
+                    "PR_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
+                    "PR_REPOSITORY": "${{ github.repository }}",
+                    "PR_REPOSITORY_OWNER": "${{ github.repository_owner }}",
                 }
                 or not isinstance(run_text, str)
                 or 'event_name == "merge_group"' not in run_text
                 or 'event_name != "pull_request_target"' not in run_text
                 or 'PR_USER") == "dependabot[bot]"' not in run_text
-                or 'PR_HEAD_REF", "").startswith("release-please--branches--")'
-                not in run_text
+                or 'PR_USER_TYPE") == "Bot"' not in run_text
+                or "release-please--branches--" not in run_text
                 or "Pull request template requirements were checked before merge-queue admission."
                 not in run_text
             ):
@@ -7542,6 +8080,10 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
             or job.get("timeout-minutes") != "10"
         ):
             problems.append(f"{relative}: upstream-drift job contract is invalid")
+        elif not freshness_job_execution_is_unconditional(job):
+            problems.append(
+                f"{relative}: upstream-drift job and steps must execute unconditionally"
+            )
         elif not job_effective_issue_write(workflow, job):
             problems.append(
                 f"{relative}: upstream-drift job must have effective issues: write permission"
@@ -7563,6 +8105,12 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
         ):
             problems.append(
                 f"{relative}: workflow must run the checker and reconcile one marker issue"
+            )
+        if not reminder_body_preflight_is_safe(
+            text, "$RUNNER_TEMP/community-health.md"
+        ):
+            problems.append(
+                f"{relative}: reminder must preflight the Markdown body before Issue mutations"
             )
         if not reminder_report_marker_check_is_safe(
             text,
@@ -7810,6 +8358,10 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
         ):
             problems.append(
                 f"{relative}: freshness workflow must run the checker and reconcile one marker issue from its report"
+            )
+        if not reminder_body_preflight_is_safe(text, "$RUNNER_TEMP/freshness.md"):
+            problems.append(
+                f"{relative}: reminder must preflight the Markdown body before Issue mutations"
             )
         if not has_repo_bound_issue_reconciliation(
             text, expected_repository_values={FRESHNESS_REMINDER_REPOSITORY}
@@ -8183,6 +8735,11 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
             ".github/workflows/official-docs.yml: reminder runs must serialize "
             "repository issue state"
         )
+    if isinstance(job, dict) and not freshness_job_execution_is_unconditional(job):
+        problems.append(
+            ".github/workflows/official-docs.yml: audit job and steps must execute "
+            "unconditionally"
+        )
     elif not job_effective_issue_write(workflow, job):
         problems.append(
             ".github/workflows/official-docs.yml: audit job must have effective issues: write permission"
@@ -8202,6 +8759,13 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 ".github/workflows/official-docs.yml: must run the checker and reconcile one marker issue"
             )
             break
+    if not reminder_body_preflight_is_safe(
+        workflow_text, "$RUNNER_TEMP/official-docs.md"
+    ):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder must preflight the "
+            "Markdown body before Issue mutations"
+        )
     if not reminder_report_marker_check_is_safe(
         workflow_text,
         marker="repo-scaffold-official-docs-audit",
@@ -8796,6 +9360,81 @@ def validate_pr_template_preflight_contract(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_markdown_body_preflight_contract(repository_root: Path) -> list[str]:
+    """Keep the shared body checker available to source and generated workflows."""
+    source = repository_root / MARKDOWN_BODY_PREFLIGHT_SKILL_SCRIPT
+    entrypoint = repository_root / MARKDOWN_BODY_PREFLIGHT_ROOT_SCRIPT
+    problems: list[str] = []
+    if not source.is_file():
+        problems.append(
+            f"{MARKDOWN_BODY_PREFLIGHT_SKILL_SCRIPT.as_posix()}: bundled body "
+            "preflight script is missing"
+        )
+    if not entrypoint.is_file():
+        problems.append(
+            f"{MARKDOWN_BODY_PREFLIGHT_ROOT_SCRIPT.as_posix()}: body preflight "
+            "entry point is missing"
+        )
+    else:
+        try:
+            entrypoint_text = entrypoint.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(
+                f"{MARKDOWN_BODY_PREFLIGHT_ROOT_SCRIPT.as_posix()}: unreadable: {error}"
+            )
+        else:
+            if not all(
+                fragment in entrypoint_text
+                for fragment in (
+                    "skills",
+                    "markdown_body_preflight.py",
+                    "runpy.run_path",
+                )
+            ):
+                problems.append(
+                    f"{MARKDOWN_BODY_PREFLIGHT_ROOT_SCRIPT.as_posix()}: must delegate "
+                    "to the bundled body preflight script"
+                )
+
+    for relative in (
+        PR_TEMPLATE_PREFLIGHT_SKILL_SCRIPT,
+        Path("skills/repo-scaffold/scripts/validate_scaffold.py"),
+    ):
+        path = repository_root / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            problems.append(f"{relative.as_posix()}: unreadable: {error}")
+            continue
+        if "from markdown_body_preflight import" not in text:
+            problems.append(
+                f"{relative.as_posix()}: must use the shared Markdown body checker"
+            )
+
+    reference = repository_root / SCAFFOLD_GENERATION_REFERENCE
+    try:
+        reference_text = reference.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        problems.append(
+            f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: could not read body "
+            f"preflight copy contract: {error}"
+        )
+    else:
+        rows = (
+            "| `assets/workflows/community-health.yml` | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |",
+            "| `assets/workflows/documentation.yml` | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |",
+            "| `assets/workflows/freshness.yml` | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |",
+            "| Pull-request preflight dependency | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |",
+        )
+        for row in rows:
+            if row not in reference_text:
+                problems.append(
+                    f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: missing body "
+                    f"preflight distribution row {row!r}"
+                )
+    return problems
+
+
 def validate_test_quality_contract(repository_root: Path) -> list[str]:
     """Reject structurally weak or duplicated test cases."""
     test_root = repository_root / "tests"
@@ -8884,6 +9523,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_code_scanning_gate_contract,
         validate_workflow_script_copy_contract,
         validate_pr_template_preflight_contract,
+        validate_markdown_body_preflight_contract,
         validate_test_quality_contract,
         validate_scaffold_contract,
         validate_release_archive,

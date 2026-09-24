@@ -151,11 +151,13 @@ jobs:
           skills/repo-scaffold/scripts/workflow_installation_preflight.py
           skills/repo-scaffold/scripts/sync_action_pins.py
           skills/repo-scaffold/scripts/validate_scaffold.py
+          skills/repo-scaffold/scripts/markdown_body_preflight.py
           scripts/audit_freshness.py
           scripts/audit_official_docs.py
           scripts/check_code_scanning_alerts.py
           scripts/merge_mutation_shards.py
           scripts/pr_template_preflight.py
+          scripts/markdown_body_preflight.py
           scripts/prepare_mutation_cache.py
           scripts/python_support.py
           scripts/run_mutation_testing.py
@@ -328,6 +330,11 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
       - name: Reconcile policy-drift reminder issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -374,6 +381,7 @@ jobs:
             printf '%s\n' "| CI toolchain | \`$TOOLCHAIN_CANARY_RESULT\` | Review the release and artifact digest, then update \`.github/ci-toolchain.json\` if appropriate. |"
           } > "$report"
           cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          python scripts/markdown_body_preflight.py --body-file "$report"
           if (( ${#issue_numbers[@]} == 1 )); then
             gh issue edit "${issue_numbers[0]}" \
               --repo "github.com/${REPOSITORY}" \

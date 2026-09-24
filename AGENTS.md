@@ -25,3 +25,5 @@ Before `gh pr create` or `gh pr edit`, run
 selected checked-in template with `--body-file`. For a focused template without
 a mandatory title mapping, pass `--template <id>`. Record validation evidence
 and update a focused regression test when behavior changes.
+After preparing the body file, rerun the preflight with `--body-file <path>` to
+reject hard-wrapped prose before the GitHub mutation.

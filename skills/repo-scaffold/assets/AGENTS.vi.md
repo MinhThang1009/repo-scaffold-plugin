@@ -31,6 +31,8 @@ trước khi chuyển sang ready for review, chỉ tick một mục bắt buộc
 hoàn tất. Dùng `gh pr create --body-file` hoặc `gh pr edit --body-file`. Không
 dùng `--fill` hoặc `--body` tự do vì có thể bỏ qua template.
 
+Sau khi chuẩn bị tệp body UTF-8, chạy lại preflight với `--body-file <path>` để chặn prose bị hard-wrap trước khi thay đổi GitHub.
+
 ## Ngôn ngữ
 
 Dùng ngôn ngữ chủ đạo của tài liệu hướng tới người dùng hiện có. Khi chưa rõ,

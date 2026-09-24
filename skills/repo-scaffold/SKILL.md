@@ -236,7 +236,8 @@ this plugin does not change the remote policy.
 The community-health tracker registry must stay inside the repository and reject
 traversal, control characters, links, or reparse points before it is read.
 Directory inventories are bounded to 10,000 entries so large repositories fail
-closed instead of exhausting the runner.
+closed instead of exhausting the runner. Each Markdown file is read as strict
+UTF-8 and capped at 1 MiB.
 
 When a code-scanning gate is supplied, its `freshness.yml` companion must use
 only scheduled and manual triggers. Each schedule entry must use a five-field
@@ -350,7 +351,11 @@ tracked workflow inventory at 500 files and 64 MiB, plus the distinct action
 repositories it resolves at 500, so a large or hostile repository cannot force
 unbounded local reads or upstream lookups.
 The action-pin synchronizer applies the same 500-file and 64 MiB aggregate
-workflow budget before preparing maintenance changes.
+workflow budget before preparing maintenance changes. Its PR body is kept in
+`.github/action-pin-sync-pr-body.md`, preflighted with
+`python scripts/markdown_body_preflight.py --body-file
+.github/action-pin-sync-pr-body.md`, and passed to the PR action through
+`body-path`.
 The tracker registry is also capped at 500 tracked input paths, including
 requirement locks. Each requirements file may contain at most 512 unique direct
 pins, and all tracked requirement sources and locks together at most 4096

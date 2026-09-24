@@ -20,6 +20,12 @@ from markdown_it.rules_inline.backticks import backtick as parse_backtick
 from markdown_it.rules_inline.state_inline import StateInline
 from markdown_it.token import Token
 
+from markdown_body_preflight import (
+    MAX_BODY_FILE_BYTES as MAX_MARKDOWN_FILE_BYTES,
+    hard_wrapped_prose_lines,
+    split_gfm_lines,
+)
+
 
 SKIPPED_DIRECTORIES = {
     ".git",
@@ -59,6 +65,10 @@ ISSUE_FORM_INPUT_TYPES = {
     "upload",
 }
 ISSUE_FORM_BODY_KEYS = {"attributes", "id", "type", "validations"}
+PULL_REQUEST_TEMPLATE_LOCATIONS = (Path("."), Path("docs"), Path(".github"))
+PULL_REQUEST_TEMPLATE_EXTENSIONS = {".md", ".markdown", ".txt"}
+MAX_FOCUSED_PULL_REQUEST_TEMPLATES = 128
+MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES = 10_000
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -178,7 +188,7 @@ def markdown_files(repository_root: Path) -> list[Path]:
 def read_markdown(
     path: Path, *, label: str, repository_root: Path | None = None
 ) -> tuple[str | None, str | None]:
-    """Read project Markdown without dereferencing symbolic links."""
+    """Read bounded project Markdown without dereferencing symbolic links."""
     if path.is_symlink():
         return None, f"{label}: symbolic-link Markdown is not dereferenced or validated"
     if (
@@ -191,9 +201,20 @@ def read_markdown(
             f"{label}: linked or reparse-point Markdown is not dereferenced or validated",
         )
     try:
-        return path.read_text(encoding="utf-8"), None
-    except (OSError, UnicodeError) as error:
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_MARKDOWN_FILE_BYTES + 1)
+    except OSError as error:
         return None, f"{label}: unreadable UTF-8 Markdown: {error}"
+    if len(payload) > MAX_MARKDOWN_FILE_BYTES:
+        return (
+            None,
+            f"{label}: exceeds the {MAX_MARKDOWN_FILE_BYTES}-byte limit",
+        )
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeError as error:
+        return None, f"{label}: unreadable UTF-8 Markdown: {error}"
+    return text.replace("\r\n", "\n").replace("\r", "\n"), None
 
 
 OPAQUE_HTML_BLOCK = re.compile(
@@ -508,7 +529,7 @@ def validate_readme_text(text: str, *, label: str = "README.md") -> list[str]:
         problems.append(f"{label}: H1 must be inside the centered header")
     tagline_lines = [
         line.strip()
-        for line in header.splitlines()
+        for line in split_gfm_lines(header)
         if line.strip()
         and not line.lstrip().startswith(("#", "![", "[![", "<!--", "-->", "<"))
     ]
@@ -821,27 +842,126 @@ def validate_issue_forms(
     return problems
 
 
+def bounded_template_directory_entries(
+    directory: Path, repository_root: Path
+) -> list[Path]:
+    """Return a bounded directory inventory for PR-template discovery."""
+    relative = directory.relative_to(repository_root).as_posix()
+    entries: list[Path] = []
+    try:
+        for entry in directory.iterdir():
+            if len(entries) >= MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES:
+                raise ValueError(
+                    f"{relative}: template directory scan exceeds "
+                    f"{MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES} entries"
+                )
+            entries.append(entry)
+    except OSError as error:
+        raise ValueError(
+            f"{relative}: could not scan template directory: {error}"
+        ) from error
+    return entries
+
+
 def pull_request_templates(repository_root: Path) -> list[Path]:
-    """Return supported single and multi-template Markdown paths."""
-    candidates = {
-        repository_root / "PULL_REQUEST_TEMPLATE.md",
-        repository_root / "docs" / "PULL_REQUEST_TEMPLATE.md",
-        repository_root / ".github" / "PULL_REQUEST_TEMPLATE.md",
+    """Return GitHub-supported single and multi-template Markdown paths."""
+    candidates: set[Path] = set()
+    focused_candidates: set[Path] = set()
+
+    def add_candidate(path: Path, *, focused: bool = False) -> None:
+        if path in candidates:
+            return
+        if focused and len(focused_candidates) >= MAX_FOCUSED_PULL_REQUEST_TEMPLATES:
+            relative = path.parent.relative_to(repository_root).as_posix()
+            raise ValueError(
+                f"{relative}: PR template inventory exceeds "
+                f"{MAX_FOCUSED_PULL_REQUEST_TEMPLATES} focused templates"
+            )
+        candidates.add(path)
+        if focused:
+            focused_candidates.add(path)
+
+    for location in PULL_REQUEST_TEMPLATE_LOCATIONS:
+        parent = repository_root / location
+        if location != Path(".") and path_has_link_or_reparse(parent, repository_root):
+            continue
+        if not parent.is_dir():
+            continue
+        for entry in bounded_template_directory_entries(parent, repository_root):
+            if (
+                Path(entry.name).stem.casefold() == "pull_request_template"
+                and Path(entry.name).suffix.casefold()
+                in PULL_REQUEST_TEMPLATE_EXTENSIONS
+                and (
+                    path_has_link_or_reparse(entry, repository_root) or entry.is_file()
+                )
+            ):
+                add_candidate(entry)
+            if entry.name.casefold() != "pull_request_template":
+                continue
+            if path_has_link_or_reparse(entry, repository_root) or not entry.is_dir():
+                continue
+            for template in bounded_template_directory_entries(entry, repository_root):
+                if template.suffix.casefold() in PULL_REQUEST_TEMPLATE_EXTENSIONS and (
+                    path_has_link_or_reparse(template, repository_root)
+                    or template.is_file()
+                ):
+                    add_candidate(template, focused=True)
+    return sorted(candidates)
+
+
+def pull_request_template_directories(repository_root: Path) -> list[Path]:
+    """Return supported multi-template directories without following links."""
+    directories = {
+        repository_root / location / "PULL_REQUEST_TEMPLATE"
+        for location in PULL_REQUEST_TEMPLATE_LOCATIONS
+        if path_has_link_or_reparse(
+            repository_root / location / "PULL_REQUEST_TEMPLATE", repository_root
+        )
+        or (repository_root / location / "PULL_REQUEST_TEMPLATE").exists()
     }
-    template_directory = repository_root / ".github" / "PULL_REQUEST_TEMPLATE"
-    if not path_has_link_or_reparse(template_directory, repository_root):
-        candidates.update(template_directory.glob("*.md"))
-    return sorted(
-        path
-        for path in candidates
-        if path_has_link_or_reparse(path, repository_root) or path.is_file()
-    )
+    for location in PULL_REQUEST_TEMPLATE_LOCATIONS:
+        parent = repository_root / location
+        if location != Path(".") and path_has_link_or_reparse(parent, repository_root):
+            continue
+        if not parent.is_dir():
+            continue
+        directories.update(
+            entry
+            for entry in bounded_template_directory_entries(parent, repository_root)
+            if entry.name.casefold() == "pull_request_template"
+        )
+    return sorted(directories)
 
 
 def validate_pull_request_templates(repository_root: Path) -> list[str]:
     """Require actionable content in every pull-request template."""
     problems: list[str] = []
-    for path in pull_request_templates(repository_root):
+    for location in PULL_REQUEST_TEMPLATE_LOCATIONS[1:]:
+        parent = repository_root / location
+        if path_has_link_or_reparse(parent, repository_root):
+            problems.append(
+                f"{location.as_posix()}: linked or reparse-point template location "
+                "is not dereferenced or validated"
+            )
+    try:
+        template_directories = pull_request_template_directories(repository_root)
+        templates = pull_request_templates(repository_root)
+    except ValueError as error:
+        problems.append(str(error))
+        return problems
+    for template_directory in template_directories:
+        relative = template_directory.relative_to(repository_root).as_posix()
+        if path_has_link_or_reparse(template_directory, repository_root):
+            problems.append(
+                f"{relative}: linked or reparse-point directory is not dereferenced "
+                "or validated"
+            )
+        elif not template_directory.is_dir():
+            problems.append(
+                f"{relative}: pull-request template catalog is not a directory"
+            )
+    for path in templates:
         relative = path.relative_to(repository_root).as_posix()
         text, problem = read_markdown(
             path, label=relative, repository_root=repository_root
@@ -850,6 +970,18 @@ def validate_pull_request_templates(repository_root: Path) -> list[str]:
             problems.append(problem)
             continue
         assert text is not None
+        try:
+            wrapped_lines = hard_wrapped_prose_lines(text)
+        except ValueError as error:
+            problems.append(
+                f"{relative}: could not validate hard-wrapped prose: {error}"
+            )
+        else:
+            if wrapped_lines:
+                lines = ", ".join(str(number) for number in wrapped_lines)
+                problems.append(
+                    f"{relative}: template contains hard-wrapped prose at line(s): {lines}"
+                )
         if not text.strip():
             problems.append(f"{relative}: template must be nonempty")
         if not re.search(r"(?m)^\s*[-*+]\s+\[ \]\s+\S", text):
@@ -894,7 +1026,10 @@ def validate_template_assets(template_root: Path) -> list[str]:
             template_root, template_directory=template_root / "ISSUE_TEMPLATE"
         )
     )
-    pull_templates = [("default", template_root / "PULL_REQUEST_TEMPLATE.md")]
+    pull_templates = [
+        ("default", template_root / "PULL_REQUEST_TEMPLATE.md"),
+        ("default", template_root / "PULL_REQUEST_TEMPLATE.vi.md"),
+    ]
     for directory_name in ("PULL_REQUEST_TEMPLATE", "PULL_REQUEST_TEMPLATE.vi"):
         template_directory = template_root / directory_name
         if path_has_link_or_reparse(template_directory, template_root):
@@ -904,9 +1039,35 @@ def validate_template_assets(template_root: Path) -> list[str]:
             )
             continue
         if template_directory.is_dir():
-            pull_templates.extend(
-                (path.stem, path) for path in sorted(template_directory.glob("*.md"))
-            )
+            try:
+                template_entries = bounded_template_directory_entries(
+                    template_directory, template_root
+                )
+            except ValueError as error:
+                problems.append(str(error))
+                continue
+            focused_template_count = 0
+            focused_template_ids: set[str] = set()
+            for path in sorted(template_entries):
+                if path.suffix.casefold() != ".md":
+                    continue
+                if focused_template_count >= MAX_FOCUSED_PULL_REQUEST_TEMPLATES:
+                    problems.append(
+                        f"{directory_name} asset directory exceeds "
+                        f"{MAX_FOCUSED_PULL_REQUEST_TEMPLATES} focused templates"
+                    )
+                    break
+                focused_template_count += 1
+                template_id = path.stem
+                if template_id in focused_template_ids:
+                    relative = path.relative_to(template_root).as_posix()
+                    problems.append(
+                        f"{relative} asset duplicates focused template identifier "
+                        f"{template_id!r}"
+                    )
+                    continue
+                focused_template_ids.add(template_id)
+                pull_templates.append((path.stem, path))
 
     marker_pattern = re.compile(
         r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",
@@ -940,6 +1101,16 @@ def validate_template_assets(template_root: Path) -> list[str]:
             problems.append(problem)
             continue
         assert text is not None
+        try:
+            wrapped_lines = hard_wrapped_prose_lines(text)
+        except ValueError as error:
+            problems.append(f"{label}: could not validate hard-wrapped prose: {error}")
+        else:
+            if wrapped_lines:
+                lines = ", ".join(str(number) for number in wrapped_lines)
+                problems.append(
+                    f"{label} contains hard-wrapped prose at line(s): {lines}"
+                )
         if marker_pattern.findall(text) != [template_id]:
             problems.append(
                 f"{label} must contain exactly one matching repo-scaffold template marker"

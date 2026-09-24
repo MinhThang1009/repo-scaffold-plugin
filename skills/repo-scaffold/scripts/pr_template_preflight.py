@@ -10,6 +10,15 @@ import stat
 import sys
 from pathlib import Path
 
+from markdown_body_preflight import (
+    MAX_BODY_FILE_BYTES as MAX_BODY_FILE_BYTES,
+    hard_wrapped_prose_lines as _shared_hard_wrapped_prose_lines,
+    read_body_file as _shared_read_body_file,
+)
+
+MAX_TEMPLATE_DIRECTORY_ENTRIES = 128
+MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES = 10_000
+
 
 TITLE_TYPE_PATTERN = re.compile(r"^(?P<type>feat|fix|docs)(?:\([^()\r\n]+\))?!?: ")
 TEMPLATE_BY_TITLE_TYPE = {
@@ -96,7 +105,22 @@ def template_catalog(repository_root: Path) -> dict[str, Path]:
     ):
         raise ValueError("trusted PR template catalog contains a linked path")
     if directory.is_dir():
-        for path in sorted(directory.glob("*.md")):
+        paths: list[Path] = []
+        for entry_index, path in enumerate(directory.iterdir()):
+            if entry_index >= MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES:
+                raise ValueError(
+                    "trusted PR template catalog scan exceeds "
+                    f"{MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES} directory entries"
+                )
+            if path.suffix.casefold() != ".md":
+                continue
+            if len(paths) >= MAX_TEMPLATE_DIRECTORY_ENTRIES:
+                raise ValueError(
+                    "trusted PR template catalog exceeds "
+                    f"{MAX_TEMPLATE_DIRECTORY_ENTRIES} focused templates"
+                )
+            paths.append(path)
+        for path in sorted(paths):
             if path_has_link_or_reparse(path, root):
                 raise ValueError(f"trusted PR template path is linked: {path}")
             template_id = path.stem
@@ -134,8 +158,12 @@ def template_path(repository_root: Path, template: str) -> Path:
     if path_has_link_or_reparse(path, root):
         raise ValueError(f"trusted PR template path is linked: {path}")
     try:
-        markers = TEMPLATE_MARKER_PATTERN.findall(path.read_text(encoding="utf-8"))
-    except OSError as error:
+        template_text = read_body_file(path)
+        normalized_template_text = template_text.replace("\r\n", "\n").replace(
+            "\r", "\n"
+        )
+        markers = TEMPLATE_MARKER_PATTERN.findall(normalized_template_text)
+    except (OSError, UnicodeError, ValueError) as error:
         raise ValueError(
             f"could not read trusted PR template {path}: {error}"
         ) from error
@@ -147,8 +175,18 @@ def template_path(repository_root: Path, template: str) -> Path:
     return path
 
 
+def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
+    """Return line numbers where ordinary Markdown prose is hard-wrapped."""
+    return _shared_hard_wrapped_prose_lines(markdown)
+
+
+def read_body_file(path: Path) -> str:
+    """Read a bounded regular UTF-8 body file without following links."""
+    return _shared_read_body_file(path)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the proposed title, optional focused template, and repository location."""
+    """Parse the proposed title, optional body/template, and repository location."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--title", required=True, help="Proposed pull-request title")
     parser.add_argument(
@@ -164,6 +202,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("."),
         help="Repository containing the checked-in PR template catalog",
     )
+    parser.add_argument(
+        "--body-file",
+        type=Path,
+        help="UTF-8 pull-request body to reject when prose is hard-wrapped",
+    )
     return parser.parse_args(argv)
 
 
@@ -173,6 +216,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         template = select_template(arguments.title, arguments.template)
         path = template_path(arguments.repository_root, template)
+        if arguments.body_file is not None:
+            wrapped_lines = hard_wrapped_prose_lines(
+                read_body_file(arguments.body_file)
+            )
+            if wrapped_lines:
+                lines = ", ".join(str(line) for line in wrapped_lines)
+                raise ValueError(
+                    f"body file contains hard-wrapped prose at line(s): {lines}"
+                )
     except (OSError, UnicodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -183,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
         "Copy this UTF-8 template to a body file, complete its required checklist, "
         "then use gh pr create --body-file or gh pr edit --body-file."
     )
+    if arguments.body_file is not None:
+        print("PR body does not contain hard-wrapped prose.")
     return 0
 
 

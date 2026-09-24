@@ -19,6 +19,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "validate_scaffold.py"
 )
+sys.path.insert(0, str(SCRIPT_PATH.parent))
 SPEC = importlib.util.spec_from_file_location(
     "skills.repo-scaffold.scripts.validate_scaffold", SCRIPT_PATH
 )
@@ -146,6 +147,17 @@ class ReadmeContractTests(unittest.TestCase):
         )
 
         no_tagline = readme().replace("A real project tagline.\n\n", "")
+        self.assertIn(
+            "README.md: centered header must contain a nonempty tagline",
+            validate_scaffold.validate_readme_text(no_tagline),
+        )
+
+    def test_unicode_line_separator_does_not_create_a_header_tagline(self) -> None:
+        no_tagline = readme().replace(
+            "# Example\n\nA real project tagline.\n\n",
+            "# Example\u2028A fake tagline.\n\n",
+        )
+
         self.assertIn(
             "README.md: centered header must contain a nonempty tagline",
             validate_scaffold.validate_readme_text(no_tagline),
@@ -317,7 +329,7 @@ class MarkdownSourceContractTests(unittest.TestCase):
         path = Path("linked.md")
         with (
             mock.patch.object(Path, "is_symlink", return_value=True),
-            mock.patch.object(Path, "read_text") as read_text,
+            mock.patch.object(Path, "open") as open_file,
         ):
             text, problem = validate_scaffold.read_markdown(path, label="linked.md")
 
@@ -326,8 +338,7 @@ class MarkdownSourceContractTests(unittest.TestCase):
             problem,
             "linked.md: symbolic-link Markdown is not dereferenced or validated",
         )
-        read_text.assert_not_called()
-
+        open_file.assert_not_called()
         root = mock.MagicMock(spec=Path)
         root.__truediv__.return_value = path
         with mock.patch.object(Path, "is_symlink", return_value=True):
@@ -335,6 +346,21 @@ class MarkdownSourceContractTests(unittest.TestCase):
                 validate_scaffold.validate_readme(root),
                 ["README.md: symbolic-link Markdown is not dereferenced or validated"],
             )
+
+    def test_markdown_reader_reports_open_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unreadable.md"
+            path.write_text("content", encoding="utf-8")
+            with mock.patch.object(Path, "open", side_effect=OSError("denied")):
+                text, problem = validate_scaffold.read_markdown(
+                    path, label="unreadable.md"
+                )
+
+        self.assertIsNone(text)
+        self.assertEqual(
+            problem,
+            "unreadable.md: unreadable UTF-8 Markdown: denied",
+        )
 
     def test_reports_unresolved_namespaced_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1130,6 +1156,210 @@ body:
                 ],
             )
 
+    def test_pull_request_template_rejects_hard_wrapped_prose(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / ".github" / "PULL_REQUEST_TEMPLATE.md"
+            template.parent.mkdir(parents=True)
+            template.write_text(
+                "- [ ] Verify the change\n\nFirst line of prose\ncontinued prose\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE.md: template contains hard-wrapped "
+            "prose at line(s): 4",
+            problems,
+        )
+
+    def test_preflight_lookahead_limit_fails_closed_for_repository_and_assets(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github").mkdir()
+            (root / ".github" / "PULL_REQUEST_TEMPLATE.md").write_text(
+                "- [ ] Verify the change\n", encoding="utf-8"
+            )
+            (root / "PULL_REQUEST_TEMPLATE.md").write_text(
+                "- [ ] Verify the change\n", encoding="utf-8"
+            )
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "README-header.md",
+                root / "README-header.md",
+            )
+
+            with mock.patch.object(
+                validate_scaffold,
+                "hard_wrapped_prose_lines",
+                side_effect=ValueError("test lookahead budget exceeded"),
+            ):
+                repository_problems = validate_scaffold.validate_pull_request_templates(
+                    root
+                )
+                asset_problems = validate_scaffold.validate_template_assets(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE.md: could not validate hard-wrapped "
+            "prose: test lookahead budget exceeded",
+            repository_problems,
+        )
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE.md asset: could not validate hard-wrapped "
+            "prose: test lookahead budget exceeded",
+            asset_problems,
+        )
+
+    def test_pull_request_template_rejects_an_oversized_markdown_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / ".github" / "PULL_REQUEST_TEMPLATE.md"
+            template.parent.mkdir(parents=True)
+            template.write_bytes(
+                b"- [ ] Verify the change\n"
+                + b"x" * validate_scaffold.MAX_MARKDOWN_FILE_BYTES
+            )
+
+            problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE.md: exceeds the "
+            f"{validate_scaffold.MAX_MARKDOWN_FILE_BYTES}-byte limit",
+            problems,
+        )
+
+    def test_pull_request_template_rejects_linked_catalog_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            with mock.patch.object(
+                validate_scaffold,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path == template_directory,
+            ):
+                problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE: linked or reparse-point directory is "
+            "not dereferenced or validated",
+            problems,
+        )
+
+    def test_pull_request_template_rejects_a_non_directory_catalog_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            catalog.parent.mkdir(parents=True)
+            catalog.write_text("not a template directory\n", encoding="utf-8")
+
+            problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE: pull-request template catalog is not "
+            "a directory",
+            problems,
+        )
+
+    def test_pull_request_template_discovery_skips_linked_search_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            docs = root / "docs"
+            (root / ".github").mkdir()
+            with mock.patch.object(
+                validate_scaffold,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path == docs,
+            ):
+                templates = validate_scaffold.pull_request_templates(root)
+                problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertEqual(templates, [])
+        self.assertIn(
+            "docs: linked or reparse-point template location is not dereferenced "
+            "or validated",
+            problems,
+        )
+
+    def test_pull_request_template_discovery_caps_catalog_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            catalog.mkdir(parents=True)
+            for index in range(
+                validate_scaffold.MAX_FOCUSED_PULL_REQUEST_TEMPLATES + 1
+            ):
+                (catalog / f"extra-{index:03}.md").write_text(
+                    "- [ ] Verify the change\n", encoding="utf-8"
+                )
+
+            problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE: PR template inventory exceeds "
+            f"{validate_scaffold.MAX_FOCUSED_PULL_REQUEST_TEMPLATES} focused templates",
+            problems,
+        )
+
+    def test_pull_request_template_discovery_deduplicates_candidate_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            github = root / ".github"
+            github.mkdir()
+            default = github / "PULL_REQUEST_TEMPLATE.md"
+            default.write_text("- [ ] Verify the change\n", encoding="utf-8")
+
+            def duplicate_default(parent: Path, _repository_root: Path) -> list[Path]:
+                return [default, default] if parent == github else []
+
+            with mock.patch.object(
+                validate_scaffold,
+                "bounded_template_directory_entries",
+                side_effect=duplicate_default,
+            ):
+                templates = validate_scaffold.pull_request_templates(root)
+
+        self.assertEqual(templates, [default])
+
+    def test_pull_request_template_discovery_bounds_raw_catalog_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            catalog.mkdir(parents=True)
+            original_iterdir = Path.iterdir
+
+            def many_unrelated_entries(path: Path):
+                if path == catalog:
+                    return (
+                        catalog / f"asset-{index}.bin"
+                        for index in range(
+                            validate_scaffold.MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES + 1
+                        )
+                    )
+                return original_iterdir(path)
+
+            with mock.patch.object(Path, "iterdir", new=many_unrelated_entries):
+                with self.assertRaisesRegex(ValueError, "directory scan exceeds"):
+                    validate_scaffold.pull_request_templates(root)
+
+            def denied_catalog(path: Path):
+                if path == catalog:
+                    raise PermissionError("denied")
+                return original_iterdir(path)
+
+            with mock.patch.object(Path, "iterdir", new=denied_catalog):
+                problems = validate_scaffold.validate_pull_request_templates(root)
+
+        self.assertIn(
+            ".github/PULL_REQUEST_TEMPLATE: could not scan template directory: denied",
+            problems,
+        )
+
     def test_pull_request_template_discovery_checks_all_supported_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1138,10 +1368,18 @@ body:
                 root / "docs" / "PULL_REQUEST_TEMPLATE.md",
                 root / ".github" / "PULL_REQUEST_TEMPLATE.md",
                 root / ".github" / "PULL_REQUEST_TEMPLATE" / "focused.md",
+                root / "pull_request_template.TXT",
+                root / "docs" / "pull_request_template" / "focused.txt",
+                root / ".github" / "PULL_REQUEST_TEMPLATE" / "lowercase.MD",
+                root / "docs" / "pull_request_template" / "focused.markdown",
             ]
             for path in paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("- [ ] Verify the change\n", encoding="utf-8")
+            unsupported_asset = (
+                root / ".github" / "PULL_REQUEST_TEMPLATE" / "diagram.png"
+            )
+            unsupported_asset.write_bytes(b"\x89PNG\r\n\x1a\n")
 
             self.assertEqual(
                 validate_scaffold.pull_request_templates(root), sorted(paths)
@@ -1363,6 +1601,152 @@ body:
                     "one optional checklist section",
                 ],
             )
+
+    def test_template_assets_discover_uppercase_md_extensions_case_insensitively(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "README-header.md",
+                root / "README-header.md",
+            )
+            template = root / "PULL_REQUEST_TEMPLATE" / "security.MD"
+            template.parent.mkdir()
+            template.write_text(
+                "<!-- repo-scaffold:pr-template=wrong -->\n\n"
+                "## Required checklist\n\n"
+                "<!-- repo-scaffold:required-checklist:start -->\n"
+                "- [ ] Verify the change\n"
+                "<!-- repo-scaffold:required-checklist:end -->\n\n"
+                "## If applicable\n\n"
+                "<!-- repo-scaffold:optional-checklist:start -->\n"
+                "- [ ] Update documentation\n"
+                "<!-- repo-scaffold:optional-checklist:end -->\n",
+                encoding="utf-8",
+            )
+            problems = validate_scaffold.validate_template_assets(root)
+
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE/security.MD asset must contain exactly one "
+            "matching repo-scaffold template marker",
+            problems,
+        )
+
+    def test_template_asset_catalog_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "README-header.md",
+                root / "README-header.md",
+            )
+            template_directory = root / "PULL_REQUEST_TEMPLATE"
+            template_directory.mkdir()
+            original_inventory = validate_scaffold.bounded_template_directory_entries
+
+            def oversized_inventory(path: Path, repository_root: Path):
+                if path == template_directory:
+                    raise ValueError("PULL_REQUEST_TEMPLATE: scan cap reached")
+                return original_inventory(path, repository_root)
+
+            with mock.patch.object(
+                validate_scaffold,
+                "bounded_template_directory_entries",
+                side_effect=oversized_inventory,
+            ):
+                raw_limit_problems = validate_scaffold.validate_template_assets(root)
+
+            def excessive_focused_templates(path: Path, repository_root: Path):
+                if path == template_directory:
+                    return [
+                        path / "diagram.png",
+                        *(
+                            path / f"focused-{index}.md"
+                            for index in range(
+                                validate_scaffold.MAX_FOCUSED_PULL_REQUEST_TEMPLATES + 1
+                            )
+                        ),
+                    ]
+                return original_inventory(path, repository_root)
+
+            with mock.patch.object(
+                validate_scaffold,
+                "bounded_template_directory_entries",
+                side_effect=excessive_focused_templates,
+            ):
+                focused_limit_problems = validate_scaffold.validate_template_assets(
+                    root
+                )
+
+            def duplicate_focused_templates(path: Path, repository_root: Path):
+                if path == template_directory:
+                    return [path / "feature.md", path / "feature.MD"]
+                return original_inventory(path, repository_root)
+
+            with mock.patch.object(
+                validate_scaffold,
+                "bounded_template_directory_entries",
+                side_effect=duplicate_focused_templates,
+            ):
+                duplicate_template_problems = (
+                    validate_scaffold.validate_template_assets(root)
+                )
+
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE: scan cap reached",
+            raw_limit_problems,
+        )
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE asset directory exceeds "
+            f"{validate_scaffold.MAX_FOCUSED_PULL_REQUEST_TEMPLATES} focused templates",
+            focused_limit_problems,
+        )
+        self.assertTrue(
+            any(
+                "asset duplicates focused template identifier 'feature'" in problem
+                for problem in duplicate_template_problems
+            ),
+            duplicate_template_problems,
+        )
+
+    def test_template_assets_reject_hard_wrapped_prose(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            header_asset = (
+                PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets" / "README-header.md"
+            )
+            shutil.copy2(header_asset, root / "README-header.md")
+            (root / "PULL_REQUEST_TEMPLATE.md").write_text(
+                "<!-- repo-scaffold:pr-template=default -->\n\n"
+                "First line of prose\ncontinued prose\n\n"
+                "- [ ] Verify the change\n",
+                encoding="utf-8",
+            )
+            (root / "PULL_REQUEST_TEMPLATE.vi.md").write_text(
+                "<!-- repo-scaffold:pr-template=default -->\n\n"
+                "Dòng đầu tiên\ndòng tiếp theo\n\n"
+                "- [ ] Xác minh thay đổi\n",
+                encoding="utf-8",
+            )
+
+            problems = validate_scaffold.validate_template_assets(root)
+
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE.md asset contains hard-wrapped prose at line(s): 4",
+            problems,
+        )
+        self.assertIn(
+            "PULL_REQUEST_TEMPLATE.vi.md asset contains hard-wrapped prose at line(s): 4",
+            problems,
+        )
 
     def test_linked_template_boundaries_are_reported_without_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

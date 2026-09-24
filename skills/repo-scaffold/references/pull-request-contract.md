@@ -16,6 +16,14 @@ needs a focused review. Preserve exactly one
 `<!-- repo-scaffold:pr-template=<id> -->` marker, every required heading, and
 every required-checklist item. The optional checklist is guidance: include only
 applicable items.
+The gate ignores fenced code, comments, and raw HTML blocks when checking for
+required headings and checklist items; hidden content cannot satisfy that
+structure contract.
+After preparing the UTF-8 body file, rerun the preflight with
+`--body-file <path>` to reject hard-wrapped prose before the GitHub mutation.
+Template discovery scans at most 10,000 entries in each candidate directory and
+accepts at most 128 focused templates. The selected template and supplied body
+file are each limited to 1 MiB of valid UTF-8.
 
 Replace guidance with concrete verification evidence. A draft PR may leave
 required items unchecked; before ready-for-review, tick an item only after its
@@ -28,3 +36,9 @@ item on a single line; separate paragraphs with blank lines and let GitHub wrap
 text to the viewer's width. GitHub renders line breaks in issue and PR bodies as
 line breaks, so do not hard-wrap prose at a fixed column; see [line-break
 guidance](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#line-breaks).
+The checker follows GFM block boundaries and preserves fenced and indented code,
+code spans, autolinks, inline and block HTML, comments, headings, tables, block
+quotes, and nested lists while rejecting hard-wrapped prose. In particular, it
+recognizes a table only at a valid block boundary with a matching delimiter row.
+Inline-code/comment disambiguation is bounded to 4,194,304 scanned characters
+per body or template; exceeding the budget fails validation closed.

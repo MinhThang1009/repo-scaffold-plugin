@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import json
 import os
 import re
@@ -868,6 +869,33 @@ class ActionPinSyncContractTests(unittest.TestCase):
             [],
         )
 
+    def test_synchronizer_job_cannot_disable_its_body_preflight(self) -> None:
+        workflow_path = PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
+        original_load_yaml = validate_repository.load_yaml
+        base = original_load_yaml(workflow_path)
+        for key, value in (
+            ("if", "false"),
+            ("continue-on-error", "true"),
+            ("needs", "missing-job"),
+            ("strategy", {"matrix": {"probe": [1]}}),
+        ):
+            candidate = copy.deepcopy(base)
+            candidate["jobs"]["synchronize"][key] = value
+
+            def load_candidate(path: Path, candidate: Any = candidate) -> Any:
+                return candidate if path == workflow_path else original_load_yaml(path)
+
+            with self.subTest(control=key):
+                with mock.patch.object(
+                    validate_repository, "load_yaml", side_effect=load_candidate
+                ):
+                    problems = validate_repository.validate_action_pin_sync_contract(
+                        PLUGIN_ROOT
+                    )
+                self.assertTrue(
+                    any("synchronizer job contract is invalid" in p for p in problems)
+                )
+
     def test_synchronizer_manual_dispatch_checks_out_default_branch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -884,6 +912,25 @@ class ActionPinSyncContractTests(unittest.TestCase):
             shutil.copy2(
                 PLUGIN_ROOT / "scripts" / "sync_versioned_inputs.py",
                 versioned_inputs_script,
+            )
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "action-pin-sync-pr-body.md",
+                root / ".github" / "action-pin-sync-pr-body.md",
+            )
+            (root / "skills" / "repo-scaffold" / "scripts").mkdir(
+                parents=True, exist_ok=True
+            )
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "markdown_body_preflight.py",
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "markdown_body_preflight.py",
             )
 
             self.assertEqual(
@@ -984,6 +1031,25 @@ class ActionPinSyncContractTests(unittest.TestCase):
                 PLUGIN_ROOT / "scripts" / "sync_versioned_inputs.py",
                 versioned_inputs_script,
             )
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "action-pin-sync-pr-body.md",
+                root / ".github" / "action-pin-sync-pr-body.md",
+            )
+            (root / "skills" / "repo-scaffold" / "scripts").mkdir(
+                parents=True, exist_ok=True
+            )
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "markdown_body_preflight.py",
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "markdown_body_preflight.py",
+            )
             original = (
                 PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
             ).read_text(encoding="utf-8")
@@ -1042,6 +1108,124 @@ class ActionPinSyncContractTests(unittest.TestCase):
                 root
             )
 
+            workflow.write_text(
+                original.replace(
+                    "python scripts/markdown_body_preflight.py --body-file "
+                    ".github/action-pin-sync-pr-body.md",
+                    "echo bypass",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            invalid_body_preflight = (
+                validate_repository.validate_action_pin_sync_contract(root)
+            )
+
+            invalid_body_step_controls = []
+            for control in ("if: false", "continue-on-error: true"):
+                workflow.write_text(
+                    original.replace(
+                        "      - name: Validate version-maintenance pull request body\n",
+                        "      - name: Validate version-maintenance pull request body\n"
+                        f"        {control}\n",
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+                invalid_body_step_controls.append(
+                    validate_repository.validate_action_pin_sync_contract(root)
+                )
+
+            workflow.write_text(original, encoding="utf-8")
+            body_file = root / ".github" / "action-pin-sync-pr-body.md"
+            body_file.write_text(
+                body_file.read_text(encoding="utf-8")
+                + "\nWrapped line one\nwrapped line two\n",
+                encoding="utf-8",
+            )
+            invalid_body = validate_repository.validate_action_pin_sync_contract(root)
+
+            preflight_block = (
+                "      - name: Validate version-maintenance pull request body\n"
+                "        run: python scripts/markdown_body_preflight.py --body-file "
+                ".github/action-pin-sync-pr-body.md\n\n"
+            )
+            workflow.write_text(
+                original.replace(preflight_block, "", 1) + preflight_block,
+                encoding="utf-8",
+            )
+            invalid_body_order = validate_repository.validate_action_pin_sync_contract(
+                root
+            )
+
+            workflow.write_text(
+                original.replace(
+                    "body-path: .github/action-pin-sync-pr-body.md",
+                    "body-path: .github/other-body.md",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            invalid_body_path = validate_repository.validate_action_pin_sync_contract(
+                root
+            )
+
+            workflow.write_text(original, encoding="utf-8")
+            body_file.unlink()
+            invalid_missing_body = (
+                validate_repository.validate_action_pin_sync_contract(root)
+            )
+            body_source = PLUGIN_ROOT / ".github" / "action-pin-sync-pr-body.md"
+            shutil.copy2(body_source, body_file)
+
+            original_read_text = Path.read_text
+
+            def deny_body_read(*args: Any, **kwargs: Any) -> str:
+                path = args[0]
+                if path == body_file:
+                    raise OSError("denied")
+                return original_read_text(*args, **kwargs)
+
+            with mock.patch.object(
+                Path, "read_text", autospec=True, side_effect=deny_body_read
+            ):
+                invalid_unreadable_body = (
+                    validate_repository.validate_action_pin_sync_contract(root)
+                )
+
+            body_preflight_script = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "markdown_body_preflight.py"
+            )
+            body_preflight_script.unlink()
+            invalid_missing_body_preflight = (
+                validate_repository.validate_action_pin_sync_contract(root)
+            )
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "markdown_body_preflight.py",
+                body_preflight_script,
+            )
+
+            with mock.patch.object(
+                subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired("python", 10),
+            ):
+                invalid_body_timeout = (
+                    validate_repository.validate_action_pin_sync_contract(root)
+                )
+            with mock.patch.object(subprocess, "run", side_effect=OSError("denied")):
+                invalid_body_execution = (
+                    validate_repository.validate_action_pin_sync_contract(root)
+                )
+
         self.assertTrue(
             any(
                 "only through the reviewed script" in problem
@@ -1073,6 +1257,67 @@ class ActionPinSyncContractTests(unittest.TestCase):
             any(
                 "must fail clearly when VERSION_SYNC_TOKEN is absent" in problem
                 for problem in invalid_token_guard
+            )
+        )
+        self.assertTrue(
+            any(
+                "must preflight its pull-request body" in problem
+                for problem in invalid_body_preflight
+            )
+        )
+        for problems in invalid_body_step_controls:
+            self.assertTrue(
+                any(
+                    "must preflight its pull-request body" in problem
+                    for problem in problems
+                )
+            )
+        self.assertTrue(
+            any(
+                "pull-request body preflight failed" in problem
+                for problem in invalid_body
+            )
+        )
+        self.assertTrue(
+            any(
+                "must run before the pull-request action" in problem
+                for problem in invalid_body_order
+            )
+        )
+        self.assertTrue(
+            any(
+                "must load its pull-request body" in problem
+                for problem in invalid_body_path
+            )
+        )
+        self.assertTrue(
+            any(
+                "pull-request body file is missing" in problem
+                for problem in invalid_missing_body
+            )
+        )
+        self.assertTrue(
+            any(
+                "pull-request body is unreadable" in problem
+                for problem in invalid_unreadable_body
+            )
+        )
+        self.assertTrue(
+            any(
+                "body preflight script is missing" in problem
+                for problem in invalid_missing_body_preflight
+            )
+        )
+        self.assertTrue(
+            any(
+                "body preflight timed out" in problem
+                for problem in invalid_body_timeout
+            )
+        )
+        self.assertTrue(
+            any(
+                "body preflight could not run" in problem
+                for problem in invalid_body_execution
             )
         )
 
@@ -3704,6 +3949,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_code_scanning_gate_contract",
             "validate_workflow_script_copy_contract",
             "validate_pr_template_preflight_contract",
+            "validate_markdown_body_preflight_contract",
             "validate_test_quality_contract",
             "validate_scaffold_contract",
             "validate_release_archive",
@@ -6167,6 +6413,24 @@ class CodeScanningGateContractTests(unittest.TestCase):
 
 
 class PullRequestTemplateContractTests(unittest.TestCase):
+    def test_release_please_owner_exception_matches_workflow_contract(self) -> None:
+        contract_text = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "workflow-contracts.md"
+        ).read_text(encoding="utf-8")
+        contracts = " ".join(contract_text.split())
+
+        self.assertIn("Dependabot exemptions require a bot user type.", contracts)
+        self.assertIn("a head repository matching the base repository", contracts)
+        self.assertIn(
+            "a bot user type or the base repository owner's account", contracts
+        )
+        self.assertIn("must run Markdown body preflight first", contracts)
+        self.assertIn("a branch name alone is never an exemption", contracts)
+
     def test_agents_and_trusted_workflows_enforce_the_template_contract(self) -> None:
         workflow = PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
         asset = (
@@ -6209,9 +6473,16 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "PR_TITLE: ${{ github.event.pull_request.title }}",
             "PR_IS_DRAFT: ${{ github.event.pull_request.draft }}",
             "PR_USER: ${{ github.event.pull_request.user.login }}",
+            "PR_USER_TYPE: ${{ github.event.pull_request.user.type }}",
             "PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}",
-            'Path(".github/PULL_REQUEST_TEMPLATE.md")',
-            'Path(".github/PULL_REQUEST_TEMPLATE")',
+            "PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}",
+            "PR_REPOSITORY: ${{ github.repository }}",
+            "PR_REPOSITORY_OWNER: ${{ github.repository_owner }}",
+            "scripts/markdown_body_preflight.py",
+            "scripts/pr_template_preflight.py",
+            '"--body-file"',
+            "from pr_template_preflight import template_catalog",
+            'template_paths = template_catalog(Path("."))',
             "repo-scaffold:pr-template=",
             "repo-scaffold:required-checklist:start",
             "repo-scaffold:optional-checklist:start",
@@ -6321,6 +6592,203 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             r"ready(?:\s+|_|-)for(?:\s+|_|-)review",
         )
 
+    def test_required_check_validator_rejects_pr_gate_step_bypasses(self) -> None:
+        original_load_yaml = validate_repository.load_yaml
+        for target, value in (
+            ("step", {"if": "false"}),
+            ("step", {"shell": "pwsh"}),
+            ("job", {"continue-on-error": "true"}),
+        ):
+
+            def tampered_load_yaml(path: Path, target=target, value=value) -> Any:
+                document = original_load_yaml(path)
+                if path.as_posix().endswith("workflows/pr-template.yml"):
+                    if target == "step":
+                        document["jobs"]["pr_template"]["steps"][1].update(value)
+                    else:
+                        document["jobs"]["pr_template"].update(value)
+                return document
+
+            with self.subTest(target=target, value=value):
+                with mock.patch.object(
+                    validate_repository, "load_yaml", side_effect=tampered_load_yaml
+                ):
+                    problems = validate_repository.validate_required_check_concurrency(
+                        PLUGIN_ROOT
+                    )
+                self.assertEqual(
+                    sum(
+                        "required pr-template check must use one unconditional producer"
+                        in p
+                        for p in problems
+                    ),
+                    2,
+                )
+
+    def test_pr_gate_body_check_rejects_exit_reordering_and_false_exemptions(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
+        )
+        run = workflow["jobs"]["pr_template"]["steps"][1]["run"]
+        early_exit = run.replace(
+            'if event_name != "pull_request_target":\n',
+            'if event_name != "pull_request_target":\n    raise SystemExit(0)\n',
+            1,
+        )
+        body_start = run.index("    body_preflight = subprocess.run(")
+        block_end = run.index('    if (\n        os.environ.get("PR_USER")')
+        body_check_block = run[body_start:block_end]
+        reordered = run[:body_start] + run[block_end:]
+        insertion = reordered.index("    preflight = subprocess.run(")
+        reordered = reordered[:insertion] + body_check_block + reordered[insertion:]
+        unconditional_exemption = run.replace(
+            "if (\n"
+            '        os.environ.get("PR_USER") == "dependabot[bot]"\n'
+            '        and os.environ.get("PR_USER_TYPE") == "Bot"\n'
+            "    ):",
+            "if True:",
+            1,
+        )
+        unchecked_body_file = run.replace(
+            "body_file.write(body)", 'body_file.write("")', 1
+        )
+        invalid_wrapper = run.replace("python - <<'PY'", "python3 - <<'PY'", 1)
+        invalid_python = run.replace(
+            'event_name == "merge_group":', 'event_name == "merge_group"', 1
+        )
+        missing_merge_group = run.replace(
+            'event_name == "merge_group"', 'event_name == "pull_request"', 1
+        )
+        invalid_merge_group_exit = run.replace(
+            "raise SystemExit(0)", "raise SystemExit(1)", 1
+        )
+        merge_start = run.index('if event_name == "merge_group":')
+        unsupported_start = run.index('if event_name != "pull_request_target":')
+        body_start = run.index('body = os.environ.get("PR_BODY", "")')
+        reordered_event_guards = (
+            run[:merge_start]
+            + run[unsupported_start:body_start]
+            + run[merge_start:unsupported_start]
+            + run[body_start:]
+        )
+        missing_body_check = run.replace(
+            "body_preflight = subprocess.run(",
+            "unbound_preflight = subprocess.run(",
+            1,
+        )
+        missing_body_file = run.replace(
+            "tempfile.NamedTemporaryFile(", "tempfile.TemporaryFile(", 1
+        )
+        extra_subprocess = run.replace("\nPY\n", "\nsubprocess.run(['true'])\nPY\n", 1)
+        unchecked_success_exit = run.replace(
+            "heading_pattern = re.compile(",
+            "os._exit(0)\nheading_pattern = re.compile(",
+            1,
+        )
+        fail_closed_raise = run.replace(
+            "heading_pattern = re.compile(",
+            "raise RuntimeError('fail closed')\nheading_pattern = re.compile(",
+            1,
+        )
+        for mutation, candidate in (
+            ("invalid wrapper", invalid_wrapper),
+            ("invalid Python", invalid_python),
+            ("missing merge group guard", missing_merge_group),
+            ("invalid merge group exit", invalid_merge_group_exit),
+            ("reordered event guards", reordered_event_guards),
+            ("missing body check", missing_body_check),
+            ("missing body file", missing_body_file),
+            ("extra subprocess", extra_subprocess),
+            ("early exit", early_exit),
+            ("body preflight after exemption", reordered),
+            ("unconditional bot exemption", unconditional_exemption),
+            ("body source not bound", unchecked_body_file),
+            ("unchecked success exit", unchecked_success_exit),
+        ):
+            with self.subTest(mutation=mutation):
+                self.assertFalse(
+                    validate_repository.pr_template_gate_body_check_is_safe(candidate)
+                )
+        self.assertTrue(
+            validate_repository.pr_template_gate_body_check_is_safe(fail_closed_raise)
+        )
+
+    def test_required_check_validator_rejects_early_exit_and_reordered_body_gate(
+        self,
+    ) -> None:
+        paths = (
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "pr-template.yml",
+        )
+        original_load_yaml = validate_repository.load_yaml
+        base = {path: original_load_yaml(path) for path in paths}
+
+        def modified_documents(mutation: str) -> list[str]:
+            candidates = {
+                path: copy.deepcopy(document) for path, document in base.items()
+            }
+            for candidate in candidates.values():
+                run = candidate["jobs"]["pr_template"]["steps"][1]["run"]
+                if mutation == "early-exit":
+                    run = run.replace(
+                        'if event_name != "pull_request_target":\n',
+                        'if event_name != "pull_request_target":\n'
+                        "    raise SystemExit(0)\n",
+                        1,
+                    )
+                elif mutation == "reordered-body-preflight":
+                    block_start = run.index("    body_preflight = subprocess.run(")
+                    block_end = run.index('    if (\n        os.environ.get("PR_USER")')
+                    preflight_block = run[block_start:block_end]
+                    run = run[:block_start] + run[block_end:]
+                    insertion = run.index("    preflight = subprocess.run(")
+                    run = run[:insertion] + preflight_block + run[insertion:]
+                elif mutation == "unconditional-bot-exemption":
+                    run = run.replace(
+                        'if (\n        os.environ.get("PR_USER") == "dependabot[bot]"\n'
+                        '        and os.environ.get("PR_USER_TYPE") == "Bot"\n'
+                        "    ):",
+                        "if True:",
+                        1,
+                    )
+                elif mutation == "body-source-not-bound":
+                    run = run.replace("body_file.write(body)", 'body_file.write("")', 1)
+                candidate["jobs"]["pr_template"]["steps"][1]["run"] = run
+
+            def load_candidate(path: Path) -> Any:
+                return candidates.get(path, original_load_yaml(path))
+
+            with mock.patch.object(
+                validate_repository, "load_yaml", side_effect=load_candidate
+            ):
+                return validate_repository.validate_required_check_concurrency(
+                    PLUGIN_ROOT
+                )
+
+        for mutation in (
+            "early-exit",
+            "reordered-body-preflight",
+            "unconditional-bot-exemption",
+            "body-source-not-bound",
+        ):
+            with self.subTest(mutation=mutation):
+                problems = modified_documents(mutation)
+                self.assertEqual(
+                    sum(
+                        "required pr-template check must use one unconditional producer"
+                        in p
+                        for p in problems
+                    ),
+                    2,
+                )
+
     def test_gate_selects_the_marked_specialized_template(self) -> None:
         workflow = validate_repository.load_yaml(
             PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
@@ -6331,6 +6799,23 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             root = Path(directory)
             template_root = root / ".github"
             template_root.mkdir()
+            for source in (
+                PLUGIN_ROOT / "scripts" / "markdown_body_preflight.py",
+                PLUGIN_ROOT / "scripts" / "pr_template_preflight.py",
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "pr_template_preflight.py",
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "markdown_body_preflight.py",
+            ):
+                destination = root / source.relative_to(PLUGIN_ROOT)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
             shutil.copy2(
                 PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
                 template_root / "PULL_REQUEST_TEMPLATE.md",
@@ -6351,6 +6836,75 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+            comment_heavy_body = feature_body.replace(
+                "## Purpose", "## Purpose " + "<!-- ignored -->" * 2000, 1
+            )
+            comment_heavy_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": comment_heavy_body},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(
+                comment_heavy_result.returncode, 0, comment_heavy_result.stderr
+            )
+
+            cr_only_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": feature_body.replace("\n", "\r")},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(cr_only_result.returncode, 0, cr_only_result.stderr)
+
+            hard_wrapped_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": feature_body + "\nThis prose is hard\nwrapped.\n",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(hard_wrapped_result.returncode, 0)
+            self.assertIn("hard-wrapped prose", hard_wrapped_result.stderr)
+
+            malformed_html_body = (
+                feature_body + "\n<div/x>\nwrapped prose line\ncontinued prose line\n\n"
+            )
+            malformed_html_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={**os.environ, "PR_BODY": malformed_html_body},
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(malformed_html_result.returncode, 0)
+            self.assertIn("hard-wrapped prose", malformed_html_result.stderr)
+
+            explicit_list_break = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": feature_body
+                    + "\n- Explicit hard break  \n  continuation of the same item.\n",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(
+                explicit_list_break.returncode, 0, explicit_list_break.stderr
+            )
 
             deployment_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "deployment.md"
@@ -6476,6 +7030,8 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             vietnamese_root = root / "vietnamese"
             vietnamese_template_root = vietnamese_root / ".github"
             vietnamese_template_root.mkdir(parents=True)
+            shutil.copytree(root / "scripts", vietnamese_root / "scripts")
+            shutil.copytree(root / "skills", vietnamese_root / "skills")
             shutil.copy2(
                 PLUGIN_ROOT
                 / "skills"
@@ -6514,13 +7070,31 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     {
                         "EVENT_NAME": "pull_request_target",
                         "PR_USER": "dependabot[bot]",
+                        "PR_USER_TYPE": "Bot",
                     },
                     "Pull request template validation is explicitly exempt for Dependabot.",
                 ),
                 (
                     {
                         "EVENT_NAME": "pull_request_target",
+                        "PR_USER": "MinhThang1009",
+                        "PR_USER_TYPE": "User",
                         "PR_HEAD_REF": "release-please--branches--main",
+                        "PR_HEAD_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                        "PR_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                        "PR_REPOSITORY_OWNER": "MinhThang1009",
+                    },
+                    "Pull request template validation is explicitly exempt for Release Please.",
+                ),
+                (
+                    {
+                        "EVENT_NAME": "pull_request_target",
+                        "PR_USER": "release-helper[bot]",
+                        "PR_USER_TYPE": "Bot",
+                        "PR_HEAD_REF": "release-please--branches--main",
+                        "PR_HEAD_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                        "PR_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                        "PR_REPOSITORY_OWNER": "MinhThang1009",
                     },
                     "Pull request template validation is explicitly exempt for Release Please.",
                 ),
@@ -6536,6 +7110,54 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     )
                     self.assertEqual(exempt_result.returncode, 0, exempt_result.stderr)
                     self.assertIn(message, exempt_result.stdout)
+
+            for environment in (
+                {"PR_USER": "dependabot[bot]", "PR_USER_TYPE": "Bot"},
+                {
+                    "PR_USER": "ordinary-user",
+                    "PR_USER_TYPE": "User",
+                    "PR_HEAD_REF": "release-please--branches--spoofed",
+                    "PR_HEAD_REPOSITORY": "fork-user/repo-scaffold-plugin",
+                    "PR_REPOSITORY": "MinhThang1009/repo-scaffold-plugin",
+                    "PR_REPOSITORY_OWNER": "MinhThang1009",
+                },
+            ):
+                with self.subTest(hard_wrapped_environment=environment):
+                    hard_wrapped_exempt = subprocess.run(
+                        [sys.executable, "-c", script],
+                        cwd=root,
+                        env={
+                            **os.environ,
+                            "PR_BODY": feature_body
+                            + "\nThis prose is hard\nwrapped.\n",
+                            **environment,
+                        },
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                    )
+                    self.assertNotEqual(hard_wrapped_exempt.returncode, 0)
+                    self.assertIn("hard-wrapped prose", hard_wrapped_exempt.stderr)
+
+            unverified_release_prefix = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_USER": "ordinary-user",
+                    "PR_USER_TYPE": "User",
+                    "PR_HEAD_REF": "release-please--branches--spoofed",
+                    "PR_BODY": "No required template structure.",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(unverified_release_prefix.returncode, 0)
+            self.assertIn(
+                "must select exactly one trusted template",
+                unverified_release_prefix.stderr,
+            )
 
             body_without_optional_items = re.sub(
                 r"\n## If applicable\n\n"
@@ -6591,6 +7213,18 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     "<!-- repo-scaffold:pr-template=feature -->\n\n"
                     f"<!--\n{feature_payload}\n-->\n"
                 ),
+                "raw HTML block": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    f"<pre>\n{feature_payload}\n</pre>\n"
+                ),
+                "block HTML": (
+                    "<!-- repo-scaffold:pr-template=feature -->\n\n"
+                    "<div>\n"
+                    + "\n".join(
+                        line for line in feature_payload.splitlines() if line.strip()
+                    )
+                    + "\n</div>\n"
+                ),
             }
             for hiding_method, hidden_body in hidden_content_bodies.items():
                 with self.subTest(hiding_method=hiding_method):
@@ -6607,6 +7241,104 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                         "must contain exactly one required checklist section",
                         hidden_result.stderr,
                     )
+
+    def test_gate_discovers_focused_templates_with_uppercase_md_extension(self) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
+        )
+        run = workflow["jobs"]["pr_template"]["steps"][-1]["run"]
+        script = run.split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            templates = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            templates.mkdir(parents=True)
+            for name in ("markdown_body_preflight.py", "pr_template_preflight.py"):
+                shutil.copy2(
+                    PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / name,
+                    scripts / name,
+                )
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+                root / ".github" / "PULL_REQUEST_TEMPLATE.md",
+            )
+            security_template = templates / "security.MD"
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md",
+                security_template,
+            )
+
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": security_template.read_text(encoding="utf-8"),
+                    "PR_TITLE": "chore: check case-insensitive template extension",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gate_uses_generated_root_preflight_scripts_without_skill_source(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "pr-template.yml"
+        )
+        run = workflow["jobs"]["pr_template"]["steps"][-1]["run"]
+        script = run.split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            templates = root / ".github"
+            templates.mkdir()
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "markdown_body_preflight.py",
+                scripts / "markdown_body_preflight.py",
+            )
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "pr_template_preflight.py",
+                scripts / "pr_template_preflight.py",
+            )
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+                templates / "PULL_REQUEST_TEMPLATE.md",
+            )
+            shutil.copytree(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE",
+                templates / "PULL_REQUEST_TEMPLATE",
+            )
+            feature_body = (
+                templates / "PULL_REQUEST_TEMPLATE" / "feature.md"
+            ).read_text(encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": feature_body,
+                    "PR_TITLE": "feat: use generated preflight scripts",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_workflow_never_checks_out_or_executes_the_pull_request_head(self) -> None:
         workflow = (
@@ -13102,6 +13834,340 @@ class PullRequestTemplatePreflightDistributionTests(unittest.TestCase):
         )
 
 
+class MarkdownBodyPreflightDistributionTests(unittest.TestCase):
+    @staticmethod
+    def copy_contract(root: Path) -> None:
+        for relative in (
+            "scripts/markdown_body_preflight.py",
+            "skills/repo-scaffold/scripts/markdown_body_preflight.py",
+            "skills/repo-scaffold/scripts/pr_template_preflight.py",
+            "skills/repo-scaffold/scripts/validate_scaffold.py",
+            "skills/repo-scaffold/references/scaffold-generation.md",
+        ):
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(PLUGIN_ROOT / relative, destination)
+
+    def test_current_body_preflight_distribution_contract_is_valid(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_markdown_body_preflight_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_missing_body_preflight_distribution_files_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            problems = validate_repository.validate_markdown_body_preflight_contract(
+                Path(directory)
+            )
+
+        self.assertTrue(
+            any("bundled body preflight script is missing" in p for p in problems)
+        )
+        self.assertTrue(
+            any("body preflight entry point is missing" in p for p in problems)
+        )
+
+    def test_unreadable_body_preflight_distribution_files_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+                problems = (
+                    validate_repository.validate_markdown_body_preflight_contract(root)
+                )
+
+        self.assertTrue(any("unreadable: denied" in p for p in problems))
+        self.assertTrue(
+            any("body preflight copy contract: denied" in p for p in problems)
+        )
+
+    def test_body_preflight_delegation_and_shared_imports_are_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            (root / "scripts" / "markdown_body_preflight.py").write_text(
+                "print('not delegated')\n", encoding="utf-8"
+            )
+            (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "scripts"
+                / "pr_template_preflight.py"
+            ).write_text("from pathlib import Path\n", encoding="utf-8")
+
+            problems = validate_repository.validate_markdown_body_preflight_contract(
+                root
+            )
+
+        self.assertTrue(any("must delegate" in p for p in problems))
+        self.assertTrue(
+            any("pr_template_preflight.py: must use" in p for p in problems)
+        )
+
+    def test_missing_generated_copy_row_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                "scripts/markdown_body_preflight.py",
+                "skills/repo-scaffold/scripts/markdown_body_preflight.py",
+                "skills/repo-scaffold/scripts/pr_template_preflight.py",
+                "skills/repo-scaffold/scripts/validate_scaffold.py",
+                "skills/repo-scaffold/references/scaffold-generation.md",
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(PLUGIN_ROOT / relative, destination)
+            reference = (
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "references"
+                / "scaffold-generation.md"
+            )
+            reference.write_text(
+                reference.read_text(encoding="utf-8").replace(
+                    "| Pull-request preflight dependency | "
+                    "`../scripts/markdown_body_preflight.py` | "
+                    "`scripts/markdown_body_preflight.py` |\n",
+                    "",
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_markdown_body_preflight_contract(
+                root
+            )
+
+        self.assertTrue(
+            any("Pull-request preflight dependency" in problem for problem in problems)
+        )
+
+
+class ReminderBodyPreflightContractTests(unittest.TestCase):
+    def test_reminder_contracts_reject_job_execution_controls(self) -> None:
+        self.assertFalse(validate_repository.job_execution_controls_are_safe(None))
+        self.assertFalse(
+            validate_repository.job_execution_controls_are_safe(
+                {"continue-on-error": True, "steps": []}
+            )
+        )
+        validators = (
+            validate_repository.validate_policy_drift_reminder_contract,
+            validate_repository.validate_community_health_tracking_contract,
+            validate_repository.validate_official_docs_tracking_contract,
+            validate_repository.validate_freshness_tracking_contract,
+        )
+        for validator in validators:
+            with self.subTest(validator=validator.__name__):
+                helper_name = (
+                    "job_execution_controls_are_safe"
+                    if validator
+                    is validate_repository.validate_policy_drift_reminder_contract
+                    else "freshness_job_execution_is_unconditional"
+                )
+                with mock.patch.object(
+                    validate_repository,
+                    helper_name,
+                    return_value=False,
+                ):
+                    problems = validator(PLUGIN_ROOT)
+                self.assertTrue(
+                    problems,
+                    f"{validator.__name__} did not enforce unconditional execution",
+                )
+
+    def test_invalid_yaml_or_shell_and_hidden_issue_commands_are_rejected(self) -> None:
+        report_path = "$RUNNER_TEMP/report.md"
+
+        self.assertFalse(
+            validate_repository.reminder_body_preflight_is_safe("jobs: [", report_path)
+        )
+        self.assertFalse(
+            validate_repository.reminder_body_preflight_is_safe("jobs: []", report_path)
+        )
+        for run in ("echo 'unterminated", "bash -c gh issue edit 1"):
+            workflow_text = yaml.safe_dump(
+                {
+                    "jobs": {
+                        "audit": {"steps": [{"name": "Reconcile issue", "run": run}]}
+                    }
+                }
+            )
+            with self.subTest(run=run):
+                self.assertFalse(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        workflow_text, report_path
+                    )
+                )
+
+    def test_preflight_cannot_be_conditionally_skipped_or_masked(self) -> None:
+        report_path = "$RUNNER_TEMP/report.md"
+        base = f'python scripts/markdown_body_preflight.py --body-file "{report_path}"'
+        for control in ("if: false", "continue-on-error: true"):
+            workflow_text = yaml.safe_dump(
+                {
+                    "jobs": {
+                        "audit": {
+                            "steps": [
+                                {
+                                    "name": "Reconcile issue",
+                                    "run": base + "\n" + "gh issue edit 1",
+                                    control.split(": ", 1)[0]: control.split(": ", 1)[
+                                        1
+                                    ],
+                                }
+                            ]
+                        }
+                    }
+                }
+            )
+            with self.subTest(control=control):
+                self.assertFalse(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        workflow_text, report_path
+                    )
+                )
+        masked = yaml.safe_dump(
+            {
+                "jobs": {
+                    "audit": {
+                        "steps": [
+                            {
+                                "name": "Reconcile issue",
+                                "run": "set -euo pipefail\n"
+                                + base
+                                + " || true\ngh issue edit 1",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        self.assertFalse(
+            validate_repository.reminder_body_preflight_is_safe(masked, report_path)
+        )
+        hidden_issue = yaml.safe_dump(
+            {
+                "jobs": {
+                    "audit": {
+                        "steps": [
+                            {
+                                "name": "Reconcile issue",
+                                "run": "set -euo pipefail\n"
+                                + base
+                                + "\ngh pr issue list\ngh issue edit 1",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        self.assertFalse(
+            validate_repository.reminder_body_preflight_is_safe(
+                hidden_issue, report_path
+            )
+        )
+        for shell_reset in (
+            "set +e",
+            "set +o errexit",
+            "set -e +o errexit",
+            "set +u",
+        ):
+            reset_script = (
+                "set -euo pipefail\n"
+                + shell_reset
+                + "\n"
+                + base
+                + '\ngh issue edit 1\ngh issue create --body-file "'
+                + report_path
+                + '" --title t'
+            )
+            reset_workflow = yaml.safe_dump(
+                {
+                    "jobs": {
+                        "audit": {
+                            "steps": [
+                                {
+                                    "name": "Reconcile issue",
+                                    "run": reset_script,
+                                }
+                            ]
+                        }
+                    }
+                }
+            )
+            with self.subTest(shell_reset=shell_reset):
+                self.assertFalse(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        reset_workflow, report_path
+                    )
+                )
+
+    def test_all_reminder_body_preflights_are_exact_and_before_mutations(self) -> None:
+        report_paths = {
+            ".github/workflows/ci.yml": "$report",
+            ".github/workflows/community-health.yml": "$RUNNER_TEMP/community-health.md",
+            ".github/workflows/freshness.yml": "$RUNNER_TEMP/freshness.md",
+            ".github/workflows/official-docs.yml": "$RUNNER_TEMP/official-docs.md",
+            "skills/repo-scaffold/assets/workflows/community-health.yml": "$RUNNER_TEMP/community-health.md",
+            "skills/repo-scaffold/assets/workflows/freshness.yml": "$RUNNER_TEMP/freshness.md",
+        }
+        for relative, report_path in report_paths.items():
+            workflow_text = (PLUGIN_ROOT / relative).read_text(encoding="utf-8")
+            checker = (
+                f'python scripts/markdown_body_preflight.py --body-file "{report_path}"'
+            )
+            with self.subTest(workflow=relative):
+                self.assertTrue(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        workflow_text, report_path
+                    )
+                )
+                missing = workflow_text.replace(checker, "", 1)
+                self.assertFalse(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        missing, report_path
+                    )
+                )
+                body_option = f'--body-file "{report_path}"'
+                insertion_point = missing.rfind(body_option) + len(body_option)
+                moved = (
+                    missing[:insertion_point]
+                    + "\n          "
+                    + checker
+                    + missing[insertion_point:]
+                )
+                self.assertFalse(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        moved, report_path
+                    )
+                )
+                prefix, suffix = workflow_text.split(checker, 1)
+                wrong_mutation_path = (
+                    prefix
+                    + checker
+                    + suffix.replace(
+                        body_option,
+                        '--body-file "$RUNNER_TEMP/other.md"',
+                    )
+                )
+                missing_mutation_body = (
+                    prefix + checker + suffix.replace(body_option, "")
+                )
+                self.assertEqual(suffix.count(body_option), 2)
+                self.assertFalse(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        wrong_mutation_path, report_path
+                    )
+                )
+                self.assertFalse(
+                    validate_repository.reminder_body_preflight_is_safe(
+                        missing_mutation_body, report_path
+                    )
+                )
+
+
 class PolicyDriftReminderContractTests(unittest.TestCase):
     def test_current_policy_drift_reminder_contract_is_valid(self) -> None:
         self.assertEqual(
@@ -13167,6 +14233,57 @@ class PolicyDriftReminderContractTests(unittest.TestCase):
                 ".github/workflows/ci.yml: could not verify policy reminder:"
             )
         )
+
+    def test_policy_drift_reminder_requires_python_setup_and_body_preflight(
+        self,
+    ) -> None:
+        workflow_text = (PLUGIN_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        job_start = workflow_text.index("  policy-drift-reminder:\n")
+        job_end = workflow_text.index("\n  ci-success:", job_start)
+        reminder_job = workflow_text[job_start:job_end]
+        without_setup = reminder_job.replace(
+            """      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
+""",
+            "",
+            1,
+        )
+        without_body_preflight = workflow_text.replace(
+            '          python scripts/markdown_body_preflight.py --body-file "$report"\n',
+            "",
+            1,
+        )
+
+        cases = (
+            (
+                workflow_text[:job_start] + without_setup + workflow_text[job_end:],
+                ".github/workflows/ci.yml: policy drift reminder must set up Python "
+                "before running the Markdown body preflight",
+            ),
+            (
+                without_body_preflight,
+                ".github/workflows/ci.yml: policy drift reminder must preflight the "
+                "Markdown body before Issue mutations",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path = root / ".github" / "workflows" / "ci.yml"
+            workflow_path.parent.mkdir(parents=True)
+            for modified_workflow, expected_problem in cases:
+                with self.subTest(expected_problem=expected_problem):
+                    workflow_path.write_text(modified_workflow, encoding="utf-8")
+                    self.assertEqual(
+                        validate_repository.validate_policy_drift_reminder_contract(
+                            root
+                        ),
+                        [expected_problem],
+                    )
 
     def test_policy_drift_reminder_requires_explicit_repository_binding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

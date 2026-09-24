@@ -17,6 +17,7 @@ ROOT_ENTRYPOINT = PLUGIN_ROOT / "scripts" / "pr_template_preflight.py"
 SCRIPT_PATH = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "pr_template_preflight.py"
 )
+sys.path.insert(0, str(SCRIPT_PATH.parent))
 SPEC = importlib.util.spec_from_file_location("pr_template_preflight", SCRIPT_PATH)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load pr_template_preflight.py")
@@ -100,6 +101,115 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             output.getvalue(),
         )
 
+    def test_body_file_rejects_hard_wrapped_prose_but_not_markdown_structure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            wrapped = root / "wrapped.md"
+            wrapped.write_text(
+                "This paragraph is incorrectly\nwrapped onto a second line.\n",
+                encoding="utf-8",
+            )
+            errors = StringIO()
+            with redirect_stderr(errors):
+                rejected = pr_template_preflight.main(
+                    [
+                        "--title",
+                        "fix: reject wrapped prose",
+                        "--body-file",
+                        str(wrapped),
+                        "--repository-root",
+                        str(root),
+                    ]
+                )
+
+            structured = root / "structured.md"
+            structured.write_text(
+                "- A list item\n- Another list item.\n\n"
+                "| Name | Value |\n| --- | --- |\n| item | value |\n\n"
+                "```text\nfirst\nsecond\n```\n",
+                encoding="utf-8",
+            )
+            accepted = pr_template_preflight.main(
+                [
+                    "--title",
+                    "fix: allow markdown structure",
+                    "--body-file",
+                    str(structured),
+                    "--repository-root",
+                    str(root),
+                ]
+            )
+
+        self.assertEqual(rejected, 1)
+        self.assertIn("contains hard-wrapped prose at line(s): 2", errors.getvalue())
+        self.assertEqual(accepted, 0)
+
+    def test_body_file_rejects_list_continuation_and_inline_comment_wraps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            for body in (
+                "- First list item\n  continuation\n",
+                "First part <!-- inline note -->\ncontinuation\n",
+                "First <!-- inline note --> visible\ncontinuation\n",
+            ):
+                body_file = root / "body.md"
+                body_file.write_text(body, encoding="utf-8")
+                errors = StringIO()
+                with redirect_stderr(errors):
+                    result = pr_template_preflight.main(
+                        [
+                            "--title",
+                            "fix: reject wrapped structure",
+                            "--body-file",
+                            str(body_file),
+                            "--repository-root",
+                            str(root),
+                        ]
+                    )
+                self.assertEqual(result, 1)
+                self.assertIn("hard-wrapped prose at line(s): 2", errors.getvalue())
+
+    def test_body_file_parser_ignores_comments_and_rejects_invalid_input(self) -> None:
+        self.assertEqual(
+            pr_template_preflight.hard_wrapped_prose_lines(
+                "<!--\nhidden prose\ncontinues here\n-->\n"
+            ),
+            (),
+        )
+        self.assertEqual(
+            pr_template_preflight.hard_wrapped_prose_lines("<!-- inline comment -->\n"),
+            (),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            body = Path(directory) / "body.md"
+            body.write_text("body\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "regular non-linked"):
+                pr_template_preflight.read_body_file(body.parent / "missing.md")
+            with mock.patch.object(Path, "open", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(ValueError, "could not read body"):
+                    pr_template_preflight.read_body_file(body)
+            with mock.patch.object(
+                Path,
+                "open",
+                return_value=mock.mock_open(
+                    read_data=b"x" * (pr_template_preflight.MAX_BODY_FILE_BYTES + 1)
+                ).return_value,
+            ):
+                with self.assertRaisesRegex(ValueError, "byte limit"):
+                    pr_template_preflight.read_body_file(body)
+            with mock.patch.object(
+                Path,
+                "open",
+                return_value=mock.mock_open(read_data=b"\xff").return_value,
+            ):
+                with self.assertRaisesRegex(ValueError, "not valid UTF-8"):
+                    pr_template_preflight.read_body_file(body)
+
     def test_rejects_an_override_of_a_mandatory_template(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -175,6 +285,83 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "duplicate pull-request"):
                 pr_template_preflight.template_catalog(root)
+
+    def test_rejects_template_catalogs_over_the_entry_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            template_directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            for index in range(
+                pr_template_preflight.MAX_TEMPLATE_DIRECTORY_ENTRIES + 1
+            ):
+                template_id = f"extra-{index:03}"
+                (template_directory / f"{template_id}.md").write_text(
+                    f"<!-- repo-scaffold:pr-template={template_id} -->\n",
+                    encoding="utf-8",
+                )
+
+            with self.assertRaisesRegex(ValueError, "catalog exceeds"):
+                pr_template_preflight.template_catalog(root)
+
+    def test_bounds_raw_template_catalog_directory_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            template_directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            original_iterdir = Path.iterdir
+
+            def many_unrelated_entries(path: Path):
+                if path == template_directory:
+                    return (
+                        template_directory / f"asset-{index}.bin"
+                        for index in range(
+                            pr_template_preflight.MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES
+                            + 1
+                        )
+                    )
+                return original_iterdir(path)
+
+            with mock.patch.object(Path, "iterdir", new=many_unrelated_entries):
+                with self.assertRaisesRegex(ValueError, "directory entries"):
+                    pr_template_preflight.template_catalog(root)
+
+    def test_reports_unreadable_template_catalog_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            template_directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            original_iterdir = Path.iterdir
+
+            def denied_catalog(path: Path):
+                if path == template_directory:
+                    raise PermissionError("denied")
+                return original_iterdir(path)
+
+            with mock.patch.object(Path, "iterdir", new=denied_catalog):
+                with self.assertRaisesRegex(PermissionError, "denied"):
+                    pr_template_preflight.template_catalog(root)
+
+    def test_rejects_oversized_selected_template(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            security = root / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md"
+            security.write_bytes(b"x" * (pr_template_preflight.MAX_BODY_FILE_BYTES + 1))
+
+            with self.assertRaisesRegex(ValueError, "exceeds"):
+                pr_template_preflight.template_path(root, "security")
+
+    def test_selected_template_marker_accepts_crlf_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            bugfix = root / ".github" / "PULL_REQUEST_TEMPLATE" / "bugfix.md"
+            bugfix.write_bytes(b"<!-- repo-scaffold:pr-template=bugfix -->\r\n")
+
+            self.assertEqual(
+                pr_template_preflight.template_path(root, "bugfix"),
+                bugfix,
+            )
 
     def test_rejects_linked_or_reparse_repository_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -269,8 +456,10 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             security.write_text(
                 "<!-- repo-scaffold:pr-template=security -->\n", encoding="utf-8"
             )
-            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
-                with self.assertRaisesRegex(ValueError, "could not read trusted"):
+            with mock.patch.object(Path, "open", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(
+                    ValueError, "could not read trusted.*could not read body file"
+                ):
                     pr_template_preflight.template_path(root, "security")
 
     def test_root_entrypoint_targets_the_distributable_preflight_script(self) -> None:

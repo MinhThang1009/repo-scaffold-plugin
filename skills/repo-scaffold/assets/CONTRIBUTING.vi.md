@@ -15,6 +15,8 @@ security, deployment hoặc dependency update cần review chuyên biệt mà ti
 không có mapping bắt buộc, thêm `--template security`, `--template deployment`
 hoặc `--template dependency-update`.
 
+Sau khi chuẩn bị tệp body UTF-8, chạy lại preflight với `--body-file <path>` để chặn prose bị hard-wrap trước khi thay đổi GitHub.
+
 ## Kỳ vọng về mã nguồn
 
 - Tuân theo các quy ước hiện có của codebase.

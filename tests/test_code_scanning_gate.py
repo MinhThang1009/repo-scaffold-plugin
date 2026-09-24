@@ -139,10 +139,10 @@ class CodeScanningGateTests(unittest.TestCase):
         reasons_by_path = {
             entry["path"]: entry["reason"] for entry in allowlist["allowlist"]
         }
-        self.assertIn(
-            "github.event.pull_request.base.sha",
-            reasons_by_path[".github/workflows/pr-template.yml"],
-        )
+        reason = reasons_by_path[".github/workflows/pr-template.yml"]
+        self.assertIn("repository default branch", reason)
+        self.assertIn("merge_group", reason)
+        self.assertIn("never checks out or executes pull-request code", reason)
 
         self.assertEqual(
             gate.unapproved_alerts(

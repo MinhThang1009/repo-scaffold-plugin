@@ -67,7 +67,11 @@ branch or tag, its checkout must pin the synchronizer to
 `persist-credentials: false` before running repository code; the PAT-backed PR
 mutation must never consume code from the selected ref. Its concurrency group
 must be repository-scoped and non-cancelling because every run updates the same
-maintenance branch.
+maintenance branch. Its static PR body must live at
+`.github/action-pin-sync-pr-body.md`, pass
+`python scripts/markdown_body_preflight.py --body-file
+.github/action-pin-sync-pr-body.md`, and be supplied to the action with
+`body-path` so the checked file is the file sent to GitHub.
 
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.
@@ -76,6 +80,12 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   `validate_scaffold.py`; obtain its runtime from `ci-toolchain.json`.
 - PR template: trust only the base SHA on `pull_request_target`; never execute
   PR head code, and require one trusted marker plus all required headings/items.
+  Dependabot exemptions require a bot user type. A Release Please exemption
+  requires its branch prefix, a head repository matching the base repository,
+  and either a bot user type or the base repository owner's account, because the
+  configured Release Please token can open PRs as that owner. Both exemptions
+  must run Markdown body preflight first; a branch name alone is never an
+  exemption.
 - Branch protection: required-check producers must be unique, executable, and
   event-compatible. A trusted `pull_request_target` producer may satisfy
   protected default-branch pull-request coverage only when its exact default
@@ -88,7 +98,18 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   valid manual trigger shape. An empty `workflow_dispatch` is allowed; when
   inputs are declared, it must contain at most 25 named input mappings using
   only supported fields and input types. Maintain one idempotent issue when
-  Issues are enabled. Serialize each reminder's shared
+  Issues are enabled. Before every Issue `create` or `edit` that passes a
+  Markdown body file, run
+  `python scripts/markdown_body_preflight.py --body-file <same-path>` and fail
+  before the GitHub mutation when the checker rejects hard-wrapped prose.
+  Reminder jobs and reconciliation steps must not use `if`, `needs`,
+  `strategy`, `continue-on-error`, `environment`, `timeout-minutes`,
+  `background`, `parallel`, `wait`, `wait-all`, or `cancel` controls that can
+  skip or mask the preflight; the policy-drift job may retain its required
+  schedule condition, dependencies, and concurrency declaration.
+  Reconciliation shells must retain `errexit`, `nounset`, and `pipefail`; they
+  may not disable them before or after the body preflight.
+  Serialize each reminder's shared
   repository state with a repository-scoped, non-cancelling concurrency group.
   Since `workflow_dispatch` can target a branch or tag, every manually
   dispatched Issue-writing reminder must check out
