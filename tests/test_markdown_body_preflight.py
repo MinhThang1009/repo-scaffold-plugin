@@ -582,6 +582,49 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         )
         self.assertEqual(non_prose_lines, {3, 4, 5, 6})
 
+    def test_list_context_is_scoped_to_its_blockquote_depth(self) -> None:
+        quote_exit_to_code = (
+            "> - outer\n"
+            ">   - inner\n"
+            ">     ```text\n"
+            "      - [ ] literal task example\n"
+            "      - [x] another literal task example\n"
+            "      ```\n"
+            "      First code line\n"
+            "      second code line\n"
+        )
+        non_prose_lines: set[int] = set()
+        self.assertEqual(
+            _bundled_module().hard_wrapped_prose_lines(
+                quote_exit_to_code,
+                non_prose_line_numbers=non_prose_lines,
+            ),
+            (),
+        )
+        self.assertEqual(non_prose_lines, {3, 4, 5, 6, 7, 8})
+
+        root_list_after_quote_exit = (
+            "- outer\n"
+            "  > quoted paragraph\n"
+            "  - nested item\n"
+            "    First prose line\n"
+            "    continued prose line\n"
+        )
+        self.assertEqual(_bundled_lines(root_list_after_quote_exit), (4, 5))
+
+        blank_quote_exit_to_code = (
+            "> - outer\n>   - inner\n\n    code line one\n    code line two\n"
+        )
+        non_prose_lines.clear()
+        self.assertEqual(
+            _bundled_module().hard_wrapped_prose_lines(
+                blank_quote_exit_to_code,
+                non_prose_line_numbers=non_prose_lines,
+            ),
+            (),
+        )
+        self.assertEqual(non_prose_lines, {4, 5})
+
     def test_list_items_starting_with_indented_code_keep_content_context(self) -> None:
         self.assertEqual(
             _bundled_lines(

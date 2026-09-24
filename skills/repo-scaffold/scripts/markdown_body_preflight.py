@@ -671,8 +671,16 @@ def advance_list_context(
     previous_is_prose: bool,
     previous_is_list_item: bool,
     previous_paragraph_open: bool | None = None,
+    context_quote_depths: list[int] | None = None,
+    current_quote_depth: int = 0,
 ) -> tuple[bool, bool]:
     """Update open list containers and report an item start or container exit."""
+
+    def pop_context() -> None:
+        context.pop()
+        if context_quote_depths is not None:
+            context_quote_depths.pop()
+
     expanded_line = line.expandtabs(4)
     leading_spaces = len(expanded_line) - len(expanded_line.lstrip(" "))
     previous_depth = len(context)
@@ -700,9 +708,9 @@ def advance_list_context(
             is_list_item = False
         if is_list_item:
             while context and marker_indent <= context[-1][0]:
-                context.pop()
+                pop_context()
             while context and marker_indent < context[-1][1]:
-                context.pop()
+                pop_context()
             padding_width = len(marker.group("padding"))
             effective_padding = (
                 padding_width if has_item_content and padding_width <= 4 else 1
@@ -711,6 +719,8 @@ def advance_list_context(
                 marker_indent + len(marker.group("marker")) + effective_padding
             )
             context.append((marker_indent, content_indent))
+            if context_quote_depths is not None:
+                context_quote_depths.append(current_quote_depth)
             return True, len(context) < previous_depth
     if not is_gfm_blank_line(line) and context and leading_spaces < context[-1][1]:
         allow_type_7 = not (paragraph_open or previous_is_list_item)
@@ -719,8 +729,19 @@ def advance_list_context(
         ) and not begins_markdown_block(line, allow_type_7=allow_type_7)
         if not lazy_continuation:
             while context and leading_spaces < context[-1][1]:
-                context.pop()
+                pop_context()
     return False, len(context) < previous_depth
+
+
+def prune_list_context_for_quote_depth(
+    context: list[tuple[int, int]],
+    context_quote_depths: list[int],
+    quote_depth: int,
+) -> None:
+    """Drop list containers whose enclosing blockquote has ended."""
+    while context_quote_depths and context_quote_depths[-1] > quote_depth:
+        context.pop()
+        context_quote_depths.pop()
 
 
 def list_item_starts_with_paragraph(line: str) -> bool:
@@ -828,6 +849,7 @@ def backtick_run_lengths_by_line(
     indented_code_indent: int | None = None
     indented_code_quote_depth = 0
     list_context: list[tuple[int, int]] = []
+    list_context_quote_depths: list[int] = []
     pending_inline_backticks_by_group: dict[int, list[int]] = {}
     active_inline_code_closers: dict[int, tuple[int, int, int]] = {}
     negative_inline_code_lookahead_ends: dict[
@@ -1041,6 +1063,9 @@ def backtick_run_lengths_by_line(
                         line, False, html_tag_spans
                     )
         if is_gfm_blank_line(line):
+            prune_list_context_for_quote_depth(
+                list_context, list_context_quote_depths, quote_depth
+            )
             group_id += 1
             indexed.append(())
             group_ids.append(group_id)
@@ -1057,12 +1082,17 @@ def backtick_run_lengths_by_line(
             previous_is_prose = False
             previous_is_list_item = False
             group_id += 1
+        prune_list_context_for_quote_depth(
+            list_context, list_context_quote_depths, effective_quote_depth
+        )
         is_list_item, list_context_shrank = advance_list_context(
             line,
             list_context,
             previous_is_prose=previous_is_prose,
             previous_is_list_item=previous_is_list_item,
             previous_paragraph_open=line_previous_paragraph_open,
+            context_quote_depths=list_context_quote_depths,
+            current_quote_depth=effective_quote_depth,
         )
         if list_context_shrank:
             group_id += 1
@@ -1223,6 +1253,7 @@ def hard_wrapped_prose_lines(
     html_block: tuple[str, int, int | None] | None = None
     previous_quote_depth = 0
     list_context: list[tuple[int, int]] = []
+    list_context_quote_depths: list[int] = []
 
     raw_lines = split_gfm_lines(markdown)
     (
@@ -1320,6 +1351,9 @@ def hard_wrapped_prose_lines(
                     line, False, html_tag_spans
                 )
                 if is_gfm_blank_line(line):
+                    prune_list_context_for_quote_depth(
+                        list_context, list_context_quote_depths, quote_depth
+                    )
                     previous_is_prose = False
                     previous_is_list_item = False
                     previous_paragraph_open = False
@@ -1348,6 +1382,9 @@ def hard_wrapped_prose_lines(
                 previous_quote_depth = quote_depth
                 continue
         if is_gfm_blank_line(line):
+            prune_list_context_for_quote_depth(
+                list_context, list_context_quote_depths, quote_depth
+            )
             inline_html_tag_pending = False
             if indented_code_indent is None:
                 previous_is_prose = False
@@ -1388,12 +1425,17 @@ def hard_wrapped_prose_lines(
             previous_is_prose = False
             previous_is_list_item = False
             inline_code_length = None
+        prune_list_context_for_quote_depth(
+            list_context, list_context_quote_depths, effective_quote_depth
+        )
         is_list_item, _ = advance_list_context(
             line,
             list_context,
             previous_is_prose=previous_is_prose,
             previous_is_list_item=previous_is_list_item,
             previous_paragraph_open=line_previous_paragraph_open,
+            context_quote_depths=list_context_quote_depths,
+            current_quote_depth=effective_quote_depth,
         )
         list_indent = list_context[-1][1] if list_context else None
         if is_list_item and line_list_code_start_indent is not None:
@@ -1461,6 +1503,9 @@ def hard_wrapped_prose_lines(
         )
 
         if is_gfm_blank_line(line):
+            prune_list_context_for_quote_depth(
+                list_context, list_context_quote_depths, quote_depth
+            )
             previous_is_prose = False
             previous_is_list_item = False
             previous_paragraph_open = False
