@@ -476,6 +476,24 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (),
         )
 
+    def test_hard_break_keeps_the_paragraph_open_for_block_precedence(self) -> None:
+        self.assertEqual(
+            _bundled_lines("Paragraph first line  \n1.\ncontinued prose line\n"),
+            (3,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line  \n"
+                "    middle paragraph line\n"
+                "    last paragraph line\n"
+            ),
+            (3,),
+        )
+        self.assertEqual(
+            _bundled_lines("- first list paragraph  \n  1.\n  continued paragraph\n"),
+            (3,),
+        )
+
     def test_comments_inside_non_prose_blocks_do_not_hide_later_wrapping(self) -> None:
         fence = chr(96) * 3
         cases = (
@@ -516,7 +534,8 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             ),
             (2, 3),
         )
-        self.assertEqual(_bundled_lines("Paragraph before empty list item\n-\n"), ())
+        self.assertEqual(_bundled_lines("Paragraph before empty list item\n-\n"), (2,))
+        self.assertEqual(_bundled_lines("Paragraph before empty list item\n\n-\n"), ())
 
     def test_empty_atx_headings_are_structural(self) -> None:
         for heading in ("#", "##", "######", "   ###   ", "> #"):
@@ -694,6 +713,7 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
     def test_inline_html_helpers_cover_default_and_blank_line_paths(self) -> None:
         module = _bundled_module()
         self.assertEqual(module.html_inline_tag_spans_by_line([]), ([], [], []))
+        self.assertFalse(module.list_item_starts_with_paragraph("plain prose"))
         masked, delimiter = module.mask_inline_code(
             "text <span title='value'> and `literal`",
             None,

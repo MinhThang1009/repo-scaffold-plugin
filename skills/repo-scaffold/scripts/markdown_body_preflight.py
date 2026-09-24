@@ -602,23 +602,32 @@ def advance_list_context(
     *,
     previous_is_prose: bool,
     previous_is_list_item: bool,
+    previous_paragraph_open: bool | None = None,
 ) -> tuple[bool, bool]:
     """Update open list containers and report an item start or container exit."""
     expanded_line = line.expandtabs(4)
     leading_spaces = len(expanded_line) - len(expanded_line.lstrip(" "))
     previous_depth = len(context)
+    paragraph_open = (
+        previous_is_prose
+        if previous_paragraph_open is None
+        else previous_paragraph_open
+    )
     marker = LIST_ITEM_CONTEXT_PATTERN.match(expanded_line)
     if marker is not None:
         marker_indent = len(marker.group("indent"))
+        has_item_content = bool(expanded_line[marker.end() :].strip(" "))
         is_list_item = marker_indent < 4 or bool(
             context and marker_indent >= context[-1][1]
         )
         marker_text = marker.group("marker")
         if (
             is_list_item
-            and previous_is_prose
-            and marker_text[-1] in ".)"
-            and int(marker_text[:-1]) != 1
+            and paragraph_open
+            and (
+                not has_item_content
+                or (marker_text[-1] in ".)" and int(marker_text[:-1]) != 1)
+            )
         ):
             is_list_item = False
         if is_list_item:
@@ -626,7 +635,6 @@ def advance_list_context(
                 context.pop()
             while context and marker_indent < context[-1][1]:
                 context.pop()
-            has_item_content = bool(expanded_line[marker.end() :].strip(" "))
             padding_width = len(marker.group("padding"))
             effective_padding = (
                 padding_width if has_item_content and padding_width <= 4 else 1
@@ -637,9 +645,9 @@ def advance_list_context(
             context.append((marker_indent, content_indent))
             return True, len(context) < previous_depth
     if not is_gfm_blank_line(line) and context and leading_spaces < context[-1][1]:
-        allow_type_7 = not (previous_is_prose or previous_is_list_item)
+        allow_type_7 = not (paragraph_open or previous_is_list_item)
         lazy_continuation = (
-            previous_is_prose or previous_is_list_item
+            paragraph_open or previous_is_list_item
         ) and not begins_markdown_block(line, allow_type_7=allow_type_7)
         if not lazy_continuation:
             while context and leading_spaces < context[-1][1]:
@@ -647,18 +655,27 @@ def advance_list_context(
     return False, len(context) < previous_depth
 
 
-def list_item_marker_is_empty(line: str) -> bool:
-    """Return whether a list marker has no non-whitespace content after it."""
+def list_item_starts_with_paragraph(line: str) -> bool:
+    """Return whether a nonempty list item starts with a paragraph block."""
     expanded_line = line.expandtabs(4)
     marker = LIST_ITEM_CONTEXT_PATTERN.match(expanded_line)
-    return marker is not None and not expanded_line[marker.end() :].strip(" ")
+    if marker is None:
+        return False
+    content = expanded_line[marker.end() :]
+    if (
+        not content.strip(" ")
+        or len(marker.group("padding")) > 4
+        or HTML_COMMENT_START_PATTERN.match(content) is not None
+    ):
+        return False
+    return not begins_markdown_block(content)
 
 
 def list_item_indented_code_start_indent(
     line: str,
     context: list[tuple[int, int]],
     *,
-    previous_is_prose: bool,
+    previous_paragraph_open: bool,
 ) -> int | None:
     """Return the code indentation when a list marker starts with indented code."""
     expanded_line = line.expandtabs(4)
@@ -672,7 +689,7 @@ def list_item_indented_code_start_indent(
     marker_text = marker.group("marker")
     if (
         is_list_item
-        and previous_is_prose
+        and previous_paragraph_open
         and marker_text[-1] in ".)"
         and int(marker_text[:-1]) != 1
     ):
@@ -689,11 +706,10 @@ def indented_code_start_indent(
     line: str,
     context: list[tuple[int, int]],
     *,
-    previous_is_prose: bool,
-    previous_is_list_item: bool,
+    previous_paragraph_open: bool,
 ) -> int | None:
     """Return the required indentation when this line starts an indented code block."""
-    if is_gfm_blank_line(line) or previous_is_prose or previous_is_list_item:
+    if is_gfm_blank_line(line) or previous_paragraph_open:
         return None
     expanded_line = line.expandtabs(4)
     leading_spaces = len(expanded_line) - len(expanded_line.lstrip(" "))
@@ -740,6 +756,7 @@ def backtick_run_lengths_by_line(
     previous_quote_depth = 0
     previous_is_prose = False
     previous_is_list_item = False
+    previous_paragraph_open = False
     indented_code_indent: int | None = None
     indented_code_quote_depth = 0
     list_context: list[tuple[int, int]] = []
@@ -782,6 +799,7 @@ def backtick_run_lengths_by_line(
                     group_id += 1
                 previous_is_prose = False
                 previous_is_list_item = False
+                previous_paragraph_open = False
                 previous_quote_depth = quote_depth
                 continue
         if fence_character is not None:
@@ -813,6 +831,7 @@ def backtick_run_lengths_by_line(
                 previous_quote_depth = quote_depth
                 previous_is_prose = False
                 previous_is_list_item = False
+                previous_paragraph_open = False
                 continue
         if indented_code_indent is not None and not is_gfm_blank_line(line):
             if (
@@ -825,17 +844,18 @@ def backtick_run_lengths_by_line(
                 previous_quote_depth = quote_depth
                 previous_is_prose = False
                 previous_is_list_item = False
+                previous_paragraph_open = False
                 continue
             indented_code_indent = None
             group_id += 1
         quote_context_changed = quote_depth > previous_quote_depth or (
             0 < quote_depth < previous_quote_depth
         )
-        line_previous_is_prose = (
-            previous_is_prose if not quote_context_changed else False
-        )
         line_previous_is_list_item = (
             previous_is_list_item if not quote_context_changed else False
+        )
+        line_previous_paragraph_open = (
+            previous_paragraph_open if not quote_context_changed else False
         )
         line_list_code_start_indent = (
             None
@@ -843,7 +863,7 @@ def backtick_run_lengths_by_line(
             else list_item_indented_code_start_indent(
                 line,
                 list_context,
-                previous_is_prose=line_previous_is_prose,
+                previous_paragraph_open=line_previous_paragraph_open,
             )
         )
         line_fence_start = (
@@ -853,7 +873,9 @@ def backtick_run_lengths_by_line(
             not comment_open
             and html_block_start(
                 line,
-                allow_type_7=not (line_previous_is_prose or line_previous_is_list_item),
+                allow_type_7=not (
+                    line_previous_paragraph_open or line_previous_is_list_item
+                ),
             )[0]
         )
         line_indented_code_start = (
@@ -861,8 +883,7 @@ def backtick_run_lengths_by_line(
             and indented_code_start_indent(
                 line,
                 list_context,
-                previous_is_prose=line_previous_is_prose,
-                previous_is_list_item=line_previous_is_list_item,
+                previous_paragraph_open=line_previous_paragraph_open,
             )
             is not None
         )
@@ -945,6 +966,7 @@ def backtick_run_lengths_by_line(
             previous_quote_depth = 0
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             continue
         if quote_depth > previous_quote_depth:
             previous_is_prose = False
@@ -959,6 +981,7 @@ def backtick_run_lengths_by_line(
             list_context,
             previous_is_prose=previous_is_prose,
             previous_is_list_item=previous_is_list_item,
+            previous_paragraph_open=line_previous_paragraph_open,
         )
         if list_context_shrank:
             group_id += 1
@@ -973,6 +996,7 @@ def backtick_run_lengths_by_line(
             previous_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             continue
         fence_start = FENCED_CODE_START_PATTERN.match(line)
         if fence_start is not None:
@@ -987,10 +1011,11 @@ def backtick_run_lengths_by_line(
             previous_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             continue
         starts_html_block, new_html_end_rule = html_block_start(
             line,
-            allow_type_7=not (previous_is_prose or previous_is_list_item),
+            allow_type_7=not (line_previous_paragraph_open or previous_is_list_item),
         )
         if starts_html_block:
             group_id += 1
@@ -1004,12 +1029,12 @@ def backtick_run_lengths_by_line(
             previous_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             continue
         code_indent = list_indent if list_indent is not None else 0
         if (
             leading_spaces >= code_indent + 4
-            and not previous_is_prose
-            and not previous_is_list_item
+            and not line_previous_paragraph_open
             and not is_list_item
         ):
             indented_code_indent = code_indent + 4
@@ -1020,6 +1045,7 @@ def backtick_run_lengths_by_line(
             previous_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             continue
         if line_index in table_lines:
             group_id += 1
@@ -1033,6 +1059,7 @@ def backtick_run_lengths_by_line(
             previous_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             continue
         is_other_block = (
             STRUCTURAL_MARKDOWN_LINE_PATTERN.match(line) is not None
@@ -1079,8 +1106,17 @@ def backtick_run_lengths_by_line(
                     pending_backticks.append(run_length)
         previous_quote_depth = quote_depth
         is_structural = is_list_item or is_other_block
-        previous_is_list_item = is_list_item and not list_item_marker_is_empty(line)
+        previous_is_list_item = is_list_item and list_item_starts_with_paragraph(line)
         previous_is_prose = not is_structural and not line.endswith(("  ", "\\"))
+        if is_list_item:
+            previous_paragraph_open = list_item_starts_with_paragraph(line)
+        elif is_other_block or (
+            line_previous_paragraph_open
+            and SETEXT_HEADING_UNDERLINE_PATTERN.fullmatch(line) is not None
+        ):
+            previous_paragraph_open = False
+        else:
+            previous_paragraph_open = True
     return indexed, group_ids
 
 
@@ -1093,6 +1129,7 @@ def hard_wrapped_prose_lines(
     wrapped: list[int] = []
     previous_is_prose = False
     previous_is_list_item = False
+    previous_paragraph_open = False
     fence_character: str | None = None
     fence_length = 0
     fence_quote_depth = 0
@@ -1147,6 +1184,7 @@ def hard_wrapped_prose_lines(
             ):
                 previous_is_prose = False
                 previous_is_list_item = False
+                previous_paragraph_open = False
                 previous_quote_depth = quote_depth
                 continue
             indented_code_indent = None
@@ -1162,8 +1200,8 @@ def hard_wrapped_prose_lines(
         quote_context_changed = quote_depth > previous_quote_depth or (
             0 < quote_depth < previous_quote_depth
         )
-        line_previous_is_prose = (
-            previous_is_prose if not quote_context_changed else False
+        line_previous_paragraph_open = (
+            previous_paragraph_open if not quote_context_changed else False
         )
         line_list_code_start_indent = (
             None
@@ -1171,7 +1209,7 @@ def hard_wrapped_prose_lines(
             else list_item_indented_code_start_indent(
                 line,
                 list_context,
-                previous_is_prose=line_previous_is_prose,
+                previous_paragraph_open=line_previous_paragraph_open,
             )
         )
         group_run_counts = future_run_counts[group_id]
@@ -1195,6 +1233,7 @@ def hard_wrapped_prose_lines(
                 if is_gfm_blank_line(line):
                     previous_is_prose = False
                     previous_is_list_item = False
+                    previous_paragraph_open = False
                     continue
         expanded_line = line.expandtabs(4)
         leading_spaces = len(expanded_line) - len(expanded_line.lstrip(" "))
@@ -1216,6 +1255,7 @@ def hard_wrapped_prose_lines(
                     html_block = None
                 previous_is_prose = False
                 previous_is_list_item = False
+                previous_paragraph_open = False
                 previous_quote_depth = quote_depth
                 continue
         if is_gfm_blank_line(line):
@@ -1223,6 +1263,7 @@ def hard_wrapped_prose_lines(
             if indented_code_indent is None:
                 previous_is_prose = False
                 previous_is_list_item = False
+                previous_paragraph_open = False
             previous_quote_depth = quote_depth
             continue
         if fence_character is not None:
@@ -1247,6 +1288,7 @@ def hard_wrapped_prose_lines(
                     fence_list_indent = None
                 previous_is_prose = False
                 previous_is_list_item = False
+                previous_paragraph_open = False
                 previous_quote_depth = quote_depth
                 continue
         if quote_depth > previous_quote_depth:
@@ -1262,6 +1304,7 @@ def hard_wrapped_prose_lines(
             list_context,
             previous_is_prose=previous_is_prose,
             previous_is_list_item=previous_is_list_item,
+            previous_paragraph_open=line_previous_paragraph_open,
         )
         list_indent = list_context[-1][1] if list_context else None
         if is_list_item and line_list_code_start_indent is not None:
@@ -1269,6 +1312,7 @@ def hard_wrapped_prose_lines(
             indented_code_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             previous_quote_depth = quote_depth
             inline_html_tag_pending = False
             continue
@@ -1282,12 +1326,13 @@ def hard_wrapped_prose_lines(
             fence_list_indent = list_indent
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             previous_quote_depth = quote_depth
             inline_html_tag_pending = False
             continue
         starts_html_block, new_html_end_rule = html_block_start(
             line,
-            allow_type_7=not (previous_is_prose or previous_is_list_item),
+            allow_type_7=not (line_previous_paragraph_open or previous_is_list_item),
         )
         if starts_html_block:
             if html_block_line_indexes is not None:
@@ -1296,6 +1341,7 @@ def hard_wrapped_prose_lines(
                 html_block = (new_html_end_rule, quote_depth, list_indent)
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             previous_quote_depth = quote_depth
             inline_html_tag_pending = False
             continue
@@ -1303,14 +1349,14 @@ def hard_wrapped_prose_lines(
         if (
             not is_gfm_blank_line(line)
             and leading_spaces >= code_indent + 4
-            and not previous_is_prose
-            and not previous_is_list_item
+            and not line_previous_paragraph_open
             and not is_list_item
         ):
             indented_code_indent = code_indent + 4
             indented_code_quote_depth = quote_depth
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             previous_quote_depth = quote_depth
             inline_html_tag_pending = False
             continue
@@ -1328,6 +1374,7 @@ def hard_wrapped_prose_lines(
         if is_gfm_blank_line(line):
             previous_is_prose = False
             previous_is_list_item = False
+            previous_paragraph_open = False
             continue
         is_table_line = line_index in table_lines
         is_structural = (
@@ -1353,9 +1400,19 @@ def hard_wrapped_prose_lines(
         previous_is_list_item = (
             is_list_item
             and not hard_break
-            and not list_item_marker_is_empty(source_line)
+            and list_item_starts_with_paragraph(source_line)
         )
         previous_is_prose = is_prose and not hard_break
+        if is_prose:
+            previous_paragraph_open = True
+        elif is_list_item:
+            previous_paragraph_open = list_item_starts_with_paragraph(source_line)
+        elif line_index in setext_heading_lines:
+            previous_paragraph_open = (
+                SETEXT_HEADING_UNDERLINE_PATTERN.fullmatch(line) is None
+            )
+        else:
+            previous_paragraph_open = False
         previous_quote_depth = quote_depth
         inline_html_tag_pending = html_tag_starts_by_line[line_index]
 
