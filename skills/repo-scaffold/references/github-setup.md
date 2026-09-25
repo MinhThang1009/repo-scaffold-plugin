@@ -799,6 +799,7 @@ Build the check list from contexts verified during the scaffold run, not from wo
 - Verify event coverage, not only the context name. A required producer must run for every `pull_request` without workflow-level `paths`, `paths-ignore`, or branch filters that can suppress the entire workflow. When an effective merge queue applies, it must also run for `merge_group` with `checks_requested`. Any job-level `if` must evaluate true and execute the real validation for every relevant event; GitHub reports skipped jobs as successful, which is not evidence that the gate ran. Duplicate names unrelated to the required set must not block protection.
 - For a generated repo-scaffold asset, parse the final YAML and record this coverage directly. For an unchanged, dynamic, matrix-named, reusable, or externally supplied check, verify a representative PR run (and a merge-group run when applicable) or do not require it.
 - For every representative PR, retrieve both `.head.sha` and the current `.merge_commit_sha` with `gh api --hostname github.com repos/OWNER/REPO/pulls/NUMBER --jq '{head_sha: .head.sha, test_merge_sha: .merge_commit_sha}'`. Require a mergeable representative PR with a non-null test-merge SHA. Inspect complete paginated results from Check Runs (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/check-runs`) and Commit Statuses (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/statuses`) on both SHAs, plus a merge-group SHA when applicable and recent default-branch SHAs. If the test-merge SHA has any Check Runs or Commit Statuses, it controls: require the selected context and source on that SHA, and do not fall back to a passing head-only result. If it has neither, use the head SHA. A check must have completed successfully in this repository during the past seven days on the controlling SHA before it can be selected as required. Compare context names case-insensitively. GitHub requires both systems when a Check Run and Commit Status share a required name, so reject that candidate on a controlling SHA instead of treating it as one producer. Record the intended Check Run's exact positive `app.id` from the controlling SHA; when checking multiple representative PRs, require their controlling-sha app IDs to agree. Bind every new required check to that verified app ID rather than allowing GitHub to auto-select a recent source.
+- When an effective merge queue applies, also pass a recent successful `merge_group` SHA to the preflight. It checks that the same workflow blob and context execute on that SHA, the Actions run's event is exactly `merge_group`, and its GitHub App ID matches the selected PR check. No verified merge-group SHA means no branch-protection mutation.
 - Stop before applying required-status-check protection when no real gate has been confirmed. Never submit a context that no workflow emits.
 
 Select the exact required contexts before running the preflight. Carry that same
@@ -808,16 +809,21 @@ or enter producer evidence again afterwards.
 The bundled `scripts/branch_protection_preflight.py` turns this proof into a
 read-only, fail-closed gate. Run it after the final workflows are pushed to a
 open, mergeable representative PR and before any branch-protection mutation. It reads
-the exact regular-file workflow blobs at that PR head, rejects duplicate YAML keys and
-ambiguous producers, verifies unfiltered `pull_request` coverage (or a trusted
+the exact regular-file workflow blobs from the PR's test-merge commit. GitHub
+runs `pull_request` workflows from that merge commit ([event documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)).
+The preflight rejects duplicate YAML keys and ambiguous producers, verifies
+unfiltered `pull_request` coverage (or a trusted
 `pull_request_target` producer from the verified default branch) plus
 `merge_group` coverage when an effective merge queue applies, requires an
 unconditional executable job, and verifies a successful Check Run no older than
 seven days on the controlling SHA: the test-merge SHA when it has any Check Runs
 or Commit Statuses, otherwise the PR head SHA. It takes the GitHub App ID from
 that same controlling SHA and rejects any same-name Commit Status collision
-there. It joins the Check Run's `check_suite.id` to exactly one Actions workflow
-run and verifies the run's commit, workflow path, and event. A successful
+there. When a queue applies, it also requires a recent successful Check Run on
+the supplied merge-group SHA with the same workflow blob, context, and App ID;
+the Actions workflow run must report the exact `merge_group` event. It joins
+each Check Run's `check_suite.id` to exactly one Actions workflow run and
+verifies the run's commit, workflow path, and event. A successful
 `workflow_dispatch` run cannot stand in for an eligible required-check event.
 For fine-grained tokens, this workflow-run read requires the repository's
 Actions: read permission; inaccessible or incomplete run evidence is
@@ -841,6 +847,7 @@ if ([string]::IsNullOrWhiteSpace($defaultBranch)) {
 # Replace this example with every context selected above. For an unchanged
 # workflow, add only the context the user confirmed from its real job.
 $requiredCheckNames = @("ci-success")
+$mergeGroupSha = $null # Set to the verified recent merge_group SHA when a queue applies.
 if ($requiredCheckNames.Count -eq 0) {
   throw "No verified required-check context; stop before configuring protection."
 }
@@ -856,17 +863,23 @@ $preflightArguments = @(
 foreach ($context in $requiredCheckNames) {
   $preflightArguments += @("--required-check", [string]$context)
 }
+if ($null -ne $mergeGroupSha) {
+  $preflightArguments += @("--merge-group-sha", [string]$mergeGroupSha)
+}
 $preflightOutput = python $branchProtectionPreflight @preflightArguments 2>&1
 if ($LASTEXITCODE -ne 0) {
   throw "Required-check evidence is inconclusive; do not mutate protection. $($preflightOutput | Out-String)"
 }
 $requiredCheckPreflight = ($preflightOutput | Out-String) | ConvertFrom-Json
 if (-not $requiredCheckPreflight.inspection_complete -or
-    $requiredCheckPreflight.decision -ne "may-configure-classic-protection") {
+    $requiredCheckPreflight.decision -ne "may-configure-classic-protection" -or
+    $requiredCheckPreflight.merge_queue_required -isnot [bool]) {
   throw "Required-check evidence is incomplete; do not mutate protection."
 }
 if ($requiredCheckPreflight.repository -cne "OWNER/REPO" -or
-    $requiredCheckPreflight.default_branch -cne $defaultBranch) {
+    $requiredCheckPreflight.default_branch -cne $defaultBranch -or
+    $requiredCheckPreflight.merge_queue_required -ne ($null -ne $mergeGroupSha) -or
+    $requiredCheckPreflight.merge_group_sha -cne $mergeGroupSha) {
   throw "Branch-protection preflight input does not match the protection mutation."
 }
 $verifiedChecks = @($requiredCheckPreflight.required_checks)
@@ -910,7 +923,10 @@ function Assert-FreshRequiredCheckPreflight {
       ([string]$fresh.head_sha).ToLowerInvariant() -cne
         ([string]$requiredCheckPreflight.head_sha).ToLowerInvariant() -or
       ([string]$fresh.test_merge_sha).ToLowerInvariant() -cne
-        ([string]$requiredCheckPreflight.test_merge_sha).ToLowerInvariant()) {
+        ([string]$requiredCheckPreflight.test_merge_sha).ToLowerInvariant() -or
+      $fresh.merge_queue_required -isnot [bool] -or
+      $fresh.merge_queue_required -ne $requiredCheckPreflight.merge_queue_required -or
+      $fresh.merge_group_sha -cne $requiredCheckPreflight.merge_group_sha) {
     throw "Representative pull-request evidence or target changed since preflight; review the fresh result before mutating protection."
   }
   $approvedBindings = @($verifiedChecks | Sort-Object context | ForEach-Object {
@@ -973,19 +989,53 @@ foreach ($context in $requiredCheckNames) {
   }
 }
 
+function ConvertTo-BranchProtectionAppId([object]$Value) {
+  if ($null -eq $Value) { return -1L }
+  if (($Value -is [int] -or $Value -is [long]) -and [int64]$Value -gt 0) {
+    return [int64]$Value
+  }
+  throw "Branch-protection App ID must be a positive integer or null."
+}
+
+function Get-BranchProtectionReviewState([object]$Protection) {
+  if ($null -eq $Protection -or $Protection -isnot [pscustomobject]) {
+    throw "Branch-protection response is incomplete; stop before mutation."
+  }
+  $reviewProperty = $Protection.PSObject.Properties['required_pull_request_reviews']
+  if ($null -eq $reviewProperty -or $null -eq $reviewProperty.Value) {
+    return $null
+  }
+  if ($reviewProperty.Value -isnot [pscustomobject]) {
+    throw "Pull-request review protection is malformed; stop before mutation."
+  }
+  return $reviewProperty.Value
+}
+
 function Assert-ClassicProtectionState(
   [object]$Protection,
-  [Collections.Generic.IDictionary[string, int64]]$ExpectedAppIdsByContext
+  [Collections.Generic.IDictionary[string, int64]]$ExpectedAppIdsByContext,
+  [object]$ExpectedReviewApprovalCount = $null
 ) {
   $problems = @()
-  if (-not [bool]$Protection.required_status_checks.strict) {
+  $null = Get-RequiredStatusCheckSnapshot $Protection
+  if ($Protection.required_status_checks.strict -isnot [bool] -or
+      -not $Protection.required_status_checks.strict) {
     $problems += "strict status checks are disabled"
   }
-  if (-not [bool]$Protection.enforce_admins.enabled) {
+  if ($Protection.enforce_admins.enabled -isnot [bool] -or
+      -not $Protection.enforce_admins.enabled) {
     $problems += "administrator enforcement is disabled"
   }
-  if ($null -eq $Protection.required_pull_request_reviews) {
+  $reviewState = Get-BranchProtectionReviewState $Protection
+  if ($null -eq $reviewState) {
     $problems += "pull request protection is absent"
+  } elseif ($null -ne $ExpectedReviewApprovalCount) {
+    $actualReviewApprovalCount = $reviewState.required_approving_review_count
+    if (($actualReviewApprovalCount -isnot [int] -and
+        $actualReviewApprovalCount -isnot [long]) -or
+        [int64]$actualReviewApprovalCount -ne [int64]$ExpectedReviewApprovalCount) {
+      $problems += "pull request approval count differs from the requested state"
+    }
   }
 
   $actualAppIdsByContext = [Collections.Specialized.OrderedDictionary]::new(
@@ -995,7 +1045,12 @@ function Assert-ClassicProtectionState(
     if ($null -eq $check -or [string]::IsNullOrWhiteSpace($check.context)) {
       continue
     }
-    $appId = if ($null -eq $check.app_id) { -1L } else { [int64]$check.app_id }
+    try {
+      $appId = ConvertTo-BranchProtectionAppId $check.app_id
+    } catch {
+      $problems += "$($check.context) has an invalid app binding"
+      continue
+    }
     if ($actualAppIdsByContext.Contains($check.context) -and
         [int64]$actualAppIdsByContext[$check.context] -ne $appId) {
       $problems += "$($check.context) has conflicting app bindings"
@@ -1029,11 +1084,77 @@ function Assert-ClassicProtectionState(
 }
 
 $protectionPath = "repos/$owner/$repo/branches/$encodedBranch/protection"
+
+function Get-RequiredStatusCheckSnapshot([object]$Protection) {
+  if ($null -eq $Protection -or $Protection -isnot [pscustomobject]) {
+    throw "Branch-protection response is incomplete; stop before mutation."
+  }
+  $statusProperty = $Protection.PSObject.Properties['required_status_checks']
+  # The top-level property is optional when no required status checks are set.
+  if ($null -eq $statusProperty) { return "null" }
+  $statusChecks = $statusProperty.Value
+  if ($null -eq $statusChecks) { return "null" }
+  if ($statusChecks -isnot [pscustomobject]) {
+    throw "Required-status-check state is incomplete; stop before mutation."
+  }
+  # The GET schema makes strict optional; the PATCH below intentionally sets it.
+  $strictProperty = $statusChecks.PSObject.Properties['strict']
+  $strictSnapshot = $null
+  if ($null -ne $strictProperty) {
+    if ($strictProperty.Value -isnot [bool]) {
+      throw "Required-status-check strictness is invalid; stop before mutation."
+    }
+    $strictSnapshot = [bool]$strictProperty.Value
+  }
+  $checksProperty = $statusChecks.PSObject.Properties['checks']
+  $contextsProperty = $statusChecks.PSObject.Properties['contexts']
+  if ($null -eq $checksProperty -or $checksProperty.Value -isnot [array] -or
+      $null -eq $contextsProperty -or $contextsProperty.Value -isnot [array]) {
+    throw "Required-status-check bindings are incomplete; stop before mutation."
+  }
+
+  $bindings = [Collections.Generic.Dictionary[string, int64]]::new(
+    [StringComparer]::OrdinalIgnoreCase
+  )
+  foreach ($check in @($statusChecks.checks)) {
+    if ($null -eq $check -or $check -isnot [pscustomobject] -or
+        $null -eq $check.PSObject.Properties['context'] -or
+        $null -eq $check.PSObject.Properties['app_id'] -or
+        $check.context -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($check.context)) {
+      throw "Required-status-check state contains an invalid context."
+    }
+    $appId = ConvertTo-BranchProtectionAppId $check.app_id
+    if ($bindings.ContainsKey([string]$check.context) -and
+        $bindings[[string]$check.context] -ne $appId) {
+      throw "Required-status-check state contains conflicting App bindings."
+    }
+    $bindings[[string]$check.context] = $appId
+  }
+  foreach ($context in @($statusChecks.contexts)) {
+    if ($context -isnot [string] -or [string]::IsNullOrWhiteSpace($context)) {
+      throw "Required-status-check state contains an invalid context."
+    }
+    if (-not $bindings.ContainsKey($context)) { $bindings[$context] = -1L }
+  }
+  $normalizedChecks = @(
+    $bindings.Keys | Sort-Object -CaseSensitive | ForEach-Object {
+      [ordered]@{ context = $_.ToLowerInvariant(); app_id = [int64]$bindings[$_] }
+    }
+  )
+  return ([ordered]@{
+    strict = $strictSnapshot
+    checks = $normalizedChecks
+  } | ConvertTo-Json -Depth 5 -Compress)
+}
+
 $protectionOutput = gh api --hostname github.com $protectionPath -H "Accept: application/vnd.github+json" 2>&1
 $protectionExitCode = $LASTEXITCODE
 
 if ($protectionExitCode -eq 0) {
   $existingProtection = $protectionOutput | ConvertFrom-Json
+  $initialStatusCheckState = Get-RequiredStatusCheckSnapshot $existingProtection
+  $initialReviewProtection = Get-BranchProtectionReviewState $existingProtection
   $checksByContext = [System.Collections.Specialized.OrderedDictionary]::new(
     [System.StringComparer]::OrdinalIgnoreCase
   )
@@ -1046,7 +1167,12 @@ if ($protectionExitCode -eq 0) {
     # A response value of null means the check accepts any app. In update requests,
     # GitHub requires -1 to preserve that behavior; omitting app_id may auto-select
     # the app that most recently supplied the check.
-    $entry.app_id = if ($null -eq $check.app_id) { -1 } else { [int64]$check.app_id }
+    try {
+      $entry.app_id = ConvertTo-BranchProtectionAppId $check.app_id
+    } catch {
+      $bindingProblems += "$($check.context)=invalid app binding"
+      continue
+    }
     if ($checksByContext.Contains($check.context) -and
         [int64]$checksByContext[$check.context].app_id -ne [int64]$entry.app_id) {
       $bindingProblems += "$($check.context)=multiple existing app bindings"
@@ -1074,12 +1200,27 @@ if ($protectionExitCode -eq 0) {
   }
 
   $requiredCheckPreflight = Assert-FreshRequiredCheckPreflight
+  $statusProtectionBeforeWriteOutput = gh api --hostname github.com $protectionPath `
+    -H "Accept: application/vnd.github+json" 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not re-read branch protection immediately before updating required checks; no new write was sent. $($statusProtectionBeforeWriteOutput | Out-String)"
+  }
+  try {
+    $statusProtectionBeforeWrite = ($statusProtectionBeforeWriteOutput | Out-String) | ConvertFrom-Json
+  } catch {
+    throw "Branch-protection re-read returned invalid JSON; no new write was sent."
+  }
+  if ((Get-RequiredStatusCheckSnapshot $statusProtectionBeforeWrite) -cne
+      $initialStatusCheckState) {
+    throw "Required status checks changed after the initial read; do not overwrite the concurrent policy. Rerun the full protection review."
+  }
   $statusPayload = @{
     strict = $true
     checks = @($checksByContext.Values)
   } | ConvertTo-Json -Depth 6
   $completedProtectionUpdates = @()
   $protectionUpdateFailure = $null
+  $expectedReviewApprovalCount = $null
   try {
     $statusUpdateOutput = $statusPayload | gh api --hostname github.com -X PATCH `
       "$protectionPath/required_status_checks" `
@@ -1089,24 +1230,56 @@ if ($protectionExitCode -eq 0) {
     }
     $completedProtectionUpdates += "required_status_checks"
 
-    $adminUpdateOutput = gh api --hostname github.com -X POST `
-      "$protectionPath/enforce_admins" -H "Accept: application/vnd.github+json" `
-      --silent 2>&1
+    $null = Assert-FreshRequiredCheckPreflight
+    $adminStateOutput = gh api --hostname github.com `
+      "$protectionPath/enforce_admins" -H "Accept: application/vnd.github+json" 2>&1
     if ($LASTEXITCODE -ne 0) {
-      throw "Failed to enable admin enforcement. $($adminUpdateOutput | Out-String)"
+      throw "Could not re-read admin enforcement before its write. $($adminStateOutput | Out-String)"
     }
-    $completedProtectionUpdates += "enforce_admins"
+    try { $adminState = ($adminStateOutput | Out-String) | ConvertFrom-Json } catch {
+      throw "Admin-enforcement re-read returned invalid JSON."
+    }
+    if ($adminState.enabled -isnot [bool]) {
+      throw "Admin-enforcement re-read is incomplete; do not mutate."
+    }
+    if (-not $adminState.enabled) {
+      $adminUpdateOutput = gh api --hostname github.com -X POST `
+        "$protectionPath/enforce_admins" -H "Accept: application/vnd.github+json" `
+        --silent 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        throw "Failed to enable admin enforcement. $($adminUpdateOutput | Out-String)"
+      }
+      $completedProtectionUpdates += "enforce_admins"
+    }
 
     # Enable the PR requirement only when it is absent. Never weaken an existing review policy.
-    if ($null -eq $existingProtection.required_pull_request_reviews) {
-      $reviewUpdateOutput = '{"required_approving_review_count":0}' | `
-        gh api --hostname github.com -X PATCH `
-          "$protectionPath/required_pull_request_reviews" `
-          -H "Accept: application/vnd.github+json" --input - 2>&1
+    if ($null -eq $initialReviewProtection) {
+      $null = Assert-FreshRequiredCheckPreflight
+      $reviewProtectionBeforeWriteOutput = gh api --hostname github.com $protectionPath `
+        -H "Accept: application/vnd.github+json" 2>&1
       if ($LASTEXITCODE -ne 0) {
-        throw "Failed to enable pull request review protection. $($reviewUpdateOutput | Out-String)"
+        throw "Could not re-read pull request review protection before its write. $($reviewProtectionBeforeWriteOutput | Out-String)"
       }
-      $completedProtectionUpdates += "required_pull_request_reviews"
+      try {
+        $reviewProtectionBeforeWrite = ($reviewProtectionBeforeWriteOutput | Out-String) | ConvertFrom-Json
+      } catch {
+        throw "Branch-protection re-read returned invalid JSON; do not mutate review protection."
+      }
+      $reviewProtectionBeforeWriteState =
+        Get-BranchProtectionReviewState $reviewProtectionBeforeWrite
+      if ($null -eq $reviewProtectionBeforeWriteState) {
+        $reviewUpdateOutput = '{"required_approving_review_count":0}' | `
+          gh api --hostname github.com -X PATCH `
+            "$protectionPath/required_pull_request_reviews" `
+            -H "Accept: application/vnd.github+json" --input - 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          throw "Failed to enable pull request review protection. $($reviewUpdateOutput | Out-String)"
+        }
+        $expectedReviewApprovalCount = 0
+        $completedProtectionUpdates += "required_pull_request_reviews"
+      } else {
+        Write-Output "A concurrent review policy appeared; preserve it without an update."
+      }
     }
   } catch {
     $protectionUpdateFailure = $_.Exception.Message
@@ -1143,7 +1316,7 @@ if ($protectionExitCode -eq 0) {
   foreach ($context in @($checksByContext.Keys)) {
     $expectedFinalAppIds[$context] = [int64]$checksByContext[$context].app_id
   }
-  Assert-ClassicProtectionState $finalProtection $expectedFinalAppIds
+  Assert-ClassicProtectionState $finalProtection $expectedFinalAppIds $expectedReviewApprovalCount
 } elseif (($protectionOutput | Out-String) -match '(?is)Branch not protected.*HTTP 404') {
   # No protection exists, so a complete initial payload cannot overwrite prior policy.
   $checks = @($requiredCheckNames | ForEach-Object {
@@ -1162,6 +1335,14 @@ if ($protectionExitCode -eq 0) {
   } | ConvertTo-Json -Depth 6
 
   $requiredCheckPreflight = Assert-FreshRequiredCheckPreflight
+  $protectionBeforeCreateOutput = gh api --hostname github.com $protectionPath `
+    -H "Accept: application/vnd.github+json" 2>&1
+  if ($LASTEXITCODE -eq 0) {
+    throw "Branch protection appeared after the initial read; do not replace it. Rerun the full protection review."
+  }
+  if (($protectionBeforeCreateOutput | Out-String) -notmatch '(?is)Branch not protected.*HTTP 404') {
+    throw "Could not verify that branch protection is still absent; do not create it. $($protectionBeforeCreateOutput | Out-String)"
+  }
   $createOutput = $payload | gh api --hostname github.com -X PUT $protectionPath `
     -H "Accept: application/vnd.github+json" --input - 2>&1
   $createExitCode = $LASTEXITCODE
@@ -1184,7 +1365,7 @@ if ($protectionExitCode -eq 0) {
     throw "Branch protection creation returned success, but its final state could not be verified. $($createdProtectionOutput | Out-String)"
   }
   $createdProtection = ($createdProtectionOutput | Out-String) | ConvertFrom-Json
-  Assert-ClassicProtectionState $createdProtection $requiredAppIdsByContext
+  Assert-ClassicProtectionState $createdProtection $requiredAppIdsByContext 0
 } elseif (($protectionOutput | Out-String) -match '(?is)HTTP 403') {
   throw "GitHub forbade branch-protection inspection. Verify repository plan and Administration permission; no settings were changed. $($protectionOutput | Out-String)"
 } elseif (($protectionOutput | Out-String) -match '(?is)HTTP 404') {
@@ -1195,6 +1376,16 @@ if ($protectionExitCode -eq 0) {
 ```
 
 `ci-success` is the aggregate test gate shipped in `assets/workflows/ci.yml`: it is green only if every `test` matrix job passed. Requiring it instead of every matrix combination keeps the matrix-specific list stable. Dependency review and the dependency-free Conventional Commit gate (`commitlint`) are independent jobs, so they must be required separately when their repo-scaffold assets were installed. All three shipped required-check workflows include unfiltered `pull_request` and `merge_group` coverage. Existing workflows may use different job IDs, names, triggers, or filters; preserve those files and require only contexts verified from their actual definitions and event coverage.
+
+GitHub's protected-branch API exposes separate writes for these settings and
+does not document conditional writes for them. Before each write the example
+reruns required-check evidence and re-reads the affected state. It compares
+required-check bindings with the initial snapshot before replacing them,
+preserves review protection that appears concurrently, and confirms protection
+is still absent before creating it. A changed state stops the sequence and the
+final GET reports partial updates. A request-sized race remains after each last
+read; coordinate a single-writer window or do not automate this path when that
+residual race is unacceptable. Never claim the sequence is atomic.
 
 ## Ruleset compatibility (inspect only)
 
@@ -1477,9 +1668,16 @@ published security-analysis fields, and requires current repository
 administration permission. It requires secret scanning before push protection,
 and permits private vulnerability reporting only for a public non-fork
 repository. It checks Dependabot alerts before automated security fixes unless
-alerts were requested for prior enablement. It does not infer entitlement from a
-missing field, so
-continue to handle GitHub's final `403`, `404`, `409`, `422`, and `503` result
+alerts were requested for prior enablement. It does not infer Secret Protection
+entitlement from missing repository fields. For private or internal targets,
+verify the organization's [GitHub Secret Protection eligibility](https://docs.github.com/en/code-security/concepts/secret-security/secret-scanning)
+separately. Repository-level [push protection requires Secret Protection](https://docs.github.com/en/code-security/concepts/secret-security/push-protection).
+On GitHub.com, a user-owned private repository requires the documented
+Enterprise Managed Users eligibility. Set
+`--confirm-private-secret-protection-eligibility` only after that check, or the
+preflight returns a confirmation-required decision and forbids mutation. This
+flag records a user-verified plan assumption; it does not query billing state.
+Continue to handle GitHub's final `403`, `404`, `409`, `422`, and `503` result
 separately.
 
 ```powershell
@@ -1494,12 +1692,18 @@ $enableAutomatedSecurityFixesRequested = $false
 $enableSecretScanningRequested = $false
 $enablePushProtectionRequested = $false
 $enablePrivateVulnerabilityReportingRequested = $false
+# Set only after verifying Secret Protection eligibility for a private/internal target.
+$confirmPrivateSecretProtectionEligibility = $false
 $securityPreflightArguments = @("--repository", "OWNER/REPO", "--hostname", "github.com")
 if ($enableDependabotAlertsRequested) { $securityPreflightArguments += "--enable-dependabot-alerts" }
 if ($enableAutomatedSecurityFixesRequested) { $securityPreflightArguments += "--enable-automated-security-fixes" }
 if ($enableSecretScanningRequested) { $securityPreflightArguments += "--enable-secret-scanning" }
 if ($enablePushProtectionRequested) { $securityPreflightArguments += "--enable-push-protection" }
 if ($enablePrivateVulnerabilityReportingRequested) { $securityPreflightArguments += "--enable-private-vulnerability-reporting" }
+if ($confirmPrivateSecretProtectionEligibility -and
+    ($enableSecretScanningRequested -or $enablePushProtectionRequested)) {
+  $securityPreflightArguments += "--confirm-private-secret-protection-eligibility"
+}
 
 $requestedSecurityFeatures = @()
 if ($enableDependabotAlertsRequested) { $requestedSecurityFeatures += "dependabot_alerts" }
@@ -1507,6 +1711,10 @@ if ($enableAutomatedSecurityFixesRequested) { $requestedSecurityFeatures += "aut
 if ($enableSecretScanningRequested) { $requestedSecurityFeatures += "secret_scanning" }
 if ($enablePushProtectionRequested) { $requestedSecurityFeatures += "push_protection" }
 if ($enablePrivateVulnerabilityReportingRequested) { $requestedSecurityFeatures += "private_vulnerability_reporting" }
+if ($confirmPrivateSecretProtectionEligibility -and
+    -not ($enableSecretScanningRequested -or $enablePushProtectionRequested)) {
+  throw "Secret Protection eligibility confirmation requires a secret-scanning or push-protection request."
+}
 $securityPreflightResult = $null
 $approvedSecurityFeatures = @()
 if ($requestedSecurityFeatures.Count -gt 0) {
@@ -1518,6 +1726,9 @@ if ($requestedSecurityFeatures.Count -gt 0) {
     $securityPreflightResult = ($securityPreflightOutput | Out-String) | ConvertFrom-Json
   } catch {
     throw "Security-feature preflight returned invalid JSON; do not mutate."
+  }
+  if ($securityPreflightResult.decision -eq "confirm-private-secret-protection-eligibility") {
+    throw "Verify GitHub Secret Protection eligibility for this private/internal repository, then set `$confirmPrivateSecretProtectionEligibility and rerun the preflight."
   }
   if (-not $securityPreflightResult.inspection_complete -or
       $securityPreflightResult.decision -ne "may-configure-security-features") {
@@ -1533,6 +1744,18 @@ if ($requestedSecurityFeatures.Count -gt 0) {
   if ($approvedSecurityFeatures.Count -ne $requestedSecurityFeatures.Count -or
       $null -ne (Compare-Object -ReferenceObject $requestedSecurityFeatures -DifferenceObject $approvedSecurityFeatures -CaseSensitive)) {
     throw "Security-feature preflight input does not match the requested mutations."
+  }
+  $privateSecretFeatureRequested =
+    $securityPreflightResult.visibility -ne "public" -and
+    @($requestedSecurityFeatures | Where-Object { $_ -in @("secret_scanning", "push_protection") }).Count -gt 0
+  $expectedSecretProtectionEligibility = if ($privateSecretFeatureRequested) {
+    "user-confirmed"
+  } else {
+    "not-required"
+  }
+  if ($securityPreflightResult.secret_protection_eligibility -cne
+      $expectedSecretProtectionEligibility) {
+    throw "Secret Protection eligibility evidence does not match the requested features and repository visibility."
   }
 } else {
   Write-Output "No security-feature changes were requested; skip the preflight and mutation blocks."
@@ -1550,11 +1773,16 @@ claiming that feature was enabled.
 function Get-ValidatedSecurityFeaturePreflight {
   param(
     [Parameter(Mandatory)][string[]]$FeatureArguments,
-    [Parameter(Mandatory)][string]$ExpectedFeature
+    [Parameter(Mandatory)][string]$ExpectedFeature,
+    [switch]$ConfirmPrivateSecretProtectionEligibility
   )
 
-  $output = & python $securityFeaturesPreflight `
-    --repository "OWNER/REPO" --hostname "github.com" @FeatureArguments 2>&1
+  $arguments = @("--repository", "OWNER/REPO", "--hostname", "github.com") + @($FeatureArguments)
+  if ($ConfirmPrivateSecretProtectionEligibility -and
+      $ExpectedFeature -in @("secret_scanning", "push_protection")) {
+    $arguments += "--confirm-private-secret-protection-eligibility"
+  }
+  $output = & python $securityFeaturesPreflight @arguments 2>&1
   $exitCode = $LASTEXITCODE
   if ($exitCode -ne 0) {
     Write-Warning "Security-feature preflight is inconclusive for $ExpectedFeature; skip this mutation. $($output | Out-String)"
@@ -1577,6 +1805,19 @@ function Get-ValidatedSecurityFeaturePreflight {
   $features = @($result.requested_features | ForEach-Object { [string]$_ })
   if ($features.Count -ne 1 -or $features[0] -cne $ExpectedFeature) {
     Write-Warning "Security-feature preflight input does not match $ExpectedFeature; skip this mutation."
+    return $null
+  }
+  $requiresSecretProtectionConfirmation =
+    $ExpectedFeature -in @("secret_scanning", "push_protection") -and
+    $result.visibility -ne "public"
+  if ($requiresSecretProtectionConfirmation) {
+    if (-not $ConfirmPrivateSecretProtectionEligibility -or
+        $result.secret_protection_eligibility -cne "user-confirmed") {
+      Write-Warning "Private Secret Protection eligibility is not confirmed for $ExpectedFeature; skip this mutation."
+      return $null
+    }
+  } elseif ($result.secret_protection_eligibility -cne "not-required") {
+    Write-Warning "Security-feature preflight returned unexpected Secret Protection eligibility evidence; skip this mutation."
     return $null
   }
   return $result
@@ -1641,7 +1882,8 @@ function Get-ValidatedSecurityFeaturePreflight {
   if ($enableSecretScanningRequested) {
     $featurePreflight = Get-ValidatedSecurityFeaturePreflight `
       -FeatureArguments @("--enable-secret-scanning") `
-      -ExpectedFeature "secret_scanning"
+      -ExpectedFeature "secret_scanning" `
+      -ConfirmPrivateSecretProtectionEligibility:$confirmPrivateSecretProtectionEligibility
     if ($null -ne $featurePreflight) {
       $enableOutput = gh repo edit github.com/OWNER/REPO --enable-secret-scanning 2>&1
       if ($LASTEXITCODE -ne 0) {
@@ -1658,7 +1900,8 @@ function Get-ValidatedSecurityFeaturePreflight {
   if ($enablePushProtectionRequested) {
     $featurePreflight = Get-ValidatedSecurityFeaturePreflight `
       -FeatureArguments @("--enable-push-protection") `
-      -ExpectedFeature "push_protection"
+      -ExpectedFeature "push_protection" `
+      -ConfirmPrivateSecretProtectionEligibility:$confirmPrivateSecretProtectionEligibility
     if ($null -ne $featurePreflight) {
       $enableOutput = gh repo edit github.com/OWNER/REPO `
         --enable-secret-scanning-push-protection 2>&1
@@ -2529,7 +2772,21 @@ copying if the selected repository or default branch changed.
 
 Treat plugin-creator's local `+codex.<cachebuster>` suffix as installation identity only. Do not copy it into the public release manifest, plugin version, changelog, or tag; confirm and use the clean public SemVer instead. Preserve other SemVer build metadata only when the user explicitly confirms it is part of the public release identity.
 
-The shipped `release.yml` also supports a verified manual recovery path without a `push.tags` trigger. Run it only after the exact tag exists and resolves to the supplied full commit SHA:
+The shipped `release.yml` also supports a verified manual recovery path
+without a `push.tags` trigger. Run it only after the exact tag exists and
+resolves to the supplied full commit SHA. All three privileged release jobs
+accept only three caller routes: a direct `workflow_dispatch` of `release.yml`
+from the default branch, `release-please.yml` calling it on a default-branch
+push, or `release-tag.yml` calling it for the pushed `v*` tag with matching tag
+and commit inputs. Other workflow-call files, events, and refs are blocked
+before build, OIDC, or publication permissions are granted. GitHub associates
+the reusable workflow's `github` context with its caller, so the gate binds the
+event, ref, and caller file
+([reusable workflow documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations)).
+The release workflow definition still comes from the tag ref for tag-triggered
+releases, so only trusted tag creators may use that path. See GitHub's
+[workflow ref semantics](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows)
+and the [push-event SHA definition](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows).
 
 ```bash
 gh workflow run release.yml --repo OWNER/REPO --ref DEFAULT_BRANCH \

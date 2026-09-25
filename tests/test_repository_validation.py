@@ -7477,6 +7477,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
         engine = {
             "jobs": {
                 "build": {
+                    "if": validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF,
                     "permissions": {"contents": "read"},
                     "steps": [
                         {
@@ -7490,6 +7491,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                 },
                 "attest": {
                     "needs": "build",
+                    "if": validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF,
                     "runs-on": "ubuntu-latest",
                     "timeout-minutes": 15,
                     "permissions": {
@@ -7520,6 +7522,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                 },
                 "publish": {
                     "needs": ["build", "attest"],
+                    "if": validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF,
                     "permissions": {"contents": "write"},
                 },
             }
@@ -7553,6 +7556,40 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
             self.write_valid_configuration(root)
 
             self.assertEqual(validate_repository.validate_release_attestation(root), [])
+
+    def test_release_dispatch_ref_must_be_the_default_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            release_paths = (
+                root / ".github" / "workflows" / "release.yml",
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "workflows"
+                / "release.yml",
+            )
+            for path in release_paths:
+                workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+                for job_name in ("build", "attest", "publish"):
+                    workflow["jobs"][job_name].pop("if")
+                    path.write_text(
+                        yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+                    )
+                    problems = validate_repository.validate_release_attestation(root)
+                    relative = path.relative_to(root).as_posix()
+                    self.assertIn(
+                        f"{relative}: {job_name} must restrict dispatch and reusable calls "
+                        "to trusted release refs",
+                        problems,
+                    )
+                    workflow["jobs"][job_name]["if"] = (
+                        validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF
+                    )
+                path.write_text(
+                    yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+                )
 
     def test_release_attestation_reports_malformed_build_step_name(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -13754,7 +13791,11 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/scripts/scorecard_preflight.py",
                 ],
                 "github-actions-workflow-permissions-syntax": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
-                "github-actions-workflow-runs-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-actions-workflow-runs-api": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
+                ],
                 "github-pull-request-target-policy": [
                     "README.md",
                     "skills/repo-scaffold/SKILL.md",
@@ -13796,6 +13837,28 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-actions-workflow-ref-selection": [
                     "README.md",
                     ".github/workflows/action-pin-sync.yml",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                ],
+                "github-actions-pull-request-merge-workflow-source": [
+                    "README.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
+                ],
+                "github-actions-reusable-workflow-caller-context": [
+                    ".github/workflows/release.yml",
+                    ".github/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/references/workflow-contracts.md",
                 ],
                 "github-pull-requests-api": [
@@ -13856,6 +13919,14 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/assets/workflows/auto-merge.yml",
                 ],
                 "github-security-analysis-settings": "skills/repo-scaffold/scripts/security_features_preflight.py",
+                "github-secret-protection-eligibility": [
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
+                "github-push-protection-secret-protection-entitlement": [
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
                 "github-repository-security-features-api": [
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/security_features_preflight.py",
@@ -14116,6 +14187,8 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-release-asset-upload-api",
             "github-rest-unsafe-conditional-requests",
             "github-actions-workflow-ref-selection",
+            "github-actions-pull-request-merge-workflow-source",
+            "github-actions-reusable-workflow-caller-context",
             "github-pull-requests-api",
             "github-git-commits-api",
             "github-repository-commits-api",
@@ -14131,6 +14204,8 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-effective-branch-rules-api",
             "github-merge-queue-auto-merge",
             "github-security-analysis-settings",
+            "github-secret-protection-eligibility",
+            "github-push-protection-secret-protection-entitlement",
             "github-repository-security-features-api",
             "github-users-api",
             "github-artifact-attestations",

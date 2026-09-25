@@ -403,7 +403,9 @@
       "url": "https://docs.github.com/en/rest/actions/workflow-runs",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
-        "skills/repo-scaffold/references/github-setup.md"
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+        "tests/test_branch_protection_preflight.py"
       ],
       "required-markers": [
         "Get a workflow run",
@@ -657,6 +659,9 @@
       "paths": [
         "README.md",
         ".github/workflows/action-pin-sync.yml",
+        ".github/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release.yml",
+        "skills/repo-scaffold/references/github-setup.md",
         "skills/repo-scaffold/references/workflow-contracts.md"
       ],
       "required-markers": [
@@ -664,6 +669,48 @@
         "Each workflow run will use the version of the workflow",
         "GITHUB_REF"
       ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-pull-request-merge-workflow-source",
+      "label": "GitHub pull_request merge workflow source",
+      "url": "https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "README.md",
+        ".github/workflows/release.yml",
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/assets/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release-tag.yml",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+        "tests/test_branch_protection_preflight.py"
+      ],
+      "required-markers": [
+        "Tip commit pushed to the ref",
+        "pull_request",
+        "pull_request_target",
+        "merge_group"
+      ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-reusable-workflow-caller-context",
+      "label": "GitHub reusable workflow caller context",
+      "url": "https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        ".github/workflows/release.yml",
+        ".github/workflows/release-please.yml",
+        "skills/repo-scaffold/assets/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release-please.yml",
+        "skills/repo-scaffold/assets/workflows/release-tag.yml",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/references/workflow-contracts.md"
+      ],
+      "required-markers": ["`github` context", "caller workflow"],
       "reviewed-on": "2026-09-25",
       "review-period-days": 90
     },
@@ -912,6 +959,35 @@
       ],
       "required-markers": ["Dependabot alerts", "Secret scanning"],
       "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-secret-protection-eligibility",
+      "label": "GitHub Secret Protection eligibility",
+      "url": "https://docs.github.com/en/code-security/concepts/secret-security/secret-scanning",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md"
+      ],
+      "required-markers": [
+        "GitHub Secret Protection",
+        "Enterprise Managed Users"
+      ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-push-protection-secret-protection-entitlement",
+      "label": "GitHub repository push-protection eligibility",
+      "url": "https://docs.github.com/en/code-security/concepts/secret-security/push-protection",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md"
+      ],
+      "required-markers": ["push protection", "Secret Protection"],
+      "reviewed-on": "2026-09-25",
       "review-period-days": 90
     },
     {

@@ -146,7 +146,9 @@ conditions that can skip the gate or mask its failure, including `if` and
 `continue-on-error`. It binds Check Run evidence to the exact Actions workflow
 path through `check_suite.id`, commit SHA, and an event GitHub accepts for
 required status checks; a `workflow_dispatch` result is not sufficient. Do not
-configure required checks when it is inconclusive.
+configure required checks when it is inconclusive. If an effective merge queue
+applies, pass a recent successful `merge_group` SHA; the preflight verifies the
+same workflow blob, context, event, and GitHub App source there.
 
 Before installing `dependency-review.yml`, run the fail-closed
 `scripts/dependency_review_preflight.py` against the exact repository. It
@@ -179,6 +181,14 @@ set and do not mutate when it cannot prove an active target repository and
 current administration permission. Do not enable push protection unless secret
 scanning is already enabled or is in the same approved mutation. Offer private
 vulnerability reporting only for a verified public non-fork repository.
+For private or internal repositories, verify [GitHub's Secret Protection
+eligibility](https://docs.github.com/en/code-security/concepts/secret-security/secret-scanning)
+separately before enabling secret scanning or push protection; repository-level
+[push protection requires Secret Protection](https://docs.github.com/en/code-security/concepts/secret-security/push-protection).
+On GitHub.com, user-owned private repositories require the documented
+Enterprise Managed Users eligibility. Then pass
+`--confirm-private-secret-protection-eligibility`. The preflight must not approve
+those features on an unconfirmed plan.
 Automated security fixes need Dependabot alerts first: request both features in
 the preflight or let it verify existing alerts, then enable alerts and confirm
 them before enabling the fixes.

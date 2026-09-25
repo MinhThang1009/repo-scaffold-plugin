@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import re
 import runpy
 import sys
 import unittest
@@ -39,11 +40,14 @@ OWNER = "octo"
 REPOSITORY = "example"
 HEAD_SHA = "a" * 40
 MERGE_SHA = "b" * 40
+MERGE_GROUP_SHA = "7" * 40
 BLOB_SHA = "c" * 40
 BASE_SHA = "d" * 40
 BASE_BLOB_SHA = "e" * 40
+MERGE_EXTRA_BLOB_SHA = "f" * 40
 CHECK_SUITE_ID = 98765
 HEAD_CHECK_SUITE_ID = 98764
+MERGE_GROUP_CHECK_SUITE_ID = 98763
 
 
 class FakeClient:
@@ -93,6 +97,7 @@ def preflight_args(*contexts: str, **overrides: object) -> argparse.Namespace:
         "repository": f"{OWNER}/{REPOSITORY}",
         "default_branch": "main",
         "pull_request": 7,
+        "merge_group_sha": None,
         "required_check": list(contexts),
     }
     values.update(overrides)
@@ -419,7 +424,7 @@ jobs:
         workflow = self.WORKFLOW if workflow is None else workflow
         base_workflow = workflow if base_workflow is None else base_workflow
         base_blob_sha = BLOB_SHA if base_workflow == workflow else BASE_BLOB_SHA
-        tree_path = f"repos/{OWNER}/{REPOSITORY}/git/trees/{HEAD_SHA}?recursive=1"
+        tree_path = f"repos/{OWNER}/{REPOSITORY}/git/trees/{MERGE_SHA}?recursive=1"
         FakeClient.responses = {
             f"repos/{OWNER}/{REPOSITORY}": {
                 "full_name": f"{OWNER}/{REPOSITORY}",
@@ -495,6 +500,61 @@ jobs:
                 ],
             }
 
+    def configure_merge_group(
+        self,
+        workflow: str | None = None,
+        *,
+        merge_group_workflow: str | None = None,
+    ) -> None:
+        workflow = self.WORKFLOW if workflow is None else workflow
+        merge_group_workflow = (
+            workflow if merge_group_workflow is None else merge_group_workflow
+        )
+        self.configure(workflow)
+        merge_group_blob_sha = (
+            BLOB_SHA if merge_group_workflow == workflow else MERGE_EXTRA_BLOB_SHA
+        )
+        tree_path = (
+            f"repos/{OWNER}/{REPOSITORY}/git/trees/{MERGE_GROUP_SHA}?recursive=1"
+        )
+        FakeClient.responses[tree_path] = {
+            "truncated": False,
+            "tree": [
+                {
+                    "type": "blob",
+                    "mode": "100644",
+                    "path": ".github/workflows/ci.yml",
+                    "sha": merge_group_blob_sha,
+                }
+            ],
+        }
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/git/blobs/{merge_group_blob_sha}"
+        ] = merge_group_workflow
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_GROUP_SHA}/check-runs?per_page=100"
+        ] = check_runs(
+            "ci-success",
+            head_sha=MERGE_GROUP_SHA,
+            suite_id=MERGE_GROUP_CHECK_SUITE_ID,
+        )
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_GROUP_SHA}/status?per_page=100"
+        ] = {"total_count": 0, "statuses": []}
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/actions/runs?check_suite_id={MERGE_GROUP_CHECK_SUITE_ID}&per_page=100"
+        ] = {
+            "total_count": 1,
+            "workflow_runs": [
+                {
+                    "check_suite_id": MERGE_GROUP_CHECK_SUITE_ID,
+                    "head_sha": MERGE_GROUP_SHA,
+                    "event": "merge_group",
+                    "path": ".github/workflows/ci.yml",
+                }
+            ],
+        }
+
     def test_run_produces_app_bound_protection_input(self) -> None:
         self.configure()
 
@@ -515,6 +575,30 @@ jobs:
                 }
             ],
         )
+
+    def test_run_discovers_workflow_producers_from_test_merge_tree(self) -> None:
+        self.configure()
+        tree_path = f"repos/{OWNER}/{REPOSITORY}/git/trees/{MERGE_SHA}?recursive=1"
+        tree = cast(dict[str, Any], FakeClient.responses[tree_path])
+        tree["tree"].append(
+            {
+                "type": "blob",
+                "mode": "100644",
+                "path": ".github/workflows/base-ci.yml",
+                "sha": MERGE_EXTRA_BLOB_SHA,
+            }
+        )
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/git/blobs/{MERGE_EXTRA_BLOB_SHA}"
+        ] = self.WORKFLOW
+
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError, "2 workflow producers"
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
 
     def test_run_accepts_trusted_pull_request_target_for_default_branch(self) -> None:
         workflow = self.WORKFLOW.replace(
@@ -785,6 +869,8 @@ jobs:
         self.assertIn("$requiredCheckPreflight.default_branch", protection)
         self.assertIn("changed after preflight", protection)
         self.assertIn("Assert-FreshRequiredCheckPreflight", protection)
+        self.assertIn("--merge-group-sha", protection)
+        self.assertIn("$fresh.merge_group_sha", protection)
         self.assertIn("$fresh.head_sha", protection)
         self.assertIn("$fresh.test_merge_sha", protection)
         self.assertIn("$freshBindings", protection)
@@ -822,6 +908,93 @@ jobs:
             mutation.index("-X PATCH"), mutation.index("-X PUT")
         )
         self.assertLess(fresh_check, first_protection_write)
+
+    def test_reference_revalidates_each_non_atomic_protection_write(self) -> None:
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        protection = setup.split("## Branch protection", 1)[1].split("\n## ", 1)[0]
+        mutation = protection.split("PowerShell example:", 1)[1]
+        existing_branch = mutation.split("if ($protectionExitCode -eq 0)", 1)[1].split(
+            "} elseif (($protectionOutput | Out-String) -match '(?is)Branch not protected.*HTTP 404')",
+            1,
+        )[0]
+        writes = (
+            "$statusUpdateOutput = $statusPayload",
+            "$adminUpdateOutput = gh api",
+            "$reviewUpdateOutput =",
+        )
+        write_positions = [existing_branch.index(marker) for marker in writes]
+        fresh_positions = [
+            match.start()
+            for match in re.finditer(
+                r"\$(?:requiredCheckPreflight|null) = Assert-FreshRequiredCheckPreflight",
+                existing_branch,
+            )
+        ]
+        for index, write_position in enumerate(write_positions):
+            previous_write = write_positions[index - 1] if index else -1
+            self.assertTrue(
+                any(
+                    previous_write < position < write_position
+                    for position in fresh_positions
+                ),
+                f"branch protection write {writes[index]!r} lacks its own fresh preflight",
+            )
+
+        for read_marker, write_position in zip(
+            (
+                "$statusProtectionBeforeWriteOutput",
+                "$adminStateOutput",
+                "$reviewProtectionBeforeWriteOutput",
+            ),
+            write_positions,
+            strict=True,
+        ):
+            self.assertLess(existing_branch.index(read_marker), write_position)
+
+        self.assertIn("$statusProtectionBeforeWriteOutput", existing_branch)
+        self.assertIn("Get-RequiredStatusCheckSnapshot", existing_branch)
+        self.assertIn("$initialStatusCheckState", existing_branch)
+        self.assertIn("$reviewProtectionBeforeWrite", existing_branch)
+        self.assertIn("A concurrent review policy appeared", existing_branch)
+        self.assertIn("$fresh.merge_queue_required -isnot [bool]", protection)
+        self.assertIn("same workflow blob, context, and App ID", protection)
+        self.assertIn(
+            "$fresh.merge_queue_required -ne $requiredCheckPreflight.merge_queue_required",
+            protection,
+        )
+        self.assertIn("function ConvertTo-BranchProtectionAppId", protection)
+        self.assertIn("$Value -gt 0", protection)
+        self.assertIn("$null = Get-RequiredStatusCheckSnapshot $Protection", protection)
+        self.assertIn("function Get-BranchProtectionReviewState", protection)
+        self.assertIn("$expectedReviewApprovalCount = 0", protection)
+        self.assertIn("$ExpectedReviewApprovalCount", protection)
+        self.assertIn(
+            "$Protection.required_status_checks.strict -isnot [bool]", protection
+        )
+        self.assertIn("$Protection.enforce_admins.enabled -isnot [bool]", protection)
+        self.assertIn('if ($null -eq $statusProperty) { return "null" }', protection)
+        self.assertIn("Required-status-check bindings are incomplete", protection)
+        self.assertIn("if ($null -ne $strictProperty)", protection)
+        self.assertIn("$null -eq $check.PSObject.Properties['app_id']", protection)
+
+        create_branch = mutation.split(
+            "} elseif (($protectionOutput | Out-String) -match '(?is)Branch not protected.*HTTP 404')",
+            1,
+        )[1].split(
+            "} elseif (($protectionOutput | Out-String) -match '(?is)HTTP 403')",
+            1,
+        )[0]
+        self.assertIn("Assert-FreshRequiredCheckPreflight", create_branch)
+        self.assertIn("$protectionBeforeCreateOutput", create_branch)
+        self.assertIn("protection appeared after the initial read", create_branch)
+        self.assertLess(
+            create_branch.index("$protectionBeforeCreateOutput"),
+            create_branch.index("$createOutput = $payload"),
+        )
+        self.assertIn("does not document conditional writes", protection)
+        self.assertIn("request-sized race", protection)
 
     def test_run_rejects_multiple_workflow_producers(self) -> None:
         self.configure(
@@ -1049,18 +1222,163 @@ jobs:
         self.assertEqual(result["decision"], "may-configure-classic-protection")
 
     def test_run_requires_merge_group_coverage_when_queue_applies(self) -> None:
-        self.configure(
-            self.WORKFLOW.replace("  merge_group:\n    types: [checks_requested]\n", "")
+        workflow = self.WORKFLOW.replace(
+            "  merge_group:\n    types: [checks_requested]\n", ""
         )
+        self.configure_merge_group(workflow)
         FakeClient.responses[
             f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
         ] = [{"type": "merge_queue"}]
+        args = preflight_args("ci-success", merge_group_sha=MERGE_GROUP_SHA)
 
         with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
             with self.assertRaisesRegex(
                 branch_protection_preflight.InspectionError, "merge_group"
             ):
-                branch_protection_preflight.run(preflight_args("ci-success"))
+                branch_protection_preflight.run(args)
+
+    def test_queue_preflight_requires_and_verifies_merge_group_evidence(self) -> None:
+        self.configure()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+        ] = [{"type": "merge_queue"}]
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "full merge-group SHA is required",
+            ),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
+
+        self.configure_merge_group()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+        ] = [{"type": "merge_queue"}]
+        args = preflight_args("ci-success", merge_group_sha=MERGE_GROUP_SHA)
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            result = branch_protection_preflight.run(args)
+        self.assertTrue(result["merge_queue_required"])
+        self.assertEqual(result["merge_group_sha"], MERGE_GROUP_SHA)
+
+    def test_queue_preflight_rejects_wrong_event_or_different_app(self) -> None:
+        self.configure_merge_group()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+        ] = [{"type": "merge_queue"}]
+        run_endpoint = (
+            f"repos/{OWNER}/{REPOSITORY}/actions/runs?"
+            f"check_suite_id={MERGE_GROUP_CHECK_SUITE_ID}&per_page=100"
+        )
+        run_payload = cast(dict[str, Any], FakeClient.responses[run_endpoint])
+        run_payload["workflow_runs"][0]["event"] = "push"
+        args = preflight_args("ci-success", merge_group_sha=MERGE_GROUP_SHA)
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "event eligible for required status checks",
+            ),
+        ):
+            branch_protection_preflight.run(args)
+
+        self.configure_merge_group()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+        ] = [{"type": "merge_queue"}]
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_GROUP_SHA}/check-runs?per_page=100"
+        ] = check_runs(
+            "ci-success",
+            app_id=1,
+            head_sha=MERGE_GROUP_SHA,
+            suite_id=MERGE_GROUP_CHECK_SUITE_ID,
+        )
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "different GitHub Apps",
+            ),
+        ):
+            branch_protection_preflight.run(args)
+
+    def test_queue_preflight_rejects_missing_duplicate_or_changed_producers(self) -> None:
+        no_required_job = self.WORKFLOW.replace("name: ci-success", "name: other")
+        duplicate_job = self.WORKFLOW + """
+  duplicate:
+    name: ci-success
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo duplicate
+"""
+        for workflow, expected in (
+            (no_required_job, "has 0 merge_group workflow producers"),
+            (duplicate_job, "has 2 merge_group workflow producers"),
+        ):
+            self.configure_merge_group(merge_group_workflow=workflow)
+            FakeClient.responses[
+                f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+            ] = [{"type": "merge_queue"}]
+            with (
+                self.subTest(expected=expected),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError, expected
+                ),
+            ):
+                branch_protection_preflight.run(
+                    preflight_args("ci-success", merge_group_sha=MERGE_GROUP_SHA)
+                )
+
+        changed_workflow = self.WORKFLOW.replace("echo checked", "echo changed")
+        self.configure_merge_group(merge_group_workflow=changed_workflow)
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+        ] = [{"type": "merge_queue"}]
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "no matching executable merge_group producer",
+            ),
+        ):
+            branch_protection_preflight.run(
+                preflight_args("ci-success", merge_group_sha=MERGE_GROUP_SHA)
+            )
+
+    def test_queue_preflight_rejects_missing_merge_group_check_evidence(self) -> None:
+        self.configure_merge_group()
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/rules/branches/main?per_page=100"
+        ] = [{"type": "merge_queue"}]
+        FakeClient.responses[
+            f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_GROUP_SHA}/check-runs?per_page=100"
+        ] = {"total_count": 0, "check_runs": []}
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "no successful Check Run on the verified merge_group SHA",
+            ),
+        ):
+            branch_protection_preflight.run(
+                preflight_args("ci-success", merge_group_sha=MERGE_GROUP_SHA)
+            )
+
+    def test_merge_group_sha_is_inapplicable_without_an_effective_queue(self) -> None:
+        self.configure()
+        args = preflight_args("ci-success", merge_group_sha=MERGE_GROUP_SHA)
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError,
+                "no effective merge queue applies",
+            ),
+        ):
+            branch_protection_preflight.run(args)
 
     def test_check_run_freshness_has_both_time_boundaries(self) -> None:
         now = datetime(2026, 9, 8, tzinfo=timezone.utc)
@@ -1314,9 +1632,35 @@ jobs:
 
         self.configure()
         pull_endpoint = f"repos/{OWNER}/{REPOSITORY}/pulls/7"
+        for head_sha, merge_sha in (
+            ("main", MERGE_SHA),
+            ("g" * 40, MERGE_SHA),
+            (HEAD_SHA, "refs/pull/7/merge"),
+            (HEAD_SHA, "1" * 39),
+        ):
+            self.configure()
+            pull_request = cast(dict[str, Any], FakeClient.responses[pull_endpoint])
+            pull_request["head"]["sha"] = head_sha
+            pull_request["merge_commit_sha"] = merge_sha
+            with (
+                self.subTest(head_sha=head_sha, merge_sha=merge_sha),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError,
+                    "no valid full head or test-merge SHA",
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+        self.configure()
         for payload, message in [
             ([], "response is invalid"),
-            ({"state": "open", "head": {}, "merge_commit_sha": MERGE_SHA}, "no head"),
+            (
+                {"state": "open", "head": {}, "merge_commit_sha": MERGE_SHA},
+                "no valid full head or test-merge SHA",
+            ),
             (
                 {
                     "state": "open",
@@ -1420,6 +1764,27 @@ jobs:
         ):
             self.assertEqual(branch_protection_preflight.main(), 2)
         self.assertIn("inconclusive", print_mock.call_args.args[0])
+
+    def test_cli_accepts_merge_group_sha(self) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                str(SCRIPT_PATH),
+                "--repository",
+                f"{OWNER}/{REPOSITORY}",
+                "--default-branch",
+                "main",
+                "--pull-request",
+                "7",
+                "--required-check",
+                "ci-success",
+                "--merge-group-sha",
+                MERGE_GROUP_SHA,
+            ],
+        ):
+            args = branch_protection_preflight.parse_args()
+        self.assertEqual(args.merge_group_sha, MERGE_GROUP_SHA)
 
     def test_module_entrypoint_exits_for_invalid_cli_arguments(self) -> None:
         with self.assertRaises(SystemExit):

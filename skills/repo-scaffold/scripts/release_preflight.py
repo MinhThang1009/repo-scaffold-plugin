@@ -7,7 +7,12 @@ import argparse
 import json
 from typing import Any
 
-from codeql_preflight import GitHubClient, InspectionError, split_repository
+from codeql_preflight import (
+    GitHubClient,
+    InspectionError,
+    github_api_status,
+    split_repository,
+)
 
 
 SUPPORTED_VISIBILITIES = frozenset({"public", "private", "internal"})
@@ -54,9 +59,15 @@ def verify_release_please_token(client: GitHubClient, owner: str, repo: str) -> 
             f"repos/{owner}/{repo}/actions/secrets/{RELEASE_PLEASE_TOKEN}"
         )
     except InspectionError as exc:
+        status = github_api_status(exc)
+        detail = (
+            f" GitHub returned HTTP {status}; the secret state remains unverified."
+            if status is not None
+            else " The secret state remains unverified."
+        )
         raise InspectionError(
             "Release Please requires a readable repository Actions secret named "
-            f"{RELEASE_PLEASE_TOKEN!r}."
+            f"{RELEASE_PLEASE_TOKEN!r}." + detail
         ) from exc
     if not isinstance(secret, dict) or secret.get("name") != RELEASE_PLEASE_TOKEN:
         raise InspectionError(

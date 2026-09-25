@@ -157,6 +157,13 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 ({"schema-version": True, "claims": []}, "schema-version"),
                 ({**valid, "unexpected": True}, "unsupported"),
                 ({"schema-version": 1, "claims": []}, "non-empty"),
+                (
+                    {
+                        **valid,
+                        "claims": [valid["claims"][0]] * (official_docs.MAX_CLAIMS + 1),
+                    },
+                    "bounded non-empty list",
+                ),  # type: ignore[index]
                 ({"schema-version": 1, "claims": [None]}, "object"),
                 (
                     {

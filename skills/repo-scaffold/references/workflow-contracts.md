@@ -73,6 +73,18 @@ maintenance branch. Its static PR body must live at
 .github/action-pin-sync-pr-body.md`, and be supplied to the action with
 `body-path` so the checked file is the file sent to GitHub.
 
+The reusable release engine admits only its documented caller paths. Direct
+`workflow_dispatch` must select `release.yml` from the default branch;
+`workflow_call` from a branch push must come from `release-please.yml` on the
+default branch; a tag call must come from `release-tag.yml` for the pushed `v*`
+tag and pass that tag and commit. The build, attestation, and publish jobs all
+enforce this gate before any write or OIDC permission is granted. GitHub keeps
+the caller's `github` context in reusable workflows, so the gate binds the
+event, ref, and workflow file to the approved caller paths
+([reusable workflow documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations)).
+The optional tag-triggered release asset still requires trusted tag creators
+because its workflow definition is taken from the pushed tag commit.
+
 Keep `scheduled compatibility canary`, `do not duplicate supported versions`,
 and `scheduled/manual drift canary` as enforceable policy outcomes.
 
@@ -96,6 +108,8 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   applicable Actions event policy are verified. Merge new or changed target
   workflows before running this preflight. Job or step `if` and
   `continue-on-error` controls that can skip or mask the gate must fail closed.
+  When an effective merge queue applies, require a recent successful `merge_group`
+  Check Run from the same workflow blob and GitHub App as the selected PR check.
 - Links, community-health, and freshness: keep network/upstream checks advisory;
   reminder workflows run only on trusted scheduled/manual events with a
   five-field POSIX cron schedule with an optional valid IANA timezone, and a

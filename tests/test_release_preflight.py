@@ -141,6 +141,20 @@ class ReleasePreflightTests(unittest.TestCase):
             ):
                 release_preflight.run(arguments(require_release_please_token=True))
 
+        for status in (403, 404, 503):
+            FakeClient.token_response = release_preflight.InspectionError(
+                f"GitHub API request failed: HTTP {status}: synthetic response"
+            )
+            with (
+                self.subTest(status=status),
+                mock.patch.object(release_preflight, "GitHubClient", FakeClient),
+                self.assertRaisesRegex(
+                    release_preflight.InspectionError,
+                    f"HTTP {status}.*state remains unverified",
+                ),
+            ):
+                release_preflight.run(arguments(require_release_please_token=True))
+
     def test_rejects_untrusted_or_unwritable_repository_state(self) -> None:
         cases: tuple[tuple[argparse.Namespace, object, str], ...] = (
             (arguments(hostname="github.example"), repository(), "GitHub.com only"),

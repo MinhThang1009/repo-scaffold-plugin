@@ -104,6 +104,12 @@ class InspectionError(RuntimeError):
     """Raised when the preflight cannot prove that mutation is safe."""
 
 
+def github_api_status(error: InspectionError) -> int | None:
+    """Retain a bounded HTTP status from a failed read without echoing its body."""
+    match = re.search(r"\bHTTP\s+([1-5][0-9]{2})\b", str(error), re.IGNORECASE)
+    return int(match.group(1)) if match is not None else None
+
+
 class DuplicateJsonMember(ValueError):
     """Raised when a GitHub API response contains ambiguous duplicate members."""
 

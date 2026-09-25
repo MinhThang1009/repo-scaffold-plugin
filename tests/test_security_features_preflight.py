@@ -66,6 +66,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
         "secret_scanning": False,
         "push_protection": False,
         "private_vulnerability_reporting": False,
+        "confirm_private_secret_protection_eligibility": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -113,6 +114,7 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result["security_and_analysis"]["secret_scanning"], "disabled")
+        self.assertEqual(result["secret_protection_eligibility"], "not-required")
         self.assertTrue(result["administration_permission"])
         self.assertEqual(result["github_api_requests"], 1)
 
@@ -230,6 +232,71 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             result = security_features_preflight.run(arguments(push_protection=True))
         self.assertEqual(result["requested_features"], ["push_protection"])
 
+    def test_private_secret_features_require_explicit_eligibility_confirmation(
+        self,
+    ) -> None:
+        FakeClient.response = repository(visibility="public")
+        with mock.patch.object(security_features_preflight, "GitHubClient", FakeClient):
+            public = security_features_preflight.run(arguments(secret_scanning=True))
+        self.assertEqual(public["decision"], "may-configure-security-features")
+        self.assertEqual(public["secret_protection_eligibility"], "not-required")
+
+        for visibility in ("private", "internal"):
+            FakeClient.response = repository(visibility=visibility)
+            with (
+                self.subTest(visibility=visibility, eligibility="unconfirmed"),
+                mock.patch.object(security_features_preflight, "GitHubClient", FakeClient),
+            ):
+                unconfirmed = security_features_preflight.run(
+                    arguments(secret_scanning=True)
+                )
+            self.assertTrue(unconfirmed["inspection_complete"])
+            self.assertEqual(
+                unconfirmed["decision"],
+                "confirm-private-secret-protection-eligibility",
+            )
+            self.assertEqual(
+                unconfirmed["secret_protection_eligibility"], "confirmation-required"
+            )
+
+            for feature in ("secret_scanning", "push_protection"):
+                FakeClient.response = repository(visibility=visibility)
+                args = arguments(
+                    secret_scanning=True,
+                    push_protection=feature == "push_protection",
+                    confirm_private_secret_protection_eligibility=True,
+                )
+                with (
+                    self.subTest(visibility=visibility, feature=feature),
+                    mock.patch.object(
+                        security_features_preflight, "GitHubClient", FakeClient
+                    ),
+                ):
+                    confirmed = security_features_preflight.run(args)
+                self.assertEqual(
+                    confirmed["decision"], "may-configure-security-features"
+                )
+                self.assertEqual(
+                    confirmed["secret_protection_eligibility"], "user-confirmed"
+                )
+
+        with self.assertRaisesRegex(
+            security_features_preflight.InspectionError, "must be boolean"
+        ):
+            security_features_preflight.run(
+                arguments(
+                    secret_scanning=True,
+                    confirm_private_secret_protection_eligibility="yes",
+                )
+            )
+
+        with self.assertRaisesRegex(
+            security_features_preflight.InspectionError, "without requesting"
+        ):
+            security_features_preflight.run(
+                arguments(dependabot_alerts=True, confirm_private_secret_protection_eligibility=True)
+            )
+
     def test_automated_security_fixes_require_dependabot_alert_evidence(self) -> None:
         FakeClient.response = repository()
         FakeClient.raw_error = None
@@ -245,6 +312,24 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 security_features_preflight.InspectionError,
                 "Automated security fixes require Dependabot alerts",
+            ):
+                security_features_preflight.run(
+                    arguments(automated_security_fixes=True)
+                )
+
+        for status in (403, 404, 503):
+            FakeClient.raw_error = security_features_preflight.InspectionError(
+                f"GitHub API request failed: HTTP {status}: synthetic response"
+            )
+            with (
+                self.subTest(status=status),
+                mock.patch.object(
+                    security_features_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    security_features_preflight.InspectionError,
+                    f"HTTP {status}.*state remains unverified",
+                ),
             ):
                 security_features_preflight.run(
                     arguments(automated_security_fixes=True)
@@ -293,10 +378,12 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
                 "--repository",
                 "octo/example",
                 "--enable-secret-scanning",
+                "--confirm-private-secret-protection-eligibility",
             ],
         ):
             args = security_features_preflight.parse_args()
         self.assertTrue(args.secret_scanning)
+        self.assertTrue(args.confirm_private_secret_protection_eligibility)
         with self.assertRaises(SystemExit):
             runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
 
@@ -312,6 +399,8 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
         self.assertIn("exact approved feature", skill)
         self.assertIn("security_features_preflight.py", security)
         self.assertIn("--enable-push-protection", security)
+        self.assertIn("--confirm-private-secret-protection-eligibility", security)
+        self.assertIn("Secret Protection eligibility", security)
         self.assertIn("non-fork repository", security)
         self.assertIn("Dependabot alerts before automated security fixes", security)
         self.assertIn("administration permission", security)

@@ -116,9 +116,24 @@ FRESHNESS_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-freshness-${{ github.repository }}"
 )
 VERSION_SYNC_CONCURRENCY_GROUP = "repo-scaffold-version-sync-${{ github.repository }}"
-VERSION_SYNC_DEFAULT_REF_IF = (
+WORKFLOW_DISPATCH_DEFAULT_BRANCH_IF = (
     "${{ github.event_name != 'workflow_dispatch' || github.ref == "
     "format('refs/heads/{0}', github.event.repository.default_branch) }}"
+)
+VERSION_SYNC_DEFAULT_REF_IF = WORKFLOW_DISPATCH_DEFAULT_BRANCH_IF
+RELEASE_ENGINE_TRUSTED_CALLER_IF = (
+    "${{ (github.event_name == 'workflow_dispatch' && github.ref == "
+    "format('refs/heads/{0}', github.event.repository.default_branch) && "
+    "github.workflow_ref == format('{0}/.github/workflows/release.yml@refs/heads/{1}', "
+    "github.repository, github.event.repository.default_branch)) || "
+    "(github.event_name == 'push' && github.ref == "
+    "format('refs/heads/{0}', github.event.repository.default_branch) && "
+    "github.workflow_ref == format('{0}/.github/workflows/release-please.yml@refs/heads/{1}', "
+    "github.repository, github.event.repository.default_branch)) || "
+    "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
+    "inputs.tag == github.ref_name && inputs.commit_sha == github.sha && "
+    "github.workflow_ref == format('{0}/.github/workflows/release-tag.yml@{1}', "
+    "github.repository, github.ref)) }}"
 )
 VERSION_SYNC_PR_BODY_PATH = Path(".github/action-pin-sync-pr-body.md")
 VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND = (
@@ -6334,6 +6349,16 @@ def validate_release_attestation(repository_root: Path) -> list[str]:
         build = jobs.get("build")
         attest = jobs.get("attest")
         publish = jobs.get("publish")
+        for job_name in ("build", "attest", "publish"):
+            job = jobs.get(job_name)
+            if (
+                isinstance(job, dict)
+                and job.get("if") != RELEASE_ENGINE_TRUSTED_CALLER_IF
+            ):
+                problems.append(
+                    f"{relative}: {job_name} must restrict dispatch and reusable calls "
+                    "to trusted release refs"
+                )
         if not isinstance(build, dict):
             problems.append(f"{relative}: build job is missing")
         else:
@@ -8492,6 +8517,8 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 },
                 "github-actions-workflow-runs-api": {
                     "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
                 },
                 "github-pull-request-target-policy": {
                     "README.md",
@@ -8572,6 +8599,28 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 "github-actions-workflow-ref-selection": {
                     "README.md",
                     ".github/workflows/action-pin-sync.yml",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                },
+                "github-actions-pull-request-merge-workflow-source": {
+                    "README.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
+                },
+                "github-actions-reusable-workflow-caller-context": {
+                    ".github/workflows/release.yml",
+                    ".github/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/references/workflow-contracts.md",
                 },
                 "github-pull-requests-api": {
@@ -8656,6 +8705,14 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/security_features_preflight.py",
+                },
+                "github-secret-protection-eligibility": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-push-protection-secret-protection-entitlement": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
                 },
                 "github-repository-security-features-api": {
                     "skills/repo-scaffold/references/github-setup.md",
