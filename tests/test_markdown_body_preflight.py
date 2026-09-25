@@ -41,6 +41,29 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("hard-wrapped prose at line(s): 2", result.stderr)
 
+    def test_utf8_bom_does_not_hide_the_first_structural_markdown_block(self) -> None:
+        body = "\ufeff# Heading\nFirst paragraph line\ncontinued prose\n"
+
+        for script in (ROOT_PREFLIGHT, SKILL_PREFLIGHT):
+            with self.subTest(script=script):
+                result = self.run_preflight(script, body)
+
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("hard-wrapped prose at line(s): 3", result.stderr)
+                self.assertNotIn("hard-wrapped prose at line(s): 2, 3", result.stderr)
+
+    def test_body_file_reader_removes_only_a_leading_utf8_bom(self) -> None:
+        body = "\ufefffirst line\n\ufeffembedded marker\n"
+
+        with tempfile.TemporaryDirectory() as directory:
+            body_file = Path(directory) / "body.md"
+            body_file.write_bytes(body.encode("utf-8"))
+
+            self.assertEqual(
+                _bundled_module().read_body_file(body_file),
+                "first line\n\ufeffembedded marker\n",
+            )
+
     def test_bundled_entrypoint_accepts_structural_markdown(self) -> None:
         result = self.run_preflight(
             SKILL_PREFLIGHT,
@@ -294,27 +317,86 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (),
         )
         self.assertEqual(
+            _bundled_lines("| Header | Value |\n| - | - |\n| row | value |\n"),
+            (),
+        )
+        self.assertEqual(
             _bundled_lines(
                 "> Header one | Header two\n> --- | ---\n> Value one | Value two\n"
             ),
             (),
         )
-        escaped_and_code_pipes = _bundled_module().split_gfm_table_cells(
-            r"| escaped \| pipe | `literal|pipe` |"
+        split_table_cells = _bundled_module().split_gfm_table_cells
+        escaped_and_code_pipes = split_table_cells(
+            r"| escaped \| pipe | `literal\|pipe` |"
         )
         self.assertEqual(len(escaped_and_code_pipes), 2)
+        unescaped_code_pipe = split_table_cells(r"| `literal|pipe` |")
+        self.assertEqual(len(unescaped_code_pipe), 2)
         html_attribute_pipe = _bundled_module().split_gfm_table_cells(
             '| <span title="left|right">Header</span> | Value |'
         )
-        self.assertEqual(len(html_attribute_pipe), 2)
+        self.assertEqual(len(html_attribute_pipe), 3)
+        escaped_html_attribute_pipe = split_table_cells(
+            r'| <span title="left\|right">Header</span> | Value |'
+        )
+        self.assertEqual(len(escaped_html_attribute_pipe), 2)
 
-    def test_gfm_table_requires_a_block_boundary_before_header(self) -> None:
+        invalid_table_with_code_pipe = (
+            "| `Header|inside` | Value |\n"
+            "| --- | --- |\n"
+            "First prose line\ncontinued prose line\n"
+        )
+        self.assertEqual(_bundled_lines(invalid_table_with_code_pipe), (2, 3, 4))
+
+        invalid_table_with_html_attribute_pipe = (
+            '| <span title="left|right">Header | Value |\n'
+            "| --- | --- |\n"
+            "First prose line\ncontinued prose line\n"
+        )
+        self.assertEqual(
+            _bundled_lines(invalid_table_with_html_attribute_pipe), (2, 3, 4)
+        )
+
+    def test_gfm_table_can_start_inside_an_open_paragraph(self) -> None:
         self.assertEqual(
             _bundled_lines(
                 "Paragraph first line\n| Header | Value |\n"
                 "| --- | --- |\n| row | value |\n"
             ),
-            (2, 3, 4),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line\nHeader | Value\n--- | ---\nrow | value\n"
+            ),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line\ncontinued paragraph line\n"
+                "| Header | Value |\n| --- | --- |\n| row | value |\n"
+            ),
+            (2,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> Paragraph first line\n> | Header | Value |\n"
+                "> | --- | --- |\n> | row | value |\n"
+            ),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("- Header | Value |\n  | --- | --- |\n  | row | value |\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("```text\n\n| Header | Value |\n| --- | --- |\n````\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("# Header | Value |\n| --- | --- |\n| row | value |\n"),
+            (3,),
         )
         self.assertEqual(
             _bundled_lines(
@@ -328,8 +410,115 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
                 "> > Inner paragraph.\n"
                 "> Parent paragraph first line\n> continued parent paragraph\n"
             ),
+            (2, 3),
+        )
+
+    def test_lazy_blockquote_continuations_keep_paragraph_context(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                "> > First paragraph line\n"
+                "> continued paragraph line\n"
+                "> final paragraph line\n"
+            ),
+            (2, 3),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> > First paragraph line  \n"
+                "> continued paragraph line\n"
+                "> final paragraph line\n"
+            ),
             (3,),
         )
+        self.assertEqual(
+            _bundled_lines("> `inline code starts\ncode ends`\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> > First paragraph line\n"
+                "continued paragraph line\n"
+                "final paragraph line\n"
+            ),
+            (2, 3),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "> > First paragraph line\n"
+                "> # New heading\n"
+                "New paragraph first line\n"
+                "continued paragraph line\n"
+            ),
+            (4,),
+        )
+        self.assertEqual(
+            _bundled_lines("> > `inline code starts\n> code ends`\n"),
+            (),
+        )
+
+    def test_lazy_blockquote_boundary_classification(self) -> None:
+        module = _bundled_module()
+        self.assertTrue(
+            module.is_lazy_blockquote_continuation(
+                "continuation",
+                quote_depth=1,
+                previous_quote_depth=2,
+                previous_paragraph_open=True,
+            )
+        )
+        self.assertFalse(
+            module.is_lazy_blockquote_continuation(
+                "# Heading",
+                quote_depth=1,
+                previous_quote_depth=2,
+                previous_paragraph_open=True,
+            )
+        )
+        self.assertFalse(
+            module.is_lazy_blockquote_continuation(
+                "continuation",
+                quote_depth=1,
+                previous_quote_depth=2,
+                previous_paragraph_open=False,
+            )
+        )
+        self.assertFalse(
+            module.is_lazy_blockquote_continuation(
+                "continuation",
+                quote_depth=2,
+                previous_quote_depth=2,
+                previous_paragraph_open=True,
+            )
+        )
+        self.assertFalse(
+            module.is_lazy_blockquote_continuation(
+                "",
+                quote_depth=1,
+                previous_quote_depth=2,
+                previous_paragraph_open=True,
+            )
+        )
+        for line in (
+            "",
+            "plain text",
+            "2. item",
+            "1.",
+            "    - code",
+            "<custom-tag>",
+        ):
+            with self.subTest(line=line):
+                self.assertFalse(module.ends_open_paragraph(line))
+        for line in (
+            "# heading",
+            "---",
+            "===",
+            "```text",
+            "- item",
+            "1. item",
+            "<div>",
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(module.ends_open_paragraph(line))
 
     def test_setext_headings_and_indented_list_like_code_remain_structural(
         self,
@@ -353,6 +542,210 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             (4,),
         )
 
+    def test_list_continuation_indent_is_relative_to_item_content(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                "- item\n\n    First continuation line\n    second continuation line\n"
+            ),
+            (4,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "- outer\n  - inner\n\n"
+                "      First nested continuation\n"
+                "      second nested continuation\n"
+            ),
+            (5,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "- item\n\n      literal code line\n      literal code continuation\n"
+            ),
+            (),
+        )
+        tick = chr(96)
+        code_span_body = (
+            "- item\n\n"
+            f"    First line with {tick}code\n"
+            f"    closing {tick} and more text\n"
+            "    final continuation line\n"
+        )
+        self.assertEqual(
+            _bundled_lines(code_span_body),
+            (5,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "-    padded marker\n\n"
+                "     first continuation\n"
+                "     second continuation\n"
+            ),
+            (4,),
+        )
+
+    def test_fenced_code_uses_nested_list_content_indentation(self) -> None:
+        body = (
+            "- outer\n"
+            "  - inner\n"
+            "    ```text\n"
+            "    - [ ] literal task example\n"
+            "    - [x] another literal task example\n"
+            "    ```\n"
+            "    First prose line\n"
+            "    continued prose line\n"
+        )
+        non_prose_lines: set[int] = set()
+
+        self.assertEqual(
+            _bundled_module().hard_wrapped_prose_lines(
+                body,
+                non_prose_line_numbers=non_prose_lines,
+            ),
+            (8,),
+        )
+        self.assertEqual(non_prose_lines, {3, 4, 5, 6})
+
+    def test_list_context_is_scoped_to_its_blockquote_depth(self) -> None:
+        quote_exit_to_code = (
+            "> - outer\n"
+            ">   - inner\n"
+            ">     ```text\n"
+            "      - [ ] literal task example\n"
+            "      - [x] another literal task example\n"
+            "      ```\n"
+            "      First code line\n"
+            "      second code line\n"
+        )
+        non_prose_lines: set[int] = set()
+        self.assertEqual(
+            _bundled_module().hard_wrapped_prose_lines(
+                quote_exit_to_code,
+                non_prose_line_numbers=non_prose_lines,
+            ),
+            (),
+        )
+        self.assertEqual(non_prose_lines, {3, 4, 5, 6, 7, 8})
+
+        root_list_after_quote_exit = (
+            "- outer\n"
+            "  > quoted paragraph\n"
+            "  - nested item\n"
+            "    First prose line\n"
+            "    continued prose line\n"
+        )
+        self.assertEqual(_bundled_lines(root_list_after_quote_exit), (4, 5))
+
+        blank_quote_exit_to_code = (
+            "> - outer\n>   - inner\n\n    code line one\n    code line two\n"
+        )
+        non_prose_lines.clear()
+        self.assertEqual(
+            _bundled_module().hard_wrapped_prose_lines(
+                blank_quote_exit_to_code,
+                non_prose_line_numbers=non_prose_lines,
+            ),
+            (),
+        )
+        self.assertEqual(non_prose_lines, {4, 5})
+
+    def test_list_items_starting_with_indented_code_keep_content_context(self) -> None:
+        self.assertEqual(
+            _bundled_lines(
+                " 1.     indented code\n\n"
+                "    first paragraph line\n"
+                "    second paragraph line\n\n"
+                "        more code\n"
+            ),
+            (4,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "1.     first code line\n"
+                "       second code line\n\n"
+                "   first paragraph line\n"
+                "   continued paragraph line\n"
+            ),
+            (5,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "1.     <!-- literal code\n"
+                "       continued literal code\n\n"
+                "   first paragraph line\n"
+                "   continued paragraph line\n"
+            ),
+            (5,),
+        )
+        self.assertEqual(
+            _bundled_lines("-\n      first code line\n      second code line\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("-    \n      first code line\n      second code line\n"),
+            (),
+        )
+
+    def test_ordered_list_start_number_one_is_required_to_interrupt_prose(self) -> None:
+        self.assertEqual(
+            _bundled_lines("First paragraph line\n2. second paragraph line\n"),
+            (2,),
+        )
+        self.assertEqual(
+            _bundled_lines("First paragraph line\n1. first list item\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("First paragraph line\n01. first list item\n"),
+            (),
+        )
+        self.assertEqual(
+            _bundled_lines("First paragraph line\n\n2. first list item\n"),
+            (),
+        )
+
+    def test_hard_break_keeps_the_paragraph_open_for_block_precedence(self) -> None:
+        self.assertEqual(
+            _bundled_lines("Paragraph first line  \n1.\ncontinued prose line\n"),
+            (3,),
+        )
+        self.assertEqual(
+            _bundled_lines(
+                "Paragraph first line  \n"
+                "    middle paragraph line\n"
+                "    last paragraph line\n"
+            ),
+            (3,),
+        )
+        self.assertEqual(
+            _bundled_lines("- first list paragraph  \n  1.\n  continued paragraph\n"),
+            (3,),
+        )
+
+    def test_comments_inside_non_prose_blocks_do_not_hide_later_wrapping(self) -> None:
+        fence = chr(96) * 3
+        cases = (
+            (
+                "fenced code",
+                f"{fence}text\n<!-- literal in code\n{fence}\n"
+                "First prose line\ncontinued prose line\n",
+                (5,),
+            ),
+            (
+                "indented code",
+                "    <!-- literal in code\nFirst prose line\ncontinued prose line\n",
+                (3,),
+            ),
+            (
+                "raw HTML block",
+                "<script>\n<!-- literal raw text\n</script>\n"
+                "First prose line\ncontinued prose line\n",
+                (5,),
+            ),
+        )
+        for name, body, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(_bundled_lines(body), expected)
+
     def test_only_valid_thematic_breaks_are_structural(self) -> None:
         self.assertEqual(
             _bundled_lines("First paragraph line\n_-_\ncontinued prose\n"),
@@ -368,7 +761,8 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             ),
             (2, 3),
         )
-        self.assertEqual(_bundled_lines("Paragraph before empty list item\n-\n"), ())
+        self.assertEqual(_bundled_lines("Paragraph before empty list item\n-\n"), (2,))
+        self.assertEqual(_bundled_lines("Paragraph before empty list item\n\n-\n"), ())
 
     def test_empty_atx_headings_are_structural(self) -> None:
         for heading in ("#", "##", "######", "   ###   ", "> #"):
@@ -543,9 +937,50 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertFalse(context_exited)
         self.assertEqual(context, [(0, 2), (3, 5)])
 
+    def test_non_prose_line_collection_includes_code_and_html_blocks(self) -> None:
+        module = _bundled_module()
+        non_prose_lines: set[int] = set()
+        html_block_lines: set[int] = set()
+        markdown = (
+            "<!-- repo-scaffold:pr-template=feature -->\n"
+            "\n"
+            "    <!-- repo-scaffold:required-checklist:start -->\n"
+            "    - [x] literal code, not a checklist section\n"
+            "\n"
+            "```markdown\n"
+            "## hidden heading\n"
+            "```\n"
+            "<pre>\n"
+            "raw HTML content\n"
+            "</pre>\n"
+            "## Visible heading\n"
+        )
+
+        self.assertEqual(
+            module.hard_wrapped_prose_lines(
+                markdown,
+                html_block_line_indexes=html_block_lines,
+                non_prose_line_numbers=non_prose_lines,
+            ),
+            (),
+        )
+        self.assertEqual(non_prose_lines, {3, 4, 6, 7, 8, 9, 10, 11})
+        self.assertEqual(html_block_lines, {9, 10, 11})
+
+        non_prose_without_html_indexes: set[int] = set()
+        module.hard_wrapped_prose_lines(
+            markdown,
+            non_prose_line_numbers=non_prose_without_html_indexes,
+        )
+        self.assertEqual(
+            non_prose_without_html_indexes,
+            {3, 4, 6, 7, 8, 9, 10, 11},
+        )
+
     def test_inline_html_helpers_cover_default_and_blank_line_paths(self) -> None:
         module = _bundled_module()
         self.assertEqual(module.html_inline_tag_spans_by_line([]), ([], [], []))
+        self.assertFalse(module.list_item_starts_with_paragraph("plain prose"))
         masked, delimiter = module.mask_inline_code(
             "text <span title='value'> and `literal`",
             None,
@@ -561,6 +996,21 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
         self.assertEqual(
             module.backtick_run_lengths_by_line(["plain text"]), ([()], [0])
         )
+        fence = chr(96) * 3
+        fenced_lines = [f"{fence}text", "literal ` backticks", fence]
+        self.assertEqual(
+            module.backtick_run_lengths_by_line(fenced_lines)[0],
+            [(), (), ()],
+        )
+        excluded_line_indexes: set[int] = set()
+        self.assertEqual(
+            module.backtick_run_lengths_by_line(
+                fenced_lines,
+                excluded_line_indexes=excluded_line_indexes,
+            )[0],
+            [(), (), ()],
+        )
+        self.assertEqual(excluded_line_indexes, {0, 1, 2})
 
     def test_comment_removal_rebases_surviving_inline_html_spans(self) -> None:
         module = _bundled_module()

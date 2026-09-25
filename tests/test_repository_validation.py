@@ -6482,6 +6482,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "scripts/pr_template_preflight.py",
             '"--body-file"',
             "from pr_template_preflight import template_catalog",
+            'template = strip_utf8_bom(template_path.read_text(encoding="utf-8"))',
             'template_paths = template_catalog(Path("."))',
             "repo-scaffold:pr-template=",
             "repo-scaffold:required-checklist:start",
@@ -6500,6 +6501,13 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             "Pull request template validation is explicitly exempt for Release Please.",
         ):
             self.assertIn(fragment, workflow_text)
+
+        validate_step = document["jobs"]["pr_template"]["steps"][1]
+        run = validate_step["run"]
+        python_source = run.split("python - <<'PY'\n", maxsplit=1)[1].rsplit(
+            "\nPY", maxsplit=1
+        )[0]
+        compile(python_source, str(workflow), "exec")
 
         template_ids = (
             "default",
@@ -7200,6 +7208,29 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             feature_payload = feature_body.replace(
                 "<!-- repo-scaffold:pr-template=feature -->\n\n", "", 1
             )
+            required_checklist = re.search(
+                r"<!-- repo-scaffold:required-checklist:start -->.*?"
+                r"<!-- repo-scaffold:required-checklist:end -->",
+                feature_body,
+                flags=re.DOTALL,
+            )
+            if required_checklist is None:
+                self.fail("feature template is missing its required checklist")
+            nested_code_checklist = (
+                "- outer\n"
+                "  - inner\n"
+                "    ```markdown\n"
+                + "".join(
+                    "    " + line + "\n"
+                    for line in required_checklist.group(0).splitlines()
+                )
+                + "    ```\n"
+            )
+            nested_fenced_code_body = (
+                feature_body[: required_checklist.start()]
+                + nested_code_checklist
+                + feature_body[required_checklist.end() :]
+            )
             hidden_content_bodies = {
                 "fenced code": (
                     "<!-- repo-scaffold:pr-template=feature -->\n\n"
@@ -7225,6 +7256,16 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     )
                     + "\n</div>\n"
                 ),
+                "indented checklist section markers": (
+                    feature_body.replace(
+                        "<!-- repo-scaffold:required-checklist:start -->",
+                        "    <!-- repo-scaffold:required-checklist:start -->",
+                    ).replace(
+                        "<!-- repo-scaffold:required-checklist:end -->",
+                        "    <!-- repo-scaffold:required-checklist:end -->",
+                    )
+                ),
+                "nested-list fenced checklist": nested_fenced_code_body,
             }
             for hiding_method, hidden_body in hidden_content_bodies.items():
                 with self.subTest(hiding_method=hiding_method):
@@ -7284,7 +7325,42 @@ class PullRequestTemplateContractTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_gate_uses_generated_root_preflight_scripts_without_skill_source(
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            templates = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            templates.mkdir(parents=True)
+            for name in ("markdown_body_preflight.py", "pr_template_preflight.py"):
+                shutil.copy2(
+                    PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / name,
+                    scripts / name,
+                )
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+                root / ".github" / "PULL_REQUEST_TEMPLATE.md",
+            )
+            security_template = templates / "security.txt"
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md",
+                security_template,
+            )
+            txt_result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PR_BODY": security_template.read_text(encoding="utf-8"),
+                    "PR_TITLE": "chore: check txt focused template",
+                },
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+        self.assertEqual(txt_result.returncode, 0, txt_result.stderr)
+
+    def test_gate_uses_generated_scripts_and_discovers_docs_templates(
         self,
     ) -> None:
         workflow = validate_repository.load_yaml(
@@ -7298,6 +7374,8 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             scripts.mkdir()
             templates = root / ".github"
             templates.mkdir()
+            docs_template = root / "docs" / "PULL_REQUEST_TEMPLATE" / "feature.txt"
+            docs_template.parent.mkdir(parents=True)
             shutil.copy2(
                 PLUGIN_ROOT
                 / "skills"
@@ -7318,13 +7396,11 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
                 templates / "PULL_REQUEST_TEMPLATE.md",
             )
-            shutil.copytree(
-                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE",
-                templates / "PULL_REQUEST_TEMPLATE",
+            shutil.copy2(
+                PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE" / "feature.md",
+                docs_template,
             )
-            feature_body = (
-                templates / "PULL_REQUEST_TEMPLATE" / "feature.md"
-            ).read_text(encoding="utf-8")
+            feature_body = docs_template.read_text(encoding="utf-8")
             result = subprocess.run(
                 [sys.executable, "-c", script],
                 cwd=root,
