@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.12](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.11...v1.10.12) (2026-09-25)
+
+
+### Bug Fixes
+
+* **preflight:** accept supported template extensions ([#125](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/125)) ([3e95298](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/3e9529873cb4b1762bd8f8bea026b5c66e358e69))
+
 ## [1.10.11](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.10...v1.10.11) (2026-09-24)
 
 
