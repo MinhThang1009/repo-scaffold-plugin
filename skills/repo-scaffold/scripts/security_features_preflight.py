@@ -98,17 +98,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError("Security-feature preflight supports GitHub.com only.")
     owner, repo = split_repository(args.repository)
     requested = requested_features(args)
-    confirm_secret_protection = getattr(
+    private_eligibility_confirmed = getattr(
         args, "confirm_private_secret_protection_eligibility", False
     )
-    if not isinstance(confirm_secret_protection, bool):
+    if not isinstance(private_eligibility_confirmed, bool):
         raise InspectionError(
             "Private Secret Protection eligibility confirmation must be boolean."
         )
-    secret_protection_requested = bool(
-        SECRET_PROTECTION_FEATURES.intersection(requested)
-    )
-    if confirm_secret_protection and not secret_protection_requested:
+    private_feature_requested = bool(SECRET_PROTECTION_FEATURES.intersection(requested))
+    if private_eligibility_confirmed and not private_feature_requested:
         raise InspectionError(
             "Private Secret Protection eligibility confirmation was supplied "
             "without requesting secret scanning or push protection."
@@ -165,17 +163,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "Private vulnerability reporting is limited to public non-fork repositories."
         )
     alerts_precondition = dependabot_alerts_precondition(client, owner, repo, args)
-    secret_protection_eligibility = "not-required"
-    if secret_protection_requested and visibility != "public":
-        secret_protection_eligibility = (
-            "user-confirmed" if confirm_secret_protection else "confirmation-required"
+    private_security_feature_eligibility = "not-required"
+    if private_feature_requested and visibility != "public":
+        private_security_feature_eligibility = (
+            "user-confirmed"
+            if private_eligibility_confirmed
+            else "confirmation-required"
         )
 
     return {
         "inspection_complete": True,
         "decision": (
             "confirm-private-secret-protection-eligibility"
-            if secret_protection_eligibility == "confirmation-required"
+            if private_security_feature_eligibility == "confirmation-required"
             else "may-configure-security-features"
         ),
         "requested_features": requested,
@@ -186,7 +186,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "owner_type": owner_type,
         "security_and_analysis": statuses,
         "dependabot_alerts_precondition": alerts_precondition,
-        "secret_protection_eligibility": secret_protection_eligibility,
+        "private_security_feature_eligibility": private_security_feature_eligibility,
         "github_api_requests": client.request_count,
     }
 

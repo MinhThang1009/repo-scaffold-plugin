@@ -115,7 +115,7 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result["security_and_analysis"]["secret_scanning"], "disabled")
-        self.assertEqual(result["secret_protection_eligibility"], "not-required")
+        self.assertEqual(result["private_security_feature_eligibility"], "not-required")
         self.assertTrue(result["administration_permission"])
         self.assertEqual(result["github_api_requests"], 1)
 
@@ -240,7 +240,7 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
         with mock.patch.object(security_features_preflight, "GitHubClient", FakeClient):
             public = security_features_preflight.run(arguments(secret_scanning=True))
         self.assertEqual(public["decision"], "may-configure-security-features")
-        self.assertEqual(public["secret_protection_eligibility"], "not-required")
+        self.assertEqual(public["private_security_feature_eligibility"], "not-required")
 
         for visibility in ("private", "internal"):
             FakeClient.response = repository(visibility=visibility)
@@ -259,7 +259,8 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
                 "confirm-private-secret-protection-eligibility",
             )
             self.assertEqual(
-                unconfirmed["secret_protection_eligibility"], "confirmation-required"
+                unconfirmed["private_security_feature_eligibility"],
+                "confirmation-required",
             )
 
             for feature in ("secret_scanning", "push_protection"):
@@ -280,7 +281,8 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
                     confirmed["decision"], "may-configure-security-features"
                 )
                 self.assertEqual(
-                    confirmed["secret_protection_eligibility"], "user-confirmed"
+                    confirmed["private_security_feature_eligibility"],
+                    "user-confirmed",
                 )
 
         with self.assertRaisesRegex(

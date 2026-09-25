@@ -1753,7 +1753,7 @@ if ($requestedSecurityFeatures.Count -gt 0) {
   } else {
     "not-required"
   }
-  if ($securityPreflightResult.secret_protection_eligibility -cne
+  if ($securityPreflightResult.private_security_feature_eligibility -cne
       $expectedSecretProtectionEligibility) {
     throw "Secret Protection eligibility evidence does not match the requested features and repository visibility."
   }
@@ -1812,11 +1812,11 @@ function Get-ValidatedSecurityFeaturePreflight {
     $result.visibility -ne "public"
   if ($requiresSecretProtectionConfirmation) {
     if (-not $ConfirmPrivateSecretProtectionEligibility -or
-        $result.secret_protection_eligibility -cne "user-confirmed") {
+        $result.private_security_feature_eligibility -cne "user-confirmed") {
       Write-Warning "Private Secret Protection eligibility is not confirmed for $ExpectedFeature; skip this mutation."
       return $null
     }
-  } elseif ($result.secret_protection_eligibility -cne "not-required") {
+  } elseif ($result.private_security_feature_eligibility -cne "not-required") {
     Write-Warning "Security-feature preflight returned unexpected Secret Protection eligibility evidence; skip this mutation."
     return $null
   }
