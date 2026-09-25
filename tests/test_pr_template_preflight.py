@@ -77,6 +77,32 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
         )
         self.assertIn("gh pr create --body-file", output.getvalue())
 
+    def test_template_with_utf8_bom_before_marker_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            bugfix = root / ".github" / "PULL_REQUEST_TEMPLATE" / "bugfix.md"
+            bugfix.write_bytes(
+                "\ufeff<!-- repo-scaffold:pr-template=bugfix -->\n".encode("utf-8")
+            )
+            output = StringIO()
+
+            with redirect_stdout(output):
+                result = pr_template_preflight.main(
+                    [
+                        "--title",
+                        "fix: accept a BOM template",
+                        "--repository-root",
+                        str(root),
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertIn(
+            "Selected PR template: .github/PULL_REQUEST_TEMPLATE/bugfix.md",
+            output.getvalue(),
+        )
+
     def test_selects_an_explicit_focused_template_for_an_unmapped_title(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -100,6 +126,122 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             "Selected PR template: .github/PULL_REQUEST_TEMPLATE/dependency-update.md",
             output.getvalue(),
         )
+
+    def test_selects_focused_templates_with_supported_text_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            catalog = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            canonical = catalog / "security.md"
+            template_text = canonical.read_text(encoding="utf-8")
+            canonical.unlink()
+
+            for extension in (".TXT", ".markdown"):
+                with self.subTest(extension=extension):
+                    candidate = catalog / f"security{extension}"
+                    candidate.write_text(template_text, encoding="utf-8")
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        result = pr_template_preflight.main(
+                            [
+                                "--title",
+                                "chore: inspect focused template",
+                                "--template",
+                                "security",
+                                "--repository-root",
+                                str(root),
+                            ]
+                        )
+
+                    self.assertEqual(result, 0)
+                    self.assertIn(
+                        f"Selected PR template: .github/PULL_REQUEST_TEMPLATE/security{extension}",
+                        output.getvalue(),
+                    )
+                    candidate.unlink()
+
+    def test_catalog_discovers_templates_in_all_github_supported_locations(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root_default = root / "PULL_REQUEST_TEMPLATE.TXT"
+            root_default.write_text(
+                "<!-- repo-scaffold:pr-template=default -->\n", encoding="utf-8"
+            )
+            docs_template = root / "docs" / "PULL_REQUEST_TEMPLATE" / "feature.markdown"
+            docs_template.parent.mkdir(parents=True)
+            docs_template.write_text(
+                "<!-- repo-scaffold:pr-template=feature -->\n", encoding="utf-8"
+            )
+            github_template = (
+                root / ".github" / "PULL_REQUEST_TEMPLATE" / "security.txt"
+            )
+            github_template.parent.mkdir(parents=True)
+            github_template.write_text(
+                "<!-- repo-scaffold:pr-template=security -->\n", encoding="utf-8"
+            )
+
+            catalog = pr_template_preflight.template_catalog(root)
+
+            self.assertEqual(catalog["default"], root_default)
+            self.assertEqual(catalog["feature"], docs_template)
+            self.assertEqual(catalog["security"], github_template)
+            self.assertEqual(
+                pr_template_preflight.template_path(root, "feature"), docs_template
+            )
+            self.assertEqual(
+                pr_template_preflight.template_path(root, "security"), github_template
+            )
+
+    def test_default_template_uses_local_location_search_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root_default = root / "PULL_REQUEST_TEMPLATE.md"
+            root_default.write_text(
+                "<!-- repo-scaffold:pr-template=default -->\n", encoding="utf-8"
+            )
+            docs_default = root / "docs" / "PULL_REQUEST_TEMPLATE.txt"
+            docs_default.parent.mkdir()
+            docs_default.write_text(
+                "<!-- repo-scaffold:pr-template=default -->\n", encoding="utf-8"
+            )
+            github = root / ".github"
+            github.mkdir()
+            github_default = github / "PULL_REQUEST_TEMPLATE.txt"
+            github_default.write_text(
+                "<!-- repo-scaffold:pr-template=default -->\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                pr_template_preflight.template_catalog(root)["default"],
+                github_default,
+            )
+
+            github_default.unlink()
+            self.assertEqual(
+                pr_template_preflight.template_catalog(root)["default"],
+                root_default,
+            )
+
+            root_default.unlink()
+            self.assertEqual(
+                pr_template_preflight.template_catalog(root)["default"],
+                docs_default,
+            )
+
+    def test_rejects_ambiguous_default_templates_in_precedence_location(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            github = root / ".github"
+            github.mkdir()
+            for extension in (".md", ".txt"):
+                (github / f"PULL_REQUEST_TEMPLATE{extension}").write_text(
+                    "<!-- repo-scaffold:pr-template=default -->\n", encoding="utf-8"
+                )
+
+            with self.assertRaisesRegex(ValueError, "ambiguous trusted PR default"):
+                pr_template_preflight.template_catalog(root)
 
     def test_body_file_rejects_hard_wrapped_prose_but_not_markdown_structure(
         self,
@@ -128,6 +270,7 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             structured = root / "structured.md"
             structured.write_text(
                 "- A list item\n- Another list item.\n\n"
+                "Paragraph before the table.\n"
                 "| Name | Value |\n| --- | --- |\n| item | value |\n\n"
                 "```text\nfirst\nsecond\n```\n",
                 encoding="utf-8",
@@ -398,6 +541,8 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not a directory"):
                 pr_template_preflight.safe_repository_root(root / "missing")
 
+            selected = root / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md"
+
             with mock.patch.object(
                 pr_template_preflight,
                 "path_has_link_or_reparse",
@@ -409,12 +554,11 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             with mock.patch.object(
                 pr_template_preflight,
                 "path_has_link_or_reparse",
-                side_effect=[False, False, False, True],
+                side_effect=lambda path, _root: path == selected,
             ):
                 with self.assertRaisesRegex(ValueError, "template path is linked"):
                     pr_template_preflight.template_catalog(root)
 
-            selected = root / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md"
             with (
                 mock.patch.object(
                     pr_template_preflight,
@@ -441,6 +585,64 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             ):
                 self.assertTrue(pr_template_preflight.is_link_or_reparse(root))
 
+    def test_catalog_fails_closed_on_linked_defaults_and_catalog_directories(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            default_template = root / ".github" / "PULL_REQUEST_TEMPLATE.md"
+            focused_directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+
+            with mock.patch.object(
+                pr_template_preflight,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path == default_template,
+            ):
+                with self.assertRaisesRegex(ValueError, "template path is linked"):
+                    pr_template_preflight.template_catalog(root)
+
+            with mock.patch.object(
+                pr_template_preflight,
+                "path_has_link_or_reparse",
+                side_effect=lambda path, _root: path == focused_directory,
+            ):
+                with self.assertRaisesRegex(ValueError, "catalog contains a linked"):
+                    pr_template_preflight.template_catalog(root)
+
+    def test_catalog_ignores_nonfile_and_unsupported_template_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            (root / "PULL_REQUEST_TEMPLATE").write_text(
+                "not a focused-template directory", encoding="utf-8"
+            )
+            (root / "PULL_REQUEST_TEMPLATE.md").mkdir()
+            focused_directory = root / ".github" / "PULL_REQUEST_TEMPLATE"
+            (focused_directory / "diagram.png").write_bytes(b"not markdown")
+            (focused_directory / "directory.md").mkdir()
+            github_directory = root / ".github"
+            original_iterdir = Path.iterdir
+
+            def with_missing_template_entries(path: Path):
+                if path == github_directory:
+                    return iter(
+                        [path / "PULL_REQUEST_TEMPLATE.txt", *original_iterdir(path)]
+                    )
+                if path == focused_directory:
+                    return iter([path / "missing.txt", *original_iterdir(path)])
+                return original_iterdir(path)
+
+            with mock.patch.object(Path, "iterdir", new=with_missing_template_entries):
+                catalog = pr_template_preflight.template_catalog(root)
+
+        self.assertEqual(
+            catalog["default"], github_directory / "PULL_REQUEST_TEMPLATE.md"
+        )
+        self.assertNotIn("missing", catalog)
+        self.assertNotIn("directory", catalog)
+        self.assertNotIn("diagram", catalog)
+
     def test_rejects_nonfile_or_unreadable_selected_template(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -449,8 +651,17 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             security.unlink()
             security.mkdir()
 
-            with self.assertRaisesRegex(ValueError, "trusted PR template is missing"):
+            with self.assertRaisesRegex(ValueError, "unknown pull-request template"):
                 pr_template_preflight.template_path(root, "security")
+            with mock.patch.object(
+                pr_template_preflight,
+                "template_catalog",
+                return_value={"security": security},
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "trusted PR template is missing"
+                ):
+                    pr_template_preflight.template_path(root, "security")
 
             security.rmdir()
             security.write_text(

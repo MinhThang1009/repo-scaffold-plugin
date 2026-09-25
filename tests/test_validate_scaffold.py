@@ -831,6 +831,42 @@ class CodeOfConductContractTests(unittest.TestCase):
 
 
 class TemplateContractTests(unittest.TestCase):
+    def test_pull_request_templates_ignore_a_leading_utf8_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository_root = Path(directory)
+            template = repository_root / ".github" / "PULL_REQUEST_TEMPLATE.md"
+            template.parent.mkdir(parents=True)
+            template.write_text("\ufeff- [ ] Verify the change\n", encoding="utf-8")
+
+            self.assertEqual(
+                validate_scaffold.validate_pull_request_templates(repository_root), []
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            template_root = Path(directory)
+            shutil.copy2(
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "README-header.md",
+                template_root / "README-header.md",
+            )
+            source_template = (
+                PLUGIN_ROOT
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "PULL_REQUEST_TEMPLATE.md"
+            )
+            (template_root / "PULL_REQUEST_TEMPLATE.md").write_bytes(
+                b"\xef\xbb\xbf" + source_template.read_bytes()
+            )
+
+            self.assertEqual(
+                validate_scaffold.validate_template_assets(template_root), []
+            )
+
     def test_specialized_template_checks_report_invalid_utf8(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

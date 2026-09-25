@@ -24,6 +24,7 @@ from markdown_body_preflight import (
     MAX_BODY_FILE_BYTES as MAX_MARKDOWN_FILE_BYTES,
     hard_wrapped_prose_lines,
     split_gfm_lines,
+    strip_utf8_bom,
 )
 
 
@@ -211,7 +212,7 @@ def read_markdown(
             f"{label}: exceeds the {MAX_MARKDOWN_FILE_BYTES}-byte limit",
         )
     try:
-        text = payload.decode("utf-8")
+        text = strip_utf8_bom(payload.decode("utf-8"))
     except UnicodeError as error:
         return None, f"{label}: unreadable UTF-8 Markdown: {error}"
     return text.replace("\r\n", "\n").replace("\r", "\n"), None
