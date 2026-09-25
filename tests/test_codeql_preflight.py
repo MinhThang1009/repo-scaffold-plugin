@@ -3496,6 +3496,34 @@ class InputValidationTests(unittest.TestCase):
 
 
 class DefaultSetupDecisionTests(unittest.TestCase):
+    def test_default_setup_docs_require_user_approval_and_fresh_bound_evidence(
+        self,
+    ) -> None:
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        codeql = setup.split("- **Code scanning default setup**", 1)[1].split(
+            "- **Private vulnerability reporting**", 1
+        )[0]
+        self.assertIn("$defaultSetupEnablementApproved = $false", codeql)
+        self.assertIn("$defaultSetupSwitchApproved = $false", codeql)
+        self.assertIn("--require-administration-permission", codeql)
+        self.assertIn('finalPreflight.repository, "OWNER/REPO"', codeql)
+        self.assertIn("finalPreflight.default_branch -cne $DEFAULT_BRANCH", codeql)
+        self.assertIn("finalPreflight.administration_permission -ne $true", codeql)
+        self.assertIn("finalPreflight.github_actions_enabled -ne $true", codeql)
+        self.assertIn(
+            "$finalPreflight.has_codeql_analysis -ne $initialHasCodeqlAnalysis", codeql
+        )
+        self.assertNotIn("$defaultSetupMutationApproved = $true", codeql)
+        final_preflight_index = codeql.index(
+            "$finalPreflightOutput = & $pythonCommand.Source"
+        )
+        patch_index = codeql.index(
+            "$setupOutput = & gh api --hostname github.com -X PATCH"
+        )
+        self.assertLess(final_preflight_index, patch_index)
+
     def test_configured_default_setup_marks_uninspected_evidence_unknown(self) -> None:
         class FakeClient:
             request_count = 0
@@ -3508,6 +3536,13 @@ class DefaultSetupDecisionTests(unittest.TestCase):
 
             def json(self, endpoint: str) -> object:
                 self.endpoints.append(endpoint)
+                if endpoint == "repos/octo/repo":
+                    return {
+                        "full_name": "octo/repo",
+                        "default_branch": "main",
+                        "archived": False,
+                        "disabled": False,
+                    }
                 return {"state": "configured"}
 
         args = argparse.Namespace(
@@ -3522,8 +3557,13 @@ class DefaultSetupDecisionTests(unittest.TestCase):
 
         self.assertEqual(
             FakeClient.endpoints,
-            ["repos/octo/repo/code-scanning/default-setup"],
+            [
+                "repos/octo/repo",
+                "repos/octo/repo/code-scanning/default-setup",
+            ],
         )
+        self.assertEqual(result["repository"], "octo/repo")
+        self.assertEqual(result["default_branch"], "main")
         self.assertIsNone(result["advanced_workflows"])
         self.assertIsNone(result["has_codeql_analysis"])
         self.assertFalse(result["workflow_inspection_performed"])
@@ -3541,6 +3581,13 @@ class DefaultSetupDecisionTests(unittest.TestCase):
 
             def json(self, endpoint: str) -> object:
                 self.request_count += 1
+                if endpoint == "repos/octo/repo":
+                    return {
+                        "full_name": "octo/repo",
+                        "default_branch": "main",
+                        "archived": False,
+                        "disabled": False,
+                    }
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "future-state"}
                 raise AssertionError(endpoint)
@@ -3558,6 +3605,44 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             ):
                 codeql_preflight.run(args)
 
+    def test_invalid_default_setup_response_fails_closed_after_target_binding(
+        self,
+    ) -> None:
+        class FakeClient:
+            request_count = 0
+            deadline = float("inf")
+
+            def __init__(
+                self, hostname: str, *, forbidden_root: Path | None = None
+            ) -> None:
+                del hostname, forbidden_root
+
+            def json(self, endpoint: str) -> object:
+                if endpoint == "repos/octo/repo":
+                    return {
+                        "full_name": "octo/repo",
+                        "default_branch": "main",
+                    }
+                if endpoint.endswith("code-scanning/default-setup"):
+                    return []
+                raise AssertionError(endpoint)
+
+        args = argparse.Namespace(
+            repo_root=str(PLUGIN_ROOT),
+            repository="octo/repo",
+            default_branch="main",
+            hostname="github.com",
+            confirm_no_external_codeql=True,
+        )
+        with (
+            mock.patch.object(codeql_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError,
+                "Default-setup endpoint returned an invalid response",
+            ),
+        ):
+            codeql_preflight.run(args)
+
     def test_requires_confirmation_when_direct_inspection_finds_no_codeql(self) -> None:
         class FakeClient:
             request_count = 0
@@ -3572,7 +3657,15 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "not-configured"}
                 if endpoint == "repos/octo/repo":
-                    return {"full_name": "octo/repo", "default_branch": "main"}
+                    return {
+                        "full_name": "octo/repo",
+                        "default_branch": "main",
+                        "archived": False,
+                        "disabled": False,
+                        "permissions": {"admin": True},
+                    }
+                if endpoint == "repos/octo/repo/actions/permissions":
+                    return {"enabled": True}
                 if "code-scanning/analyses" in endpoint:
                     return []
                 raise AssertionError(endpoint)
@@ -3583,6 +3676,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             default_branch="main",
             hostname="github.com",
             confirm_no_external_codeql=False,
+            require_administration_permission=True,
         )
         patches = (
             mock.patch.object(codeql_preflight, "GitHubClient", FakeClient),
@@ -3605,7 +3699,134 @@ class DefaultSetupDecisionTests(unittest.TestCase):
         with patches[0], patches[1], patches[2]:
             result = codeql_preflight.run(args)
         self.assertEqual(result["decision"], "may-offer-default-setup")
+        self.assertEqual(result["repository"], "octo/repo")
+        self.assertEqual(result["default_branch"], "main")
+        self.assertTrue(result["administration_permission"])
+        self.assertTrue(result["github_actions_enabled"])
         self.assertTrue(result["external_codeql_absence_confirmed"])
+
+    def test_mutation_preflight_requires_an_active_repository_admin(self) -> None:
+        for repository, actions_enabled, message in (
+            (
+                {
+                    "full_name": "octo/repo",
+                    "default_branch": "main",
+                    "archived": True,
+                    "disabled": False,
+                    "permissions": {"admin": True},
+                },
+                True,
+                "Archived or unknown",
+            ),
+            (
+                {
+                    "full_name": "octo/repo",
+                    "default_branch": "main",
+                    "archived": False,
+                    "disabled": True,
+                    "permissions": {"admin": True},
+                },
+                True,
+                "Disabled or unknown",
+            ),
+            (
+                {
+                    "full_name": "octo/repo",
+                    "default_branch": "main",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": False},
+                },
+                True,
+                "administration permission",
+            ),
+            (
+                {
+                    "full_name": "octo/repo",
+                    "default_branch": "main",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": None,
+                },
+                True,
+                "administration permission",
+            ),
+            (
+                {
+                    "full_name": "octo/repo",
+                    "default_branch": "main",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": True},
+                },
+                False,
+                "GitHub Actions must be enabled",
+            ),
+            (
+                {
+                    "full_name": "octo/repo",
+                    "default_branch": "main",
+                    "archived": False,
+                    "disabled": False,
+                    "permissions": {"admin": True},
+                },
+                "yes",
+                "GitHub Actions permissions response is invalid",
+            ),
+        ):
+
+            class FakeClient:
+                request_count = 0
+                deadline = float("inf")
+
+                def __init__(
+                    self, hostname: str, *, forbidden_root: Path | None = None
+                ) -> None:
+                    del hostname, forbidden_root
+
+                def json(self, endpoint: str) -> object:
+                    if endpoint == "repos/octo/repo":
+                        return repository
+                    if endpoint.endswith("code-scanning/default-setup"):
+                        return {"state": "not-configured"}
+                    if endpoint == "repos/octo/repo/actions/permissions":
+                        return {"enabled": actions_enabled}
+                    raise AssertionError(endpoint)
+
+            args = argparse.Namespace(
+                repo_root=str(PLUGIN_ROOT),
+                repository="octo/repo",
+                default_branch="main",
+                hostname="github.com",
+                confirm_no_external_codeql=True,
+                require_administration_permission=True,
+            )
+            with (
+                self.subTest(repository=repository),
+                mock.patch.object(codeql_preflight, "GitHubClient", FakeClient),
+                self.assertRaisesRegex(codeql_preflight.InspectionError, message),
+            ):
+                codeql_preflight.run(args)
+
+    def test_preflight_cli_exposes_explicit_mutation_permission_requirement(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "codeql_preflight.py",
+                "--repo-root",
+                str(PLUGIN_ROOT),
+                "--repository",
+                "octo/repo",
+                "--default-branch",
+                "main",
+                "--require-administration-permission",
+            ],
+        ):
+            args = codeql_preflight.parse_args()
+        self.assertTrue(args.require_administration_permission)
 
     def test_rejects_a_branch_that_is_not_the_verified_default(self) -> None:
         class FakeClient:
@@ -3621,7 +3842,12 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "not-configured"}
                 if endpoint == "repos/octo/repo":
-                    return {"full_name": "octo/repo", "default_branch": "main"}
+                    return {
+                        "full_name": "octo/repo",
+                        "default_branch": "main",
+                        "archived": False,
+                        "disabled": False,
+                    }
                 raise AssertionError(endpoint)
 
         args = argparse.Namespace(
@@ -3657,7 +3883,12 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "not-configured"}
                 if endpoint == "repos/octo/repo":
-                    return {"full_name": "octo/repo", "default_branch": "main"}
+                    return {
+                        "full_name": "octo/repo",
+                        "default_branch": "main",
+                        "archived": False,
+                        "disabled": False,
+                    }
                 if "code-scanning/analyses" in endpoint:
                     return []
                 raise AssertionError(endpoint)
@@ -3741,7 +3972,7 @@ jobs:
         with (
             mock.patch.object(codeql_preflight, "GitHubClient", InvalidClient),
             self.assertRaisesRegex(
-                codeql_preflight.InspectionError, "invalid response"
+                codeql_preflight.InspectionError, "Repository response is invalid"
             ),
         ):
             codeql_preflight.run(args)
@@ -3763,7 +3994,12 @@ jobs:
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "not-configured"}
                 if endpoint == "repos/octo/repo":
-                    return {"full_name": "octo/repo", "default_branch": "main"}
+                    return {
+                        "full_name": "octo/repo",
+                        "default_branch": "main",
+                        "archived": False,
+                        "disabled": False,
+                    }
                 if "code-scanning/analyses" in endpoint:
                     return [{"id": 1}]
                 raise AssertionError(endpoint)
@@ -3809,7 +4045,12 @@ jobs:
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "not-configured"}
                 if endpoint == "repos/octo/repo":
-                    return {"full_name": "octo/repo", "default_branch": "main"}
+                    return {
+                        "full_name": "octo/repo",
+                        "default_branch": "main",
+                        "archived": False,
+                        "disabled": False,
+                    }
                 if "code-scanning/analyses" in endpoint:
                     return {}
                 raise AssertionError(endpoint)
@@ -3965,13 +4206,25 @@ class PlaceholderContractTests(unittest.TestCase):
             / "release.yml"
         ).read_text(encoding="utf-8")
         self.assertEqual(len(re.findall(r"(?m)^\s+gh release upload", workflow)), 2)
-        release_commands = re.findall(
-            r"(?m)^\s+gh release (?:create|edit|upload).*$", workflow
-        )
+        release_lines = workflow.splitlines()
+        release_commands: list[str] = []
+        index = 0
+        while index < len(release_lines):
+            if re.match(
+                r"^\s*gh release (?:create|edit|upload)\b", release_lines[index]
+            ):
+                parts = [release_lines[index].strip()]
+                while parts[-1].endswith("\\") and index + 1 < len(release_lines):
+                    parts[-1] = parts[-1][:-1].rstrip()
+                    index += 1
+                    parts.append(release_lines[index].strip())
+                release_commands.append(" ".join(parts))
+            index += 1
         self.assertEqual(len(release_commands), 4)
         self.assertTrue(
             all('--repo "${GITHUB_REPOSITORY}"' in line for line in release_commands)
         )
+        self.assertNotIn("--clobber", workflow)
         self.assertIn("already published and mutable", workflow)
         self.assertNotIn("Backward compatibility for Releases", workflow)
         self.assertIn('"${#artifact_tag}" -gt 120', workflow)

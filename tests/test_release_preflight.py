@@ -234,6 +234,12 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn("release_preflight.py", release)
         self.assertIn("render-no-attestation-variant", release)
         self.assertIn("--require-release-please-token", release)
+        self.assertIn(
+            "reports the exact `OWNER/REPO` and `DEFAULT_BRANCH` inputs", release
+        )
+        self.assertIn("`repository` equal to `OWNER/REPO`", release)
+        self.assertIn("`default_branch`", release)
+        self.assertIn("exactly equal to `DEFAULT_BRANCH`", release)
 
 
 if __name__ == "__main__":

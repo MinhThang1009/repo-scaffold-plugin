@@ -12,6 +12,7 @@ from branch_protection_preflight import GitHubClient, InspectionError, split_rep
 
 
 SUPPORTED_MERGE_METHODS = frozenset({"merge", "squash", "rebase"})
+SUPPORTED_SQUASH_TITLE_MODES = frozenset({"PR_TITLE", "COMMIT_OR_PR_TITLE"})
 
 
 def require_boolean(document: dict[str, Any], field: str) -> bool:
@@ -192,6 +193,33 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Requested branch is not the verified current default branch."
         )
+    request_delete_branch = getattr(args, "enable_delete_branch_on_merge", False)
+    if not isinstance(request_delete_branch, bool):
+        raise InspectionError("Delete-branch request must be a boolean.")
+    requested_squash_title = getattr(args, "squash_merge_commit_title", None)
+    if requested_squash_title is not None and (
+        not isinstance(requested_squash_title, str)
+        or requested_squash_title not in SUPPORTED_SQUASH_TITLE_MODES
+    ):
+        raise InspectionError("Requested squash merge commit title is unsupported.")
+    current_settings: dict[str, Any] = {
+        "delete_branch_on_merge": None,
+        "squash_merge_commit_title": None,
+    }
+    if request_delete_branch:
+        current_settings["delete_branch_on_merge"] = require_boolean(
+            repository, "delete_branch_on_merge"
+        )
+    if requested_squash_title is not None:
+        current_title = repository.get("squash_merge_commit_title")
+        if (
+            not isinstance(current_title, str)
+            or current_title not in SUPPORTED_SQUASH_TITLE_MODES
+        ):
+            raise InspectionError(
+                "Repository response has an invalid 'squash_merge_commit_title' value."
+            )
+        current_settings["squash_merge_commit_title"] = current_title
     rules = client.json(
         f"repos/{owner}/{repo}/rules/branches/"
         f"{quote(args.default_branch, safe='')}?per_page=100"
@@ -217,7 +245,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     classic_status_checks_required: bool | None = None
     status_checks_required: bool | None = None
-    if args.require_auto_merge_workflows and not has_merge_queue and auto_merge_enabled:
+    if args.require_auto_merge_workflows and not has_merge_queue:
         if ruleset_status_checks_required:
             status_checks_required = True
         else:
@@ -237,18 +265,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         decision = "require-explicit-merge-method-removal-confirmation"
     elif args.require_auto_merge_workflows and has_merge_queue:
         decision = "skip-auto-merge-workflows"
-    elif args.require_auto_merge_workflows and not auto_merge_enabled:
-        decision = "enable-auto-merge-before-installing-workflows"
     elif args.require_auto_merge_workflows and not status_checks_required:
         decision = "require-status-checks-before-installing-auto-merge-workflows"
+    elif args.require_auto_merge_workflows and not auto_merge_enabled:
+        decision = "enable-auto-merge-before-installing-workflows"
     else:
         decision = "may-configure-merge-settings"
     return {
         "inspection_complete": True,
         "decision": decision,
+        "repository": args.repository,
+        "default_branch": args.default_branch,
         "required_merge_methods": sorted(required_methods),
         "current_merge_methods": current,
         "desired_merge_methods": desired,
+        "requested_settings": {
+            "delete_branch_on_merge": True if request_delete_branch else None,
+            "squash_merge_commit_title": requested_squash_title,
+        },
+        "current_settings": current_settings,
         "methods_to_disable": disabled_methods,
         "merge_queue_applies": has_merge_queue,
         "ruleset_status_checks_required": ruleset_status_checks_required,
@@ -268,6 +303,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hostname", default="github.com")
     parser.add_argument("--require-auto-merge-workflows", action="store_true")
     parser.add_argument("--confirm-disable-merge-methods", action="store_true")
+    parser.add_argument("--enable-delete-branch-on-merge", action="store_true")
+    parser.add_argument(
+        "--squash-merge-commit-title", choices=sorted(SUPPORTED_SQUASH_TITLE_MODES)
+    )
     return parser.parse_args()
 
 

@@ -320,6 +320,111 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
         self.assertIn("Compare-Object", security)
         self.assertIn("if ($enablePrivateVulnerabilityReportingRequested)", security)
 
+    def test_each_security_setting_revalidates_then_checks_write_and_readback(
+        self,
+    ) -> None:
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        security = setup.split("## Security features", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("Get-ValidatedSecurityFeaturePreflight", security)
+        self.assertIn('$result.repository, "OWNER/REPO"', security)
+        self.assertIn("$features.Count -ne 1", security)
+        self.assertIn("$exitCode -ne 0", security)
+        self.assertIn("if ($requestedSecurityFeatures.Count -gt 0)", security)
+        self.assertIn("No security-feature changes were requested", security)
+        self.assertLess(
+            security.index("if ($requestedSecurityFeatures.Count -gt 0)"),
+            security.index(
+                "$securityPreflightOutput = python $securityFeaturesPreflight"
+            ),
+        )
+
+        cases = (
+            (
+                "- **Dependabot alerts**",
+                "- **Secret scanning + push protection**",
+                "-X PUT",
+                "repos/OWNER/REPO/vulnerability-alerts",
+                "repos/OWNER/REPO/vulnerability-alerts",
+                "if ($enableDependabotAlertsRequested)",
+            ),
+            (
+                "- **Dependabot alerts**",
+                "- **Secret scanning + push protection**",
+                "-X PUT",
+                "repos/OWNER/REPO/automated-security-fixes",
+                "repos/OWNER/REPO/automated-security-fixes",
+                "if ($enableAutomatedSecurityFixesRequested)",
+            ),
+            (
+                "- **Secret scanning + push protection**",
+                "- **CodeQL advanced setup**",
+                "--enable-secret-scanning",
+                "--enable-secret-scanning",
+                ".security_and_analysis.secret_scanning.status",
+                "if ($enableSecretScanningRequested)",
+            ),
+            (
+                "- **Secret scanning + push protection**",
+                "- **CodeQL advanced setup**",
+                "--enable-secret-scanning-push-protection",
+                "--enable-secret-scanning-push-protection",
+                "push_protection: .security_and_analysis.secret_scanning_push_protection.status",
+                "if ($enablePushProtectionRequested)",
+            ),
+            (
+                "- **Private vulnerability reporting**",
+                "- **Dependency review workflow**",
+                "-X PUT",
+                "repos/OWNER/REPO/private-vulnerability-reporting",
+                "--jq '.enabled'",
+                "if ($enablePrivateVulnerabilityReportingRequested)",
+            ),
+        )
+        for (
+            start_marker,
+            end_marker,
+            mutation,
+            mutation_flag,
+            verification,
+            guard,
+        ) in cases:
+            with self.subTest(mutation=mutation):
+                start = security.index(start_marker)
+                end = security.index(end_marker, start + len(start_marker))
+                section = security[start:end]
+                guard_index = section.index(guard)
+                preflight_index = section.index(
+                    "Get-ValidatedSecurityFeaturePreflight", guard_index
+                )
+                mutation_index = section.index(mutation, preflight_index)
+                write_path_index = section.index(mutation_flag, mutation_index)
+                exit_check_index = section.index("$LASTEXITCODE", write_path_index)
+                verify_index = section.index(
+                    verification, exit_check_index + len("$LASTEXITCODE")
+                )
+                self.assertLess(guard_index, preflight_index)
+                self.assertLess(preflight_index, mutation_index)
+                self.assertLess(mutation_index, exit_check_index)
+                self.assertLess(exit_check_index, verify_index)
+
+        dependabot = security.split("- **Dependabot alerts**", 1)[1].split(
+            "- **Secret scanning + push protection**", 1
+        )[0]
+        self.assertIn("$fixState.enabled -ne $true", dependabot)
+        self.assertIn("$fixState.paused -ne $false", dependabot)
+
+        push_protection = security.split("- **Secret scanning + push protection**", 1)[
+            1
+        ].split("- **CodeQL advanced setup**", 1)[0]
+        self.assertIn(
+            '$pushProtectionState.secret_scanning -cne "enabled"', push_protection
+        )
+        self.assertIn(
+            '$pushProtectionState.push_protection -cne "enabled"', push_protection
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -167,6 +167,11 @@ if (-not $metadataPreflight.inspection_complete -or
     @($metadataPreflight.requested_mutations) -notcontains "description") {
   throw "Repository-settings preflight did not approve the requested metadata mutations."
 }
+if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+  [string]$metadataPreflight.repository, "OWNER/REPO"
+)) {
+  throw "Repository-settings preflight returned a different repository; do not mutate."
+}
 $approvedMetadata = $metadataPreflight.requested_settings
 if ($null -eq $approvedMetadata) {
   throw "Repository-settings preflight did not return the approved metadata input."
@@ -235,6 +240,11 @@ if ($enableIssuesRequested -or $enableDiscussionsRequested) {
       $communicationPreflight.decision -ne "may-configure-repository-settings") {
     throw "Repository-settings preflight did not approve the requested communication mutations."
   }
+  if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+    [string]$communicationPreflight.repository, "OWNER/REPO"
+  )) {
+    throw "Repository-settings preflight returned a different repository; do not mutate."
+  }
   $approvedCommunication = $communicationPreflight.requested_settings
   if ($null -eq $approvedCommunication -or
       $approvedCommunication.issues -ne $enableIssuesRequested -or
@@ -243,16 +253,55 @@ if ($enableIssuesRequested -or $enableDiscussionsRequested) {
   }
 }
 
+function Test-FreshCommunicationPreflight {
+  param([Parameter(Mandatory)][ValidateSet("issues", "discussions")][string]$Feature)
+
+  $arguments = @("--repository", "OWNER/REPO", "--hostname", "github.com")
+  if ($Feature -eq "issues") { $arguments += "--enable-issues" }
+  if ($Feature -eq "discussions") { $arguments += "--enable-discussions" }
+  $output = python $repositorySettingsPreflight @arguments 2>&1
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    Write-Warning "Fresh $Feature preflight is inconclusive; skip this mutation. $($output | Out-String)"
+    return $false
+  }
+  try {
+    $result = ($output | Out-String) | ConvertFrom-Json
+  } catch {
+    Write-Warning "Fresh $Feature preflight returned invalid JSON; skip this mutation."
+    return $false
+  }
+  $mutations = @($result.requested_mutations | ForEach-Object { [string]$_ })
+  $expectedIssues = $Feature -eq "issues"
+  $expectedDiscussions = $Feature -eq "discussions"
+  if (-not $result.inspection_complete -or
+      $result.decision -ne "may-configure-repository-settings" -or
+      -not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+        [string]$result.repository, "OWNER/REPO"
+      ) -or $mutations.Count -ne 1 -or $mutations[0] -cne $Feature -or
+      $null -eq $result.requested_settings -or
+      $result.requested_settings.issues -ne $expectedIssues -or
+      $result.requested_settings.discussions -ne $expectedDiscussions) {
+    Write-Warning "Fresh $Feature preflight did not approve exactly that setting for OWNER/REPO; skip this mutation."
+    return $false
+  }
+  return $true
+}
+
 if ($enableIssuesRequested) {
-  $issuesOutput = & gh repo edit github.com/OWNER/REPO --enable-issues 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Issues could not be enabled; issue-dependent output will be omitted. $($issuesOutput | Out-String)"
+  if (Test-FreshCommunicationPreflight -Feature "issues") {
+    $issuesOutput = & gh repo edit github.com/OWNER/REPO --enable-issues 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      Write-Warning "Issues could not be enabled; issue-dependent output will be omitted. $($issuesOutput | Out-String)"
+    }
   }
 }
 if ($enableDiscussionsRequested) {
-  $discussionsOutput = & gh repo edit github.com/OWNER/REPO --enable-discussions 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Discussions could not be enabled; discussion-dependent output will be omitted. $($discussionsOutput | Out-String)"
+  if (Test-FreshCommunicationPreflight -Feature "discussions") {
+    $discussionsOutput = & gh repo edit github.com/OWNER/REPO --enable-discussions 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      Write-Warning "Discussions could not be enabled; discussion-dependent output will be omitted. $($discussionsOutput | Out-String)"
+    }
   }
 }
 
@@ -351,6 +400,11 @@ $workflowPreflightResult = ($workflowPreflightOutput | Out-String) | ConvertFrom
 if (-not $workflowPreflightResult.inspection_complete -or
     $workflowPreflightResult.decision -ne "may-install-workflow-assets") {
   throw "Workflow capability is not confirmed. Resolve the returned decision and rerun before copying the asset."
+}
+if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+  [string]$workflowPreflightResult.repository, "OWNER/REPO"
+)) {
+  throw "Workflow-installation preflight returned a different repository; do not copy assets."
 }
 ```
 
@@ -836,13 +890,52 @@ foreach ($check in $verifiedChecks) {
   }
   $requiredAppIdsByContext[[string]$check.context] = [int64]$check.app_id
 }
+
+function Assert-FreshRequiredCheckPreflight {
+  $output = python $branchProtectionPreflight @preflightArguments 2>&1
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    throw "Final required-check preflight is inconclusive; do not mutate protection. $($output | Out-String)"
+  }
+  try {
+    $fresh = ($output | Out-String) | ConvertFrom-Json
+  } catch {
+    throw "Final required-check preflight returned invalid JSON; do not mutate protection."
+  }
+  if (-not $fresh.inspection_complete -or
+      $fresh.decision -ne "may-configure-classic-protection" -or
+      $fresh.repository -cne "OWNER/REPO" -or
+      $fresh.default_branch -cne $defaultBranch -or
+      [int]$fresh.pull_request -ne [int]$requiredCheckPreflight.pull_request -or
+      ([string]$fresh.head_sha).ToLowerInvariant() -cne
+        ([string]$requiredCheckPreflight.head_sha).ToLowerInvariant() -or
+      ([string]$fresh.test_merge_sha).ToLowerInvariant() -cne
+        ([string]$requiredCheckPreflight.test_merge_sha).ToLowerInvariant()) {
+    throw "Representative pull-request evidence or target changed since preflight; review the fresh result before mutating protection."
+  }
+  $approvedBindings = @($verifiedChecks | Sort-Object context | ForEach-Object {
+    [ordered]@{ context = [string]$_.context; app_id = [int64]$_.app_id }
+  })
+  $freshBindings = @($fresh.required_checks | Sort-Object context | ForEach-Object {
+    [ordered]@{ context = [string]$_.context; app_id = [int64]$_.app_id }
+  })
+  if ((ConvertTo-Json -InputObject $approvedBindings -Compress -Depth 4) -cne
+      (ConvertTo-Json -InputObject $freshBindings -Compress -Depth 4)) {
+    throw "Required-check contexts or App IDs changed since preflight; review the fresh result before mutating protection."
+  }
+  return $fresh
+}
 ```
 
-Run it once with every context passed to the later mutation block. When multiple
-contexts are eligible, pass one `--required-check` argument for each and retain
-the returned context/app-ID pairs exactly. The PowerShell example below explains
-the preservation and post-mutation verification of classic-protection settings;
-do not bypass this preflight by hand-populating its producer evidence.
+Run it with every context passed to the later mutation block. Immediately before
+the first protection write, the example reruns it and requires the same
+repository, branch, pull-request head, test-merge SHA, contexts, and App IDs.
+When multiple contexts are eligible, pass one `--required-check` argument for
+each and retain the returned context/app-ID pairs exactly. If any evidence
+changed, review the fresh result and rerun the flow before mutation. The
+PowerShell example below explains the preservation and post-mutation
+verification of classic-protection settings; do not bypass this preflight by
+hand-populating its producer evidence.
 
 PowerShell example:
 
@@ -980,6 +1073,7 @@ if ($protectionExitCode -eq 0) {
     throw "Existing required-check bindings conflict with verified producers; no protection was changed: $($bindingProblems -join ', ')."
   }
 
+  $requiredCheckPreflight = Assert-FreshRequiredCheckPreflight
   $statusPayload = @{
     strict = $true
     checks = @($checksByContext.Values)
@@ -1067,6 +1161,7 @@ if ($protectionExitCode -eq 0) {
     restrictions = $null
   } | ConvertTo-Json -Depth 6
 
+  $requiredCheckPreflight = Assert-FreshRequiredCheckPreflight
   $createOutput = $payload | gh api --hostname github.com -X PUT $protectionPath `
     -H "Accept: application/vnd.github+json" --input - 2>&1
   $createExitCode = $LASTEXITCODE
@@ -1117,13 +1212,43 @@ $repositorySettingsPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/repo
 if (-not (Test-Path -LiteralPath $repositorySettingsPreflight -PathType Leaf)) {
   throw "The bundled repository-settings preflight is missing; do not create labels."
 }
-# This is the complete envelope of labels that the following optional asset
-# blocks can create. Keep this list synchronized with every Add-LabelIfMissing call.
+# Populate this list only from the exact optional assets selected in the
+# approved scaffold plan. The allowlist and labels come from the checked-in assets.
+$selectedOptionalLabelAssets = @() # e.g. "labeler.yml" only when that asset is selected
+$optionalLabelNamesByAsset = [ordered]@{
+  "auto-merge.yml" = @("automerge")
+  "labeler.yml" = @("ci", "tests")
+  "release-config.yml" = @("feature", "fix", "ignore-for-release")
+  "stale.yml" = @("Stale", "pinned", "security")
+}
+$allowedOptionalLabelAssets = @(
+  "auto-merge.yml", "labeler.yml", "release-config.yml", "stale.yml"
+)
+$selectedOptionalLabelAssetSet = [System.Collections.Generic.HashSet[string]]::new(
+  [System.StringComparer]::Ordinal
+)
+foreach ($assetName in @($selectedOptionalLabelAssets)) {
+  if ($assetName -isnot [string] -or
+      $allowedOptionalLabelAssets -cnotcontains $assetName -or
+      -not $selectedOptionalLabelAssetSet.Add($assetName)) {
+    throw "Label plan contains an unsupported or duplicate optional asset: '$assetName'."
+  }
+}
 $plannedLabelNames = @(
   "bug", "documentation", "duplicate", "enhancement", "good first issue",
-  "help wanted", "invalid", "question", "wontfix", "automerge", "ci", "tests",
-  "feature", "fix", "ignore-for-release", "Stale", "pinned", "security"
+  "help wanted", "invalid", "question", "wontfix"
 )
+foreach ($assetName in $selectedOptionalLabelAssets) {
+  $plannedLabelNames += @($optionalLabelNamesByAsset[[string]$assetName])
+}
+$plannedLabelNameSet = [System.Collections.Generic.HashSet[string]]::new(
+  [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($labelName in $plannedLabelNames) {
+  if (-not $plannedLabelNameSet.Add([string]$labelName)) {
+    throw "Label plan contains a duplicate label: '$labelName'."
+  }
+}
 $labelPreflightArguments = @("--repository", "OWNER/REPO", "--hostname", "github.com")
 foreach ($labelName in $plannedLabelNames) { $labelPreflightArguments += @("--create-label", $labelName) }
 $labelPreflightOutput = python $repositorySettingsPreflight @labelPreflightArguments 2>&1
@@ -1137,6 +1262,11 @@ if (-not $labelPreflight.inspection_complete -or
     $labelPreflight.decision -ne "may-configure-repository-settings" -or
     @($labelPreflight.requested_mutations) -notcontains "labels") {
   throw "Repository-settings preflight did not approve the planned label mutations."
+}
+if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+  [string]$labelPreflight.repository, "OWNER/REPO"
+)) {
+  throw "Repository-settings preflight returned a different repository; do not create labels."
 }
 $approvedLabelSettings = $labelPreflight.requested_settings
 if ($null -eq $approvedLabelSettings) {
@@ -1167,6 +1297,7 @@ function Add-LabelIfMissing {
   )
 
   if ($existingLabels.Contains($Name)) { return }
+  $null = Get-ValidatedLabelPreflight -Name $Name
   $createOutput = gh label create $Name --repo github.com/OWNER/REPO `
     --color $Color --description $Description 2>&1
   $createExitCode = $LASTEXITCODE
@@ -1196,6 +1327,33 @@ function Add-LabelIfMissing {
   [void]$existingLabels.Add($Name)
 }
 
+function Get-ValidatedLabelPreflight {
+  param([Parameter(Mandatory)][string]$Name)
+
+  $output = python $repositorySettingsPreflight `
+    --repository "OWNER/REPO" --hostname "github.com" --create-label $Name 2>&1
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    throw "Fresh label preflight is inconclusive for '$Name'; do not create it. $($output | Out-String)"
+  }
+  try {
+    $result = ($output | Out-String) | ConvertFrom-Json
+  } catch {
+    throw "Fresh label preflight returned invalid JSON for '$Name'; do not create it."
+  }
+  $mutations = @($result.requested_mutations | ForEach-Object { [string]$_ })
+  $labels = @($result.requested_settings.labels | ForEach-Object { [string]$_ })
+  if (-not $result.inspection_complete -or
+      $result.decision -ne "may-configure-repository-settings" -or
+      -not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+        [string]$result.repository, "OWNER/REPO"
+      ) -or $mutations.Count -ne 1 -or $mutations[0] -cne "labels" -or
+      $labels.Count -ne 1 -or $labels[0] -cne $Name) {
+    throw "Fresh label preflight did not approve exactly '$Name' for OWNER/REPO; do not create it."
+  }
+  return $result
+}
+
 Add-LabelIfMissing "bug"              d73a4a "Something is not working"
 Add-LabelIfMissing "documentation"    0075ca "Improvements or additions to documentation"
 Add-LabelIfMissing "duplicate"        cfd3d7 "Similar issue, pull request, or discussion already exists"
@@ -1207,25 +1365,75 @@ Add-LabelIfMissing "question"         d876e3 "Further information is requested"
 Add-LabelIfMissing "wontfix"          ffffff "This will not be worked on"
 ```
 
-Create workflow/config labels only when shipping the matching optional asset:
+Create optional workflow/config labels only when the matching asset is selected
+in `$selectedOptionalLabelAssets`. The shipped labeler grants
+`pull-requests: write` but not `issues: write`, so every label in
+`.github/labeler.yml` must already exist when that workflow runs. Run the exact
+workflow-installation preflight for each selected asset, then call
+`Assert-CurrentPlannedLabels` immediately before copying it. Repeat both checks
+before each separate asset copy; do not reuse a label read from an earlier
+preflight or copy.
 
 ```powershell
-# auto-merge.yml
-Add-LabelIfMissing "automerge" 0e8a16 "Auto-merge when CI is green"
+if ($selectedOptionalLabelAssets -contains "auto-merge.yml") {
+  Add-LabelIfMissing "automerge" 0e8a16 "Auto-merge when CI is green"
+}
 
-# labeler.yml
-Add-LabelIfMissing "ci"    5319e7 "Changes to CI configuration"
-Add-LabelIfMissing "tests" bfdadc "Changes to tests"
+if ($selectedOptionalLabelAssets -contains "labeler.yml") {
+  Add-LabelIfMissing "ci"    5319e7 "Changes to CI configuration"
+  Add-LabelIfMissing "tests" bfdadc "Changes to tests"
+}
 
-# release-config.yml
-Add-LabelIfMissing "feature"            a2eeef "Feature work for release notes"
-Add-LabelIfMissing "fix"                d73a4a "Bug fix for release notes"
-Add-LabelIfMissing "ignore-for-release" ffffff "Exclude from generated release notes"
+if ($selectedOptionalLabelAssets -contains "release-config.yml") {
+  Add-LabelIfMissing "feature"            a2eeef "Feature work for release notes"
+  Add-LabelIfMissing "fix"                d73a4a "Bug fix for release notes"
+  Add-LabelIfMissing "ignore-for-release" ffffff "Exclude from generated release notes"
+}
 
-# stale.yml
-Add-LabelIfMissing "Stale"    ededed "Inactive issue or pull request"
-Add-LabelIfMissing "pinned"   1d76db "Exempt from stale automation"
-Add-LabelIfMissing "security" b60205 "Security-related work or report"
+if ($selectedOptionalLabelAssets -contains "stale.yml") {
+  Add-LabelIfMissing "Stale"    ededed "Inactive issue or pull request"
+  Add-LabelIfMissing "pinned"   1d76db "Exempt from stale automation"
+  Add-LabelIfMissing "security" b60205 "Security-related work or report"
+}
+
+$finalLabelListOutput = gh api --hostname github.com --paginate `
+  "repos/OWNER/REPO/labels?per_page=100" --jq '.[].name'
+if ($LASTEXITCODE -ne 0) {
+  throw "Could not verify the final label state after configuration."
+}
+$finalLabelNames = [System.Collections.Generic.HashSet[string]]::new(
+  [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($labelName in @($finalLabelListOutput)) {
+  [void]$finalLabelNames.Add([string]$labelName)
+}
+$missingFinalLabels = @($plannedLabelNames | Where-Object {
+  -not $finalLabelNames.Contains([string]$_)
+})
+if ($missingFinalLabels.Count -gt 0) {
+  throw "Some planned labels are missing from the final repository state: $($missingFinalLabels -join ', ')."
+}
+
+function Assert-CurrentPlannedLabels {
+  $output = gh api --hostname github.com --paginate `
+    "repos/OWNER/REPO/labels?per_page=100" --jq '.[].name'
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    throw "Could not re-read planned labels immediately before copying an asset."
+  }
+  $currentNames = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+  foreach ($labelName in @($output)) {
+    [void]$currentNames.Add([string]$labelName)
+  }
+  $missingNames = @($plannedLabelNames | Where-Object {
+    -not $currentNames.Contains([string]$_)
+  })
+  if ($missingNames.Count -gt 0) {
+    throw "Planned labels changed after preflight; do not copy the asset. Missing: $($missingNames -join ', ')."
+  }
+}
 ```
 
 ## Dependabot
@@ -1293,50 +1501,137 @@ if ($enableSecretScanningRequested) { $securityPreflightArguments += "--enable-s
 if ($enablePushProtectionRequested) { $securityPreflightArguments += "--enable-push-protection" }
 if ($enablePrivateVulnerabilityReportingRequested) { $securityPreflightArguments += "--enable-private-vulnerability-reporting" }
 
-$securityPreflightOutput = python $securityFeaturesPreflight @securityPreflightArguments 2>&1
-if ($LASTEXITCODE -ne 0) {
-  throw "Security-feature inspection is inconclusive; do not mutate. $($securityPreflightOutput | Out-String)"
-}
-try {
-  $securityPreflightResult = ($securityPreflightOutput | Out-String) | ConvertFrom-Json
-} catch {
-  throw "Security-feature preflight returned invalid JSON; do not mutate."
-}
-if (-not $securityPreflightResult.inspection_complete -or
-    $securityPreflightResult.decision -ne "may-configure-security-features") {
-  throw "Security-feature preflight did not approve the requested mutations."
-}
 $requestedSecurityFeatures = @()
 if ($enableDependabotAlertsRequested) { $requestedSecurityFeatures += "dependabot_alerts" }
 if ($enableAutomatedSecurityFixesRequested) { $requestedSecurityFeatures += "automated_security_fixes" }
 if ($enableSecretScanningRequested) { $requestedSecurityFeatures += "secret_scanning" }
 if ($enablePushProtectionRequested) { $requestedSecurityFeatures += "push_protection" }
 if ($enablePrivateVulnerabilityReportingRequested) { $requestedSecurityFeatures += "private_vulnerability_reporting" }
-$approvedSecurityFeatures = @($securityPreflightResult.requested_features | ForEach-Object { [string]$_ })
-if ($approvedSecurityFeatures.Count -ne $requestedSecurityFeatures.Count -or
-    $null -ne (Compare-Object -ReferenceObject $requestedSecurityFeatures -DifferenceObject $approvedSecurityFeatures -CaseSensitive)) {
-  throw "Security-feature preflight input does not match the requested mutations."
+$securityPreflightResult = $null
+$approvedSecurityFeatures = @()
+if ($requestedSecurityFeatures.Count -gt 0) {
+  $securityPreflightOutput = python $securityFeaturesPreflight @securityPreflightArguments 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Security-feature inspection is inconclusive; do not mutate. $($securityPreflightOutput | Out-String)"
+  }
+  try {
+    $securityPreflightResult = ($securityPreflightOutput | Out-String) | ConvertFrom-Json
+  } catch {
+    throw "Security-feature preflight returned invalid JSON; do not mutate."
+  }
+  if (-not $securityPreflightResult.inspection_complete -or
+      $securityPreflightResult.decision -ne "may-configure-security-features") {
+    throw "Security-feature preflight did not approve the requested mutations."
+  }
+  if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+    [string]$securityPreflightResult.repository,
+    "OWNER/REPO"
+  )) {
+    throw "Security-feature preflight returned a different repository; do not mutate."
+  }
+  $approvedSecurityFeatures = @($securityPreflightResult.requested_features | ForEach-Object { [string]$_ })
+  if ($approvedSecurityFeatures.Count -ne $requestedSecurityFeatures.Count -or
+      $null -ne (Compare-Object -ReferenceObject $requestedSecurityFeatures -DifferenceObject $approvedSecurityFeatures -CaseSensitive)) {
+    throw "Security-feature preflight input does not match the requested mutations."
+  }
+} else {
+  Write-Output "No security-feature changes were requested; skip the preflight and mutation blocks."
 }
 ```
 
-Run a following mutating command only when its matching approved request flag
-was passed to this final preflight result. Re-query its endpoint after the
-mutation; an approved preflight is not proof that GitHub accepted or enabled a
-feature.
+An approved feature list is only the planned mutation envelope. Re-run the
+read-only preflight for each individual setting immediately before its write,
+bind its repository and single requested feature, check the write exit code,
+and read the setting back. A failed or inconclusive feature check skips only
+that feature and any dependent setting; continue unrelated scaffold work without
+claiming that feature was enabled.
+
+```powershell
+function Get-ValidatedSecurityFeaturePreflight {
+  param(
+    [Parameter(Mandatory)][string[]]$FeatureArguments,
+    [Parameter(Mandatory)][string]$ExpectedFeature
+  )
+
+  $output = & python $securityFeaturesPreflight `
+    --repository "OWNER/REPO" --hostname "github.com" @FeatureArguments 2>&1
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    Write-Warning "Security-feature preflight is inconclusive for $ExpectedFeature; skip this mutation. $($output | Out-String)"
+    return $null
+  }
+  try {
+    $result = ($output | Out-String) | ConvertFrom-Json
+  } catch {
+    Write-Warning "Security-feature preflight returned invalid JSON for $ExpectedFeature; skip this mutation."
+    return $null
+  }
+  if (-not $result.inspection_complete -or
+      $result.decision -ne "may-configure-security-features" -or
+      -not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+        [string]$result.repository, "OWNER/REPO"
+      )) {
+    Write-Warning "Security-feature preflight did not approve $ExpectedFeature for OWNER/REPO; skip this mutation."
+    return $null
+  }
+  $features = @($result.requested_features | ForEach-Object { [string]$_ })
+  if ($features.Count -ne 1 -or $features[0] -cne $ExpectedFeature) {
+    Write-Warning "Security-feature preflight input does not match $ExpectedFeature; skip this mutation."
+    return $null
+  }
+  return $result
+}
+```
 
 - **Dependency graph**: enabled by default for public repositories. It is not the same setting as Dependabot alerts.
 - **Dependabot alerts**: not enabled by default. Enable explicitly where supported. Dependabot alerts before automated security fixes are required: when both were approved in one preflight, enable alerts, re-query `vulnerability-alerts` successfully, and only then enable security fixes:
 
   ```powershell
   if ($enableDependabotAlertsRequested) {
-    gh api --hostname github.com -X PUT repos/OWNER/REPO/vulnerability-alerts
+    $featurePreflight = Get-ValidatedSecurityFeaturePreflight `
+      -FeatureArguments @("--enable-dependabot-alerts") `
+      -ExpectedFeature "dependabot_alerts"
+    if ($null -ne $featurePreflight) {
+      $enableOutput = gh api --hostname github.com -X PUT `
+        repos/OWNER/REPO/vulnerability-alerts 2>&1
+      $enableExitCode = $LASTEXITCODE
+      if ($enableExitCode -ne 0) {
+        Write-Warning "Dependabot alerts were not enabled; inspect the preserved GitHub response. $($enableOutput | Out-String)"
+      } else {
+        $verifyOutput = gh api --hostname github.com `
+          repos/OWNER/REPO/vulnerability-alerts 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          Write-Warning "Dependabot alerts write returned success, but the enabled state could not be verified. $($verifyOutput | Out-String)"
+        }
+      }
+    }
   }
   if ($enableAutomatedSecurityFixesRequested) {
-    gh api --hostname github.com repos/OWNER/REPO/vulnerability-alerts | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-      throw "Dependabot alerts are not verified as enabled; do not enable automated security fixes."
+    $featurePreflight = Get-ValidatedSecurityFeaturePreflight `
+      -FeatureArguments @("--enable-automated-security-fixes") `
+      -ExpectedFeature "automated_security_fixes"
+    if ($null -ne $featurePreflight) {
+      $enableOutput = gh api --hostname github.com -X PUT `
+        repos/OWNER/REPO/automated-security-fixes 2>&1
+      $enableExitCode = $LASTEXITCODE
+      if ($enableExitCode -ne 0) {
+        Write-Warning "Automated security fixes were not enabled; inspect the preserved GitHub response. $($enableOutput | Out-String)"
+      } else {
+        $verifyOutput = gh api --hostname github.com `
+          repos/OWNER/REPO/automated-security-fixes 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          Write-Warning "Automated security fixes write returned success, but the state could not be verified. $($verifyOutput | Out-String)"
+        } else {
+          try { $fixState = ($verifyOutput | Out-String) | ConvertFrom-Json } catch {
+            $fixState = $null
+          }
+          if ($null -eq $fixState -or $fixState.enabled -ne $true -or
+              $fixState.paused -ne $false) {
+            Write-Warning "Automated security fixes are not verified as enabled and unpaused."
+          }
+        }
+      }
     }
-    gh api --hostname github.com -X PUT repos/OWNER/REPO/automated-security-fixes
   }
   ```
 
@@ -1344,14 +1639,48 @@ feature.
 
   ```powershell
   if ($enableSecretScanningRequested) {
-    gh repo edit github.com/OWNER/REPO --enable-secret-scanning
+    $featurePreflight = Get-ValidatedSecurityFeaturePreflight `
+      -FeatureArguments @("--enable-secret-scanning") `
+      -ExpectedFeature "secret_scanning"
+    if ($null -ne $featurePreflight) {
+      $enableOutput = gh repo edit github.com/OWNER/REPO --enable-secret-scanning 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Secret scanning was not enabled; inspect the preserved GitHub response. $($enableOutput | Out-String)"
+      } else {
+        $verifyOutput = gh api --hostname github.com repos/OWNER/REPO `
+          --jq '.security_and_analysis.secret_scanning.status' 2>&1
+        if ($LASTEXITCODE -ne 0 -or $verifyOutput -cne "enabled") {
+          Write-Warning "Secret scanning write returned success, but its enabled state was not verified. $($verifyOutput | Out-String)"
+        }
+      }
+    }
   }
   if ($enablePushProtectionRequested) {
-    $secretScanningState = gh api --hostname github.com repos/OWNER/REPO --jq '.security_and_analysis.secret_scanning.status'
-    if ($LASTEXITCODE -ne 0 -or $secretScanningState -ne "enabled") {
-      throw "Secret scanning is not verified as enabled; do not enable push protection."
+    $featurePreflight = Get-ValidatedSecurityFeaturePreflight `
+      -FeatureArguments @("--enable-push-protection") `
+      -ExpectedFeature "push_protection"
+    if ($null -ne $featurePreflight) {
+      $enableOutput = gh repo edit github.com/OWNER/REPO `
+        --enable-secret-scanning-push-protection 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Push protection was not enabled; inspect the preserved GitHub response. $($enableOutput | Out-String)"
+      } else {
+        $verifyOutput = gh api --hostname github.com repos/OWNER/REPO `
+          --jq '{secret_scanning: .security_and_analysis.secret_scanning.status, push_protection: .security_and_analysis.secret_scanning_push_protection.status}' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          Write-Warning "Push-protection state could not be read after the write. $($verifyOutput | Out-String)"
+        } else {
+          try { $pushProtectionState = ($verifyOutput | Out-String) | ConvertFrom-Json } catch {
+            $pushProtectionState = $null
+          }
+          if ($null -eq $pushProtectionState -or
+              $pushProtectionState.secret_scanning -cne "enabled" -or
+              $pushProtectionState.push_protection -cne "enabled") {
+            Write-Warning "Push protection and its secret-scanning prerequisite were not both verified as enabled."
+          }
+        }
+      }
     }
-    gh repo edit github.com/OWNER/REPO --enable-secret-scanning-push-protection
   }
   ```
 
@@ -1393,6 +1722,11 @@ feature.
       $advancedCodeqlResult.decision -ne "may-install-advanced-codeql-workflow") {
     throw "Advanced CodeQL setup is not eligible. Resolve the returned decision and rerun before copying codeql.yml."
   }
+  if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+      [string]$advancedCodeqlResult.repository, "OWNER/REPO"
+    ) -or [string]$advancedCodeqlResult.default_branch -cne $DEFAULT_BRANCH) {
+    throw "Advanced CodeQL preflight result is not bound to OWNER/REPO and DEFAULT_BRANCH; do not copy codeql.yml."
+  }
   ```
 
   Then run `workflow_installation_preflight.py` against `codeql.yml`; this
@@ -1417,15 +1751,21 @@ feature.
       $scorecardPreflightResult.decision -ne "may-install-scorecard-workflow") {
     throw "Scorecard is not eligible. Resolve the returned decision and rerun before copying scorecard.yml."
   }
+  if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+    [string]$scorecardPreflightResult.repository, "OWNER/REPO"
+  )) {
+    throw "Scorecard preflight returned a different repository; do not copy scorecard.yml."
+  }
   ```
 
-- **Code scanning default setup**: requires an eligible repository and supported detected language. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
+- **Code scanning default setup**: requires GitHub Actions and code-scanning eligibility. GitHub can enable default setup without a currently supported language, but no scan runs until a supported language is added; report that distinction and do not claim scan coverage from configuration state alone. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
 
   The bundled preflight requires PyYAML and a Python feature release at or above
   `tooling-python-minimum` in `.github/ci-toolchain.json`. When default setup is
-  not configured, it verifies the exact repository and current default branch
-  from GitHub before inspecting remote workflows. Remote tree entries using
-  symlink or non-file modes fail closed instead of being parsed as workflow YAML.
+  not configured, the mutation-mode check requires repository administration,
+  an active repository, enabled Actions, and the exact current default branch
+  before inspecting remote workflows. Remote tree entries using symlink or
+  non-file modes fail closed instead of being parsed as workflow YAML.
 
   Resolve `REPO_SCAFFOLD_SKILL_ROOT` to the installed/source directory that contains this skill's `SKILL.md`; do not guess it from the current working directory. Run the bundled structural preflight with an available Python interpreter. It uses PyYAML's non-coercing `BaseLoader`, rejects duplicate keys, inspects only direct files under `.github/workflows`, inspects semantic `jobs.*.uses`, `jobs.*.steps[*].uses`, and shell-aware executable `run` content, and honors step, job, and workflow shell selection. For recognized Bash and PowerShell shells it masks inert heredoc, here-string, arithmetic-shift, literal, comment, and uninvoked function content, including function definitions whose opening brace is on the following line. It retains transitively invoked function bodies, literal `eval` and trap handlers, exported functions invoked by literal nested-shell commands, statically resolvable Bash/PowerShell aliases, direct shell-heredoc, recognized command wrappers, GNU `env` split strings, `xargs` with supported GNU/BSD options, direct `find` executors, shell `-c`, pipeline-fed shells, backtick/`$()` command substitution, Bash process substitution, PowerShell scriptblocks, nested PowerShell `-Command`, `Invoke-Expression`, `Start-Process`, direct `cmd /c` or `/k` CodeQL commands, quoted call-operator commands, and PowerShell `$()` execution. An unresolved command position, call-operator expression, recognized dynamic executor or alias target, encoded PowerShell command with a non-literal payload, or a malformed or unterminated construct fails closed. An unsupported or unresolved effective shell also fails closed instead of falling back to raw-text inspection. If default setup is already configured, it returns the safe preserve decision without the unnecessary workflow/analysis queries, sets those uninspected evidence fields to `null`, and sets `workflow_inspection_performed` and `analysis_inspection_performed` to false. Any other state must be exactly `not-configured`; an unknown default-setup state fails closed. It follows reusable workflows per top-level caller, rejects cycles, enforces GitHub's limit of 50 unique called workflows and 10 total levels on every call path, retains a separate 500-edge traversal safety cap, bounds API requests, and applies a timeout to each `gh api` subprocess. If Python, PyYAML, the effective shell, shell syntax, a workflow, a linked path, an API response, or the separate external/indirect CodeQL confirmation is unavailable, it exits inconclusive and mutation remains forbidden.
 
@@ -1470,7 +1810,8 @@ feature.
       break
     }
   }
-  $defaultSetupMutationApproved = $false
+  $defaultSetupEnablementApproved = $false
+  $defaultSetupSwitchApproved = $false
   $noExternalCodeqlConfirmed = $false
 
   if ($null -eq $pythonCommand) {
@@ -1480,7 +1821,8 @@ feature.
       "--repo-root", $REPO_ROOT,
       "--repository", "OWNER/REPO",
       "--default-branch", $DEFAULT_BRANCH,
-      "--hostname", "github.com"
+      "--hostname", "github.com",
+      "--require-administration-permission"
     )
     if ($noExternalCodeqlConfirmed) {
       $preflightArguments += "--confirm-no-external-codeql"
@@ -1497,26 +1839,96 @@ feature.
       }
       if (-not $preflight.inspection_complete) {
         Write-Warning "CodeQL setup inspection is inconclusive; do not PATCH."
+      } elseif (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+          [string]$preflight.repository, "OWNER/REPO"
+        ) -or [string]$preflight.default_branch -cne $DEFAULT_BRANCH) {
+        throw "CodeQL preflight result is not bound to OWNER/REPO and DEFAULT_BRANCH; do not PATCH."
+      } elseif ($preflight.decision -ne "preserve-default-setup" -and
+          ($preflight.administration_permission -ne $true -or
+           $preflight.github_actions_enabled -ne $true)) {
+        Write-Warning "CodeQL default setup lacks confirmed administration permission or enabled Actions; do not PATCH."
       } elseif ($preflight.decision -eq "preserve-default-setup") {
         Write-Output "Code scanning default setup is already configured; preserve it without PATCHing."
       } elseif ($preflight.decision -eq "require-explicit-switch-confirmation") {
         $workflowSummary = @($preflight.advanced_workflows) -join ", "
         Write-Warning "Possible CodeQL advanced setup detected ($workflowSummary). Stop before PATCH, explain that default setup will disable the existing workflow and block CodeQL analysis API uploads, and ask for explicit approval to switch."
       } elseif ($preflight.decision -eq "may-offer-default-setup") {
-        $defaultSetupMutationApproved = $true
-        Write-Output "No direct CodeQL evidence was detected, and the absence of external or indirect CodeQL uploads was separately confirmed; default setup may be offered."
+        Write-Output "Default setup is eligible to be offered. Obtain the user's explicit approval before setting `$defaultSetupEnablementApproved or PATCHing."
       } else {
         Write-Warning "CodeQL preflight returned an unknown decision; do not PATCH."
       }
+      $initialCodeqlDecision = [string]$preflight.decision
+      $initialAdvancedWorkflows = @($preflight.advanced_workflows | ForEach-Object { [string]$_ })
+      $initialHasCodeqlAnalysis = $preflight.has_codeql_analysis
     }
   }
   ```
 
-  Run the mutating block below in the same PowerShell session only when the inspection completed, default setup is not already configured, and either no direct or confirmed-external advanced-setup evidence exists or the user separately confirmed the documented switch. After that switch confirmation, set `$defaultSetupMutationApproved = $true` explicitly in that session. Record both kinds of confirmation; do not infer either from general scaffold approval. The PATCH can return `202 Accepted` with a validation workflow; wait for that run to complete and require a final GET with `state: configured` before calling the feature enabled. A non-successful validation conclusion does not negate `state: configured`; report that conclusion separately and do not claim that scans succeeded:
+  Run the mutating block below only after the user explicitly approves enabling
+  CodeQL default setup for this repository. General scaffold approval and the
+  read-only `may-offer-default-setup` decision are not that approval. If the
+  preflight reports `require-explicit-switch-confirmation`, explain the exact
+  advanced workflows and analysis evidence, obtain separate approval to switch,
+  and set `$defaultSetupSwitchApproved = $true` only then. Immediately before the
+  PATCH, rerun the same preflight with the same target, branch, and explicit
+  no-external-uploader confirmation; require the same decision and evidence,
+  exact repository/default-branch binding, `not-configured` state, and current
+  administration permission. A changed decision or evidence requires a new
+  review and approval. The PATCH can return `202 Accepted` with a validation
+  workflow; wait for it to complete and require a final GET with
+  `state: configured` before calling the feature enabled. A non-successful
+  validation conclusion does not negate `state: configured`; report that
+  conclusion separately and do not claim that scans succeeded:
 
   ```powershell
-  if (-not $defaultSetupMutationApproved) {
-    throw "CodeQL default-setup mutation was not approved by the completed preflight."
+  if (-not $defaultSetupEnablementApproved) {
+    throw "CodeQL default setup was not explicitly approved; do not PATCH."
+  }
+  if ($initialCodeqlDecision -eq "preserve-default-setup" -or
+      $initialCodeqlDecision -notin @("may-offer-default-setup", "require-explicit-switch-confirmation")) {
+    throw "The initial CodeQL preflight did not permit this mutation."
+  }
+  if ($initialCodeqlDecision -eq "require-explicit-switch-confirmation" -and
+      -not $defaultSetupSwitchApproved) {
+    throw "Switching from existing CodeQL setup was not separately approved; do not PATCH."
+  }
+  if (-not $noExternalCodeqlConfirmed) {
+    throw "Absence of external or indirect CodeQL uploaders was not confirmed; do not PATCH."
+  }
+  $finalPreflightOutput = & $pythonCommand.Source $preflightScript `
+    --repo-root $REPO_ROOT `
+    --repository "OWNER/REPO" `
+    --default-branch $DEFAULT_BRANCH `
+    --hostname "github.com" `
+    --confirm-no-external-codeql `
+    --require-administration-permission 2>&1
+  $finalPreflightExitCode = $LASTEXITCODE
+  if ($finalPreflightExitCode -ne 0) {
+    throw "Final CodeQL preflight is inconclusive; do not PATCH. $($finalPreflightOutput | Out-String)"
+  }
+  try {
+    $finalPreflight = ($finalPreflightOutput | Out-String) | ConvertFrom-Json
+  } catch {
+    throw "Final CodeQL preflight returned invalid JSON; do not PATCH."
+  }
+  $finalAdvancedWorkflows = @($finalPreflight.advanced_workflows | ForEach-Object { [string]$_ })
+  if (-not $finalPreflight.inspection_complete -or
+      $finalPreflight.decision -cne $initialCodeqlDecision -or
+      $finalPreflight.default_setup_state -cne "not-configured" -or
+      $finalPreflight.external_codeql_absence_confirmed -ne $true -or
+      $finalPreflight.administration_permission -ne $true -or
+      $finalPreflight.github_actions_enabled -ne $true -or
+      -not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+        [string]$finalPreflight.repository, "OWNER/REPO"
+      ) -or [string]$finalPreflight.default_branch -cne $DEFAULT_BRANCH -or
+      $finalPreflight.has_codeql_analysis -ne $initialHasCodeqlAnalysis -or
+      $finalAdvancedWorkflows.Count -ne $initialAdvancedWorkflows.Count -or
+      $null -ne (Compare-Object -ReferenceObject $initialAdvancedWorkflows -DifferenceObject $finalAdvancedWorkflows -CaseSensitive)) {
+    throw "CodeQL evidence or target changed since approval; review the fresh result and obtain any required approval again."
+  }
+  if ($finalPreflight.decision -eq "require-explicit-switch-confirmation" -and
+      -not $defaultSetupSwitchApproved) {
+    throw "The fresh CodeQL result requires separate approval to switch; do not PATCH."
   }
   $defaultSetupPath = "repos/OWNER/REPO/code-scanning/default-setup"
   $defaultSetupEnabled = $false
@@ -1598,7 +2010,22 @@ feature.
 
   ```powershell
   if ($enablePrivateVulnerabilityReportingRequested) {
-    gh api --hostname github.com -X PUT repos/OWNER/REPO/private-vulnerability-reporting
+    $featurePreflight = Get-ValidatedSecurityFeaturePreflight `
+      -FeatureArguments @("--enable-private-vulnerability-reporting") `
+      -ExpectedFeature "private_vulnerability_reporting"
+    if ($null -ne $featurePreflight) {
+      $enableOutput = gh api --hostname github.com -X PUT `
+        repos/OWNER/REPO/private-vulnerability-reporting 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Private vulnerability reporting was not enabled; inspect the preserved GitHub response. $($enableOutput | Out-String)"
+      } else {
+        $verifyOutput = gh api --hostname github.com `
+          repos/OWNER/REPO/private-vulnerability-reporting --jq '.enabled' 2>&1
+        if ($LASTEXITCODE -ne 0 -or $verifyOutput -cne "true") {
+          Write-Warning "Private vulnerability reporting write returned success, but the enabled state was not verified. $($verifyOutput | Out-String)"
+        }
+      }
+    }
   }
   ```
 
@@ -1626,6 +2053,11 @@ feature.
       $dependencyReviewPreflightResult.decision -ne "may-install-dependency-review-workflow") {
     throw "Dependency-review capability is not confirmed. Resolve the returned decision and rerun before copying the workflow."
   }
+  if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+    [string]$dependencyReviewPreflightResult.repository, "OWNER/REPO"
+  )) {
+    throw "Dependency-review preflight returned a different repository; do not copy the workflow."
+  }
   ```
 
   The v5 asset handles both `pull_request` and `merge_group` payloads. Require
@@ -1644,6 +2076,10 @@ repository response to the explicit `OWNER/REPO`, rejects archived or disabled
 repositories, requires current administration permission, and rejects unbounded
 effective-rule results. It preserves every method required by an effective merge
 queue or pull-request rule, and records the exact resulting method plan. It
+also binds the requested `delete_branch_on_merge=true` and
+`squash_merge_commit_title=PR_TITLE` values and records their current state.
+The flow reruns it before each separate settings write and compares the fresh
+policy and current values with the expected intermediate state.
 returns `require-explicit-merge-method-removal-confirmation` when the proposed
 squash-default configuration would disable an enabled merge or rebase method.
 Do not pass its confirmation flag until the user separately approves those named
@@ -1670,7 +2106,9 @@ if ([string]::IsNullOrWhiteSpace($DEFAULT_BRANCH)) {
 $preflightArguments = @(
   "--repository", "OWNER/REPO",
   "--default-branch", $DEFAULT_BRANCH,
-  "--require-auto-merge-workflows"
+  "--require-auto-merge-workflows",
+  "--enable-delete-branch-on-merge",
+  "--squash-merge-commit-title", "PR_TITLE"
 )
 $preflightOutput = python $mergeSettingsPreflight @preflightArguments 2>&1
 if ($LASTEXITCODE -ne 0) {
@@ -1679,6 +2117,15 @@ if ($LASTEXITCODE -ne 0) {
 $mergeSettingsPreflightResult = ($preflightOutput | Out-String) | ConvertFrom-Json
 if (-not $mergeSettingsPreflightResult.inspection_complete) {
   throw "Merge-settings inspection is incomplete; do not mutate."
+}
+if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+  [string]$mergeSettingsPreflightResult.repository, "OWNER/REPO"
+) -or [string]$mergeSettingsPreflightResult.default_branch -cne $DEFAULT_BRANCH) {
+  throw "Merge-settings preflight result is not bound to OWNER/REPO and DEFAULT_BRANCH; do not mutate."
+}
+if ($mergeSettingsPreflightResult.requested_settings.delete_branch_on_merge -ne $true -or
+    $mergeSettingsPreflightResult.requested_settings.squash_merge_commit_title -cne "PR_TITLE") {
+  throw "Merge-settings preflight did not bind the requested branch-deletion and squash-title settings; do not mutate."
 }
 if ($mergeSettingsPreflightResult.decision -eq "require-explicit-merge-method-removal-confirmation") {
   $methods = @($mergeSettingsPreflightResult.methods_to_disable) -join ", "
@@ -1697,6 +2144,10 @@ $enableMergeCommit = [bool]$mergeSettingsPreflightResult.desired_merge_methods.m
 $enableRebaseMerge = [bool]$mergeSettingsPreflightResult.desired_merge_methods.rebase
 $hasMergeQueue = [bool]$mergeSettingsPreflightResult.merge_queue_applies
 $installAutoMergeWorkflows = [bool]$mergeSettingsPreflightResult.auto_merge_workflows_eligible
+# Set only after the user explicitly requests one of the shipped assets and
+# separately approves enabling this optional repository capability.
+$installAutoMergeAssetsRequested = $false
+$autoMergeCapabilityEnableApproved = $false
 ```
 
 After separate approval for listed removals, append
@@ -1710,6 +2161,13 @@ Use `$enableMergeCommit`, `$enableRebaseMerge`, and
 `$installAutoMergeWorkflows` only from its final JSON result. The detailed
 effective-rule inspection below is retained to explain the underlying GitHub
 policy fields; do not replace the helper's result with manually inferred values.
+The repository-level auto-merge capability is opt-in. Set
+`$installAutoMergeAssetsRequested = $true` only after the user chooses one of the
+two assets. If the preflight reports
+`enable-auto-merge-before-installing-workflows`, set
+`$autoMergeCapabilityEnableApproved = $true` only after separate approval to
+change that repository setting. Without both conditions, leave the setting as
+observed and do not install either asset.
 
 For explanation and troubleshooting only, the following inspection shows the
 effective-rule fields evaluated by the helper. The built-in `GITHUB_TOKEN`
@@ -1781,6 +2239,119 @@ Continue with the repository merge settings below even when `$hasMergeQueue` is 
 ```powershell
 # Values come only from the final merge-settings preflight. A queue configured
 # for MERGE or REBASE must keep that method enabled or GitHub will block it.
+$initialMergePlan = [ordered]@{
+  repository = [string]$mergeSettingsPreflightResult.repository
+  default_branch = [string]$mergeSettingsPreflightResult.default_branch
+  decision = [string]$mergeSettingsPreflightResult.decision
+  desired_merge_methods = $mergeSettingsPreflightResult.desired_merge_methods
+  methods_to_disable = @($mergeSettingsPreflightResult.methods_to_disable)
+  merge_queue_applies = [bool]$mergeSettingsPreflightResult.merge_queue_applies
+  auto_merge_enabled = [bool]$mergeSettingsPreflightResult.auto_merge_enabled
+  auto_merge_workflows_eligible = [bool]$mergeSettingsPreflightResult.auto_merge_workflows_eligible
+  status_checks_required = $mergeSettingsPreflightResult.status_checks_required
+  requested_settings = $mergeSettingsPreflightResult.requested_settings
+  current_settings = $mergeSettingsPreflightResult.current_settings
+} | ConvertTo-Json -Depth 6 -Compress
+$finalPreflightOutput = python $mergeSettingsPreflight @preflightArguments 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Final merge-settings inspection is inconclusive; do not mutate. $($finalPreflightOutput | Out-String)"
+}
+$finalMergePreflight = ($finalPreflightOutput | Out-String) | ConvertFrom-Json
+if (-not $finalMergePreflight.inspection_complete -or
+    -not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+      [string]$finalMergePreflight.repository, "OWNER/REPO"
+    ) -or [string]$finalMergePreflight.default_branch -cne $DEFAULT_BRANCH) {
+  throw "Final merge-settings preflight is incomplete or bound to another target; do not mutate."
+}
+$finalMergePlan = [ordered]@{
+  repository = [string]$finalMergePreflight.repository
+  default_branch = [string]$finalMergePreflight.default_branch
+  decision = [string]$finalMergePreflight.decision
+  desired_merge_methods = $finalMergePreflight.desired_merge_methods
+  methods_to_disable = @($finalMergePreflight.methods_to_disable)
+  merge_queue_applies = [bool]$finalMergePreflight.merge_queue_applies
+  auto_merge_enabled = [bool]$finalMergePreflight.auto_merge_enabled
+  auto_merge_workflows_eligible = [bool]$finalMergePreflight.auto_merge_workflows_eligible
+  status_checks_required = $finalMergePreflight.status_checks_required
+  requested_settings = $finalMergePreflight.requested_settings
+  current_settings = $finalMergePreflight.current_settings
+} | ConvertTo-Json -Depth 6 -Compress
+if ($initialMergePlan -cne $finalMergePlan -or
+    $finalMergePreflight.decision -notin @(
+      "may-configure-merge-settings", "skip-auto-merge-workflows",
+      "enable-auto-merge-before-installing-workflows"
+    )) {
+  throw "Merge settings or effective rules changed since approval; review the fresh preflight before mutating."
+}
+$mergeSettingsPreflightResult = $finalMergePreflight
+$enableMergeCommit = [bool]$finalMergePreflight.desired_merge_methods.merge
+$enableRebaseMerge = [bool]$finalMergePreflight.desired_merge_methods.rebase
+$hasMergeQueue = [bool]$finalMergePreflight.merge_queue_applies
+$installAutoMergeWorkflows = [bool]$finalMergePreflight.auto_merge_workflows_eligible
+$enableAutoMergeNow = -not [bool]$finalMergePreflight.auto_merge_enabled -and
+  $installAutoMergeAssetsRequested -and $autoMergeCapabilityEnableApproved
+$expectedAutoMergeEnabled = [bool]$finalMergePreflight.auto_merge_enabled -or $enableAutoMergeNow
+
+function Get-ValidatedFreshMergePreflight {
+  param(
+    [Parameter(Mandatory)][bool]$ExpectedAutoMergeEnabled,
+    [Parameter(Mandatory)][bool]$ExpectedDeleteBranchOnMerge,
+    [Parameter(Mandatory)][string]$ExpectedSquashMergeCommitTitle,
+    [switch]$RequireDesiredMergeMethods
+  )
+
+  $output = python $mergeSettingsPreflight @preflightArguments 2>&1
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    throw "Fresh merge-settings preflight is inconclusive; do not mutate. $($output | Out-String)"
+  }
+  try {
+    $result = ($output | Out-String) | ConvertFrom-Json
+  } catch {
+    throw "Fresh merge-settings preflight returned invalid JSON; do not mutate."
+  }
+  $policy = [ordered]@{
+    required_merge_methods = @($result.required_merge_methods)
+    desired_merge_methods = $result.desired_merge_methods
+    merge_queue_applies = [bool]$result.merge_queue_applies
+    ruleset_status_checks_required = $result.ruleset_status_checks_required
+    classic_status_checks_required = $result.classic_status_checks_required
+    status_checks_required = $result.status_checks_required
+  } | ConvertTo-Json -Depth 6 -Compress
+  $approvedPolicy = [ordered]@{
+    required_merge_methods = @($finalMergePreflight.required_merge_methods)
+    desired_merge_methods = $finalMergePreflight.desired_merge_methods
+    merge_queue_applies = [bool]$finalMergePreflight.merge_queue_applies
+    ruleset_status_checks_required = $finalMergePreflight.ruleset_status_checks_required
+    classic_status_checks_required = $finalMergePreflight.classic_status_checks_required
+    status_checks_required = $finalMergePreflight.status_checks_required
+  } | ConvertTo-Json -Depth 6 -Compress
+  if (-not $result.inspection_complete -or
+      -not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+        [string]$result.repository, "OWNER/REPO"
+      ) -or [string]$result.default_branch -cne $DEFAULT_BRANCH -or
+      $result.administration_permission -ne $true -or
+      $result.requested_settings.delete_branch_on_merge -ne $true -or
+      $result.requested_settings.squash_merge_commit_title -cne "PR_TITLE" -or
+      [bool]$result.auto_merge_enabled -ne $ExpectedAutoMergeEnabled -or
+      [bool]$result.current_settings.delete_branch_on_merge -ne $ExpectedDeleteBranchOnMerge -or
+      [string]$result.current_settings.squash_merge_commit_title -cne $ExpectedSquashMergeCommitTitle -or
+      $policy -cne $approvedPolicy -or
+      $result.decision -notin @(
+        "may-configure-merge-settings", "skip-auto-merge-workflows",
+        "enable-auto-merge-before-installing-workflows"
+      )) {
+    throw "Fresh merge policy, repository settings, or request changed; review it again before mutating."
+  }
+  if ($RequireDesiredMergeMethods -and
+      ([bool]$result.current_merge_methods.squash -ne [bool]$result.desired_merge_methods.squash -or
+       [bool]$result.current_merge_methods.merge -ne [bool]$result.desired_merge_methods.merge -or
+       [bool]$result.current_merge_methods.rebase -ne [bool]$result.desired_merge_methods.rebase)) {
+    throw "Fresh merge-method state does not match the approved plan; do not continue mutating."
+  }
+  return $result
+}
+
 $mergeArguments = @(
   "repo", "edit", "github.com/OWNER/REPO",
   "--enable-squash-merge=true",
@@ -1797,6 +2368,11 @@ try {
   }
   $completedMergeUpdates += "merge_methods_and_branch_cleanup"
 
+  $null = Get-ValidatedFreshMergePreflight `
+    -ExpectedAutoMergeEnabled ([bool]$finalMergePreflight.auto_merge_enabled) `
+    -ExpectedDeleteBranchOnMerge $true `
+    -ExpectedSquashMergeCommitTitle ([string]$finalMergePreflight.current_settings.squash_merge_commit_title) `
+    -RequireDesiredMergeMethods
   $squashTitleOutput = & gh api --hostname github.com -X PATCH `
     repos/OWNER/REPO -f squash_merge_commit_title=PR_TITLE 2>&1
   if ($LASTEXITCODE -ne 0) {
@@ -1804,23 +2380,28 @@ try {
   }
   $completedMergeUpdates += "squash_merge_commit_title"
 
-  # Enable this optional capability separately. Only install auto-merge workflows
-  # after this call and the final state verification succeed.
-  $autoMergeOutput = & gh repo edit github.com/OWNER/REPO --enable-auto-merge 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    $autoMergeError = $autoMergeOutput | Out-String
-    if ($autoMergeError -match '(?is)HTTP 403') {
-      throw "GitHub forbade auto-merge enablement. Verify repository plan and Administration permission. Do not install auto-merge workflows. $autoMergeError"
+  if ($enableAutoMergeNow) {
+    $null = Get-ValidatedFreshMergePreflight `
+      -ExpectedAutoMergeEnabled $false `
+      -ExpectedDeleteBranchOnMerge $true `
+      -ExpectedSquashMergeCommitTitle "PR_TITLE" `
+      -RequireDesiredMergeMethods
+    $autoMergeOutput = & gh repo edit github.com/OWNER/REPO --enable-auto-merge 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      $autoMergeError = $autoMergeOutput | Out-String
+      if ($autoMergeError -match '(?is)HTTP 403') {
+        throw "GitHub forbade auto-merge enablement. Verify repository plan and Administration permission. Do not install auto-merge workflows. $autoMergeError"
+      }
+      if ($autoMergeError -match '(?is)HTTP 404') {
+        throw "The repository is missing or inaccessible. Re-verify repository identity; do not install auto-merge workflows. $autoMergeError"
+      }
+      if ($autoMergeError -match '(?is)HTTP 422') {
+        throw "GitHub rejected auto-merge enablement as invalid, ineligible, or abuse-limited. Inspect the preserved response; do not install auto-merge workflows. $autoMergeError"
+      }
+      throw "Failed to enable auto-merge. $autoMergeError"
     }
-    if ($autoMergeError -match '(?is)HTTP 404') {
-      throw "The repository is missing or inaccessible. Re-verify repository identity; do not install auto-merge workflows. $autoMergeError"
-    }
-    if ($autoMergeError -match '(?is)HTTP 422') {
-      throw "GitHub rejected auto-merge enablement as invalid, ineligible, or abuse-limited. Inspect the preserved response; do not install auto-merge workflows. $autoMergeError"
-    }
-    throw "Failed to enable auto-merge. $autoMergeError"
+    $completedMergeUpdates += "auto_merge"
   }
-  $completedMergeUpdates += "auto_merge"
 } catch {
   $mergeSettingsFailure = $_.Exception.Message
 }
@@ -1861,8 +2442,8 @@ if ([bool]$finalMergeSettings.allow_rebase_merge -ne $enableRebaseMerge) {
 if (-not [bool]$finalMergeSettings.delete_branch_on_merge) {
   $mergeSettingProblems += "head-branch deletion is disabled"
 }
-if (-not [bool]$finalMergeSettings.allow_auto_merge) {
-  $mergeSettingProblems += "auto-merge is disabled"
+if ([bool]$finalMergeSettings.allow_auto_merge -ne $expectedAutoMergeEnabled) {
+  $mergeSettingProblems += "auto-merge setting differs from the explicitly approved target"
 }
 if ([string]$finalMergeSettings.squash_merge_commit_title -cne "PR_TITLE") {
   $mergeSettingProblems += "squash commit title is not PR_TITLE"
@@ -1870,7 +2451,49 @@ if ([string]$finalMergeSettings.squash_merge_commit_title -cne "PR_TITLE") {
 if ($mergeSettingProblems.Count -gt 0) {
   throw "Repository merge settings did not reach the requested state: $($mergeSettingProblems -join '; '). Final state: $finalMergeSummary"
 }
+$postMergePreflightOutput = python $mergeSettingsPreflight @preflightArguments 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Merge settings were updated, but the final auto-merge eligibility check is inconclusive; do not install either workflow. $($postMergePreflightOutput | Out-String)"
+}
+$postMergePreflight = ($postMergePreflightOutput | Out-String) | ConvertFrom-Json
+if (-not $postMergePreflight.inspection_complete -or
+    -not [System.StringComparer]::OrdinalIgnoreCase.Equals(
+      [string]$postMergePreflight.repository, "OWNER/REPO"
+    ) -or [string]$postMergePreflight.default_branch -cne $DEFAULT_BRANCH -or
+    [bool]$postMergePreflight.auto_merge_enabled -ne [bool]$finalMergeSettings.allow_auto_merge -or
+    [bool]$finalMergeSettings.allow_squash_merge -ne [bool]$postMergePreflight.desired_merge_methods.squash -or
+    [bool]$finalMergeSettings.allow_merge_commit -ne [bool]$postMergePreflight.desired_merge_methods.merge -or
+    [bool]$finalMergeSettings.allow_rebase_merge -ne [bool]$postMergePreflight.desired_merge_methods.rebase -or
+    [bool]$finalMergeSettings.delete_branch_on_merge -ne [bool]$postMergePreflight.current_settings.delete_branch_on_merge -or
+    [string]$finalMergeSettings.squash_merge_commit_title -cne [string]$postMergePreflight.current_settings.squash_merge_commit_title) {
+  throw "Merge settings or effective branch rules changed during configuration; review the fresh result and do not install either workflow."
+}
+$installAutoMergeWorkflows = [bool]$postMergePreflight.auto_merge_workflows_eligible
+if ($installAutoMergeAssetsRequested -and -not $installAutoMergeWorkflows) {
+  Write-Warning "Fresh merge-settings preflight returned '$($postMergePreflight.decision)'; do not install either auto-merge workflow."
+}
 ```
+
+Run the exact workflow-installation preflight for the selected asset first. Then
+immediately before copying each selected auto-merge asset, rerun the merge
+preflight against the same approved settings and effective-rule evidence:
+
+```powershell
+if ($installAutoMergeAssetsRequested -and $installAutoMergeWorkflows) {
+  $copyMergePreflight = Get-ValidatedFreshMergePreflight `
+    -ExpectedAutoMergeEnabled $true `
+    -ExpectedDeleteBranchOnMerge $true `
+    -ExpectedSquashMergeCommitTitle "PR_TITLE" `
+    -RequireDesiredMergeMethods
+  if (-not $copyMergePreflight.auto_merge_workflows_eligible) {
+    throw "Fresh merge-settings preflight no longer permits this asset; do not copy it."
+  }
+}
+```
+
+Repeat this check before the second asset if both were selected. A change in the
+default branch, effective queue/rules, required-check eligibility, or repository
+settings means the old installation verdict cannot authorize a later copy.
 
 The repository API setting `squash_merge_commit_title=PR_TITLE` makes the final squash commit use the PR title. When `commitlint.yml` is installed, its dependency-free `commitlint` job validates that title as well as the PR commits, preserving Conventional Commit input for release-please. `--enable-auto-merge` is required for any auto-merge workflow (`gh pr merge --auto`) to work — both Dependabot auto-merge and the label-gated `auto-merge.yml`.
 
@@ -1899,6 +2522,10 @@ instead. A result of `inconclusive` forbids the release workflow mutation until
 the evidence is repaired. For a confirmed private or internal GitHub Enterprise
 Cloud repository, add `--github-enterprise-cloud`; omit
 `--with-attestations` when provenance attestations are not requested.
+Before copying any release asset, require the same result to report
+`repository` equal to `OWNER/REPO` (case-insensitive) and `default_branch`
+exactly equal to `DEFAULT_BRANCH`. Rerun the preflight immediately before
+copying if the selected repository or default branch changed.
 
 Treat plugin-creator's local `+codex.<cachebuster>` suffix as installation identity only. Do not copy it into the public release manifest, plugin version, changelog, or tag; confirm and use the clean public SemVer instead. Preserve other SemVer build metadata only when the user explicitly confirms it is part of the public release identity.
 
@@ -1931,7 +2558,24 @@ For `en`, use `Features`, `Bug Fixes`, `Performance Improvements`, `Reverts`,
 Release Please and documentation links from the English asset, translating
 only the surrounding prose.
 
-When installing release-please, also copy `assets/release-please-config.json` and `assets/release-please-manifest.json` to the repository root as `release-please-config.json` and `.release-please-manifest.json`. Render the config's pull-request title, header, footer, and changelog section names in the resolved `SCAFFOLD_LANGUAGE`. Preserve `${scope}`, `${component}`, and `${version}` exactly in the title pattern, and preserve the asset's changelog type order and `hidden` flags so localization does not change release semantics. Before changing the title pattern in an existing setup, list open release PRs and coordinate the transition: release-please uses the configured pattern to build and parse titles, so rename an existing release PR to the exact new pattern immediately before the config lands, or wait until that PR is resolved. After the first run with the new config, verify that the original release PR was updated and no duplicate was opened. The config intentionally combines `draft: true` with `force-tag-creation: true`. release-please creates the tag before it creates the draft Release, so never pair this mode with `release-tag.yml` or another `push.tags: v*` caller: that caller could observe the tag before the draft exists. The shipped `release-please.yml` instead waits for the release-please action to complete, then invokes reusable `release.yml` with the emitted tag and the action's `sha` output. The engine serializes callers by tag. A read-only build job verifies the tag through the authenticated Git database references/tags REST APIs, checks out that immutable commit without persisted credentials, builds and validates regular-file artifacts, then transfers them through SHA-pinned artifact actions. For an eligible repository, a fresh attestation job downloads those files without a checkout, validates them without executing project code, and generates SLSA build provenance with `actions/attest`; it alone receives `id-token: write` and `attestations: write`, while the reusable-workflow caller passes those permissions through. GitHub currently supports attestations for public repositories on current plans and for private/internal repositories on GitHub Enterprise Cloud. For an ineligible repository, render the documented no-attestation variant rather than leaving a gate that cannot succeed. A separate write-enabled publish job on a fresh runner downloads but never executes those artifacts, waits for attestation when enabled, verifies the tag immediately before publishing, and checks it once more after publication. When it creates a missing draft Release, `--verify-tag` prevents GitHub CLI from silently recreating a tag that disappeared after verification. A pre-publication mismatch leaves the Release as a draft and fails. A post-publication mismatch is an integrity incident that the workflow reports but cannot roll back; use an effective tag ruleset or immutable releases when tag movement must be prevented rather than merely detected. Reruns may repair a draft, but they must refuse every published Release, including a legacy mutable one: `gh release upload --clobber` deletes an existing public asset before uploading its replacement, so an upload failure can lose the original. Create a new version tag instead. Fill the manifest with a confirmed current version without a leading `v`; do not invent an initial version. Do not remove either option or collapse the build, eligible attestation, and publish permission boundaries while `release.yml` is responsible for artifacts.
+When installing release-please, also copy `assets/release-please-config.json` and `assets/release-please-manifest.json` to the repository root as `release-please-config.json` and `.release-please-manifest.json`. Render the config's pull-request title, header, footer, and changelog section names in the resolved `SCAFFOLD_LANGUAGE`. Preserve `${scope}`, `${component}`, and `${version}` exactly in the title pattern, and preserve the asset's changelog type order and `hidden` flags so localization does not change release semantics. Before changing the title pattern in an existing setup, list open release PRs and coordinate the transition: release-please uses the configured pattern to build and parse titles, so rename an existing release PR to the exact new pattern immediately before the config lands, or wait until that PR is resolved. After the first run with the new config, verify that the original release PR was updated and no duplicate was opened. The config intentionally combines `draft: true` with `force-tag-creation: true`. release-please creates the tag before it creates the draft Release, so never pair this mode with `release-tag.yml` or another `push.tags: v*` caller: that caller could observe the tag before the draft exists. The shipped `release-please.yml` instead waits for the release-please action to complete, then invokes reusable `release.yml` with the emitted tag and the action's `sha` output. The engine serializes callers by tag. A read-only build job verifies the tag through the authenticated Git database references/tags REST APIs, checks out that immutable commit without persisted credentials, builds and validates regular-file artifacts, then transfers them through SHA-pinned artifact actions. For an eligible repository, a fresh attestation job downloads those files without a checkout, validates them without executing project code, and generates SLSA build provenance with `actions/attest`; it alone receives `id-token: write` and `attestations: write`, while the reusable-workflow caller passes those permissions through. GitHub currently supports attestations for public repositories on current plans and for private/internal repositories on GitHub Enterprise Cloud. For an ineligible repository, render the documented no-attestation variant rather than leaving a gate that cannot succeed. A separate write-enabled publish job on a fresh runner downloads but never executes those artifacts, waits for attestation when enabled, verifies the tag immediately before publishing, and checks it once more after publication. When it creates a missing draft Release, `--verify-tag` prevents GitHub CLI from silently recreating a tag that disappeared after verification. A pre-publication mismatch leaves the Release as a draft and fails. A post-publication mismatch is an integrity incident that the workflow reports but cannot roll back; use an effective tag ruleset or immutable releases when tag movement must be prevented rather than merely detected. Reruns may repair only drafts: they skip an existing asset only when its name, size, SHA-256 digest, and state match the expected artifact, and upload only missing assets without replacing existing ones. Unexpected or conflicting assets stop the run. The publisher refuses every published Release, including a legacy mutable one; create a new version tag instead. Fill the manifest with a confirmed current version without a leading `v`; do not invent an initial version. Do not remove either option or collapse the build, eligible attestation, and publish permission boundaries while `release.yml` is responsible for artifacts.
+
+The release publisher bounds release-list inspection to 16 pages, re-reads the
+tag's draft state before each upload and publication, compares the complete
+uploaded asset names, sizes, and SHA-256 digests with the build outputs, and
+verifies the published state. On a draft rerun, it skips only exact matching
+assets and uploads only missing assets without replacing existing ones; an
+unexpected or conflicting asset stops the run. It fails closed on an oversized
+history or any state mismatch. GitHub's [REST guidance for conditional
+requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api)
+says unsafe requests are not conditional unless an endpoint documents that
+support. Its [release asset upload endpoint](https://docs.github.com/en/rest/releases/assets)
+documents a separate upload request and no draft-state precondition. The
+resulting inference is that this flow cannot atomically bind the draft read to
+the upload or publish write. It rechecks immediately before each request and
+never replaces existing assets, but an external publisher can still race that
+request window; keep release write access limited and enable immutable releases
+when supported.
 
 The shipped freshness registry treats `release-please-config.json` as optional: it skips the path until Release Please is installed, then audits its `$schema` on the next scheduled or manual freshness run. Do not remove that tracker entry. The same workflow includes the bundled CI-toolchain policy and checker, so its Markdown tooling pin receives the same reminder coverage.
 
@@ -1958,9 +2602,10 @@ gh attestation verify PATH/TO/ARTIFACT \
      --require-release-please-token
    ```
 
-   Continue only when `release_please_token` is `verified-present` in the JSON
-   result. The caller still must confirm that the PAT itself has the documented
-   least-privilege scopes; GitHub's secret API intentionally cannot prove them.
+   Continue only when `release_please_token` is `verified-present` and the JSON
+   result reports the exact `OWNER/REPO` and `DEFAULT_BRANCH` inputs. The caller
+   still must confirm that the PAT itself has the documented least-privilege
+   scopes; GitHub's secret API intentionally cannot prove them.
 
 Never paste the token value into a chat, commit, or log. If one is ever exposed, revoke it immediately and create a new one.
 

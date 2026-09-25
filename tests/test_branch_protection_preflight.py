@@ -784,6 +784,10 @@ jobs:
         self.assertIn("$requiredCheckPreflight.repository", protection)
         self.assertIn("$requiredCheckPreflight.default_branch", protection)
         self.assertIn("changed after preflight", protection)
+        self.assertIn("Assert-FreshRequiredCheckPreflight", protection)
+        self.assertIn("$fresh.head_sha", protection)
+        self.assertIn("$fresh.test_merge_sha", protection)
+        self.assertIn("$freshBindings", protection)
         self.assertIn("check_suite.id", protection)
         self.assertIn("workflow_dispatch", protection)
         self.assertIn("Actions: read", protection)
@@ -813,6 +817,11 @@ jobs:
         self.assertNotIn("$effectiveWorkflowChecks", mutation)
         self.assertNotIn("$requiredCheckNames = @()", mutation)
         self.assertNotIn("$requiredAppIdsByContext =", mutation)
+        fresh_check = mutation.index("Assert-FreshRequiredCheckPreflight")
+        first_protection_write = min(
+            mutation.index("-X PATCH"), mutation.index("-X PUT")
+        )
+        self.assertLess(fresh_check, first_protection_write)
 
     def test_run_rejects_multiple_workflow_producers(self) -> None:
         self.configure(

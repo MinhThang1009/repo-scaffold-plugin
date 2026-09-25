@@ -116,6 +116,10 @@ FRESHNESS_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-freshness-${{ github.repository }}"
 )
 VERSION_SYNC_CONCURRENCY_GROUP = "repo-scaffold-version-sync-${{ github.repository }}"
+VERSION_SYNC_DEFAULT_REF_IF = (
+    "${{ github.event_name != 'workflow_dispatch' || github.ref == "
+    "format('refs/heads/{0}', github.event.repository.default_branch) }}"
+)
 VERSION_SYNC_PR_BODY_PATH = Path(".github/action-pin-sync-pr-body.md")
 VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND = (
     "python",
@@ -6680,8 +6684,10 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     steps = job.get("steps") if isinstance(job, dict) else None
     if (
         not isinstance(job, dict)
-        or set(job) != {"name", "runs-on", "timeout-minutes", "permissions", "steps"}
+        or set(job)
+        != {"if", "name", "runs-on", "timeout-minutes", "permissions", "steps"}
         or job.get("name") != "synchronize-versioned-inputs"
+        or job.get("if") != VERSION_SYNC_DEFAULT_REF_IF
         or job.get("runs-on") != "ubuntu-latest"
         or job.get("timeout-minutes") != "15"
         or not isinstance(steps, list)
@@ -8476,6 +8482,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                     "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
                     "skills/repo-scaffold/scripts/scorecard_preflight.py",
                 },
                 "github-actions-workflow-permissions-syntax": {
@@ -8552,6 +8559,21 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     ".github/workflows/release.yml",
                     "skills/repo-scaffold/assets/workflows/release.yml",
                 },
+                "github-release-asset-upload-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                },
+                "github-rest-unsafe-conditional-requests": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                },
+                "github-actions-workflow-ref-selection": {
+                    "README.md",
+                    ".github/workflows/action-pin-sync.yml",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                },
                 "github-pull-requests-api": {
                     "scripts/check_code_scanning_alerts.py",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
@@ -8594,6 +8616,15 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 },
                 "github-repository-labels-api": {
                     "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-repository-labeler-action-permissions": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/labeler.yml",
+                    "skills/repo-scaffold/assets/labeler.yml",
+                },
+                "github-actions-stale-label-contract": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/stale.yml",
                 },
                 "github-branch-protection-status-checks": {
                     "README.md",

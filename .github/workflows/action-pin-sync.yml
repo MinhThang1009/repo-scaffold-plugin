@@ -17,6 +17,7 @@ concurrency:
 jobs:
   synchronize:
     name: synchronize-versioned-inputs
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -25,8 +26,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Manual dispatch can select another branch or tag. Keep repository
-          # code and the token-backed PR mutation on the trusted default branch.
+          # Pin updater input to the trusted default branch. The job condition
+          # rejects accidental non-default dispatches. The workflow definition
+          # still follows the event ref, so only trusted writers may dispatch.
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 

@@ -120,6 +120,14 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   `${{ github.event.repository.default_branch }}` with
   `persist-credentials: false` before running repository code. This keeps the
   checker and tracker on the trusted default branch.
+  This checkout does not pin the workflow definition itself: GitHub [uses the
+  workflow version associated with the selected ref](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows).
+  A manual write-enabled workflow is therefore restricted to trusted
+  dispatchers and trusted workflow refs. A default-branch checkout binds the
+  checked-out scripts and files, but it does not isolate secrets from an
+  untrusted workflow definition on the selected ref. If the target repository
+  has lower-trust writers, do not install or dispatch a workflow that grants
+  write-token or repository-secret access to those refs.
   The preflight evaluates each job's effective `issues: write` permission, so a
   checkout in a different job cannot satisfy the requirement; job-level reusable
   workflows are rejected, and repository-local actions require their trusted

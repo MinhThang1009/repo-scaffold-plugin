@@ -346,10 +346,14 @@ configuration, and scaffold assets. It uses a dedicated fine-grained PAT stored
 as `VERSION_SYNC_TOKEN`, so normal PR CI runs; it never auto-merges. Scope that
 token to this repository only, with **Contents: Read and write**, **Pull
 requests: Read and write**, and **Workflows: Read and write** because the
-synchronizer may update workflow files. Manual synchronizer runs always check out
-the default branch with credentials disabled before running repository code, so a
-selected branch or tag cannot reach the PAT-backed PR mutation. All runs share a
-repository-scoped non-cancelling concurrency group because they update the same
+synchronizer may update workflow files. Its manual job rejects a non-default
+selected ref and checks out the default branch with credentials disabled. GitHub
+still runs the workflow definition associated with the selected `workflow_dispatch`
+ref, so that guard prevents accidental ref selection but does not make an
+untrusted workflow definition safe. The PR action receives a repository-scoped
+PAT, so only trusted writers may dispatch or edit this workflow. See GitHub's
+[workflow ref semantics](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows).
+All runs share a repository-scoped non-cancelling concurrency group because they update the same
 maintenance branch. Keep it separate from
 `RELEASE_PLEASE_TOKEN` to avoid granting release automation unnecessary workflow
 write access. The maintenance PR body is kept in
