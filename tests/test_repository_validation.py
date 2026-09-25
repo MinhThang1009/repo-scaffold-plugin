@@ -7866,6 +7866,21 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
             self.skipTest(
                 "bash is unavailable for the release publisher integration test"
             )
+        compatible_bash = subprocess.run(
+            [
+                bash,
+                "-c",
+                "type mapfile >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if compatible_bash.returncode != 0:
+            self.skipTest(
+                "the release publisher integration requires Bash mapfile and sha256sum"
+            )
 
         fake_tool = r"""#!/usr/bin/env python
 import hashlib
