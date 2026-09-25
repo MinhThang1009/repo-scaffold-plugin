@@ -1303,15 +1303,20 @@ jobs:
         ):
             branch_protection_preflight.run(args)
 
-    def test_queue_preflight_rejects_missing_duplicate_or_changed_producers(self) -> None:
+    def test_queue_preflight_rejects_missing_duplicate_or_changed_producers(
+        self,
+    ) -> None:
         no_required_job = self.WORKFLOW.replace("name: ci-success", "name: other")
-        duplicate_job = self.WORKFLOW + """
+        duplicate_job = (
+            self.WORKFLOW
+            + """
   duplicate:
     name: ci-success
     runs-on: ubuntu-latest
     steps:
       - run: echo duplicate
 """
+        )
         for workflow, expected in (
             (no_required_job, "has 0 merge_group workflow producers"),
             (duplicate_job, "has 2 merge_group workflow producers"),

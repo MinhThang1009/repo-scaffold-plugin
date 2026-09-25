@@ -168,9 +168,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     secret_protection_eligibility = "not-required"
     if secret_protection_requested and visibility != "public":
         secret_protection_eligibility = (
-            "user-confirmed"
-            if confirm_secret_protection
-            else "confirmation-required"
+            "user-confirmed" if confirm_secret_protection else "confirmation-required"
         )
 
     return {
@@ -213,15 +211,16 @@ def main() -> int:
     try:
         result = run(parse_args())
     except (InspectionError, OSError, UnicodeError) as exc:
-        print(
-            json.dumps(
-                {
-                    "inspection_complete": False,
-                    "decision": "inconclusive",
-                    "error": str(exc),
-                }
-            )
-        )
+        error_result: dict[str, Any] = {
+            "inspection_complete": False,
+            "decision": "inconclusive",
+            "error": "Security-feature preflight could not verify current GitHub state.",
+        }
+        if isinstance(exc, InspectionError):
+            status = github_api_status(exc)
+            if status is not None:
+                error_result["github_http_status"] = status
+        print(json.dumps(error_result))
         return 2
     print(json.dumps(result))
     return 0

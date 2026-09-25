@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import runpy
 import sys
 import unittest
@@ -245,7 +246,9 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             FakeClient.response = repository(visibility=visibility)
             with (
                 self.subTest(visibility=visibility, eligibility="unconfirmed"),
-                mock.patch.object(security_features_preflight, "GitHubClient", FakeClient),
+                mock.patch.object(
+                    security_features_preflight, "GitHubClient", FakeClient
+                ),
             ):
                 unconfirmed = security_features_preflight.run(
                     arguments(secret_scanning=True)
@@ -294,7 +297,10 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             security_features_preflight.InspectionError, "without requesting"
         ):
             security_features_preflight.run(
-                arguments(dependabot_alerts=True, confirm_private_secret_protection_eligibility=True)
+                arguments(
+                    dependabot_alerts=True,
+                    confirm_private_secret_protection_eligibility=True,
+                )
             )
 
     def test_automated_security_fixes_require_dependabot_alert_evidence(self) -> None:
@@ -386,6 +392,48 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
         self.assertTrue(args.confirm_private_secret_protection_eligibility)
         with self.assertRaises(SystemExit):
             runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+
+    def test_cli_redacts_api_error_details_and_preserves_http_status(self) -> None:
+        with (
+            mock.patch.object(
+                security_features_preflight,
+                "parse_args",
+                return_value=arguments(),
+            ),
+            mock.patch.object(
+                security_features_preflight,
+                "run",
+                side_effect=security_features_preflight.InspectionError(
+                    "GitHub API request failed: HTTP 403: synthetic-secret-response"
+                ),
+            ),
+            mock.patch("builtins.print") as print_mock,
+        ):
+            self.assertEqual(security_features_preflight.main(), 2)
+
+        response_text = print_mock.call_args.args[0]
+        response = json.loads(response_text)
+        self.assertEqual(response["github_http_status"], 403)
+        self.assertNotIn("synthetic-secret-response", response_text)
+
+        with (
+            mock.patch.object(
+                security_features_preflight,
+                "parse_args",
+                return_value=arguments(),
+            ),
+            mock.patch.object(
+                security_features_preflight,
+                "run",
+                side_effect=OSError("synthetic-local-error"),
+            ),
+            mock.patch("builtins.print") as print_mock,
+        ):
+            self.assertEqual(security_features_preflight.main(), 2)
+        local_error_text = print_mock.call_args.args[0]
+        local_error_response = json.loads(local_error_text)
+        self.assertNotIn("github_http_status", local_error_response)
+        self.assertNotIn("synthetic-local-error", local_error_text)
 
     def test_skill_and_reference_require_the_preflight_before_mutation(self) -> None:
         skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
