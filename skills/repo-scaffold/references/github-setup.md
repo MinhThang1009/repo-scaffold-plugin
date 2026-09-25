@@ -747,6 +747,10 @@ Build the check list from contexts verified during the scaffold run, not from wo
 - For every representative PR, retrieve both `.head.sha` and the current `.merge_commit_sha` with `gh api --hostname github.com repos/OWNER/REPO/pulls/NUMBER --jq '{head_sha: .head.sha, test_merge_sha: .merge_commit_sha}'`. Require a mergeable representative PR with a non-null test-merge SHA. Inspect complete paginated results from Check Runs (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/check-runs`) and Commit Statuses (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/statuses`) on both SHAs, plus a merge-group SHA when applicable and recent default-branch SHAs. If the test-merge SHA has any Check Runs or Commit Statuses, it controls: require the selected context and source on that SHA, and do not fall back to a passing head-only result. If it has neither, use the head SHA. A check must have completed successfully in this repository during the past seven days on the controlling SHA before it can be selected as required. Compare context names case-insensitively. GitHub requires both systems when a Check Run and Commit Status share a required name, so reject that candidate on a controlling SHA instead of treating it as one producer. Record the intended Check Run's exact positive `app.id` from the controlling SHA; when checking multiple representative PRs, require their controlling-sha app IDs to agree. Bind every new required check to that verified app ID rather than allowing GitHub to auto-select a recent source.
 - Stop before applying required-status-check protection when no real gate has been confirmed. Never submit a context that no workflow emits.
 
+Select the exact required contexts before running the preflight. Carry that same
+list and its returned App IDs through to the mutation; do not rebuild the list
+or enter producer evidence again afterwards.
+
 The bundled `scripts/branch_protection_preflight.py` turns this proof into a
 read-only, fail-closed gate. Run it after the final workflows are pushed to a
 open, mergeable representative PR and before any branch-protection mutation. It reads
@@ -780,15 +784,25 @@ $defaultBranch = $repoView.defaultBranchRef.name
 if ([string]::IsNullOrWhiteSpace($defaultBranch)) {
   throw "The repository has no default branch; confirm one before configuring protection."
 }
+# Replace this example with every context selected above. For an unchanged
+# workflow, add only the context the user confirmed from its real job.
+$requiredCheckNames = @("ci-success")
+if ($requiredCheckNames.Count -eq 0) {
+  throw "No verified required-check context; stop before configuring protection."
+}
 $branchProtectionPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/branch_protection_preflight.py"
 if (-not (Test-Path -LiteralPath $branchProtectionPreflight -PathType Leaf)) {
   throw "The bundled branch-protection preflight script is missing; do not mutate protection."
 }
-$preflightOutput = python $branchProtectionPreflight `
-  --repository "OWNER/REPO" `
-  --default-branch $defaultBranch `
-  --pull-request NUMBER `
-  --required-check "ci-success" 2>&1
+$preflightArguments = @(
+  "--repository", "OWNER/REPO",
+  "--default-branch", $defaultBranch,
+  "--pull-request", "NUMBER"
+)
+foreach ($context in $requiredCheckNames) {
+  $preflightArguments += @("--required-check", [string]$context)
+}
+$preflightOutput = python $branchProtectionPreflight @preflightArguments 2>&1
 if ($LASTEXITCODE -ne 0) {
   throw "Required-check evidence is inconclusive; do not mutate protection. $($preflightOutput | Out-String)"
 }
@@ -801,13 +815,25 @@ if ($requiredCheckPreflight.repository -cne "OWNER/REPO" -or
     $requiredCheckPreflight.default_branch -cne $defaultBranch) {
   throw "Branch-protection preflight input does not match the protection mutation."
 }
+$verifiedChecks = @($requiredCheckPreflight.required_checks)
+$verifiedCheckNames = @($verifiedChecks | ForEach-Object { [string]$_.context })
+if ($verifiedCheckNames.Count -ne $requiredCheckNames.Count -or
+    $null -ne (Compare-Object `
+      -ReferenceObject @($requiredCheckNames | Sort-Object) `
+      -DifferenceObject @($verifiedCheckNames | Sort-Object))) {
+  throw "Required-check preflight contexts differ from the mutation plan; rerun with the exact context list."
+}
 # Use only these returned values in the mutation block. Do not add contexts or
 # substitute app IDs manually after the preflight completes.
-$requiredCheckNames = @($requiredCheckPreflight.required_checks.context)
+$requiredCheckNames = $verifiedCheckNames
 $requiredAppIdsByContext = [Collections.Generic.Dictionary[string, int64]]::new(
   [StringComparer]::OrdinalIgnoreCase
 )
-foreach ($check in @($requiredCheckPreflight.required_checks)) {
+foreach ($check in $verifiedChecks) {
+  if ([string]::IsNullOrWhiteSpace([string]$check.context) -or
+      [int64]$check.app_id -le 0) {
+    throw "Required-check preflight returned an invalid context or App ID."
+  }
   $requiredAppIdsByContext[[string]$check.context] = [int64]$check.app_id
 }
 ```
@@ -845,91 +871,13 @@ if ($LASTEXITCODE -ne 0) {
   throw "Could not determine whether a merge queue applies; stop before configuring required checks. $($effectiveRuleOutput | Out-String)"
 }
 $hasMergeQueue = @($effectiveRuleOutput | Where-Object { $_ -eq "merge_queue" }).Count -gt 0
-
-# Start false; set true only for files this scaffold run actually created or updated.
-$installedRepoScaffoldCi = $false
-$installedDependencyReview = $false
-$installedCommitlint = $false
-
-# REQUIRED INPUT: populate one object per effective job producer found by inspecting
-# every final workflow. ProducerId is the stable workflow-path + job-id identity;
-# duplicate Context values from different ProducerIds remain visible as ambiguity.
-# Populate SourceVerified, HasCommitStatusCollision, and AppId from the API evidence
-# described above; do not infer them from a workflow filename.
-$effectiveWorkflowChecks = @(
-  # [pscustomobject]@{
-  #   Context = "ci-success"
-  #   ProducerId = ".github/workflows/ci.yml#ci-success"
-  #   PullRequestCoverage = $true
-  #   MergeGroupCoverage = $true
-  #   CanSkipRelevantEvents = $false
-  #   SourceVerified = $true
-  #   HasCommitStatusCollision = $false
-  #   AppId = [int64]$verifiedAppId
-  # }
-)
-if ($effectiveWorkflowChecks.Count -eq 0) {
-  throw "No effective workflow check producers were inspected; stop before configuring protection."
+if ($hasMergeQueue -ne [bool]$requiredCheckPreflight.merge_queue_required) {
+  throw "Effective merge-queue rules changed after preflight; rerun before mutating protection."
 }
-
-$requiredCheckNames = @()
-if ($installedRepoScaffoldCi) { $requiredCheckNames += "ci-success" }
-if ($installedDependencyReview) { $requiredCheckNames += "dependency-review" }
-if ($installedCommitlint) { $requiredCheckNames += "commitlint" }
-
-# For an unchanged existing workflow, append only a context confirmed from its real job:
-# $requiredCheckNames += "existing-ci-gate"
-
-$duplicateRequiredNames = @(
-  $requiredCheckNames | Group-Object | Where-Object Count -gt 1 |
-    Select-Object -ExpandProperty Name
-)
-if ($duplicateRequiredNames.Count -gt 0) {
-  throw "Duplicate required check names: $($duplicateRequiredNames -join ', '). Resolve the workflow job-name collision before configuring protection."
-}
-$requiredCheckNames = @($requiredCheckNames | Sort-Object)
-if ($requiredCheckNames.Count -eq 0) {
-  throw "No verified required check context; inspect the existing workflows before protecting the branch."
-}
-
-$producerProblems = @()
-$requiredAppIdsByContext = [System.Collections.Generic.Dictionary[string, int64]]::new(
-  [System.StringComparer]::OrdinalIgnoreCase
-)
 foreach ($context in $requiredCheckNames) {
-  $producers = @($effectiveWorkflowChecks | Where-Object {
-    [System.StringComparer]::OrdinalIgnoreCase.Equals($_.Context, $context)
-  })
-  $producerCount = @($producers.ProducerId | Sort-Object -Unique).Count
-  if ($producerCount -ne 1) {
-    $producerProblems += "${context}=${producerCount} producers"
-    continue
+  if (-not $requiredAppIdsByContext.ContainsKey($context)) {
+    throw "Required-check preflight did not return a verified App ID for $context."
   }
-  $producer = $producers[0]
-  if (-not $producer.PullRequestCoverage -or $producer.CanSkipRelevantEvents) {
-    $producerProblems += "${context}=missing unconditional pull_request coverage"
-  }
-  if ($hasMergeQueue -and -not $producer.MergeGroupCoverage) {
-    $producerProblems += "${context}=missing merge_group coverage"
-  }
-  if (-not $producer.SourceVerified) {
-    $producerProblems += "${context}=unverified check source"
-  }
-  if ($producer.HasCommitStatusCollision) {
-    $producerProblems += "${context}=Check Run/Commit Status collision"
-  }
-  $appId = 0L
-  if ($null -eq $producer.AppId -or -not [int64]::TryParse(
-    [string]$producer.AppId,
-    [ref]$appId
-  ) -or $appId -le 0) {
-    $producerProblems += "${context}=missing positive GitHub App ID"
-  } else {
-    $requiredAppIdsByContext[$context] = $appId
-  }
-}
-if ($producerProblems.Count -gt 0) {
-  throw "Every required context must have one event-compatible producer across the final workflow set: $($producerProblems -join ', ')."
 }
 
 function Assert-ClassicProtectionState(

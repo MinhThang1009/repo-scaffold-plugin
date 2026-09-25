@@ -788,6 +788,32 @@ jobs:
         self.assertIn("workflow_dispatch", protection)
         self.assertIn("Actions: read", protection)
 
+    def test_reference_carries_preflight_contexts_and_app_ids_into_mutation(
+        self,
+    ) -> None:
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        protection = setup.split("## Branch protection", 1)[1].split("\n## ", 1)[0]
+        preflight_setup, mutation = protection.split("PowerShell example:", 1)
+
+        self.assertIn("foreach ($context in $requiredCheckNames)", preflight_setup)
+        self.assertIn(
+            '$preflightArguments += @("--required-check", [string]$context)',
+            preflight_setup,
+        )
+        self.assertIn(
+            "$requiredAppIdsByContext[[string]$check.context] = [int64]$check.app_id",
+            preflight_setup,
+        )
+        self.assertIn(
+            "$hasMergeQueue -ne [bool]$requiredCheckPreflight.merge_queue_required",
+            mutation,
+        )
+        self.assertNotIn("$effectiveWorkflowChecks", mutation)
+        self.assertNotIn("$requiredCheckNames = @()", mutation)
+        self.assertNotIn("$requiredAppIdsByContext =", mutation)
+
     def test_run_rejects_multiple_workflow_producers(self) -> None:
         self.configure(
             self.WORKFLOW
