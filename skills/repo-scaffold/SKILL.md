@@ -102,9 +102,10 @@ policy may select the supported GitHub-hosted labels `ubuntu-latest`,
 `windows-latest`, and `macos-latest`; keep the policy and matrix as the single
 source of truth instead of hard-coding a runner in the test job.
 
-For CodeQL default setup, run the fail-closed `scripts/codeql_preflight.py` and
-require explicit confirmation that no external or indirect uploader exists.
-Never switch CodeQL modes without separate approval.
+For CodeQL default setup, run the fail-closed `scripts/codeql_preflight.py`,
+which verifies the exact repository and current default branch before scanning
+remote workflows. Require explicit confirmation that no external or indirect
+uploader exists. Never switch CodeQL modes without separate approval.
 
 Before installing the repository-managed `codeql.yml` advanced-setup asset, run
 the fail-closed `scripts/advanced_codeql_preflight.py` with the target root,
@@ -138,10 +139,14 @@ Before configuring classic branch protection, run the fail-closed
 `scripts/branch_protection_preflight.py` against a mergeable representative PR
 whose head contains the final workflow set. Use only its returned contexts and
 GitHub App IDs. Its producer check accepts a trusted `pull_request_target`
-workflow only when it is filtered to the verified default branch, and rejects
-job or step conditions that can skip the gate or mask its failure, including
-`if` and `continue-on-error`. Do not configure required checks when it is
-inconclusive.
+workflow only when it is filtered to the verified default branch and its exact
+workflow blob is unchanged from the pull request's base commit. Merge any new or
+changed target workflow before running this check. It rejects job or step
+conditions that can skip the gate or mask its failure, including `if` and
+`continue-on-error`. It binds Check Run evidence to the exact Actions workflow
+path through `check_suite.id`, commit SHA, and an event GitHub accepts for
+required status checks; a `workflow_dispatch` result is not sufficient. Do not
+configure required checks when it is inconclusive.
 
 Before installing `dependency-review.yml`, run the fail-closed
 `scripts/dependency_review_preflight.py` against the exact repository. It

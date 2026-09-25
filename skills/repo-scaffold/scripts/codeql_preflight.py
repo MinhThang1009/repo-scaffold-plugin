@@ -2914,6 +2914,10 @@ def load_remote_default_branch(
             raise InspectionError(
                 f"Default-branch workflow entry is not a blob: {path!r}"
             )
+        if item.get("mode") not in {"100644", "100755"}:
+            raise InspectionError(
+                f"Default-branch workflow entry is not a regular file: {path!r}"
+            )
         if not is_direct_workflow_path(path):
             raise InspectionError(
                 f"Default-branch workflow path is not canonical: {path!r}"
@@ -3012,9 +3016,36 @@ def split_repository(value: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def require_verified_default_branch(
+    repository_document: Any, repository: str, requested_branch: str
+) -> None:
+    """Bind a CodeQL workflow scan to the repository's current default branch."""
+    if not isinstance(repository_document, dict):
+        raise InspectionError("Repository response is invalid.")
+    full_name = repository_document.get("full_name")
+    if not isinstance(full_name, str) or full_name.casefold() != repository.casefold():
+        raise InspectionError("GitHub returned a different repository than requested.")
+    actual_default_branch = repository_document.get("default_branch")
+    if (
+        not isinstance(actual_default_branch, str)
+        or not actual_default_branch.strip()
+        or any(character in actual_default_branch for character in "\r\n\x00")
+        or actual_default_branch != requested_branch
+    ):
+        raise InspectionError(
+            "Requested branch is not the verified current default branch."
+        )
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(args.hostname, str) or args.hostname.casefold() != "github.com":
         raise InspectionError("CodeQL preflight supports GitHub.com only.")
+    if (
+        not isinstance(args.default_branch, str)
+        or not args.default_branch.strip()
+        or any(character in args.default_branch for character in "\r\n\x00")
+    ):
+        raise InspectionError("Default branch must be a non-empty single line.")
     owner, repo = split_repository(args.repository)
     repo_root = Path(os.path.abspath(os.fspath(args.repo_root)))
     require_safe_root(repo_root)
@@ -3040,6 +3071,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "analysis_inspection_performed": False,
             "github_api_requests": client.request_count,
         }
+
+    require_verified_default_branch(
+        client.json(f"repos/{owner}/{repo}"), args.repository, args.default_branch
+    )
 
     budget = WorkflowByteBudget(deadline=client.deadline)
     local_workflows = load_local_workflows(repo_root, budget)

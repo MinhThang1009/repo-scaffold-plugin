@@ -3063,6 +3063,7 @@ class WorkflowResolverTests(unittest.TestCase):
                     {"type": "blob", "path": "README.md", "sha": "c" * 40},
                     {
                         "type": "blob",
+                        "mode": "100644",
                         "path": ".github/workflows/ci.yml",
                         "sha": blob,
                     },
@@ -3096,6 +3097,7 @@ class WorkflowResolverTests(unittest.TestCase):
                         "tree": [
                             {
                                 "type": "blob",
+                                "mode": "100644",
                                 "path": ".github/workflows/ci.yml",
                                 "sha": "short",
                             }
@@ -3112,6 +3114,7 @@ class WorkflowResolverTests(unittest.TestCase):
                         "tree": [
                             {
                                 "type": "blob",
+                                "mode": "100644",
                                 "path": ".github/workflows/a\n.yml",
                                 "sha": blob,
                             }
@@ -3119,6 +3122,23 @@ class WorkflowResolverTests(unittest.TestCase):
                     },
                 ],
                 "not canonical",
+            ),
+            (
+                [
+                    {"sha": commit},
+                    {
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "type": "blob",
+                                "mode": "120000",
+                                "path": ".github/workflows/ci.yml",
+                                "sha": blob,
+                            }
+                        ],
+                    },
+                ],
+                "not a regular file",
             ),
             (
                 [
@@ -3143,11 +3163,13 @@ class WorkflowResolverTests(unittest.TestCase):
                         "tree": [
                             {
                                 "type": "blob",
+                                "mode": "100644",
                                 "path": ".github/workflows/ci.yml",
                                 "sha": blob,
                             },
                             {
                                 "type": "blob",
+                                "mode": "100644",
                                 "path": ".github/workflows/ci.yml",
                                 "sha": "c" * 40,
                             },
@@ -3174,6 +3196,7 @@ class WorkflowResolverTests(unittest.TestCase):
                 "tree": [
                     {
                         "type": "blob",
+                        "mode": "100644",
                         "path": ".github/workflows/ci.yml",
                         "sha": blob,
                     }
@@ -3382,6 +3405,39 @@ class InputValidationTests(unittest.TestCase):
                 ):
                     codeql_preflight.split_repository(repository)
 
+    def test_verified_default_branch_binds_repository_and_branch(self) -> None:
+        invalid_responses: tuple[tuple[object, str], ...] = (
+            ([], "Repository response is invalid"),
+            ({"full_name": "octo/other", "default_branch": "main"}, "different"),
+            ({"full_name": "octo/repo", "default_branch": "develop"}, "verified"),
+            ({"full_name": "octo/repo", "default_branch": "\n"}, "verified"),
+        )
+        for response, message in invalid_responses:
+            with self.subTest(response=response):
+                with self.assertRaisesRegex(codeql_preflight.InspectionError, message):
+                    codeql_preflight.require_verified_default_branch(
+                        response, "octo/repo", "main"
+                    )
+
+    def test_rejects_invalid_default_branch_before_api_access(self) -> None:
+        for default_branch in (None, "", "main\nother"):
+            args = argparse.Namespace(
+                repo_root=str(PLUGIN_ROOT),
+                repository="octo/repo",
+                default_branch=default_branch,
+                hostname="github.com",
+                confirm_no_external_codeql=True,
+            )
+            with (
+                self.subTest(default_branch=default_branch),
+                mock.patch.object(codeql_preflight, "GitHubClient") as client,
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "Default branch"
+                ),
+            ):
+                codeql_preflight.run(args)
+            client.assert_not_called()
+
     def test_rejects_reusable_workflow_repository_path_components(self) -> None:
         client = mock.Mock()
         resolver = codeql_preflight.WorkflowResolver(client, {})
@@ -3515,6 +3571,8 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             def json(self, endpoint: str) -> object:
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "not-configured"}
+                if endpoint == "repos/octo/repo":
+                    return {"full_name": "octo/repo", "default_branch": "main"}
                 if "code-scanning/analyses" in endpoint:
                     return []
                 raise AssertionError(endpoint)
@@ -3549,6 +3607,42 @@ class DefaultSetupDecisionTests(unittest.TestCase):
         self.assertEqual(result["decision"], "may-offer-default-setup")
         self.assertTrue(result["external_codeql_absence_confirmed"])
 
+    def test_rejects_a_branch_that_is_not_the_verified_default(self) -> None:
+        class FakeClient:
+            request_count = 0
+            deadline = float("inf")
+
+            def __init__(
+                self, hostname: str, *, forbidden_root: Path | None = None
+            ) -> None:
+                del hostname, forbidden_root
+
+            def json(self, endpoint: str) -> object:
+                if endpoint.endswith("code-scanning/default-setup"):
+                    return {"state": "not-configured"}
+                if endpoint == "repos/octo/repo":
+                    return {"full_name": "octo/repo", "default_branch": "main"}
+                raise AssertionError(endpoint)
+
+        args = argparse.Namespace(
+            repo_root=str(PLUGIN_ROOT),
+            repository="octo/repo",
+            default_branch="develop",
+            hostname="github.com",
+            confirm_no_external_codeql=True,
+        )
+        with (
+            mock.patch.object(codeql_preflight, "GitHubClient", FakeClient),
+            mock.patch.object(codeql_preflight, "load_local_workflows") as local,
+            mock.patch.object(codeql_preflight, "load_remote_default_branch") as remote,
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "verified current default branch"
+            ),
+        ):
+            codeql_preflight.run(args)
+        local.assert_not_called()
+        remote.assert_not_called()
+
     def test_quoted_heredoc_marker_cannot_downgrade_codeql_decision(self) -> None:
         class FakeClient:
             request_count = 0
@@ -3562,6 +3656,8 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             def json(self, endpoint: str) -> object:
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "not-configured"}
+                if endpoint == "repos/octo/repo":
+                    return {"full_name": "octo/repo", "default_branch": "main"}
                 if "code-scanning/analyses" in endpoint:
                     return []
                 raise AssertionError(endpoint)
@@ -3666,6 +3762,8 @@ jobs:
                 self.request_count += 1
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "not-configured"}
+                if endpoint == "repos/octo/repo":
+                    return {"full_name": "octo/repo", "default_branch": "main"}
                 if "code-scanning/analyses" in endpoint:
                     return [{"id": 1}]
                 raise AssertionError(endpoint)
@@ -3710,6 +3808,8 @@ jobs:
             def json(self, endpoint: str) -> object:
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "not-configured"}
+                if endpoint == "repos/octo/repo":
+                    return {"full_name": "octo/repo", "default_branch": "main"}
                 if "code-scanning/analyses" in endpoint:
                     return {}
                 raise AssertionError(endpoint)

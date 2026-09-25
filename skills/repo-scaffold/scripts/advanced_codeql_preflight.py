@@ -73,6 +73,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         or full_name.casefold() != args.repository.casefold()
     ):
         raise InspectionError("GitHub returned a different repository than requested.")
+    codeql_preflight.require_verified_default_branch(
+        repository, args.repository, args.default_branch
+    )
     if require_boolean(repository, "archived"):
         raise InspectionError("Archived repositories cannot install CodeQL workflows.")
     if require_boolean(repository, "disabled"):

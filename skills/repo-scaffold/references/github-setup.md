@@ -744,19 +744,34 @@ Build the check list from contexts verified during the scaffold run, not from wo
 - Compute the producers of every candidate required context across the final workflow set before mutation: use job-level `name` when present, otherwise the job ID, and resolve matrix/reusable-workflow names to the check context GitHub actually emits. GitHub does not scope required checks by workflow, matrix, or event, so each required context must have exactly one producer.
 - Verify event coverage, not only the context name. A required producer must run for every `pull_request` without workflow-level `paths`, `paths-ignore`, or branch filters that can suppress the entire workflow. When an effective merge queue applies, it must also run for `merge_group` with `checks_requested`. Any job-level `if` must evaluate true and execute the real validation for every relevant event; GitHub reports skipped jobs as successful, which is not evidence that the gate ran. Duplicate names unrelated to the required set must not block protection.
 - For a generated repo-scaffold asset, parse the final YAML and record this coverage directly. For an unchanged, dynamic, matrix-named, reusable, or externally supplied check, verify a representative PR run (and a merge-group run when applicable) or do not require it.
-- For every representative PR, retrieve both `.head.sha` and the current `.merge_commit_sha` with `gh api --hostname github.com repos/OWNER/REPO/pulls/NUMBER --jq '{head_sha: .head.sha, test_merge_sha: .merge_commit_sha}'`. Require a mergeable representative PR with a non-null test-merge SHA. Inspect complete paginated results from Check Runs (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/check-runs`) and Commit Statuses (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/statuses`) on both SHAs, plus a merge-group SHA when applicable and recent default-branch SHAs. When the test-merge commit has statuses, apply GitHub's documented precedence and treat it as controlling; never infer that head-only evidence is complete. A check must have completed successfully in this repository during the past seven days before it can be selected as required. Compare context names case-insensitively. GitHub requires both systems when a Check Run and Commit Status share a required name, so reject that candidate on any controlling SHA instead of treating it as one producer. Record the intended Check Run's exact positive `app.id`; reject an unknown, absent, or changing source. Bind every new required check to that verified app ID rather than allowing GitHub to auto-select a recent source.
+- For every representative PR, retrieve both `.head.sha` and the current `.merge_commit_sha` with `gh api --hostname github.com repos/OWNER/REPO/pulls/NUMBER --jq '{head_sha: .head.sha, test_merge_sha: .merge_commit_sha}'`. Require a mergeable representative PR with a non-null test-merge SHA. Inspect complete paginated results from Check Runs (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/check-runs`) and Commit Statuses (`gh api --hostname github.com --paginate repos/OWNER/REPO/commits/SHA/statuses`) on both SHAs, plus a merge-group SHA when applicable and recent default-branch SHAs. If the test-merge SHA has any Check Runs or Commit Statuses, it controls: require the selected context and source on that SHA, and do not fall back to a passing head-only result. If it has neither, use the head SHA. A check must have completed successfully in this repository during the past seven days on the controlling SHA before it can be selected as required. Compare context names case-insensitively. GitHub requires both systems when a Check Run and Commit Status share a required name, so reject that candidate on a controlling SHA instead of treating it as one producer. Record the intended Check Run's exact positive `app.id` from the controlling SHA; when checking multiple representative PRs, require their controlling-sha app IDs to agree. Bind every new required check to that verified app ID rather than allowing GitHub to auto-select a recent source.
 - Stop before applying required-status-check protection when no real gate has been confirmed. Never submit a context that no workflow emits.
+
+Select the exact required contexts before running the preflight. Carry that same
+list and its returned App IDs through to the mutation; do not rebuild the list
+or enter producer evidence again afterwards.
 
 The bundled `scripts/branch_protection_preflight.py` turns this proof into a
 read-only, fail-closed gate. Run it after the final workflows are pushed to a
 open, mergeable representative PR and before any branch-protection mutation. It reads
-the exact workflow blobs at that PR head, rejects duplicate YAML keys and
-ambiguous producers, verifies unfiltered `pull_request` coverage plus
+the exact regular-file workflow blobs at that PR head, rejects duplicate YAML keys and
+ambiguous producers, verifies unfiltered `pull_request` coverage (or a trusted
+`pull_request_target` producer from the verified default branch) plus
 `merge_group` coverage when an effective merge queue applies, requires an
 unconditional executable job, and verifies a successful Check Run no older than
-seven days on both the head and test-merge SHAs. It also rejects a changing or
-missing GitHub App ID and every same-name Commit Status collision. It never
-modifies GitHub state. It also binds the exact repository/default branch,
+seven days on the controlling SHA: the test-merge SHA when it has any Check Runs
+or Commit Statuses, otherwise the PR head SHA. It takes the GitHub App ID from
+that same controlling SHA and rejects any same-name Commit Status collision
+there. It joins the Check Run's `check_suite.id` to exactly one Actions workflow
+run and verifies the run's commit, workflow path, and event. A successful
+`workflow_dispatch` run cannot stand in for an eligible required-check event.
+For fine-grained tokens, this workflow-run read requires the repository's
+Actions: read permission; inaccessible or incomplete run evidence is
+inconclusive.
+For `pull_request_target`, it also requires the exact workflow blob to match at
+the PR base commit because GitHub runs that event from the base repository's
+default branch. Merge any new or changed target workflow before running this
+preflight. It never modifies GitHub state. It also binds the exact repository/default branch,
 rejects archived or disabled targets, and requires current administration
 permission. Any API, parsing, pagination, mergeability, or evidence gap is
 inconclusive and required-check mutation remains forbidden.
@@ -769,15 +784,25 @@ $defaultBranch = $repoView.defaultBranchRef.name
 if ([string]::IsNullOrWhiteSpace($defaultBranch)) {
   throw "The repository has no default branch; confirm one before configuring protection."
 }
+# Replace this example with every context selected above. For an unchanged
+# workflow, add only the context the user confirmed from its real job.
+$requiredCheckNames = @("ci-success")
+if ($requiredCheckNames.Count -eq 0) {
+  throw "No verified required-check context; stop before configuring protection."
+}
 $branchProtectionPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/branch_protection_preflight.py"
 if (-not (Test-Path -LiteralPath $branchProtectionPreflight -PathType Leaf)) {
   throw "The bundled branch-protection preflight script is missing; do not mutate protection."
 }
-$preflightOutput = python $branchProtectionPreflight `
-  --repository "OWNER/REPO" `
-  --default-branch $defaultBranch `
-  --pull-request NUMBER `
-  --required-check "ci-success" 2>&1
+$preflightArguments = @(
+  "--repository", "OWNER/REPO",
+  "--default-branch", $defaultBranch,
+  "--pull-request", "NUMBER"
+)
+foreach ($context in $requiredCheckNames) {
+  $preflightArguments += @("--required-check", [string]$context)
+}
+$preflightOutput = python $branchProtectionPreflight @preflightArguments 2>&1
 if ($LASTEXITCODE -ne 0) {
   throw "Required-check evidence is inconclusive; do not mutate protection. $($preflightOutput | Out-String)"
 }
@@ -790,13 +815,25 @@ if ($requiredCheckPreflight.repository -cne "OWNER/REPO" -or
     $requiredCheckPreflight.default_branch -cne $defaultBranch) {
   throw "Branch-protection preflight input does not match the protection mutation."
 }
+$verifiedChecks = @($requiredCheckPreflight.required_checks)
+$verifiedCheckNames = @($verifiedChecks | ForEach-Object { [string]$_.context })
+if ($verifiedCheckNames.Count -ne $requiredCheckNames.Count -or
+    $null -ne (Compare-Object `
+      -ReferenceObject @($requiredCheckNames | Sort-Object) `
+      -DifferenceObject @($verifiedCheckNames | Sort-Object))) {
+  throw "Required-check preflight contexts differ from the mutation plan; rerun with the exact context list."
+}
 # Use only these returned values in the mutation block. Do not add contexts or
 # substitute app IDs manually after the preflight completes.
-$requiredCheckNames = @($requiredCheckPreflight.required_checks.context)
+$requiredCheckNames = $verifiedCheckNames
 $requiredAppIdsByContext = [Collections.Generic.Dictionary[string, int64]]::new(
   [StringComparer]::OrdinalIgnoreCase
 )
-foreach ($check in @($requiredCheckPreflight.required_checks)) {
+foreach ($check in $verifiedChecks) {
+  if ([string]::IsNullOrWhiteSpace([string]$check.context) -or
+      [int64]$check.app_id -le 0) {
+    throw "Required-check preflight returned an invalid context or App ID."
+  }
   $requiredAppIdsByContext[[string]$check.context] = [int64]$check.app_id
 }
 ```
@@ -834,91 +871,13 @@ if ($LASTEXITCODE -ne 0) {
   throw "Could not determine whether a merge queue applies; stop before configuring required checks. $($effectiveRuleOutput | Out-String)"
 }
 $hasMergeQueue = @($effectiveRuleOutput | Where-Object { $_ -eq "merge_queue" }).Count -gt 0
-
-# Start false; set true only for files this scaffold run actually created or updated.
-$installedRepoScaffoldCi = $false
-$installedDependencyReview = $false
-$installedCommitlint = $false
-
-# REQUIRED INPUT: populate one object per effective job producer found by inspecting
-# every final workflow. ProducerId is the stable workflow-path + job-id identity;
-# duplicate Context values from different ProducerIds remain visible as ambiguity.
-# Populate SourceVerified, HasCommitStatusCollision, and AppId from the API evidence
-# described above; do not infer them from a workflow filename.
-$effectiveWorkflowChecks = @(
-  # [pscustomobject]@{
-  #   Context = "ci-success"
-  #   ProducerId = ".github/workflows/ci.yml#ci-success"
-  #   PullRequestCoverage = $true
-  #   MergeGroupCoverage = $true
-  #   CanSkipRelevantEvents = $false
-  #   SourceVerified = $true
-  #   HasCommitStatusCollision = $false
-  #   AppId = [int64]$verifiedAppId
-  # }
-)
-if ($effectiveWorkflowChecks.Count -eq 0) {
-  throw "No effective workflow check producers were inspected; stop before configuring protection."
+if ($hasMergeQueue -ne [bool]$requiredCheckPreflight.merge_queue_required) {
+  throw "Effective merge-queue rules changed after preflight; rerun before mutating protection."
 }
-
-$requiredCheckNames = @()
-if ($installedRepoScaffoldCi) { $requiredCheckNames += "ci-success" }
-if ($installedDependencyReview) { $requiredCheckNames += "dependency-review" }
-if ($installedCommitlint) { $requiredCheckNames += "commitlint" }
-
-# For an unchanged existing workflow, append only a context confirmed from its real job:
-# $requiredCheckNames += "existing-ci-gate"
-
-$duplicateRequiredNames = @(
-  $requiredCheckNames | Group-Object | Where-Object Count -gt 1 |
-    Select-Object -ExpandProperty Name
-)
-if ($duplicateRequiredNames.Count -gt 0) {
-  throw "Duplicate required check names: $($duplicateRequiredNames -join ', '). Resolve the workflow job-name collision before configuring protection."
-}
-$requiredCheckNames = @($requiredCheckNames | Sort-Object)
-if ($requiredCheckNames.Count -eq 0) {
-  throw "No verified required check context; inspect the existing workflows before protecting the branch."
-}
-
-$producerProblems = @()
-$requiredAppIdsByContext = [System.Collections.Generic.Dictionary[string, int64]]::new(
-  [System.StringComparer]::OrdinalIgnoreCase
-)
 foreach ($context in $requiredCheckNames) {
-  $producers = @($effectiveWorkflowChecks | Where-Object {
-    [System.StringComparer]::OrdinalIgnoreCase.Equals($_.Context, $context)
-  })
-  $producerCount = @($producers.ProducerId | Sort-Object -Unique).Count
-  if ($producerCount -ne 1) {
-    $producerProblems += "${context}=${producerCount} producers"
-    continue
+  if (-not $requiredAppIdsByContext.ContainsKey($context)) {
+    throw "Required-check preflight did not return a verified App ID for $context."
   }
-  $producer = $producers[0]
-  if (-not $producer.PullRequestCoverage -or $producer.CanSkipRelevantEvents) {
-    $producerProblems += "${context}=missing unconditional pull_request coverage"
-  }
-  if ($hasMergeQueue -and -not $producer.MergeGroupCoverage) {
-    $producerProblems += "${context}=missing merge_group coverage"
-  }
-  if (-not $producer.SourceVerified) {
-    $producerProblems += "${context}=unverified check source"
-  }
-  if ($producer.HasCommitStatusCollision) {
-    $producerProblems += "${context}=Check Run/Commit Status collision"
-  }
-  $appId = 0L
-  if ($null -eq $producer.AppId -or -not [int64]::TryParse(
-    [string]$producer.AppId,
-    [ref]$appId
-  ) -or $appId -le 0) {
-    $producerProblems += "${context}=missing positive GitHub App ID"
-  } else {
-    $requiredAppIdsByContext[$context] = $appId
-  }
-}
-if ($producerProblems.Count -gt 0) {
-  throw "Every required context must have one event-compatible producer across the final workflow set: $($producerProblems -join ', ')."
 }
 
 function Assert-ClassicProtectionState(
@@ -1463,7 +1422,10 @@ feature.
 - **Code scanning default setup**: requires an eligible repository and supported detected language. Skip this mutation path when the repository-managed advanced workflow was selected. Otherwise, first inspect the current default-setup state, direct workflow evidence in the working tree and default branch, and existing CodeQL analyses. Separately ask whether external CI, indirect scripts, local actions, composite actions, or any other process uploads CodeQL results. Do not infer their absence from repository workflow inspection. Do not treat a generic request to enable code scanning as permission to replace advanced setup: switching disables its workflow and blocks CodeQL analysis API uploads.
 
   The bundled preflight requires PyYAML and a Python feature release at or above
-  `tooling-python-minimum` in `.github/ci-toolchain.json`.
+  `tooling-python-minimum` in `.github/ci-toolchain.json`. When default setup is
+  not configured, it verifies the exact repository and current default branch
+  from GitHub before inspecting remote workflows. Remote tree entries using
+  symlink or non-file modes fail closed instead of being parsed as workflow YAML.
 
   Resolve `REPO_SCAFFOLD_SKILL_ROOT` to the installed/source directory that contains this skill's `SKILL.md`; do not guess it from the current working directory. Run the bundled structural preflight with an available Python interpreter. It uses PyYAML's non-coercing `BaseLoader`, rejects duplicate keys, inspects only direct files under `.github/workflows`, inspects semantic `jobs.*.uses`, `jobs.*.steps[*].uses`, and shell-aware executable `run` content, and honors step, job, and workflow shell selection. For recognized Bash and PowerShell shells it masks inert heredoc, here-string, arithmetic-shift, literal, comment, and uninvoked function content, including function definitions whose opening brace is on the following line. It retains transitively invoked function bodies, literal `eval` and trap handlers, exported functions invoked by literal nested-shell commands, statically resolvable Bash/PowerShell aliases, direct shell-heredoc, recognized command wrappers, GNU `env` split strings, `xargs` with supported GNU/BSD options, direct `find` executors, shell `-c`, pipeline-fed shells, backtick/`$()` command substitution, Bash process substitution, PowerShell scriptblocks, nested PowerShell `-Command`, `Invoke-Expression`, `Start-Process`, direct `cmd /c` or `/k` CodeQL commands, quoted call-operator commands, and PowerShell `$()` execution. An unresolved command position, call-operator expression, recognized dynamic executor or alias target, encoded PowerShell command with a non-literal payload, or a malformed or unterminated construct fails closed. An unsupported or unresolved effective shell also fails closed instead of falling back to raw-text inspection. If default setup is already configured, it returns the safe preserve decision without the unnecessary workflow/analysis queries, sets those uninspected evidence fields to `null`, and sets `workflow_inspection_performed` and `analysis_inspection_performed` to false. Any other state must be exactly `not-configured`; an unknown default-setup state fails closed. It follows reusable workflows per top-level caller, rejects cycles, enforces GitHub's limit of 50 unique called workflows and 10 total levels on every call path, retains a separate 500-edge traversal safety cap, bounds API requests, and applies a timeout to each `gh api` subprocess. If Python, PyYAML, the effective shell, shell syntax, a workflow, a linked path, an API response, or the separate external/indirect CodeQL confirmation is unavailable, it exits inconclusive and mutation remains forbidden.
 
@@ -2043,4 +2005,4 @@ gh repo view github.com/OWNER/REPO --json visibility,isFork,defaultBranchRef
     --jq '.[] | select(.type == "pull_request" or .type == "required_status_checks")'
   ```
 
-Run the classic command when this plugin configured classic protection. Always run the effective-rules command to identify preserved repository or organization rulesets; this is inspection, not proof that the plugin configured them. For classic protection, compare every returned check `context` and `app_id` with the exact `$requiredCheckNames` and `$requiredAppIdsByContext` used during setup. For an effective ruleset `required_status_checks` rule, inspect its `context` and `integration_id` separately and report conflicts with the intended checks; never compare a ruleset field to classic `app_id`. Re-query both Check Runs and Commit Statuses on each representative PR's head and current test-merge SHAs, recent default-branch SHAs, and a merge-group SHA when applicable. Apply test-merge precedence when it has statuses, verify that each context corresponds to exactly one effective job name and the same GitHub App, and fail verification if a same-name Commit Status exists on any controlling SHA. Remove, rename, or correct a classic context that no workflow emits, that multiple workflows emit, whose app binding differs, or that collides across the two status systems. Preserve existing rulesets unless the user starts a separate approved ruleset-policy change.
+Run the classic command when this plugin configured classic protection. Always run the effective-rules command to identify preserved repository or organization rulesets; this is inspection, not proof that the plugin configured them. For classic protection, compare every returned check `context` and `app_id` with the exact `$requiredCheckNames` and `$requiredAppIdsByContext` used during setup. For an effective ruleset `required_status_checks` rule, inspect its `context` and `integration_id` separately and report conflicts with the intended checks; never compare a ruleset field to classic `app_id`. Re-query both Check Runs and Commit Statuses on each representative PR's head and current test-merge SHAs, recent default-branch SHAs, and a merge-group SHA when applicable. The test-merge SHA controls when it has any Check Runs or Commit Statuses; otherwise the head SHA controls. Verify that each required context has exactly one effective job name and that its controlling-sha App ID matches the configured source. Fail verification if a same-name Commit Status exists on any controlling SHA. Remove, rename, or correct a classic context that no workflow emits, that multiple workflows emit, whose app binding differs, or that collides across the two status systems. Preserve existing rulesets unless the user starts a separate approved ruleset-policy change.
