@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIRECTORY = PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts"
@@ -256,13 +258,136 @@ class RepositorySettingsPreflightTests(unittest.TestCase):
         self.assertIn("requested_settings", communication)
         self.assertIn("requested_settings", labels)
         self.assertIn("approvedLabelSettings", labels)
+        self.assertIn("function Assert-CurrentPlannedLabels", labels)
+        self.assertIn(
+            "`Assert-CurrentPlannedLabels` immediately before copying it.", labels
+        )
+        self.assertIn('metadataPreflight.repository, "OWNER/REPO"', metadata)
+        self.assertIn('communicationPreflight.repository, "OWNER/REPO"', communication)
+        self.assertIn('labelPreflight.repository, "OWNER/REPO"', labels)
+        self.assertIn("function Test-FreshCommunicationPreflight", communication)
+        self.assertIn("$mutations[0] -cne $Feature", communication)
+        self.assertLess(
+            communication.index('Test-FreshCommunicationPreflight -Feature "issues"'),
+            communication.index("$issuesOutput = & gh repo edit"),
+        )
+        self.assertLess(
+            communication.index(
+                'Test-FreshCommunicationPreflight -Feature "discussions"'
+            ),
+            communication.index("$discussionsOutput = & gh repo edit"),
+        )
         planned = re.search(
             r"\$plannedLabelNames = @\((?P<names>.*?)\n\)", labels, re.DOTALL
         )
         self.assertIsNotNone(planned)
         assert planned is not None
+        planned_names = set(re.findall(r'"([^"]+)"', planned.group("names")))
+        mapping = re.search(
+            r"\$optionalLabelNamesByAsset = \[ordered\]@\{(?P<entries>.*?)\n\}",
+            labels,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(mapping)
+        assert mapping is not None
+        mapped_labels: set[str] = set()
+        mapped_assets: set[str] = set()
+        labels_by_asset: dict[str, set[str]] = {}
+        for match in re.finditer(
+            r'^\s+"(?P<asset>[^"]+)"\s*=\s*@\((?P<labels>[^)]*)\)',
+            mapping.group("entries"),
+            re.MULTILINE,
+        ):
+            asset_name = match.group("asset")
+            asset_labels = set(re.findall(r'"([^"]+)"', match.group("labels")))
+            mapped_assets.add(asset_name)
+            labels_by_asset[asset_name] = asset_labels
+            mapped_labels.update(asset_labels)
+        allowed_assets = re.search(
+            r"\$allowedOptionalLabelAssets = @\((?P<assets>.*?)\n\)",
+            labels,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(allowed_assets)
+        assert allowed_assets is not None
+        self.assertEqual(
+            mapped_assets,
+            set(re.findall(r'"([^"]+)"', allowed_assets.group("assets"))),
+        )
+        self.assertEqual(
+            mapped_labels,
+            {
+                "automerge",
+                "ci",
+                "tests",
+                "feature",
+                "fix",
+                "ignore-for-release",
+                "Stale",
+                "pinned",
+                "security",
+            },
+        )
         for label in re.findall(r'Add-LabelIfMissing "([^"]+)"', labels):
-            self.assertIn(f'"{label}"', planned.group("names"))
+            self.assertIn(label, planned_names | mapped_labels)
+
+        assets = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
+        labeler_config = yaml.safe_load(
+            (assets / "labeler.yml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(labels_by_asset["labeler.yml"], {"ci", "tests"})
+        self.assertEqual(
+            mapped_labels & set(labeler_config),
+            {"ci", "tests"},
+        )
+        release_config = yaml.safe_load(
+            (assets / "release-config.yml").read_text(encoding="utf-8")
+        )
+        configured_release_labels = set(
+            release_config["changelog"]["exclude"]["labels"]
+        )
+        for category in release_config["changelog"]["categories"]:
+            configured_release_labels.update(category["labels"])
+        self.assertEqual(
+            mapped_labels & configured_release_labels,
+            {"feature", "fix", "ignore-for-release"},
+        )
+        self.assertEqual(
+            labels_by_asset["release-config.yml"],
+            {"feature", "fix", "ignore-for-release"},
+        )
+        auto_merge_workflow = (assets / "workflows" / "auto-merge.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(labels_by_asset["auto-merge.yml"], {"automerge"})
+        self.assertIn("'automerge'", auto_merge_workflow)
+        stale_workflow = yaml.safe_load(
+            (assets / "workflows" / "stale.yml").read_text(encoding="utf-8")
+        )
+        stale_inputs = stale_workflow["jobs"]["stale"]["steps"][0]["with"]
+        self.assertEqual(stale_inputs["stale-issue-label"], "Stale")
+        self.assertEqual(stale_inputs["stale-pr-label"], "Stale")
+        self.assertEqual(labels_by_asset["stale.yml"], {"Stale", "pinned", "security"})
+        self.assertEqual(
+            mapped_labels & set(stale_inputs["exempt-issue-labels"].split(",")),
+            {"pinned", "security"},
+        )
+
+        add_label = labels.split("function Add-LabelIfMissing", 1)[1].split(
+            "function Get-ValidatedLabelPreflight", 1
+        )[0]
+        self.assertLess(
+            add_label.index("Get-ValidatedLabelPreflight -Name $Name"),
+            add_label.index("gh label create $Name"),
+        )
+        fresh_preflight = labels.split("function Get-ValidatedLabelPreflight", 1)[
+            1
+        ].split('Add-LabelIfMissing "bug"', 1)[0]
+        self.assertIn("--create-label $Name", fresh_preflight)
+        self.assertIn('$mutations[0] -cne "labels"', fresh_preflight)
+        self.assertIn("$labels[0] -cne $Name", fresh_preflight)
+        self.assertIn("$finalLabelListOutput = gh api", labels)
+        self.assertIn("$missingFinalLabels.Count -gt 0", labels)
 
 
 if __name__ == "__main__":

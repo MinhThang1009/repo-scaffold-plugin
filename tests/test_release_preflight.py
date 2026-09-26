@@ -141,6 +141,20 @@ class ReleasePreflightTests(unittest.TestCase):
             ):
                 release_preflight.run(arguments(require_release_please_token=True))
 
+        for status in (403, 404, 503):
+            FakeClient.token_response = release_preflight.InspectionError(
+                f"GitHub API request failed: HTTP {status}: synthetic response"
+            )
+            with (
+                self.subTest(status=status),
+                mock.patch.object(release_preflight, "GitHubClient", FakeClient),
+                self.assertRaisesRegex(
+                    release_preflight.InspectionError,
+                    f"HTTP {status}.*state remains unverified",
+                ),
+            ):
+                release_preflight.run(arguments(require_release_please_token=True))
+
     def test_rejects_untrusted_or_unwritable_repository_state(self) -> None:
         cases: tuple[tuple[argparse.Namespace, object, str], ...] = (
             (arguments(hostname="github.example"), repository(), "GitHub.com only"),
@@ -234,6 +248,12 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn("release_preflight.py", release)
         self.assertIn("render-no-attestation-variant", release)
         self.assertIn("--require-release-please-token", release)
+        self.assertIn(
+            "reports the exact `OWNER/REPO` and `DEFAULT_BRANCH` inputs", release
+        )
+        self.assertIn("`repository` equal to `OWNER/REPO`", release)
+        self.assertIn("`default_branch`", release)
+        self.assertIn("exactly equal to `DEFAULT_BRANCH`", release)
 
 
 if __name__ == "__main__":

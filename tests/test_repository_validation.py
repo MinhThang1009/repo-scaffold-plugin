@@ -43,7 +43,40 @@ sys.modules[WORKFLOW_SPEC.name] = validate_workflows
 WORKFLOW_SPEC.loader.exec_module(validate_workflows)
 
 
+def run_test_subprocess(
+    command: list[str], **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """Keep mutmut's in-process state out of test child processes."""
+    inherited_environment = kwargs.pop("env", None)
+    environment = (
+        os.environ.copy()
+        if inherited_environment is None
+        else inherited_environment.copy()
+    )
+    environment.pop("MUTANT_UNDER_TEST", None)
+    environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
+    return subprocess.run(command, env=environment, **kwargs)
+
+
 class SerializedFileValidationTests(unittest.TestCase):
+    def test_test_subprocess_environment_does_not_inherit_mutmut_runtime_flags(
+        self,
+    ) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"MUTANT_UNDER_TEST": "stats", "MUTMUT_DEPENDENCY_DEPTH": "1"},
+        ):
+            with mock.patch("subprocess.run") as run:
+                run_test_subprocess(
+                    [sys.executable, "-c", "pass"],
+                    env={**os.environ, "CHILD_TEST_VALUE": "preserved"},
+                )
+
+        child_environment = run.call_args.kwargs["env"]
+        self.assertNotIn("MUTANT_UNDER_TEST", child_environment)
+        self.assertNotIn("MUTMUT_DEPENDENCY_DEPTH", child_environment)
+        self.assertEqual(child_environment["CHILD_TEST_VALUE"], "preserved")
+
     def test_yaml_loader_rejects_duplicate_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "duplicate.yml"
@@ -145,12 +178,17 @@ class SerializedFileValidationTests(unittest.TestCase):
             self.assertFalse(validate_repository.nonempty_string(7))
             with mock.patch.dict(
                 os.environ,
-                {"MUTANT_UNDER_TEST": "stats", "PRESERVED_VALUE": "yes"},
+                {
+                    "MUTANT_UNDER_TEST": "stats",
+                    "MUTMUT_DEPENDENCY_DEPTH": "1",
+                    "PRESERVED_VALUE": "yes",
+                },
                 clear=True,
             ):
                 child_environment = validate_repository.child_process_environment()
                 self.assertEqual(child_environment, {"PRESERVED_VALUE": "yes"})
                 self.assertEqual(os.environ["MUTANT_UNDER_TEST"], "stats")
+                self.assertEqual(os.environ["MUTMUT_DEPENDENCY_DEPTH"], "1")
             self.assertEqual(
                 validate_repository.reject_duplicate_json_pairs(
                     [("first", 1), ("second", 2)]
@@ -869,6 +907,26 @@ class ActionPinSyncContractTests(unittest.TestCase):
             [],
         )
 
+    def test_docs_bound_the_manual_dispatch_trust_assumption(self) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        workflow_contracts = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "workflow-contracts.md"
+        ).read_text(encoding="utf-8")
+        workflow = (
+            PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow definition associated with the selected", readme)
+        self.assertIn("only trusted writers may dispatch", workflow)
+        self.assertIn(
+            "This checkout does not pin the workflow definition itself",
+            workflow_contracts,
+        )
+        self.assertIn("dispatchers and trusted workflow refs", workflow_contracts)
+
     def test_synchronizer_job_cannot_disable_its_body_preflight(self) -> None:
         workflow_path = PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
         original_load_yaml = validate_repository.load_yaml
@@ -935,6 +993,12 @@ class ActionPinSyncContractTests(unittest.TestCase):
 
             self.assertEqual(
                 validate_repository.validate_action_pin_sync_contract(root), []
+            )
+            workflow_document = validate_repository.load_yaml(workflow)
+            assert isinstance(workflow_document, dict)
+            self.assertEqual(
+                workflow_document["jobs"]["synchronize"]["if"],
+                validate_repository.VERSION_SYNC_DEFAULT_REF_IF,
             )
             original = workflow.read_text(encoding="utf-8")
             workflow.write_text(
@@ -1101,6 +1165,18 @@ class ActionPinSyncContractTests(unittest.TestCase):
             )
 
             workflow.write_text(
+                original.replace(
+                    "if: ${{ github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}",
+                    "if: true",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            invalid_dispatch_ref_guard = (
+                validate_repository.validate_action_pin_sync_contract(root)
+            )
+
+            workflow.write_text(
                 original.replace("Verify version-sync token", "Bypass token check", 1),
                 encoding="utf-8",
             )
@@ -1251,6 +1327,12 @@ class ActionPinSyncContractTests(unittest.TestCase):
             any(
                 "job permissions must remain contents: read" in problem
                 for problem in invalid_job_permissions
+            )
+        )
+        self.assertTrue(
+            any(
+                "synchronizer job contract is invalid" in problem
+                for problem in invalid_dispatch_ref_guard
             )
         )
         self.assertTrue(
@@ -2287,16 +2369,40 @@ class MutationTestingContractTests(unittest.TestCase):
                     "timeout-minutes": "360",
                     "steps": [
                         {
+                            "id": "mutation-cache",
+                            "uses": "actions/cache/restore@" + "a" * 40,
+                            "with": {
+                                "path": "mutants/",
+                                "key": (
+                                    "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-incremental-"
+                                    "${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+                                ),
+                                "restore-keys": (
+                                    "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-incremental-"
+                                    "${{ github.sha }}-\n"
+                                ),
+                            },
+                        },
+                        {"run": "python scripts/prepare_mutation_cache.py prepare"},
+                        {
                             "env": {
                                 "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
                             },
-                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32",
-                        }
+                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64",
+                        },
+                        {"run": "python scripts/prepare_mutation_cache.py record"},
+                        {"run": "python scripts/prepare_mutation_cache.py prepare"},
+                        {
+                            "name": "Upload mutation plan",
+                            "with": {"include-hidden-files": "true"},
+                        },
                     ],
                 },
                 "mutation-shards": {
                     "strategy": {
-                        "matrix": {"shard": [str(index) for index in range(32)]}
+                        "matrix": {"shard": [str(index) for index in range(64)]}
                     },
                     "steps": [
                         {
@@ -2305,7 +2411,22 @@ class MutationTestingContractTests(unittest.TestCase):
                     ],
                 },
                 "mutation-quality": {
-                    "steps": [{"run": "python scripts/merge_mutation_shards.py"}]
+                    "steps": [
+                        {"run": "python scripts/merge_mutation_shards.py"},
+                        {"run": "python scripts/prepare_mutation_cache.py record"},
+                        {
+                            "uses": "actions/cache/save@" + "b" * 40,
+                            "if": "${{ success() }}",
+                            "with": {
+                                "path": "mutants/",
+                                "key": (
+                                    "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-incremental-"
+                                    "${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+                                ),
+                            },
+                        },
+                    ]
                 },
             }
         }
@@ -2326,7 +2447,7 @@ class MutationTestingContractTests(unittest.TestCase):
                         },
                     }
                 },
-                "run all 32 exact mutation shards",
+                "run all 64 exact mutation shards",
             ),
             (
                 {
@@ -2378,6 +2499,34 @@ class MutationTestingContractTests(unittest.TestCase):
         self.assertEqual(
             validate_repository.validate_sharded_mutation_workflow(valid), []
         )
+
+    def test_sharded_workflow_cache_is_bound_and_preserves_reuse_marker(self) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "mutation-testing.yml"
+        )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(workflow), []
+        )
+        mutations = (
+            lambda value: value["jobs"]["mutation-plan"]["steps"].pop(5),
+            lambda value: value["jobs"]["mutation-plan"]["steps"][5]["with"].update(
+                {"key": "mutable-cache-key"}
+            ),
+            lambda value: value["jobs"]["mutation-plan"]["steps"][-1]["with"].update(
+                {"include-hidden-files": "false"}
+            ),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                candidate = copy.deepcopy(workflow)
+                mutate(candidate)
+                problems = validate_repository.validate_sharded_mutation_workflow(
+                    candidate
+                )
+                self.assertTrue(
+                    any("mutation state cache" in problem for problem in problems),
+                    problems,
+                )
 
     def copy_contract(self, root: Path) -> None:
         for relative in self.CONTRACT_FILES:
@@ -4729,9 +4878,9 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             ".agents/plugins/marketplace.json",
             ".codex-plugin",
             ".claude-plugin",
-            "claude-community",
+            "directory developer portal",
+            "paid claude.ai plan",
             "separately curated Anthropic marketplace",
-            "in-app forms",
             "Skills only",
             "Apps Management write access",
             "identity verification",
@@ -4740,28 +4889,27 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         ):
             self.assertIn(fragment, dossier)
 
-    def test_claude_submission_guidance_uses_community_marketplace(self) -> None:
+    def test_claude_submission_guidance_uses_anthropic_directory(self) -> None:
         documents = {
-            PLUGIN_ROOT
-            / "README.md": "`claude-community` marketplace through its in-app forms.",
-            PLUGIN_ROOT
-            / "PLUGIN_SUBMISSION.md": "`claude-community` marketplace through one of its current in-app forms",
+            PLUGIN_ROOT / "README.md": "account sync",
+            PLUGIN_ROOT / "PLUGIN_SUBMISSION.md": "account sync",
             PLUGIN_ROOT
             / "skills"
             / "repo-scaffold"
             / "references"
-            / "agent-compatibility.md": "`claude-community` marketplace through one of its current in-app forms.",
+            / "agent-compatibility.md": "account sync",
             PLUGIN_ROOT
             / "skills"
             / "repo-scaffold"
             / "references"
-            / "agent-compatibility.vi.md": "`claude-community` của Anthropic qua một trong các form trong app hiện hành.",
+            / "agent-compatibility.vi.md": "account sync",
         }
 
         for path, expected in documents.items():
             text = path.read_text(encoding="utf-8")
 
             self.assertIn(expected, text, path.name)
+            self.assertIn("code.claude.com/docs/en/plugins/publish", text, path.name)
             self.assertIn("claude-plugins-official", text, path.name)
 
     def test_readme_uninstalls_from_the_documented_marketplace(self) -> None:
@@ -6835,7 +6983,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             feature_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "feature.md"
             ).read_text(encoding="utf-8")
-            result = subprocess.run(
+            result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": feature_body},
@@ -6848,7 +6996,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             comment_heavy_body = feature_body.replace(
                 "## Purpose", "## Purpose " + "<!-- ignored -->" * 2000, 1
             )
-            comment_heavy_result = subprocess.run(
+            comment_heavy_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": comment_heavy_body},
@@ -6860,7 +7008,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 comment_heavy_result.returncode, 0, comment_heavy_result.stderr
             )
 
-            cr_only_result = subprocess.run(
+            cr_only_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": feature_body.replace("\n", "\r")},
@@ -6870,7 +7018,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             )
             self.assertEqual(cr_only_result.returncode, 0, cr_only_result.stderr)
 
-            hard_wrapped_result = subprocess.run(
+            hard_wrapped_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -6887,7 +7035,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             malformed_html_body = (
                 feature_body + "\n<div/x>\nwrapped prose line\ncontinued prose line\n\n"
             )
-            malformed_html_result = subprocess.run(
+            malformed_html_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": malformed_html_body},
@@ -6898,7 +7046,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             self.assertNotEqual(malformed_html_result.returncode, 0)
             self.assertIn("hard-wrapped prose", malformed_html_result.stderr)
 
-            explicit_list_break = subprocess.run(
+            explicit_list_break = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -6917,7 +7065,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             deployment_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "deployment.md"
             ).read_text(encoding="utf-8")
-            deployment_result = subprocess.run(
+            deployment_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": deployment_body},
@@ -6930,7 +7078,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             dependency_update_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "dependency-update.md"
             ).read_text(encoding="utf-8")
-            dependency_update_result = subprocess.run(
+            dependency_update_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": dependency_update_body},
@@ -6954,7 +7102,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     template_root / "PULL_REQUEST_TEMPLATE" / f"{template_id}.md"
                 ).read_text(encoding="utf-8")
                 with self.subTest(title=title, template_id=template_id):
-                    selected_result = subprocess.run(
+                    selected_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={
@@ -6969,7 +7117,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     self.assertEqual(
                         selected_result.returncode, 0, selected_result.stderr
                     )
-                    default_result = subprocess.run(
+                    default_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={
@@ -6987,7 +7135,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                         default_result.stderr,
                     )
 
-            maintenance_result = subprocess.run(
+            maintenance_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7003,7 +7151,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 maintenance_result.returncode, 0, maintenance_result.stderr
             )
 
-            ready_incomplete = subprocess.run(
+            ready_incomplete = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": feature_body, "PR_IS_DRAFT": "false"},
@@ -7025,7 +7173,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 feature_body,
                 flags=re.DOTALL,
             )
-            ready_completed = subprocess.run(
+            ready_completed = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": ready_body, "PR_IS_DRAFT": "false"},
@@ -7059,7 +7207,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             vietnamese_body = (
                 vietnamese_template_root / "PULL_REQUEST_TEMPLATE" / "feature.md"
             ).read_text(encoding="utf-8")
-            vietnamese_result = subprocess.run(
+            vietnamese_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=vietnamese_root,
                 env={**os.environ, "PR_BODY": vietnamese_body},
@@ -7108,7 +7256,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 ),
             ):
                 with self.subTest(environment=environment):
-                    exempt_result = subprocess.run(
+                    exempt_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={**os.environ, **environment},
@@ -7131,7 +7279,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 },
             ):
                 with self.subTest(hard_wrapped_environment=environment):
-                    hard_wrapped_exempt = subprocess.run(
+                    hard_wrapped_exempt = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={
@@ -7147,7 +7295,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     self.assertNotEqual(hard_wrapped_exempt.returncode, 0)
                     self.assertIn("hard-wrapped prose", hard_wrapped_exempt.stderr)
 
-            unverified_release_prefix = subprocess.run(
+            unverified_release_prefix = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7175,7 +7323,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 feature_body,
                 flags=re.DOTALL,
             )
-            without_optional_items = subprocess.run(
+            without_optional_items = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": body_without_optional_items},
@@ -7187,7 +7335,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 without_optional_items.returncode, 0, without_optional_items.stderr
             )
 
-            missing_marker = subprocess.run(
+            missing_marker = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7269,7 +7417,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             }
             for hiding_method, hidden_body in hidden_content_bodies.items():
                 with self.subTest(hiding_method=hiding_method):
-                    hidden_result = subprocess.run(
+                    hidden_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={**os.environ, "PR_BODY": hidden_body},
@@ -7310,7 +7458,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 security_template,
             )
 
-            result = subprocess.run(
+            result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7345,7 +7493,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md",
                 security_template,
             )
-            txt_result = subprocess.run(
+            txt_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7401,7 +7549,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 docs_template,
             )
             feature_body = docs_template.read_text(encoding="utf-8")
-            result = subprocess.run(
+            result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7433,6 +7581,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
         engine = {
             "jobs": {
                 "build": {
+                    "if": validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF,
                     "permissions": {"contents": "read"},
                     "steps": [
                         {
@@ -7446,6 +7595,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                 },
                 "attest": {
                     "needs": "build",
+                    "if": validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF,
                     "runs-on": "ubuntu-latest",
                     "timeout-minutes": 15,
                     "permissions": {
@@ -7476,6 +7626,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                 },
                 "publish": {
                     "needs": ["build", "attest"],
+                    "if": validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF,
                     "permissions": {"contents": "write"},
                 },
             }
@@ -7509,6 +7660,40 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
             self.write_valid_configuration(root)
 
             self.assertEqual(validate_repository.validate_release_attestation(root), [])
+
+    def test_release_dispatch_ref_must_be_the_default_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            release_paths = (
+                root / ".github" / "workflows" / "release.yml",
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "workflows"
+                / "release.yml",
+            )
+            for path in release_paths:
+                workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+                for job_name in ("build", "attest", "publish"):
+                    workflow["jobs"][job_name].pop("if")
+                    path.write_text(
+                        yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+                    )
+                    problems = validate_repository.validate_release_attestation(root)
+                    relative = path.relative_to(root).as_posix()
+                    self.assertIn(
+                        f"{relative}: {job_name} must restrict dispatch and reusable calls "
+                        "to trusted release refs",
+                        problems,
+                    )
+                    workflow["jobs"][job_name]["if"] = (
+                        validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF
+                    )
+                path.write_text(
+                    yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+                )
 
     def test_release_attestation_reports_malformed_build_step_name(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -7724,6 +7909,499 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                     for item in validate_repository.validate_release_attestation(root)
                 )
             )
+
+    def test_release_publish_rechecks_draft_assets_and_published_state(self) -> None:
+        workflow_paths = (
+            PLUGIN_ROOT / ".github" / "workflows" / "release.yml",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "release.yml",
+        )
+        for workflow_path in workflow_paths:
+            with self.subTest(workflow=str(workflow_path.relative_to(PLUGIN_ROOT))):
+                workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+                publish_steps = workflow["jobs"]["publish"]["steps"]
+                publish_step = next(
+                    step
+                    for step in publish_steps
+                    if step.get("name")
+                    == "Attach assets and publish the GitHub Release"
+                )
+                script = publish_step["run"]
+                self.assertIn("local page_budget=16", script)
+                self.assertIn("expected_asset_manifest='[]'", script)
+                self.assertIn("sha256sum --", script)
+                self.assertIn(".assets[] | {name, size, digest, state}", script)
+                self.assertIn('if [[ -z "${release_record}" ]]; then', script)
+                self.assertIn("prepare_missing_release_assets()", script)
+                self.assertNotIn("--clobber", script)
+                upload_positions = list(
+                    re.finditer(r"(?m)^\s*gh release upload", script)
+                )
+                self.assertEqual(len(upload_positions), 2)
+                for upload in upload_positions:
+                    self.assertGreater(
+                        script.rfind("assert_draft_release", 0, upload.start()),
+                        script.rfind("if [[ -z", 0, upload.start()),
+                    )
+                    self.assertGreater(
+                        script.find("assert_release_assets draft", upload.end()),
+                        upload.end(),
+                    )
+                edit_index = script.index("gh release edit")
+                self.assertLess(
+                    script.rfind("assert_release_assets draft", 0, edit_index),
+                    edit_index,
+                )
+                self.assertLess(
+                    edit_index,
+                    script.index("assert_release_assets published", edit_index),
+                )
+                self.assertIn(
+                    "Release history exceeded the ${page_budget}-page", script
+                )
+
+                bash = shutil.which("bash")
+                if bash is None:
+                    git_bash = (
+                        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+                        / "Git"
+                        / "bin"
+                        / "bash.exe"
+                    )
+                    if git_bash.is_file():
+                        bash = str(git_bash)
+                if bash is None:
+                    self.skipTest(
+                        "bash is unavailable for the release script syntax check"
+                    )
+                with tempfile.NamedTemporaryFile(
+                    suffix=".sh", mode="w", encoding="utf-8", newline="\n"
+                ) as shell_file:
+                    shell_file.write(script)
+                    shell_file.flush()
+                    checked = run_test_subprocess(
+                        [bash, "-n", shell_file.name],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_release_publisher_create_resume_and_fail_closed_paths(self) -> None:
+        bash = shutil.which("bash")
+        if bash is None:
+            git_bash = (
+                Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+                / "Git"
+                / "bin"
+                / "bash.exe"
+            )
+            if git_bash.is_file():
+                bash = str(git_bash)
+        if bash is None:
+            self.skipTest(
+                "bash is unavailable for the release publisher integration test"
+            )
+        compatible_bash = run_test_subprocess(
+            [
+                bash,
+                "-c",
+                "type mapfile >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if compatible_bash.returncode != 0:
+            self.skipTest(
+                "the release publisher integration requires Bash mapfile and sha256sum"
+            )
+
+        fake_tool = r"""#!/usr/bin/env python
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+from urllib.parse import parse_qs, quote, urlsplit
+
+
+def compact(value):
+    return json.dumps(value, separators=(",", ":"))
+
+
+def emit(value, raw=False):
+    if raw and isinstance(value, str):
+        print(value)
+    elif raw and isinstance(value, bool):
+        print("true" if value else "false")
+    elif raw and value is None:
+        print("null")
+    else:
+        print(compact(value))
+
+
+def jq_main():
+    args = sys.argv[1:]
+    flags = set()
+    values = {}
+    positional = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token in ("--arg", "--argjson"):
+            key, value = args[index + 1], args[index + 2]
+            values[key] = json.loads(value) if token == "--argjson" else value
+            index += 3
+        elif token.startswith("-") and not token.startswith("--"):
+            flags.update(token[1:])
+            index += 1
+        else:
+            positional.append(token)
+            index += 1
+    expression = positional[-1] if positional else ""
+    raw_input = "" if "n" in flags else sys.stdin.read()
+    try:
+        data = (
+            None if "n" in flags
+            else raw_input.rstrip("\n") if "R" in flags
+            else json.loads(raw_input)
+        )
+    except json.JSONDecodeError as error:
+        print(str(error) + "; filter=" + expression + "; input=" + repr(raw_input), file=sys.stderr)
+        return 4
+
+    if "n" in flags and "$current + [{name:" in expression:
+        value = values["current"] + [{
+            "name": values["name"], "size": int(values["size"]),
+            "digest": values["digest"], "state": "uploaded",
+        }]
+    elif "n" in flags and "$current + $next" in expression:
+        value = values["current"] + values["next"]
+    elif expression == "@uri":
+        value = quote(data, safe="~")
+    elif expression == ".count":
+        value = data["count"]
+    elif expression == ".matching":
+        value = data["matching"]
+    elif expression == "length":
+        value = len(data)
+    elif expression == ".[0]":
+        value = data[0]
+    elif expression == ".object.type // empty":
+        value = data.get("object", {}).get("type", "")
+    elif expression == ".object.sha // empty":
+        value = data.get("object", {}).get("sha", "")
+    elif expression == ".draft":
+        value = data["draft"]
+    elif expression == ".immutable":
+        value = data["immutable"]
+    elif "(.count | type == \"number\"" in expression:
+        value = (
+            isinstance(data, dict) and type(data.get("count")) is int
+            and 0 <= data["count"] <= 100 and isinstance(data.get("matching"), list)
+        )
+    elif 'type == "array" and length <= 1' in expression:
+        value = isinstance(data, list) and len(data) <= 1
+    elif "all(.assets[];" in expression:
+        expected = values["expected"]
+        assets = data.get("assets")
+        value = (
+            data.get("tag_name") == values["tag"] and data.get("draft") is True
+            and data.get("immutable") is False and isinstance(assets, list)
+            and len([asset.get("name") for asset in assets])
+                == len(set(asset.get("name") for asset in assets))
+            and all(asset in expected for asset in assets)
+        )
+    elif "$draft_state" in expression:
+        expected = values["expected"]
+        expected_draft = values["draft_state"] == "draft"
+        assets = data.get("assets")
+        value = (
+            data.get("tag_name") == values["tag"]
+            and data.get("draft") is expected_draft
+            and (data.get("immutable") is False if expected_draft
+                 else type(data.get("immutable")) is bool)
+            and isinstance(assets, list)
+            and sorted(assets, key=lambda item: item.get("name", ""))
+                == sorted(expected, key=lambda item: item.get("name", ""))
+        )
+    elif "any(.assets[]; .name == $name)" in expression:
+        value = any(asset.get("name") == values["name"] for asset in data["assets"])
+    elif '.tag_name == $tag and .draft == true' in expression:
+        value = (
+            data.get("tag_name") == values["tag"] and data.get("draft") is True
+            and data.get("immutable") is False
+        )
+    else:
+        print("unsupported jq filter in release integration test: " + expression, file=sys.stderr)
+        return 2
+
+    if "e" in flags and (value is False or value is None):
+        return 1
+    emit(value, raw="r" in flags)
+    return 0
+
+
+def gh_main():
+    args = sys.argv[1:]
+    state_path = Path(os.environ["AUDIT_RELEASE_STATE"])
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.setdefault("calls", []).append(args)
+    command = args[:2]
+    if command[0] == "api":
+        endpoint = next((item for item in args if item.startswith("repos/")), "")
+        if "/releases?" in endpoint:
+            page = int(parse_qs(urlsplit(endpoint).query).get("page", ["1"])[0])
+            if os.environ.get("AUDIT_RELEASE_MODE") == "full-pages":
+                result = {"count": 100, "matching": []}
+            else:
+                records = list(state.get("extra_releases", []))
+                if state.get("release") is not None:
+                    records.append(state["release"])
+                matching = [item for item in records if item.get("tag_name") == os.environ["RELEASE_TAG"]]
+                start = (page - 1) * 100
+                page_records = records[start:start + 100]
+                result = {
+                    "count": len(page_records),
+                    "matching": [item for item in page_records if item.get("tag_name") == os.environ["RELEASE_TAG"]],
+                }
+            print(compact(result))
+        elif "/git/ref/tags/" in endpoint:
+            sha = os.environ.get("AUDIT_TAG_TARGET_SHA", os.environ["RELEASE_COMMIT_SHA"])
+            print(compact({"object": {"type": "commit", "sha": sha}}))
+        else:
+            print("unsupported GitHub API request: " + endpoint, file=sys.stderr)
+            return 2
+    elif command == ["release", "create"]:
+        if state.get("release") is not None:
+            print("release already exists", file=sys.stderr)
+            return 1
+        state["release"] = {
+            "tag_name": args[2], "draft": True, "immutable": False, "assets": []
+        }
+    elif command == ["release", "upload"]:
+        asset_paths = [item for item in args[3:] if Path(item).is_file()]
+        for index, asset_path in enumerate(asset_paths):
+            content = Path(asset_path).read_bytes()
+            state["release"]["assets"].append({
+                "name": Path(asset_path).name,
+                "size": len(content),
+                "digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+                "state": "uploaded",
+            })
+            state_path.write_text(compact(state), encoding="utf-8")
+            if os.environ.get("FAIL_AFTER_FIRST_UPLOAD") == "1" and index == 0:
+                return 1
+    elif command == ["release", "edit"]:
+        state["release"]["draft"] = False
+        state["release"]["immutable"] = True
+    else:
+        print("unsupported GitHub CLI call: " + " ".join(args), file=sys.stderr)
+        return 2
+    state_path.write_text(compact(state), encoding="utf-8")
+    return 0
+
+
+if Path(sys.argv[0]).name == "jq":
+    raise SystemExit(jq_main())
+raise SystemExit(gh_main())
+"""
+
+        artifact_bytes = {
+            "first.bin": b"first artifact",
+            "second.bin": b"second artifact",
+        }
+
+        def run_publisher(
+            script: str,
+            initial_state: dict[str, Any],
+            *,
+            fail_after_first_upload: bool = False,
+            mode: str | None = None,
+            tag_target_sha: str | None = None,
+        ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bin_directory = root / "bin"
+                bin_directory.mkdir()
+                tool_names = ("gh",) if shutil.which("jq") else ("gh", "jq")
+                for name in tool_names:
+                    tool_path = bin_directory / name
+                    tool_path.write_text(fake_tool, encoding="utf-8", newline="\n")
+                    tool_path.chmod(
+                        tool_path.stat().st_mode
+                        | stat.S_IXUSR
+                        | stat.S_IXGRP
+                        | stat.S_IXOTH
+                    )
+                work_directory = root / "work"
+                dist_directory = work_directory / "dist"
+                dist_directory.mkdir(parents=True)
+                for name, contents in artifact_bytes.items():
+                    (dist_directory / name).write_bytes(contents)
+                state_path = root / "release-state.json"
+                state_path.write_text(json.dumps(initial_state), encoding="utf-8")
+                environment = os.environ.copy()
+                environment.update(
+                    {
+                        "PATH": str(bin_directory)
+                        + os.pathsep
+                        + environment.get("PATH", ""),
+                        "GITHUB_REPOSITORY": "octo/example",
+                        "RELEASE_TAG": "v9.9.9",
+                        "RELEASE_COMMIT_SHA": "a" * 40,
+                        "AUDIT_RELEASE_STATE": str(state_path),
+                    }
+                )
+                if fail_after_first_upload:
+                    environment["FAIL_AFTER_FIRST_UPLOAD"] = "1"
+                else:
+                    environment.pop("FAIL_AFTER_FIRST_UPLOAD", None)
+                if mode is not None:
+                    environment["AUDIT_RELEASE_MODE"] = mode
+                if tag_target_sha is not None:
+                    environment["AUDIT_TAG_TARGET_SHA"] = tag_target_sha
+                completed = run_test_subprocess(
+                    [bash, "-s"],
+                    input=script,
+                    cwd=work_directory,
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                )
+                final_state = json.loads(state_path.read_text(encoding="utf-8"))
+                return completed, final_state
+
+        publish_paths = (
+            PLUGIN_ROOT / ".github" / "workflows" / "release.yml",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "release.yml",
+        )
+        for workflow_path in publish_paths:
+            workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+            script = next(
+                step["run"]
+                for step in workflow["jobs"]["publish"]["steps"]
+                if step.get("name") == "Attach assets and publish the GitHub Release"
+            )
+            with self.subTest(workflow=str(workflow_path.relative_to(PLUGIN_ROOT))):
+                fresh, fresh_state = run_publisher(
+                    script, {"release": None, "extra_releases": [], "calls": []}
+                )
+                self.assertEqual(fresh.returncode, 0, fresh.stderr)
+                self.assertFalse(fresh_state["release"]["draft"])
+                self.assertEqual(
+                    {asset["name"] for asset in fresh_state["release"]["assets"]},
+                    set(artifact_bytes),
+                )
+                self.assertFalse(
+                    any("--clobber" in call for call in fresh_state["calls"])
+                )
+
+                partial, partial_state = run_publisher(
+                    script,
+                    {"release": None, "extra_releases": [], "calls": []},
+                    fail_after_first_upload=True,
+                )
+                self.assertNotEqual(partial.returncode, 0)
+                self.assertTrue(partial_state["release"]["draft"])
+                self.assertEqual(len(partial_state["release"]["assets"]), 1)
+                resumed, resumed_state = run_publisher(script, partial_state)
+                self.assertEqual(resumed.returncode, 0, resumed.stderr)
+                self.assertFalse(resumed_state["release"]["draft"])
+                self.assertEqual(
+                    {asset["name"] for asset in resumed_state["release"]["assets"]},
+                    set(artifact_bytes),
+                )
+                upload_calls = [
+                    call
+                    for call in resumed_state["calls"]
+                    if call[:2] == ["release", "upload"]
+                ]
+                self.assertEqual(len(upload_calls), 2)
+                self.assertEqual(
+                    len([item for item in upload_calls[-1] if item.endswith(".bin")]), 1
+                )
+
+                if workflow_path != publish_paths[0]:
+                    continue
+
+                wrong_digest_asset = {
+                    "name": "first.bin",
+                    "size": len(artifact_bytes["first.bin"]),
+                    "digest": "sha256:" + "0" * 64,
+                    "state": "uploaded",
+                }
+                conflicting = {
+                    "release": {
+                        "tag_name": "v9.9.9",
+                        "draft": True,
+                        "immutable": False,
+                        "assets": [wrong_digest_asset],
+                    },
+                    "extra_releases": [],
+                    "calls": [],
+                }
+                failed_conflict, conflict_state = run_publisher(script, conflicting)
+                self.assertNotEqual(failed_conflict.returncode, 0)
+                self.assertEqual(
+                    conflict_state["release"]["assets"], [wrong_digest_asset]
+                )
+                self.assertFalse(
+                    any(
+                        call[:2] == ["release", "upload"]
+                        for call in conflict_state["calls"]
+                    )
+                )
+
+                published = {
+                    "release": {
+                        "tag_name": "v9.9.9",
+                        "draft": False,
+                        "immutable": False,
+                        "assets": [],
+                    },
+                    "extra_releases": [],
+                    "calls": [],
+                }
+                failed_published, published_state = run_publisher(script, published)
+                self.assertNotEqual(failed_published.returncode, 0)
+                self.assertFalse(
+                    any(
+                        call[:2] == ["release", "upload"]
+                        for call in published_state["calls"]
+                    )
+                )
+                self.assertFalse(published_state["release"]["draft"])
+
+                bad_tag, bad_tag_state = run_publisher(
+                    script,
+                    {"release": None, "extra_releases": [], "calls": []},
+                    tag_target_sha="b" * 40,
+                )
+                self.assertNotEqual(bad_tag.returncode, 0)
+                self.assertIsNone(bad_tag_state["release"])
+
+                oversized, oversized_state = run_publisher(
+                    script,
+                    {"release": None, "extra_releases": [], "calls": []},
+                    mode="full-pages",
+                )
+                self.assertNotEqual(oversized.returncode, 0)
+                self.assertIsNone(oversized_state["release"])
 
 
 class IssueFormValidationTests(unittest.TestCase):
@@ -13213,10 +13891,15 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-actions-permissions-api": [
                     "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                     "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
                     "skills/repo-scaffold/scripts/scorecard_preflight.py",
                 ],
                 "github-actions-workflow-permissions-syntax": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
-                "github-actions-workflow-runs-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-actions-workflow-runs-api": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
+                ],
                 "github-pull-request-target-policy": [
                     "README.md",
                     "skills/repo-scaffold/SKILL.md",
@@ -13245,6 +13928,43 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-git-refs-api": "skills/repo-scaffold/assets/workflows/release.yml",
                 "github-git-tags-api": "skills/repo-scaffold/assets/workflows/release.yml",
                 "github-releases-api": "skills/repo-scaffold/scripts/ci_toolchain.py",
+                "github-release-asset-upload-api": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                ],
+                "github-rest-unsafe-conditional-requests": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                ],
+                "github-actions-workflow-ref-selection": [
+                    "README.md",
+                    ".github/workflows/action-pin-sync.yml",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                ],
+                "github-actions-pull-request-merge-workflow-source": [
+                    "README.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
+                ],
+                "github-actions-reusable-workflow-caller-context": [
+                    ".github/workflows/release.yml",
+                    ".github/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                ],
                 "github-pull-requests-api": [
                     "scripts/check_code_scanning_alerts.py",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
@@ -13275,6 +13995,15 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 ],
                 "github-reminder-issue-search-api": "skills/repo-scaffold/assets/workflows/freshness.yml",
                 "github-repository-labels-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-repository-labeler-action-permissions": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/labeler.yml",
+                    "skills/repo-scaffold/assets/labeler.yml",
+                ],
+                "github-actions-stale-label-contract": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/stale.yml",
+                ],
                 "github-branch-protection-status-checks": [
                     "README.md",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
@@ -13294,6 +14023,14 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/assets/workflows/auto-merge.yml",
                 ],
                 "github-security-analysis-settings": "skills/repo-scaffold/scripts/security_features_preflight.py",
+                "github-secret-protection-eligibility": [
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
+                "github-push-protection-secret-protection-entitlement": [
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
                 "github-repository-security-features-api": [
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/security_features_preflight.py",
@@ -13551,6 +14288,11 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-git-refs-api",
             "github-git-tags-api",
             "github-releases-api",
+            "github-release-asset-upload-api",
+            "github-rest-unsafe-conditional-requests",
+            "github-actions-workflow-ref-selection",
+            "github-actions-pull-request-merge-workflow-source",
+            "github-actions-reusable-workflow-caller-context",
             "github-pull-requests-api",
             "github-git-commits-api",
             "github-repository-commits-api",
@@ -13566,6 +14308,8 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-effective-branch-rules-api",
             "github-merge-queue-auto-merge",
             "github-security-analysis-settings",
+            "github-secret-protection-eligibility",
+            "github-push-protection-secret-protection-entitlement",
             "github-repository-security-features-api",
             "github-users-api",
             "github-artifact-attestations",

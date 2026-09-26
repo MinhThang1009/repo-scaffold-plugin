@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import runpy
 import sys
 import unittest
@@ -66,6 +67,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
         "secret_scanning": False,
         "push_protection": False,
         "private_vulnerability_reporting": False,
+        "confirm_private_secret_protection_eligibility": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -113,6 +115,7 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result["security_and_analysis"]["secret_scanning"], "disabled")
+        self.assertEqual(result["private_security_feature_eligibility"], "not-required")
         self.assertTrue(result["administration_permission"])
         self.assertEqual(result["github_api_requests"], 1)
 
@@ -230,6 +233,78 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             result = security_features_preflight.run(arguments(push_protection=True))
         self.assertEqual(result["requested_features"], ["push_protection"])
 
+    def test_private_secret_features_require_explicit_eligibility_confirmation(
+        self,
+    ) -> None:
+        FakeClient.response = repository(visibility="public")
+        with mock.patch.object(security_features_preflight, "GitHubClient", FakeClient):
+            public = security_features_preflight.run(arguments(secret_scanning=True))
+        self.assertEqual(public["decision"], "may-configure-security-features")
+        self.assertEqual(public["private_security_feature_eligibility"], "not-required")
+
+        for visibility in ("private", "internal"):
+            FakeClient.response = repository(visibility=visibility)
+            with (
+                self.subTest(visibility=visibility, eligibility="unconfirmed"),
+                mock.patch.object(
+                    security_features_preflight, "GitHubClient", FakeClient
+                ),
+            ):
+                unconfirmed = security_features_preflight.run(
+                    arguments(secret_scanning=True)
+                )
+            self.assertTrue(unconfirmed["inspection_complete"])
+            self.assertEqual(
+                unconfirmed["decision"],
+                "confirm-private-secret-protection-eligibility",
+            )
+            self.assertEqual(
+                unconfirmed["private_security_feature_eligibility"],
+                "confirmation-required",
+            )
+
+            for feature in ("secret_scanning", "push_protection"):
+                FakeClient.response = repository(visibility=visibility)
+                args = arguments(
+                    secret_scanning=True,
+                    push_protection=feature == "push_protection",
+                    confirm_private_secret_protection_eligibility=True,
+                )
+                with (
+                    self.subTest(visibility=visibility, feature=feature),
+                    mock.patch.object(
+                        security_features_preflight, "GitHubClient", FakeClient
+                    ),
+                ):
+                    confirmed = security_features_preflight.run(args)
+                self.assertEqual(
+                    confirmed["decision"], "may-configure-security-features"
+                )
+                self.assertEqual(
+                    confirmed["private_security_feature_eligibility"],
+                    "user-confirmed",
+                )
+
+        with self.assertRaisesRegex(
+            security_features_preflight.InspectionError, "must be boolean"
+        ):
+            security_features_preflight.run(
+                arguments(
+                    secret_scanning=True,
+                    confirm_private_secret_protection_eligibility="yes",
+                )
+            )
+
+        with self.assertRaisesRegex(
+            security_features_preflight.InspectionError, "without requesting"
+        ):
+            security_features_preflight.run(
+                arguments(
+                    dependabot_alerts=True,
+                    confirm_private_secret_protection_eligibility=True,
+                )
+            )
+
     def test_automated_security_fixes_require_dependabot_alert_evidence(self) -> None:
         FakeClient.response = repository()
         FakeClient.raw_error = None
@@ -245,6 +320,24 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 security_features_preflight.InspectionError,
                 "Automated security fixes require Dependabot alerts",
+            ):
+                security_features_preflight.run(
+                    arguments(automated_security_fixes=True)
+                )
+
+        for status in (403, 404, 503):
+            FakeClient.raw_error = security_features_preflight.InspectionError(
+                f"GitHub API request failed: HTTP {status}: synthetic response"
+            )
+            with (
+                self.subTest(status=status),
+                mock.patch.object(
+                    security_features_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    security_features_preflight.InspectionError,
+                    f"HTTP {status}.*state remains unverified",
+                ),
             ):
                 security_features_preflight.run(
                     arguments(automated_security_fixes=True)
@@ -293,12 +386,56 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
                 "--repository",
                 "octo/example",
                 "--enable-secret-scanning",
+                "--confirm-private-secret-protection-eligibility",
             ],
         ):
             args = security_features_preflight.parse_args()
         self.assertTrue(args.secret_scanning)
+        self.assertTrue(args.confirm_private_secret_protection_eligibility)
         with self.assertRaises(SystemExit):
             runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+
+    def test_cli_redacts_api_error_details_and_preserves_http_status(self) -> None:
+        with (
+            mock.patch.object(
+                security_features_preflight,
+                "parse_args",
+                return_value=arguments(),
+            ),
+            mock.patch.object(
+                security_features_preflight,
+                "run",
+                side_effect=security_features_preflight.InspectionError(
+                    "GitHub API request failed: HTTP 403: synthetic-secret-response"
+                ),
+            ),
+            mock.patch("builtins.print") as print_mock,
+        ):
+            self.assertEqual(security_features_preflight.main(), 2)
+
+        response_text = print_mock.call_args.args[0]
+        response = json.loads(response_text)
+        self.assertEqual(response["github_http_status"], 403)
+        self.assertNotIn("synthetic-secret-response", response_text)
+
+        with (
+            mock.patch.object(
+                security_features_preflight,
+                "parse_args",
+                return_value=arguments(),
+            ),
+            mock.patch.object(
+                security_features_preflight,
+                "run",
+                side_effect=OSError("synthetic-local-error"),
+            ),
+            mock.patch("builtins.print") as print_mock,
+        ):
+            self.assertEqual(security_features_preflight.main(), 2)
+        local_error_text = print_mock.call_args.args[0]
+        local_error_response = json.loads(local_error_text)
+        self.assertNotIn("github_http_status", local_error_response)
+        self.assertNotIn("synthetic-local-error", local_error_text)
 
     def test_skill_and_reference_require_the_preflight_before_mutation(self) -> None:
         skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
@@ -312,6 +449,8 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
         self.assertIn("exact approved feature", skill)
         self.assertIn("security_features_preflight.py", security)
         self.assertIn("--enable-push-protection", security)
+        self.assertIn("--confirm-private-secret-protection-eligibility", security)
+        self.assertIn("Secret Protection eligibility", security)
         self.assertIn("non-fork repository", security)
         self.assertIn("Dependabot alerts before automated security fixes", security)
         self.assertIn("administration permission", security)
@@ -319,6 +458,111 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
         self.assertIn("$approvedSecurityFeatures", security)
         self.assertIn("Compare-Object", security)
         self.assertIn("if ($enablePrivateVulnerabilityReportingRequested)", security)
+
+    def test_each_security_setting_revalidates_then_checks_write_and_readback(
+        self,
+    ) -> None:
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        security = setup.split("## Security features", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("Get-ValidatedSecurityFeaturePreflight", security)
+        self.assertIn('$result.repository, "OWNER/REPO"', security)
+        self.assertIn("$features.Count -ne 1", security)
+        self.assertIn("$exitCode -ne 0", security)
+        self.assertIn("if ($requestedSecurityFeatures.Count -gt 0)", security)
+        self.assertIn("No security-feature changes were requested", security)
+        self.assertLess(
+            security.index("if ($requestedSecurityFeatures.Count -gt 0)"),
+            security.index(
+                "$securityPreflightOutput = python $securityFeaturesPreflight"
+            ),
+        )
+
+        cases = (
+            (
+                "- **Dependabot alerts**",
+                "- **Secret scanning + push protection**",
+                "-X PUT",
+                "repos/OWNER/REPO/vulnerability-alerts",
+                "repos/OWNER/REPO/vulnerability-alerts",
+                "if ($enableDependabotAlertsRequested)",
+            ),
+            (
+                "- **Dependabot alerts**",
+                "- **Secret scanning + push protection**",
+                "-X PUT",
+                "repos/OWNER/REPO/automated-security-fixes",
+                "repos/OWNER/REPO/automated-security-fixes",
+                "if ($enableAutomatedSecurityFixesRequested)",
+            ),
+            (
+                "- **Secret scanning + push protection**",
+                "- **CodeQL advanced setup**",
+                "--enable-secret-scanning",
+                "--enable-secret-scanning",
+                ".security_and_analysis.secret_scanning.status",
+                "if ($enableSecretScanningRequested)",
+            ),
+            (
+                "- **Secret scanning + push protection**",
+                "- **CodeQL advanced setup**",
+                "--enable-secret-scanning-push-protection",
+                "--enable-secret-scanning-push-protection",
+                "push_protection: .security_and_analysis.secret_scanning_push_protection.status",
+                "if ($enablePushProtectionRequested)",
+            ),
+            (
+                "- **Private vulnerability reporting**",
+                "- **Dependency review workflow**",
+                "-X PUT",
+                "repos/OWNER/REPO/private-vulnerability-reporting",
+                "--jq '.enabled'",
+                "if ($enablePrivateVulnerabilityReportingRequested)",
+            ),
+        )
+        for (
+            start_marker,
+            end_marker,
+            mutation,
+            mutation_flag,
+            verification,
+            guard,
+        ) in cases:
+            with self.subTest(mutation=mutation):
+                start = security.index(start_marker)
+                end = security.index(end_marker, start + len(start_marker))
+                section = security[start:end]
+                guard_index = section.index(guard)
+                preflight_index = section.index(
+                    "Get-ValidatedSecurityFeaturePreflight", guard_index
+                )
+                mutation_index = section.index(mutation, preflight_index)
+                write_path_index = section.index(mutation_flag, mutation_index)
+                exit_check_index = section.index("$LASTEXITCODE", write_path_index)
+                verify_index = section.index(
+                    verification, exit_check_index + len("$LASTEXITCODE")
+                )
+                self.assertLess(guard_index, preflight_index)
+                self.assertLess(preflight_index, mutation_index)
+                self.assertLess(mutation_index, exit_check_index)
+                self.assertLess(exit_check_index, verify_index)
+
+        dependabot = security.split("- **Dependabot alerts**", 1)[1].split(
+            "- **Secret scanning + push protection**", 1
+        )[0]
+        self.assertIn("$fixState.enabled -ne $true", dependabot)
+        self.assertIn("$fixState.paused -ne $false", dependabot)
+
+        push_protection = security.split("- **Secret scanning + push protection**", 1)[
+            1
+        ].split("- **CodeQL advanced setup**", 1)[0]
+        self.assertIn(
+            '$pushProtectionState.secret_scanning -cne "enabled"', push_protection
+        )
+        self.assertIn(
+            '$pushProtectionState.push_protection -cne "enabled"', push_protection
+        )
 
 
 if __name__ == "__main__":

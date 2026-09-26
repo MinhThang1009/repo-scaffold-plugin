@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import re
 import runpy
 import sys
 import unittest
@@ -65,12 +66,79 @@ def arguments(**overrides: object) -> argparse.Namespace:
         "default_branch": "main",
         "require_auto_merge_workflows": False,
         "confirm_disable_merge_methods": False,
+        "enable_delete_branch_on_merge": False,
+        "squash_merge_commit_title": None,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
 
 
 class MergeSettingsPreflightTests(unittest.TestCase):
+    def test_merge_mutation_docs_bind_and_recheck_the_optional_auto_merge_plan(
+        self,
+    ) -> None:
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        merge = setup.split("## Merge settings", 1)[1].split("\n## ", 1)[0]
+        self.assertIn('mergeSettingsPreflightResult.repository, "OWNER/REPO"', merge)
+        self.assertIn(
+            "mergeSettingsPreflightResult.default_branch -cne $DEFAULT_BRANCH", merge
+        )
+        self.assertIn(
+            "$finalPreflightOutput = python $mergeSettingsPreflight @preflightArguments",
+            merge,
+        )
+        self.assertIn(
+            "$postMergePreflightOutput = python $mergeSettingsPreflight @preflightArguments",
+            merge,
+        )
+        self.assertIn("$installAutoMergeAssetsRequested = $false", merge)
+        self.assertIn("$autoMergeCapabilityEnableApproved = $false", merge)
+        self.assertIn("$copyMergePreflight = Get-ValidatedFreshMergePreflight", merge)
+        self.assertIn(
+            "Repeat this check before the second asset if both were selected.", merge
+        )
+        self.assertIn(
+            "$enableAutoMergeNow = -not [bool]$finalMergePreflight.auto_merge_enabled",
+            merge,
+        )
+        self.assertIn(
+            "$finalMergeSettings.allow_rebase_merge -ne [bool]$postMergePreflight.desired_merge_methods.rebase",
+            merge,
+        )
+        self.assertIn("if ($enableAutoMergeNow) {", merge)
+        self.assertIn("$expectedAutoMergeEnabled", merge)
+        self.assertIn('"--enable-delete-branch-on-merge"', merge)
+        self.assertIn('"--squash-merge-commit-title", "PR_TITLE"', merge)
+        self.assertIn("requested_settings.delete_branch_on_merge -ne $true", merge)
+        self.assertIn(
+            'requested_settings.squash_merge_commit_title -cne "PR_TITLE"', merge
+        )
+        self.assertLess(
+            merge.index(
+                "$finalPreflightOutput = python $mergeSettingsPreflight @preflightArguments"
+            ),
+            merge.index("$mergeOutput = & gh @mergeArguments"),
+        )
+        fresh_checks = [
+            match.start()
+            for match in re.finditer(
+                r"\$null = Get-ValidatedFreshMergePreflight", merge
+            )
+        ]
+        self.assertEqual(len(fresh_checks), 2)
+        self.assertLess(fresh_checks[0], merge.index("$squashTitleOutput = & gh api"))
+        self.assertLess(
+            fresh_checks[1], merge.index("$autoMergeOutput = & gh repo edit")
+        )
+        self.assertLess(
+            merge.index("$autoMergeOutput = & gh repo edit"),
+            merge.index(
+                "$postMergePreflightOutput = python $mergeSettingsPreflight @preflightArguments"
+            ),
+        )
+
     def configure(
         self,
         *,
@@ -91,6 +159,8 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 "allow_merge_commit": merge,
                 "allow_rebase_merge": rebase,
                 "allow_auto_merge": auto_merge,
+                "delete_branch_on_merge": False,
+                "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
             },
             "repos/octo/example/rules/branches/main?per_page=100": rules,
             "repos/octo/example/branches/main": branch
@@ -170,6 +240,86 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         self.assertEqual(result["decision"], "may-configure-merge-settings")
         self.assertEqual(result["methods_to_disable"], ["merge", "rebase"])
 
+    def test_binds_delete_branch_and_squash_title_mutation_inputs(self) -> None:
+        self.configure(rules=[])
+        with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
+            result = merge_settings_preflight.run(
+                arguments(
+                    enable_delete_branch_on_merge=True,
+                    squash_merge_commit_title="PR_TITLE",
+                )
+            )
+
+        self.assertEqual(
+            result["requested_settings"],
+            {
+                "delete_branch_on_merge": True,
+                "squash_merge_commit_title": "PR_TITLE",
+            },
+        )
+        self.assertEqual(
+            result["current_settings"],
+            {
+                "delete_branch_on_merge": False,
+                "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+            },
+        )
+
+    def test_cli_accepts_exact_merge_setting_inputs(self) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "merge_settings_preflight.py",
+                "--repository",
+                "octo/example",
+                "--default-branch",
+                "main",
+                "--enable-delete-branch-on-merge",
+                "--squash-merge-commit-title",
+                "PR_TITLE",
+            ],
+        ):
+            parsed = merge_settings_preflight.parse_args()
+        self.assertTrue(parsed.enable_delete_branch_on_merge)
+        self.assertEqual(parsed.squash_merge_commit_title, "PR_TITLE")
+
+    def test_rejects_unsupported_requested_squash_title(self) -> None:
+        self.configure(rules=[])
+        with (
+            mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                merge_settings_preflight.InspectionError, "title is unsupported"
+            ),
+        ):
+            merge_settings_preflight.run(arguments(squash_merge_commit_title="PR_BODY"))
+
+    def test_rejects_malformed_merge_setting_inputs_and_current_state(self) -> None:
+        self.configure(rules=[])
+        with (
+            mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                merge_settings_preflight.InspectionError,
+                "Delete-branch request must be a boolean",
+            ),
+        ):
+            merge_settings_preflight.run(arguments(enable_delete_branch_on_merge="yes"))
+
+        self.configure(rules=[])
+        repository = FakeClient.responses["repos/octo/example"]
+        assert isinstance(repository, dict)
+        repository["squash_merge_commit_title"] = "UNSUPPORTED"
+        with (
+            mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient),
+            self.assertRaisesRegex(
+                merge_settings_preflight.InspectionError,
+                "invalid 'squash_merge_commit_title'",
+            ),
+        ):
+            merge_settings_preflight.run(
+                arguments(squash_merge_commit_title="PR_TITLE")
+            )
+
     def test_queue_requires_preserving_its_method_and_skips_auto_merge_assets(
         self,
     ) -> None:
@@ -188,7 +338,9 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         self.assertFalse(result["auto_merge_workflows_eligible"])
         self.assertEqual(result["required_merge_methods"], ["rebase"])
 
-    def test_auto_merge_workflows_require_enabled_repository_capability(self) -> None:
+    def test_auto_merge_capability_requires_a_status_check_before_enablement(
+        self,
+    ) -> None:
         self.configure(rules=[], auto_merge=False)
 
         with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
@@ -197,21 +349,31 @@ class MergeSettingsPreflightTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            blocked["decision"], "enable-auto-merge-before-installing-workflows"
+            blocked["decision"],
+            "require-status-checks-before-installing-auto-merge-workflows",
         )
         self.assertFalse(blocked["auto_merge_enabled"])
         self.assertFalse(blocked["auto_merge_workflows_eligible"])
 
+        branch_with_checks = {
+            "name": "main",
+            "protected": True,
+            "protection": {"required_status_checks": {"contexts": ["ci"]}},
+        }
+        self.configure(rules=[], auto_merge=False, branch=branch_with_checks)
+        with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
+            enableable = merge_settings_preflight.run(
+                arguments(require_auto_merge_workflows=True)
+            )
+        self.assertEqual(
+            enableable["decision"], "enable-auto-merge-before-installing-workflows"
+        )
+        self.assertTrue(enableable["status_checks_required"])
+
         self.configure(
             rules=[],
             auto_merge=True,
-            branch={
-                "name": "main",
-                "protected": True,
-                "protection": {
-                    "required_status_checks": {"contexts": ["ci"]},
-                },
-            },
+            branch=branch_with_checks,
         )
         with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
             ready = merge_settings_preflight.run(
@@ -222,6 +384,8 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         self.assertTrue(ready["auto_merge_enabled"])
         self.assertTrue(ready["auto_merge_workflows_eligible"])
         self.assertTrue(ready["classic_status_checks_required"])
+        self.assertEqual(ready["repository"], "octo/example")
+        self.assertEqual(ready["default_branch"], "main")
 
     def test_auto_merge_workflows_require_effective_status_checks(self) -> None:
         self.configure(rules=[])

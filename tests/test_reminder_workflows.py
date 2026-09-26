@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -28,6 +29,15 @@ if BASH is None and os.name == "nt":
         BASH = str(git_bash)
 
 
+def child_cli_environment(overrides: dict[str, str]) -> dict[str, str]:
+    """Keep mutmut's parent-test trampoline state out of copied CLI children."""
+    environment = os.environ.copy()
+    environment.pop("MUTANT_UNDER_TEST", None)
+    environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
+    environment.update(overrides)
+    return environment
+
+
 class ReminderWorkflowTests(unittest.TestCase):
     @staticmethod
     def install_body_preflight(root: Path, *, root_entrypoint: bool = False) -> None:
@@ -45,6 +55,17 @@ class ReminderWorkflowTests(unittest.TestCase):
             shutil.copyfile(bundled_script, bundled_destination)
         else:
             shutil.copyfile(bundled_script, script)
+
+    def test_child_cli_environment_does_not_inherit_mutmut_runtime_flags(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"MUTANT_UNDER_TEST": "stats", "MUTMUT_DEPENDENCY_DEPTH": "1"},
+        ):
+            environment = child_cli_environment({"CHILD_TEST_VALUE": "preserved"})
+
+        self.assertNotIn("MUTANT_UNDER_TEST", environment)
+        self.assertNotIn("MUTMUT_DEPENDENCY_DEPTH", environment)
+        self.assertEqual(environment["CHILD_TEST_VALUE"], "preserved")
 
     def test_every_issue_body_writer_preflights_before_edit_or_create(self) -> None:
         report_paths = {
@@ -151,17 +172,18 @@ class ReminderWorkflowTests(unittest.TestCase):
                         f"<!-- {marker} -->\nFirst line\ncontinued line\n",
                         encoding="utf-8",
                     )
-                    environment = {
-                        **os.environ,
-                        "REPOSITORY": "synthetic/example",
-                        "GITHUB_REPOSITORY": "synthetic/example",
-                        "RUNNER_TEMP": ".",
-                        "CHECKER_EXIT": "1",
-                        "PYTHON_CANARY_RESULT": "failure",
-                        "TOOLCHAIN_CANARY_RESULT": "success",
-                        "RUN_URL": "https://github.com/synthetic/example/actions/runs/1",
-                        "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
-                    }
+                    environment = child_cli_environment(
+                        {
+                            "REPOSITORY": "synthetic/example",
+                            "GITHUB_REPOSITORY": "synthetic/example",
+                            "RUNNER_TEMP": ".",
+                            "CHECKER_EXIT": "1",
+                            "PYTHON_CANARY_RESULT": "failure",
+                            "TOOLCHAIN_CANARY_RESULT": "success",
+                            "RUN_URL": "https://github.com/synthetic/example/actions/runs/1",
+                            "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
+                        }
+                    )
                     result = subprocess.run(
                         [str(BASH), "--noprofile", "--norc", "-s"],
                         input=stub + script,
@@ -276,13 +298,14 @@ class ReminderWorkflowTests(unittest.TestCase):
                     root = Path(directory)
                     self.install_body_preflight(root)
                     (root / report).write_text("wrong-marker\n", encoding="utf-8")
-                    environment = {
-                        **os.environ,
-                        "REPOSITORY": "synthetic/example",
-                        "GITHUB_REPOSITORY": "synthetic/example",
-                        "RUNNER_TEMP": ".",
-                        "CHECKER_EXIT": "0",
-                    }
+                    environment = child_cli_environment(
+                        {
+                            "REPOSITORY": "synthetic/example",
+                            "GITHUB_REPOSITORY": "synthetic/example",
+                            "RUNNER_TEMP": ".",
+                            "CHECKER_EXIT": "0",
+                        }
+                    )
                     stub = """gh() {
   if [[ "$1" == api ]]; then printf '41\\n'; return 0; fi
   printf 'MUTATION:%s\\n' "$2"
@@ -342,19 +365,22 @@ class ReminderWorkflowTests(unittest.TestCase):
                             (root / f"{name}.md").write_text(
                                 f"<!-- {marker} -->\n", encoding="utf-8"
                             )
-                        environment = {
-                            **os.environ,
-                            "REPOSITORY": "synthetic/example",
-                            "GITHUB_REPOSITORY": "synthetic/example",
-                            "RUNNER_TEMP": ".",
-                            "GITHUB_STEP_SUMMARY": "summary.md",
-                            "RUN_URL": "https://example.test/run",
-                            "CHECKER_EXIT": "0" if clean else "1",
-                            "PYTHON_CANARY_RESULT": "success" if clean else "failure",
-                            "TOOLCHAIN_CANARY_RESULT": "success",
-                            "TEST_API_EXIT": str(api_exit),
-                            "TEST_NUMBERS": numbers,
-                        }
+                        environment = child_cli_environment(
+                            {
+                                "REPOSITORY": "synthetic/example",
+                                "GITHUB_REPOSITORY": "synthetic/example",
+                                "RUNNER_TEMP": ".",
+                                "GITHUB_STEP_SUMMARY": "summary.md",
+                                "RUN_URL": "https://example.test/run",
+                                "CHECKER_EXIT": "0" if clean else "1",
+                                "PYTHON_CANARY_RESULT": "success"
+                                if clean
+                                else "failure",
+                                "TOOLCHAIN_CANARY_RESULT": "success",
+                                "TEST_API_EXIT": str(api_exit),
+                                "TEST_NUMBERS": numbers,
+                            }
+                        )
                         stub = """gh() {
   if [[ "$1" == api ]]; then
     if [[ -n "$TEST_NUMBERS" ]]; then printf '%s\\n' "${TEST_NUMBERS//$'\\n'/ }"; fi
@@ -409,13 +435,14 @@ class ReminderWorkflowTests(unittest.TestCase):
             (root / "community-health.md").write_text(
                 "<!-- repo-scaffold-community-health-drift -->\n", encoding="utf-8"
             )
-            environment = {
-                **os.environ,
-                "REPOSITORY": "synthetic/example",
-                "GITHUB_REPOSITORY": "synthetic/example",
-                "RUNNER_TEMP": ".",
-                "CHECKER_EXIT": "127",
-            }
+            environment = child_cli_environment(
+                {
+                    "REPOSITORY": "synthetic/example",
+                    "GITHUB_REPOSITORY": "synthetic/example",
+                    "RUNNER_TEMP": ".",
+                    "CHECKER_EXIT": "127",
+                }
+            )
             stub = """gh() {
   if [[ "$1" == api ]]; then return 0; fi
   printf 'MUTATION:%s\\n' "$2"
@@ -460,12 +487,13 @@ class ReminderWorkflowTests(unittest.TestCase):
                         "<!-- repo-scaffold-freshness-audit -->\n",
                         encoding="utf-8",
                     )
-                    environment = {
-                        **os.environ,
-                        "GITHUB_REPOSITORY": "synthetic/example",
-                        "RUNNER_TEMP": ".",
-                        "CHECKER_EXIT": "127",
-                    }
+                    environment = child_cli_environment(
+                        {
+                            "GITHUB_REPOSITORY": "synthetic/example",
+                            "RUNNER_TEMP": ".",
+                            "CHECKER_EXIT": "127",
+                        }
+                    )
                     stub = """gh() {
   if [[ "$1" == api ]]; then return 0; fi
   printf 'MUTATION:%s\\n' "$2"

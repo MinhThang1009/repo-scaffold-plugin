@@ -104,6 +104,12 @@ class InspectionError(RuntimeError):
     """Raised when the preflight cannot prove that mutation is safe."""
 
 
+def github_api_status(error: InspectionError) -> int | None:
+    """Retain a bounded HTTP status from a failed read without echoing its body."""
+    match = re.search(r"\bHTTP\s+([1-5][0-9]{2})\b", str(error), re.IGNORECASE)
+    return int(match.group(1)) if match is not None else None
+
+
 class DuplicateJsonMember(ValueError):
     """Raised when a GitHub API response contains ambiguous duplicate members."""
 
@@ -3053,6 +3059,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError("Repository root is not a directory.")
     client = GitHubClient(args.hostname, forbidden_root=repo_root)
 
+    repository_document = client.json(f"repos/{owner}/{repo}")
+    require_verified_default_branch(
+        repository_document, args.repository, args.default_branch
+    )
     current_setup = client.json(f"repos/{owner}/{repo}/code-scanning/default-setup")
     if not isinstance(current_setup, dict) or not isinstance(
         current_setup.get("state"), str
@@ -3064,6 +3074,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return {
             "inspection_complete": True,
             "decision": "preserve-default-setup",
+            "repository": args.repository,
+            "default_branch": args.default_branch,
+            "administration_permission": None,
+            "github_actions_enabled": None,
             "default_setup_state": current_setup["state"],
             "advanced_workflows": None,
             "has_codeql_analysis": None,
@@ -3072,9 +3086,33 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "github_api_requests": client.request_count,
         }
 
-    require_verified_default_branch(
-        client.json(f"repos/{owner}/{repo}"), args.repository, args.default_branch
-    )
+    if repository_document.get("archived") is not False:
+        raise InspectionError(
+            "Archived or unknown repositories cannot change CodeQL setup."
+        )
+    if repository_document.get("disabled") is not False:
+        raise InspectionError(
+            "Disabled or unknown repositories cannot change CodeQL setup."
+        )
+    administration_permission: bool | None = None
+    github_actions_enabled: bool | None = None
+    if getattr(args, "require_administration_permission", False):
+        permissions = repository_document.get("permissions")
+        if not isinstance(permissions, dict) or permissions.get("admin") is not True:
+            raise InspectionError(
+                "Repository administration permission is required to change CodeQL setup."
+            )
+        administration_permission = True
+        actions_permissions = client.json(f"repos/{owner}/{repo}/actions/permissions")
+        if not isinstance(actions_permissions, dict) or not isinstance(
+            actions_permissions.get("enabled"), bool
+        ):
+            raise InspectionError("GitHub Actions permissions response is invalid.")
+        github_actions_enabled = actions_permissions["enabled"]
+        if not github_actions_enabled:
+            raise InspectionError(
+                "GitHub Actions must be enabled before configuring CodeQL default setup."
+            )
 
     budget = WorkflowByteBudget(deadline=client.deadline)
     local_workflows = load_local_workflows(repo_root, budget)
@@ -3137,6 +3175,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "inspection_complete": True,
         "decision": decision,
+        "repository": args.repository,
+        "default_branch": args.default_branch,
+        "administration_permission": administration_permission,
+        "github_actions_enabled": github_actions_enabled,
         "default_setup_state": current_setup["state"],
         "advanced_workflows": advanced,
         "has_codeql_analysis": has_analysis,
@@ -3154,6 +3196,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--default-branch", required=True)
     parser.add_argument("--hostname", default="github.com")
     parser.add_argument("--confirm-no-external-codeql", action="store_true")
+    parser.add_argument("--require-administration-permission", action="store_true")
     return parser.parse_args()
 
 

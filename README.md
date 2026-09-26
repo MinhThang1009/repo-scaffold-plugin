@@ -73,6 +73,7 @@ before installing those assets. This plugin does not change that remote policy.
 - `git`.
 - `actionlint` and ShellCheck are required for local workflow validation. CI obtains their reviewed versions, release metadata, archive layout, and asset digests from the centralized [CI toolchain policy](.github/ci-toolchain.json).
 - Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with the hash-locked development dependencies, for deterministic tests, branch coverage, scaffold validation, and fail-closed preflights. The CodeQL preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime, and requires separate confirmation that no external or indirect process uploads CodeQL results. The classic branch-protection preflight binds the repository/default branch, proves an exact remote workflow producer and event coverage, then uses a recent successful Check Run on GitHub's controlling representative PR SHA (test-merge when it has any checks/statuses, otherwise head). It joins the Check Run to its Actions workflow run and verifies the path, commit, and eligible event before using that run's GitHub App ID; no same-name Commit Status may exist on the controlling SHA. It rejects inactive targets and requires current administration permission. The merge-settings preflight preserves methods required by effective rules, requires separate confirmation before disabling an enabled method, and rejects auto-merge assets when a merge queue applies or no effective required status-check gate can be verified. The security-features preflight binds the exact requested features to an active repository with administration permission, enforces the secret-scanning prerequisite for push protection, limits private vulnerability reporting to public non-forks, and proves Dependabot alerts are enabled before automated security fixes unless alerts were approved for prior enablement. The workflow-installation preflight compares each supplied, SHA-pinned `uses:` reference with the effective selected-actions policy before allowing a restricted workflow asset. Without the applicable proof, the plugin skips that mutation and reports the verification gap.
+- When an effective merge queue applies, branch-protection preflight also requires a recent successful Check Run on a verified `merge_group` SHA, from the same workflow blob and GitHub App as the selected PR check; otherwise setup stops.
 - The repository-settings preflight independently binds description/topics, Issues/Discussions, and label creation to the exact GitHub.com repository, rejects archived or disabled targets, and requires current administration permission before `gh repo edit` or `gh label create` can run.
 - Node.js 22 or later with `npx` is required only to reproduce the markdownlint package pinned by the [CI toolchain policy](.github/ci-toolchain.json).
 - Remote automation supports GitHub.com only. GitHub Enterprise Server and GHE.com repositories receive host-independent local community files, but bundled workflows, GitHub.com badges, and remote configuration are skipped.
@@ -141,12 +142,14 @@ local plugin sources into its per-user plugin cache (normally
 caches, `.git` metadata, or private local files. Use the release package or an
 archive built from the canonical release path set.
 
-Claude Code distribution is separate. Public third-party listings are submitted
-to Anthropic's `claude-community` marketplace through its in-app forms.
-`claude-plugins-official` is Anthropic's separately curated marketplace. Until a
-Claude Code listing is approved, do not treat Codex Plugin Directory
-availability as a Claude Code listing. For a private or local Claude Code
-installation, add this repository as a marketplace and install the plugin:
+Claude Code distribution is separate. Submit public third-party listings through
+Anthropic's [directory developer portal](https://code.claude.com/docs/en/plugins/publish),
+which requires a paid claude.ai plan. Directory listings are available on
+claude.ai and Cowork and reach Claude Code through account sync.
+`claude-plugins-official` is Anthropic's separately curated marketplace. Do not
+claim an Anthropic directory listing until it is published. For a private or
+local Claude Code installation, add this repository as a marketplace and install
+the plugin:
 
 ```powershell
 claude plugin validate --strict .
@@ -346,10 +349,14 @@ configuration, and scaffold assets. It uses a dedicated fine-grained PAT stored
 as `VERSION_SYNC_TOKEN`, so normal PR CI runs; it never auto-merges. Scope that
 token to this repository only, with **Contents: Read and write**, **Pull
 requests: Read and write**, and **Workflows: Read and write** because the
-synchronizer may update workflow files. Manual synchronizer runs always check out
-the default branch with credentials disabled before running repository code, so a
-selected branch or tag cannot reach the PAT-backed PR mutation. All runs share a
-repository-scoped non-cancelling concurrency group because they update the same
+synchronizer may update workflow files. Its manual job rejects a non-default
+selected ref and checks out the default branch with credentials disabled. GitHub
+still runs the workflow definition associated with the selected `workflow_dispatch`
+ref, so that guard prevents accidental ref selection but does not make an
+untrusted workflow definition safe. The PR action receives a repository-scoped
+PAT, so only trusted writers may dispatch or edit this workflow. See GitHub's
+[workflow ref semantics](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows).
+All runs share a repository-scoped non-cancelling concurrency group because they update the same
 maintenance branch. Keep it separate from
 `RELEASE_PLEASE_TOKEN` to avoid granting release automation unnecessary workflow
 write access. The maintenance PR body is kept in
@@ -387,11 +394,12 @@ Mutation testing extends that toolchain through the separate, hash-verified
 against the direct pin, and a compatible Dependabot bump passes the runner integration tests,
 while an incompatible internal API change fails those behavioral checks. Its
 daily and manually dispatched workflow plans every mutant on Linux, executes
-each exact assignment in a 32-way matrix, then rejects missing, duplicate, or
-incomplete shard results before enforcing the evidence-backed mutation score
-floor documented in `CONTRIBUTING.md`. It retains generated mutants and metadata
-for diagnosis. Native Windows is not supported by mutmut; contributors can use
-WSL for the same check.
+each exact assignment in a 64-way matrix, and reuses only hash-validated mutation
+state for a matching commit, runtime, and platform. It rejects missing,
+duplicate, or incomplete shard results before enforcing the evidence-backed
+mutation score floor documented in `CONTRIBUTING.md`. It retains generated
+mutants and metadata for diagnosis. Native Windows is not supported by mutmut;
+contributors can use WSL for the same check.
 
 ## 11. Releases
 

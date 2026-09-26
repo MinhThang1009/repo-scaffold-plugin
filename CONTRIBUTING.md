@@ -89,8 +89,9 @@ on a newer interpreter. A mutmut update must pass the runner's internal API
 integration and behavioral tests; validators derive the reviewed version from
 the direct input instead of duplicating it. Regenerating the lock alone remains
 insufficient. Trusted scheduled and manual runs
-plan every mutant, execute the exact assignment in 32 Linux workers, and merge
-only a complete non-overlapping result set. The aggregate job rejects a missing
+plan every mutant, executes the exact assignment in 64 Linux workers, and merges
+only a complete non-overlapping result set. A hash-validated mutation cache may
+reuse state only for the same commit, runtime, and platform. The aggregate job rejects a missing
 artifact, an unassigned result, or a shard that did not finish before it exports
 statistics. This preserves a full mutation run without accepting partial cache
 state or lowering the score gate.
@@ -132,7 +133,7 @@ The coverage command enforces the repository's 100% branch-coverage floor from
 
 Mutation testing runs daily and on manual dispatch because a complete run is
 substantially more expensive than the required pull-request checks. The workflow
-plans every mutant, runs 32 exact Linux shards, and merges only a complete,
+plans every mutant, runs 64 exact Linux shards, and merges only a complete,
 non-overlapping assignment before it applies the gate. Mutmut requires
 operating-system `fork` support, so run it on Linux or macOS, or in WSL on
 Windows:

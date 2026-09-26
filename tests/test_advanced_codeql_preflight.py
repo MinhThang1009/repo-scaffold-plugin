@@ -103,6 +103,8 @@ class AdvancedCodeqlPreflightTests(unittest.TestCase):
             result = advanced_codeql_preflight.run(arguments())
 
         self.assertEqual(result["decision"], "may-install-advanced-codeql-workflow")
+        self.assertEqual(result["repository"], "octo/example")
+        self.assertEqual(result["default_branch"], "main")
         self.assertEqual(result["github_code_security"], "not-required")
         self.assertTrue(result["github_actions_enabled"])
         self.assertEqual(result["github_api_requests"], 9)
@@ -414,6 +416,8 @@ class AdvancedCodeqlPreflightTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("advanced_codeql_preflight.py", skill)
         self.assertIn("advanced_codeql_preflight.py", setup)
+        self.assertIn('advancedCodeqlResult.repository, "OWNER/REPO"', setup)
+        self.assertIn("advancedCodeqlResult.default_branch -cne $DEFAULT_BRANCH", setup)
 
 
 if __name__ == "__main__":
