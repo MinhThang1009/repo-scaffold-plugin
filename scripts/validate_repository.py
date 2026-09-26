@@ -4701,14 +4701,18 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
     expected_source_root_env = {
         "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
     }
-    plan_steps = plan.get("steps")
+    raw_plan_steps = plan.get("steps")
+    plan_steps: list[object] = (
+        raw_plan_steps if isinstance(raw_plan_steps, list) else []
+    )
+    expected_plan_run = (
+        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64"
+    )
     plan_generation_steps = (
         [
             step
             for step in plan_steps
-            if isinstance(step, dict)
-            and step.get("run")
-            == "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32"
+            if isinstance(step, dict) and step.get("run") == expected_plan_run
         ]
         if isinstance(plan_steps, list)
         else []
@@ -4728,10 +4732,27 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         ]
     matrix = shards.get("strategy", {}).get("matrix", {})
     assigned = matrix.get("shard") if isinstance(matrix, dict) else None
-    if assigned != [str(index) for index in range(32)]:
+    if assigned != [str(index) for index in range(64)]:
         return [
-            ".github/workflows/mutation-testing.yml: run all 32 exact mutation shards"
+            ".github/workflows/mutation-testing.yml: run all 64 exact mutation shards"
         ]
+    expected_shard_run = (
+        "python scripts/run_mutation_testing.py --max-children 4 --shard-index "
+        '"$SHARD_INDEX"'
+    )
+    cache_prefix = (
+        "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
+        "${{ steps.support.outputs.latest }}-incremental-${{ github.sha }}"
+    )
+    expected_restore = {
+        "path": "mutants/",
+        "key": f"{cache_prefix}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}",
+        "restore-keys": f"{cache_prefix}-\n",
+    }
+    expected_save = {
+        "path": "mutants/",
+        "key": expected_restore["key"],
+    }
     runs = {
         step.get("run")
         for job in (jobs["mutation-plan"], shards, aggregate)
@@ -4740,14 +4761,75 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         if isinstance(step, dict) and isinstance(step.get("run"), str)
     }
     required = {
-        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32",
-        'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"',
+        expected_plan_run,
+        expected_shard_run,
+        "python scripts/prepare_mutation_cache.py prepare",
+        "python scripts/prepare_mutation_cache.py record",
         "python scripts/merge_mutation_shards.py",
     }
     if not required.issubset(runs):
         return [
             ".github/workflows/mutation-testing.yml: plan, execute, and merge "
             "exact mutation shards"
+        ]
+    cache_restore_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/cache/restore@")
+    ]
+    plan_prepare_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py prepare"
+    ]
+    plan_record_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py record"
+    ]
+    plan_upload_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict) and step.get("name") == "Upload mutation plan"
+    ]
+    raw_aggregate_steps = aggregate.get("steps")
+    aggregate_steps: list[object] = (
+        raw_aggregate_steps if isinstance(raw_aggregate_steps, list) else []
+    )
+    aggregate_record_steps = [
+        step
+        for step in aggregate_steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py record"
+    ]
+    cache_save_steps = [
+        step
+        for step in aggregate_steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/cache/save@")
+    ]
+    if (
+        len(cache_restore_steps) != 1
+        or cache_restore_steps[0].get("id") != "mutation-cache"
+        or cache_restore_steps[0].get("with") != expected_restore
+        or len(plan_prepare_steps) != 2
+        or len(plan_record_steps) != 1
+        or len(plan_upload_steps) != 1
+        or plan_upload_steps[0].get("with", {}).get("include-hidden-files") != "true"
+        or len(aggregate_record_steps) != 1
+        or len(cache_save_steps) != 1
+        or cache_save_steps[0].get("if") != "${{ success() }}"
+        or cache_save_steps[0].get("with") != expected_save
+    ):
+        return [
+            ".github/workflows/mutation-testing.yml: mutation state cache must "
+            "restore and prepare validated state, preserve its marker for shard "
+            "reuse, and save completed state under a commit-bound cache key"
         ]
     return []
 

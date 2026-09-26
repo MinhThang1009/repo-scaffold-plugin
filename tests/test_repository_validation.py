@@ -2369,16 +2369,40 @@ class MutationTestingContractTests(unittest.TestCase):
                     "timeout-minutes": "360",
                     "steps": [
                         {
+                            "id": "mutation-cache",
+                            "uses": "actions/cache/restore@" + "a" * 40,
+                            "with": {
+                                "path": "mutants/",
+                                "key": (
+                                    "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-incremental-"
+                                    "${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+                                ),
+                                "restore-keys": (
+                                    "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-incremental-"
+                                    "${{ github.sha }}-\n"
+                                ),
+                            },
+                        },
+                        {"run": "python scripts/prepare_mutation_cache.py prepare"},
+                        {
                             "env": {
                                 "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
                             },
-                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32",
-                        }
+                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64",
+                        },
+                        {"run": "python scripts/prepare_mutation_cache.py record"},
+                        {"run": "python scripts/prepare_mutation_cache.py prepare"},
+                        {
+                            "name": "Upload mutation plan",
+                            "with": {"include-hidden-files": "true"},
+                        },
                     ],
                 },
                 "mutation-shards": {
                     "strategy": {
-                        "matrix": {"shard": [str(index) for index in range(32)]}
+                        "matrix": {"shard": [str(index) for index in range(64)]}
                     },
                     "steps": [
                         {
@@ -2387,7 +2411,22 @@ class MutationTestingContractTests(unittest.TestCase):
                     ],
                 },
                 "mutation-quality": {
-                    "steps": [{"run": "python scripts/merge_mutation_shards.py"}]
+                    "steps": [
+                        {"run": "python scripts/merge_mutation_shards.py"},
+                        {"run": "python scripts/prepare_mutation_cache.py record"},
+                        {
+                            "uses": "actions/cache/save@" + "b" * 40,
+                            "if": "${{ success() }}",
+                            "with": {
+                                "path": "mutants/",
+                                "key": (
+                                    "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-incremental-"
+                                    "${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+                                ),
+                            },
+                        },
+                    ]
                 },
             }
         }
@@ -2408,7 +2447,7 @@ class MutationTestingContractTests(unittest.TestCase):
                         },
                     }
                 },
-                "run all 32 exact mutation shards",
+                "run all 64 exact mutation shards",
             ),
             (
                 {
@@ -2460,6 +2499,34 @@ class MutationTestingContractTests(unittest.TestCase):
         self.assertEqual(
             validate_repository.validate_sharded_mutation_workflow(valid), []
         )
+
+    def test_sharded_workflow_cache_is_bound_and_preserves_reuse_marker(self) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "mutation-testing.yml"
+        )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(workflow), []
+        )
+        mutations = (
+            lambda value: value["jobs"]["mutation-plan"]["steps"].pop(5),
+            lambda value: value["jobs"]["mutation-plan"]["steps"][5]["with"].update(
+                {"key": "mutable-cache-key"}
+            ),
+            lambda value: value["jobs"]["mutation-plan"]["steps"][-1]["with"].update(
+                {"include-hidden-files": "false"}
+            ),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                candidate = copy.deepcopy(workflow)
+                mutate(candidate)
+                problems = validate_repository.validate_sharded_mutation_workflow(
+                    candidate
+                )
+                self.assertTrue(
+                    any("mutation state cache" in problem for problem in problems),
+                    problems,
+                )
 
     def copy_contract(self, root: Path) -> None:
         for relative in self.CONTRACT_FILES:
