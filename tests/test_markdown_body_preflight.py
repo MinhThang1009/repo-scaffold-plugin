@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import runpy
 import subprocess
 import sys
@@ -18,6 +19,14 @@ SKILL_PREFLIGHT = (
 )
 
 
+def child_test_environment() -> dict[str, str]:
+    """Keep mutmut's in-process state out of CLI subprocesses."""
+    environment = os.environ.copy()
+    environment.pop("MUTANT_UNDER_TEST", None)
+    environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
+    return environment
+
+
 class MarkdownBodyPreflightTests(unittest.TestCase):
     def run_preflight(
         self, script: Path, body_text: str
@@ -28,6 +37,7 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             return subprocess.run(
                 [sys.executable, str(script), "--body-file", str(body_file)],
                 cwd=PLUGIN_ROOT,
+                env=child_test_environment(),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

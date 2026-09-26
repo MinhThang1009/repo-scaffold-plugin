@@ -3258,6 +3258,7 @@ def child_process_environment() -> dict[str, str]:
     """Keep mutmut's in-process selector out of child Python processes."""
     environment = os.environ.copy()
     environment.pop("MUTANT_UNDER_TEST", None)
+    environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
     return environment
 
 

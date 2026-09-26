@@ -256,6 +256,7 @@ if elapsed >= 1.0:
 """
         environment = os.environ.copy()
         environment.pop("MUTANT_UNDER_TEST", None)
+        environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
         subprocess.run(
             [sys.executable, "-c", probe, str(SCRIPT_PATH), case],
             check=True,

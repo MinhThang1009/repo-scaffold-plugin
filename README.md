@@ -142,12 +142,14 @@ local plugin sources into its per-user plugin cache (normally
 caches, `.git` metadata, or private local files. Use the release package or an
 archive built from the canonical release path set.
 
-Claude Code distribution is separate. Public third-party listings are submitted
-to Anthropic's `claude-community` marketplace through its in-app forms.
-`claude-plugins-official` is Anthropic's separately curated marketplace. Until a
-Claude Code listing is approved, do not treat Codex Plugin Directory
-availability as a Claude Code listing. For a private or local Claude Code
-installation, add this repository as a marketplace and install the plugin:
+Claude Code distribution is separate. Submit public third-party listings through
+Anthropic's [directory developer portal](https://code.claude.com/docs/en/plugins/publish),
+which requires a paid claude.ai plan. Directory listings are available on
+claude.ai and Cowork and reach Claude Code through account sync.
+`claude-plugins-official` is Anthropic's separately curated marketplace. Do not
+claim an Anthropic directory listing until it is published. For a private or
+local Claude Code installation, add this repository as a marketplace and install
+the plugin:
 
 ```powershell
 claude plugin validate --strict .

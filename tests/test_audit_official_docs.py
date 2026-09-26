@@ -77,16 +77,16 @@ def registry_document(*, reviewed_on: str = "2026-08-24") -> dict[str, Any]:
 
 
 class OfficialDocumentationAuditTests(unittest.TestCase):
-    def test_community_marketplace_claim_tracks_submission_guide(self) -> None:
+    def test_anthropic_directory_claim_tracks_submission_guide(self) -> None:
         claims = official_docs.load_trackers(PLUGIN_ROOT)
         claim = next(
             item
             for item in claims
-            if item.identifier == "claude-plugin-community-marketplace"
+            if item.identifier == "claude-plugin-anthropic-directory-submission"
         )
 
         self.assertEqual(claim.url, "https://code.claude.com/docs/en/plugins/publish")
-        self.assertEqual(claim.markers, ("claude-community", "in-app forms"))
+        self.assertEqual(claim.markers, ("developer portal", "paid claude.ai plan"))
 
     def write_repository(self, root: Path, *, reviewed_on: str = "2026-08-24") -> None:
         registry = root / official_docs.DEFAULT_TRACKER_REGISTRY

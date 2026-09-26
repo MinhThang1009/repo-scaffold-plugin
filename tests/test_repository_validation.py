@@ -43,7 +43,40 @@ sys.modules[WORKFLOW_SPEC.name] = validate_workflows
 WORKFLOW_SPEC.loader.exec_module(validate_workflows)
 
 
+def run_test_subprocess(
+    command: list[str], **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """Keep mutmut's in-process state out of test child processes."""
+    inherited_environment = kwargs.pop("env", None)
+    environment = (
+        os.environ.copy()
+        if inherited_environment is None
+        else inherited_environment.copy()
+    )
+    environment.pop("MUTANT_UNDER_TEST", None)
+    environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
+    return subprocess.run(command, env=environment, **kwargs)
+
+
 class SerializedFileValidationTests(unittest.TestCase):
+    def test_test_subprocess_environment_does_not_inherit_mutmut_runtime_flags(
+        self,
+    ) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"MUTANT_UNDER_TEST": "stats", "MUTMUT_DEPENDENCY_DEPTH": "1"},
+        ):
+            with mock.patch("subprocess.run") as run:
+                run_test_subprocess(
+                    [sys.executable, "-c", "pass"],
+                    env={**os.environ, "CHILD_TEST_VALUE": "preserved"},
+                )
+
+        child_environment = run.call_args.kwargs["env"]
+        self.assertNotIn("MUTANT_UNDER_TEST", child_environment)
+        self.assertNotIn("MUTMUT_DEPENDENCY_DEPTH", child_environment)
+        self.assertEqual(child_environment["CHILD_TEST_VALUE"], "preserved")
+
     def test_yaml_loader_rejects_duplicate_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "duplicate.yml"
@@ -145,12 +178,17 @@ class SerializedFileValidationTests(unittest.TestCase):
             self.assertFalse(validate_repository.nonempty_string(7))
             with mock.patch.dict(
                 os.environ,
-                {"MUTANT_UNDER_TEST": "stats", "PRESERVED_VALUE": "yes"},
+                {
+                    "MUTANT_UNDER_TEST": "stats",
+                    "MUTMUT_DEPENDENCY_DEPTH": "1",
+                    "PRESERVED_VALUE": "yes",
+                },
                 clear=True,
             ):
                 child_environment = validate_repository.child_process_environment()
                 self.assertEqual(child_environment, {"PRESERVED_VALUE": "yes"})
                 self.assertEqual(os.environ["MUTANT_UNDER_TEST"], "stats")
+                self.assertEqual(os.environ["MUTMUT_DEPENDENCY_DEPTH"], "1")
             self.assertEqual(
                 validate_repository.reject_duplicate_json_pairs(
                     [("first", 1), ("second", 2)]
@@ -4773,9 +4811,9 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             ".agents/plugins/marketplace.json",
             ".codex-plugin",
             ".claude-plugin",
-            "claude-community",
+            "directory developer portal",
+            "paid claude.ai plan",
             "separately curated Anthropic marketplace",
-            "in-app forms",
             "Skills only",
             "Apps Management write access",
             "identity verification",
@@ -4784,28 +4822,27 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         ):
             self.assertIn(fragment, dossier)
 
-    def test_claude_submission_guidance_uses_community_marketplace(self) -> None:
+    def test_claude_submission_guidance_uses_anthropic_directory(self) -> None:
         documents = {
-            PLUGIN_ROOT
-            / "README.md": "`claude-community` marketplace through its in-app forms.",
-            PLUGIN_ROOT
-            / "PLUGIN_SUBMISSION.md": "`claude-community` marketplace through one of its current in-app forms",
+            PLUGIN_ROOT / "README.md": "account sync",
+            PLUGIN_ROOT / "PLUGIN_SUBMISSION.md": "account sync",
             PLUGIN_ROOT
             / "skills"
             / "repo-scaffold"
             / "references"
-            / "agent-compatibility.md": "`claude-community` marketplace through one of its current in-app forms.",
+            / "agent-compatibility.md": "account sync",
             PLUGIN_ROOT
             / "skills"
             / "repo-scaffold"
             / "references"
-            / "agent-compatibility.vi.md": "`claude-community` của Anthropic qua một trong các form trong app hiện hành.",
+            / "agent-compatibility.vi.md": "account sync",
         }
 
         for path, expected in documents.items():
             text = path.read_text(encoding="utf-8")
 
             self.assertIn(expected, text, path.name)
+            self.assertIn("code.claude.com/docs/en/plugins/publish", text, path.name)
             self.assertIn("claude-plugins-official", text, path.name)
 
     def test_readme_uninstalls_from_the_documented_marketplace(self) -> None:
@@ -6879,7 +6916,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             feature_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "feature.md"
             ).read_text(encoding="utf-8")
-            result = subprocess.run(
+            result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": feature_body},
@@ -6892,7 +6929,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             comment_heavy_body = feature_body.replace(
                 "## Purpose", "## Purpose " + "<!-- ignored -->" * 2000, 1
             )
-            comment_heavy_result = subprocess.run(
+            comment_heavy_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": comment_heavy_body},
@@ -6904,7 +6941,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 comment_heavy_result.returncode, 0, comment_heavy_result.stderr
             )
 
-            cr_only_result = subprocess.run(
+            cr_only_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": feature_body.replace("\n", "\r")},
@@ -6914,7 +6951,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             )
             self.assertEqual(cr_only_result.returncode, 0, cr_only_result.stderr)
 
-            hard_wrapped_result = subprocess.run(
+            hard_wrapped_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -6931,7 +6968,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             malformed_html_body = (
                 feature_body + "\n<div/x>\nwrapped prose line\ncontinued prose line\n\n"
             )
-            malformed_html_result = subprocess.run(
+            malformed_html_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": malformed_html_body},
@@ -6942,7 +6979,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             self.assertNotEqual(malformed_html_result.returncode, 0)
             self.assertIn("hard-wrapped prose", malformed_html_result.stderr)
 
-            explicit_list_break = subprocess.run(
+            explicit_list_break = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -6961,7 +6998,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             deployment_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "deployment.md"
             ).read_text(encoding="utf-8")
-            deployment_result = subprocess.run(
+            deployment_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": deployment_body},
@@ -6974,7 +7011,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             dependency_update_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "dependency-update.md"
             ).read_text(encoding="utf-8")
-            dependency_update_result = subprocess.run(
+            dependency_update_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": dependency_update_body},
@@ -6998,7 +7035,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     template_root / "PULL_REQUEST_TEMPLATE" / f"{template_id}.md"
                 ).read_text(encoding="utf-8")
                 with self.subTest(title=title, template_id=template_id):
-                    selected_result = subprocess.run(
+                    selected_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={
@@ -7013,7 +7050,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     self.assertEqual(
                         selected_result.returncode, 0, selected_result.stderr
                     )
-                    default_result = subprocess.run(
+                    default_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={
@@ -7031,7 +7068,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                         default_result.stderr,
                     )
 
-            maintenance_result = subprocess.run(
+            maintenance_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7047,7 +7084,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 maintenance_result.returncode, 0, maintenance_result.stderr
             )
 
-            ready_incomplete = subprocess.run(
+            ready_incomplete = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": feature_body, "PR_IS_DRAFT": "false"},
@@ -7069,7 +7106,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 feature_body,
                 flags=re.DOTALL,
             )
-            ready_completed = subprocess.run(
+            ready_completed = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": ready_body, "PR_IS_DRAFT": "false"},
@@ -7103,7 +7140,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             vietnamese_body = (
                 vietnamese_template_root / "PULL_REQUEST_TEMPLATE" / "feature.md"
             ).read_text(encoding="utf-8")
-            vietnamese_result = subprocess.run(
+            vietnamese_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=vietnamese_root,
                 env={**os.environ, "PR_BODY": vietnamese_body},
@@ -7152,7 +7189,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 ),
             ):
                 with self.subTest(environment=environment):
-                    exempt_result = subprocess.run(
+                    exempt_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={**os.environ, **environment},
@@ -7175,7 +7212,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 },
             ):
                 with self.subTest(hard_wrapped_environment=environment):
-                    hard_wrapped_exempt = subprocess.run(
+                    hard_wrapped_exempt = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={
@@ -7191,7 +7228,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     self.assertNotEqual(hard_wrapped_exempt.returncode, 0)
                     self.assertIn("hard-wrapped prose", hard_wrapped_exempt.stderr)
 
-            unverified_release_prefix = subprocess.run(
+            unverified_release_prefix = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7219,7 +7256,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 feature_body,
                 flags=re.DOTALL,
             )
-            without_optional_items = subprocess.run(
+            without_optional_items = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": body_without_optional_items},
@@ -7231,7 +7268,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 without_optional_items.returncode, 0, without_optional_items.stderr
             )
 
-            missing_marker = subprocess.run(
+            missing_marker = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7313,7 +7350,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             }
             for hiding_method, hidden_body in hidden_content_bodies.items():
                 with self.subTest(hiding_method=hiding_method):
-                    hidden_result = subprocess.run(
+                    hidden_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={**os.environ, "PR_BODY": hidden_body},
@@ -7354,7 +7391,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 security_template,
             )
 
-            result = subprocess.run(
+            result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7389,7 +7426,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md",
                 security_template,
             )
-            txt_result = subprocess.run(
+            txt_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7445,7 +7482,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 docs_template,
             )
             feature_body = docs_template.read_text(encoding="utf-8")
-            result = subprocess.run(
+            result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7879,7 +7916,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                 ) as shell_file:
                     shell_file.write(script)
                     shell_file.flush()
-                    checked = subprocess.run(
+                    checked = run_test_subprocess(
                         [bash, "-n", shell_file.name],
                         check=False,
                         capture_output=True,
@@ -7903,7 +7940,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
             self.skipTest(
                 "bash is unavailable for the release publisher integration test"
             )
-        compatible_bash = subprocess.run(
+        compatible_bash = run_test_subprocess(
             [
                 bash,
                 "-c",
@@ -8164,7 +8201,7 @@ raise SystemExit(gh_main())
                     environment["AUDIT_RELEASE_MODE"] = mode
                 if tag_target_sha is not None:
                     environment["AUDIT_TAG_TARGET_SHA"] = tag_target_sha
-                completed = subprocess.run(
+                completed = run_test_subprocess(
                     [bash, "-s"],
                     input=script,
                     cwd=work_directory,
