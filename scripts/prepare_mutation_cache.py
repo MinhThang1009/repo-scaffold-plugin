@@ -27,6 +27,7 @@ MAX_MUTANTS_PER_SHARD = 100_000
 SOURCE_ROOTS = (PurePosixPath("scripts"), PurePosixPath("skills/repo-scaffold/scripts"))
 CACHE_CONTROL_FILES = frozenset(
     {
+        PurePosixPath(".github/workflows/mutation-testing.yml"),
         PurePosixPath("pyproject.toml"),
         PurePosixPath("requirements-mutation.txt"),
     }

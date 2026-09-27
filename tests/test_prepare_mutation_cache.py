@@ -33,6 +33,7 @@ class MutationCacheTests(unittest.TestCase):
             "tests/test_alpha.py": ("def test_alpha():\n    assert True\n"),
             "pyproject.toml": "[tool.mutmut]\n",
             "requirements-mutation.txt": "mutmut==3.7.0\n",
+            ".github/workflows/mutation-testing.yml": "name: Mutation testing\n",
             "README.md": "# Fixture\n",
         }
         for relative, content in files.items():
@@ -313,6 +314,9 @@ class MutationCacheTests(unittest.TestCase):
             ),
             lambda root: (root / "requirements-mutation.txt").write_text(
                 "mutmut==3.8.0\n", encoding="utf-8"
+            ),
+            lambda root: (root / ".github/workflows/mutation-testing.yml").write_text(
+                "name: Changed mutation testing\n", encoding="utf-8"
             ),
             lambda root: (root / "tests" / "test_alpha.py").unlink(),
         )
@@ -904,6 +908,13 @@ class MutationCacheTests(unittest.TestCase):
             self.assertEqual(
                 before, prepare_mutation_cache.mutation_input_fingerprint(root)
             )
+
+            workflow = root / ".github/workflows/mutation-testing.yml"
+            workflow.write_text("name: Changed mutation testing\n", encoding="utf-8")
+            self.assertNotEqual(
+                before, prepare_mutation_cache.mutation_input_fingerprint(root)
+            )
+            workflow.write_text("name: Mutation testing\n", encoding="utf-8")
 
             source = root / "scripts" / "alpha.py"
             source.write_text("def alpha():\n    return 2\n", encoding="utf-8")

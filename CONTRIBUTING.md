@@ -91,10 +91,11 @@ the direct input instead of duplicating it. Regenerating the lock alone remains
 insufficient. Trusted scheduled and manual runs
 plan every mutant, executes the exact assignment in 64 Linux workers, and merges
 only a complete non-overlapping result set. A hash-validated mutation cache may
-reuse state only for the same mutation-input fingerprint, branch, runtime, and
-platform. The plan job saves generated state after recording its input and state
-hashes, so a failed shard run can reuse the plan. Completed verdicts are saved
-after aggregation and the score gate. The aggregate job rejects a missing
+reuse state only for the same source, tests, mutation workflow and dependency
+fingerprint, branch, runtime, and platform. The plan job saves generated state
+after recording its input and state hashes. A failed shard run can then reuse
+the plan. Completed verdicts are saved after aggregation and the score gate.
+The aggregate job rejects a missing
 artifact, an unassigned result, or a shard that did not finish before it exports
 statistics. On a validated cache hit, preserved killed verdicts are carried into
 the merge and only pending assignments execute again. This preserves a full
