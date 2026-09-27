@@ -7481,7 +7481,7 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
 
     problems: list[str] = []
     if workflow.get("on") != {
-        "pull_request_target": {"types": ["opened", "synchronize"]}
+        "pull_request_target": {"types": ["opened", "reopened", "synchronize"]}
     }:
         problems.append(
             f"{relative}: body-sync workflow must run only for opened and synchronized pull requests"

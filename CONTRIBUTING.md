@@ -185,8 +185,8 @@ After preparing the UTF-8 body file, rerun the preflight with `--body-file <path
 it rejects hard-wrapped prose before the GitHub mutation.
 
 This repository's `pr-body-sync` workflow renders the complete pull-request
-body from `.github/pr-body-template.md` when a pull request is opened or
-receives a new commit. The source template is read at the exact head SHA and
+body from `.github/pr-body-template.md` when a pull request is opened, reopened,
+or receives a new commit. The source template is read at the exact head SHA and
 may use only `{{HEAD_SHA}}` and `{{HEAD_REPOSITORY}}` placeholders. The workflow
 is opt-in: it runs only when that template is changed in the pull request's
 base-to-head diff, so it cannot overwrite unrelated pull requests with this

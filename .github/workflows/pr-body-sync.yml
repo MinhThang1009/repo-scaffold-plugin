@@ -2,7 +2,7 @@ name: Update pull request body
 
 on:
   pull_request_target:
-    types: [opened, synchronize]
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: read
