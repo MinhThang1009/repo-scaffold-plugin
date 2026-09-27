@@ -70,13 +70,14 @@ jobs:
           verified_payload="$RUNNER_TEMP/pr-body-verified.json"
           gh api --hostname github.com \
             "repos/$REPOSITORY/compare/$PR_BASE_SHA...$PR_HEAD_SHA" > "$compare_payload"
-          source_state=$(python - "$compare_payload" "$PR_BASE_SHA" <<'PY'
+          source_state=$(python - "$compare_payload" "$PR_BASE_SHA" "$PR_HEAD_SHA" <<'PY'
           import json
           import sys
           from pathlib import Path
 
           payload_path = Path(sys.argv[1])
           expected_base_sha = sys.argv[2]
+          expected_head_sha = sys.argv[3]
           raw = payload_path.read_bytes()
           if len(raw) > 10 * 1024 * 1024:
               raise SystemExit("Pull-request comparison payload exceeds the safety cap.")
@@ -87,10 +88,16 @@ jobs:
           if not isinstance(payload, dict):
               raise SystemExit("Pull-request comparison payload is not an object.")
           base_commit = payload.get("base_commit")
+          commits = payload.get("commits")
           files = payload.get("files")
           if (
               not isinstance(base_commit, dict)
               or base_commit.get("sha") != expected_base_sha
+              or payload.get("status") not in {"ahead", "identical"}
+              or not isinstance(commits, list)
+              or not commits
+              or not isinstance(commits[-1], dict)
+              or commits[-1].get("sha") != expected_head_sha
               or not isinstance(files, list)
           ):
               raise SystemExit("Pull-request comparison evidence is incomplete.")
