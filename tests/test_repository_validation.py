@@ -2374,14 +2374,14 @@ class MutationTestingContractTests(unittest.TestCase):
                             "with": {
                                 "path": "mutants/",
                                 "key": (
-                                    "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
-                                    "${{ steps.support.outputs.latest }}-incremental-"
-                                    "${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+                                    "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+                                    "${{ steps.mutation-fingerprint.outputs.fingerprint }}-${{ github.run_id }}-${{ github.run_attempt }}"
                                 ),
                                 "restore-keys": (
-                                    "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
-                                    "${{ steps.support.outputs.latest }}-incremental-"
-                                    "${{ github.sha }}-\n"
+                                    "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+                                    "${{ steps.mutation-fingerprint.outputs.fingerprint }}-\n"
                                 ),
                             },
                         },
@@ -2398,6 +2398,12 @@ class MutationTestingContractTests(unittest.TestCase):
                                 "  printf 'plan-reuse=false\\n' >> \"$GITHUB_OUTPUT\"\n"
                                 "fi"
                             ),
+                        },
+                        {
+                            "id": "mutation-fingerprint",
+                            "name": "Compute mutation input fingerprint",
+                            "shell": "bash",
+                            "run": "python scripts/prepare_mutation_cache.py fingerprint",
                         },
                         {
                             "env": {
@@ -2426,6 +2432,12 @@ class MutationTestingContractTests(unittest.TestCase):
                 },
                 "mutation-quality": {
                     "steps": [
+                        {
+                            "id": "mutation-fingerprint",
+                            "name": "Compute mutation input fingerprint",
+                            "shell": "bash",
+                            "run": "python scripts/prepare_mutation_cache.py fingerprint",
+                        },
                         {"run": "python scripts/merge_mutation_shards.py"},
                         {"run": "python scripts/prepare_mutation_cache.py record"},
                         {
@@ -2434,9 +2446,9 @@ class MutationTestingContractTests(unittest.TestCase):
                             "with": {
                                 "path": "mutants/",
                                 "key": (
-                                    "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
-                                    "${{ steps.support.outputs.latest }}-incremental-"
-                                    "${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+                                    "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+                                    "${{ steps.mutation-fingerprint.outputs.fingerprint }}-${{ github.run_id }}-${{ github.run_attempt }}"
                                 ),
                             },
                         },
@@ -2529,13 +2541,25 @@ class MutationTestingContractTests(unittest.TestCase):
             validate_repository.validate_sharded_mutation_workflow(workflow), []
         )
         mutations = (
-            lambda value: value["jobs"]["mutation-plan"]["steps"].pop(5),
-            lambda value: value["jobs"]["mutation-plan"]["steps"][5]["with"].update(
-                {"key": "mutable-cache-key"}
+            lambda value: value["jobs"]["mutation-plan"]["steps"].pop(
+                next(
+                    index
+                    for index, step in enumerate(
+                        value["jobs"]["mutation-plan"]["steps"]
+                    )
+                    if step.get("id") == "mutation-cache"
+                )
             ),
-            lambda value: value["jobs"]["mutation-plan"]["steps"][-1]["with"].update(
-                {"include-hidden-files": "false"}
-            ),
+            lambda value: next(
+                step
+                for step in value["jobs"]["mutation-plan"]["steps"]
+                if step.get("id") == "mutation-cache"
+            )["with"].update({"key": "mutable-cache-key"}),
+            lambda value: next(
+                step
+                for step in value["jobs"]["mutation-plan"]["steps"]
+                if step.get("name") == "Upload mutation plan"
+            )["with"].update({"include-hidden-files": "false"}),
         )
         for mutate in mutations:
             with self.subTest(mutate=mutate):

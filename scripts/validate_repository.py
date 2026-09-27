@@ -4745,8 +4745,9 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         '"$SHARD_INDEX"'
     )
     cache_prefix = (
-        "mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-"
-        "${{ steps.support.outputs.latest }}-incremental-${{ github.sha }}"
+        "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+        "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+        "${{ steps.mutation-fingerprint.outputs.fingerprint }}"
     )
     expected_restore = {
         "path": "mutants/",
@@ -4789,6 +4790,12 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         if isinstance(step, dict)
         and step.get("run") == "python scripts/prepare_mutation_cache.py prepare"
     ]
+    plan_fingerprint_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and step.get("name") == "Compute mutation input fingerprint"
+    ]
     restore_prepare_steps = [
         step
         for step in plan_steps
@@ -4816,6 +4823,12 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         if isinstance(step, dict)
         and step.get("run") == "python scripts/prepare_mutation_cache.py record"
     ]
+    aggregate_fingerprint_steps = [
+        step
+        for step in aggregate_steps
+        if isinstance(step, dict)
+        and step.get("name") == "Compute mutation input fingerprint"
+    ]
     cache_save_steps = [
         step
         for step in aggregate_steps
@@ -4827,6 +4840,11 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         len(cache_restore_steps) != 1
         or cache_restore_steps[0].get("id") != "mutation-cache"
         or cache_restore_steps[0].get("with") != expected_restore
+        or len(plan_fingerprint_steps) != 1
+        or plan_fingerprint_steps[0].get("id") != "mutation-fingerprint"
+        or plan_fingerprint_steps[0].get("shell") != "bash"
+        or "python scripts/prepare_mutation_cache.py fingerprint"
+        not in plan_fingerprint_steps[0].get("run", "")
         or len(restore_prepare_steps) != 1
         or restore_prepare_steps[0].get("id") != "mutation-prepare"
         or restore_prepare_steps[0].get("shell") != "bash"
@@ -4841,6 +4859,11 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         or len(plan_upload_steps) != 1
         or plan_upload_steps[0].get("with", {}).get("include-hidden-files") != "true"
         or len(aggregate_record_steps) != 1
+        or len(aggregate_fingerprint_steps) != 1
+        or aggregate_fingerprint_steps[0].get("id") != "mutation-fingerprint"
+        or aggregate_fingerprint_steps[0].get("shell") != "bash"
+        or "python scripts/prepare_mutation_cache.py fingerprint"
+        not in aggregate_fingerprint_steps[0].get("run", "")
         or len(cache_save_steps) != 1
         or cache_save_steps[0].get("if") != "${{ success() }}"
         or cache_save_steps[0].get("with") != expected_save
@@ -4848,7 +4871,7 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         return [
             ".github/workflows/mutation-testing.yml: mutation state cache must "
             "restore and prepare validated state, preserve its marker for shard "
-            "reuse, and save completed state under a commit-bound cache key"
+            "reuse, and save completed state under an input-bound branch cache key"
         ]
     return []
 

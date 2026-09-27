@@ -894,6 +894,36 @@ class MutationCacheTests(unittest.TestCase):
                 all(path.name not in before.control_hashes for path in coverage_files)
             )
 
+    def test_mutation_input_fingerprint_tracks_only_verdict_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            before = prepare_mutation_cache.mutation_input_fingerprint(root)
+
+            (root / "README.md").write_text("# Changed\n", encoding="utf-8")
+            self.assertEqual(
+                before, prepare_mutation_cache.mutation_input_fingerprint(root)
+            )
+
+            source = root / "scripts" / "alpha.py"
+            source.write_text("def alpha():\n    return 2\n", encoding="utf-8")
+            self.assertNotEqual(
+                before, prepare_mutation_cache.mutation_input_fingerprint(root)
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    prepare_mutation_cache.main(
+                        ["fingerprint", "--repository-root", str(root)]
+                    ),
+                    0,
+                )
+            self.assertEqual(
+                output.getvalue().strip(),
+                prepare_mutation_cache.mutation_input_fingerprint(root),
+            )
+
     def test_main_and_entrypoint_report_operations_and_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -957,13 +987,13 @@ class MutationCacheTests(unittest.TestCase):
                 "Recorded mutation cache inputs and progress", output.getvalue()
             )
 
-    def test_help_documents_both_cache_operations(self) -> None:
+    def test_help_documents_cache_operations(self) -> None:
         output = StringIO()
         with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
             prepare_mutation_cache.parse_args(["--help"])
 
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("{prepare,record}", output.getvalue())
+        self.assertIn("{prepare,record,fingerprint}", output.getvalue())
 
 
 if __name__ == "__main__":

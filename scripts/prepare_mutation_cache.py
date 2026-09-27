@@ -369,6 +369,19 @@ def manifest_document(snapshot: ProjectSnapshot) -> dict[str, Any]:
     }
 
 
+def mutation_input_fingerprint(repository_root: Path) -> str:
+    """Return a stable key for inputs that can affect mutation verdicts."""
+    snapshot = snapshot_project(repository_root)
+    document = {
+        "source_hashes": snapshot.source_hashes,
+        "test_sources": snapshot.test_sources,
+        "control_hashes": snapshot.control_hashes,
+    }
+    return _sha256(
+        json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+
 def load_manifest(path: Path) -> ProjectSnapshot:
     """Load and strictly validate a cache manifest."""
     if path.stat().st_size > MAX_TOTAL_BYTES:
@@ -681,7 +694,7 @@ def record_cache(repository_root: Path) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the cache operation and repository root."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("prepare", "record"))
+    parser.add_argument("operation", choices=("prepare", "record", "fingerprint"))
     parser.add_argument("--repository-root", type=Path, default=Path("."))
     return parser.parse_args(argv)
 
@@ -690,7 +703,9 @@ def main(argv: list[str] | None = None) -> int:
     """Prepare or record mutation state with actionable diagnostics."""
     arguments = parse_args(argv)
     try:
-        if arguments.operation == "record":
+        if arguments.operation == "fingerprint":
+            print(mutation_input_fingerprint(arguments.repository_root))
+        elif arguments.operation == "record":
             record_cache(arguments.repository_root)
             print("Recorded mutation cache inputs and progress.")
         else:
