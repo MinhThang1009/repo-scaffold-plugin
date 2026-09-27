@@ -54,12 +54,22 @@ jobs:
             mutmut-v7-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.support.outputs.latest }}-incremental-${{ github.sha }}-
 
       - name: Prepare restored mutation state
-        run: python scripts/prepare_mutation_cache.py prepare
+        id: mutation-prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/prepare_mutation_cache.py prepare
+          if [[ -f mutants/mutation-shards.json ]]; then
+            printf 'plan-reuse=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'plan-reuse=false\n' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Generate exact mutation shards
         env:
           REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: ${{ github.workspace }}
         shell: bash
+        if: ${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}
         run: python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64
 
       - name: Record mutation state for shard reuse

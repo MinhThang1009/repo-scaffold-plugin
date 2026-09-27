@@ -2385,11 +2385,25 @@ class MutationTestingContractTests(unittest.TestCase):
                                 ),
                             },
                         },
-                        {"run": "python scripts/prepare_mutation_cache.py prepare"},
+                        {
+                            "id": "mutation-prepare",
+                            "name": "Prepare restored mutation state",
+                            "shell": "bash",
+                            "run": (
+                                "set -euo pipefail\n"
+                                "python scripts/prepare_mutation_cache.py prepare\n"
+                                "if [[ -f mutants/mutation-shards.json ]]; then\n"
+                                "  printf 'plan-reuse=true\\n' >> \"$GITHUB_OUTPUT\"\n"
+                                "else\n"
+                                "  printf 'plan-reuse=false\\n' >> \"$GITHUB_OUTPUT\"\n"
+                                "fi"
+                            ),
+                        },
                         {
                             "env": {
                                 "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
                             },
+                            "if": "${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}",
                             "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64",
                         },
                         {"run": "python scripts/prepare_mutation_cache.py record"},
@@ -2466,9 +2480,16 @@ class MutationTestingContractTests(unittest.TestCase):
                             **valid["jobs"]["mutation-plan"],
                             "steps": [
                                 {
-                                    **valid["jobs"]["mutation-plan"]["steps"][0],
+                                    **step,
                                     "env": {},
                                 }
+                                if step.get("run")
+                                == (
+                                    "python scripts/run_mutation_testing.py "
+                                    "--max-children 4 --plan-shards 64"
+                                )
+                                else step
+                                for step in valid["jobs"]["mutation-plan"]["steps"]
                             ],
                         },
                     }

@@ -20,6 +20,10 @@ MANIFEST_SCHEMA_VERSION = 2
 REUSABLE_SOURCES_SCHEMA_VERSION = 1
 MANIFEST_NAME = "mutation-cache-manifest.json"
 REUSABLE_SOURCES_NAME = ".incremental-sources.json"
+SHARD_PLAN_NAME = "mutation-shards.json"
+SHARD_PLAN_SCHEMA_VERSION = 1
+MAX_MUTATION_SHARDS = 64
+MAX_MUTANTS_PER_SHARD = 100_000
 SOURCE_ROOTS = (PurePosixPath("scripts"), PurePosixPath("skills/repo-scaffold/scripts"))
 CACHE_CONTROL_FILES = frozenset(
     {
@@ -150,7 +154,7 @@ def _validate_source_paths(source_hashes: dict[str, str]) -> None:
 
 
 def _expected_state_paths(source_hashes: dict[str, str]) -> set[str]:
-    paths = {"mutmut-stats.json"}
+    paths = {"mutmut-stats.json", SHARD_PLAN_NAME}
     for relative in source_hashes:
         paths.add(relative)
         paths.add(f"{relative}.meta")
@@ -167,6 +171,54 @@ def _validate_state_paths(
         metadata_path = f"{relative}.meta" in state_hashes
         if state_path != metadata_path:
             raise ValueError("manifest source state and metadata must be paired")
+
+
+def _validate_shard_plan(path: Path, mutation_root: Path) -> None:
+    """Validate one cached deterministic assignment before it can be reused."""
+    _assert_safe_cache_path(mutation_root, path)
+    if not path.is_file() or _is_link_or_reparse(path):
+        raise ValueError("cached mutation shard plan is missing or unsafe")
+    if path.stat().st_size > MAX_META_BYTES:
+        raise ValueError("cached mutation shard plan is oversized")
+    try:
+        document = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+        )
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
+        raise ValueError(
+            f"could not read cached mutation shard plan: {error}"
+        ) from error
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema_version", "shards"}
+        or document["schema_version"] != SHARD_PLAN_SCHEMA_VERSION
+        or not isinstance(document["shards"], list)
+        or len(document["shards"]) not in range(1, MAX_MUTATION_SHARDS + 1)
+    ):
+        raise ValueError("cached mutation shard plan has an invalid schema")
+    names: list[str] = []
+    for shard in document["shards"]:
+        if (
+            not isinstance(shard, list)
+            or not shard
+            or len(shard) > MAX_MUTANTS_PER_SHARD
+        ):
+            raise ValueError("cached mutation shard plan has an invalid shard")
+        for name in shard:
+            if (
+                not isinstance(name, str)
+                or not name
+                or len(name) > 4_096
+                or "\x00" in name
+                or "\r" in name
+                or "\n" in name
+            ):
+                raise ValueError(
+                    "cached mutation shard plan has an invalid mutant name"
+                )
+            names.append(name)
+    if len(names) != len(set(names)):
+        raise ValueError("cached mutation shard plan contains duplicate mutants")
 
 
 def _sha256(content: bytes) -> str:
@@ -424,6 +476,8 @@ def _sanitize_restored_state(mutation_root: Path, state_hashes: dict[str, str]) 
             raise ValueError(
                 f"restored mutation state failed integrity for {relative!r}"
             )
+    if SHARD_PLAN_NAME in state_hashes:
+        _validate_shard_plan(mutation_root / SHARD_PLAN_NAME, mutation_root)
 
     for directory, child_directories, filenames in os.walk(
         mutation_root, topdown=False, followlinks=False
@@ -600,6 +654,9 @@ def record_cache(repository_root: Path) -> None:
     reusable_path = mutation_root / REUSABLE_SOURCES_NAME
     _assert_safe_cache_path(mutation_root, reusable_path)
     reusable_path.unlink(missing_ok=True)
+    shard_plan = mutation_root / SHARD_PLAN_NAME
+    if shard_plan.exists():
+        _validate_shard_plan(shard_plan, mutation_root)
     snapshot = snapshot_project(repository_root)
     snapshot = ProjectSnapshot(
         source_hashes=snapshot.source_hashes,

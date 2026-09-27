@@ -77,6 +77,126 @@ class MutationCacheTests(unittest.TestCase):
         )
         prepare_mutation_cache.record_cache(root)
 
+    def write_shard_plan(self, root: Path, *, invalid: bool = False) -> None:
+        path = root / "mutants" / prepare_mutation_cache.SHARD_PLAN_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        document = (
+            {"schema_version": 1, "shards": [["scripts.alpha.killed"]]}
+            if not invalid
+            else {"schema_version": 0, "shards": [["scripts.alpha.killed"]]}
+        )
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    def test_record_and_prepare_preserve_a_valid_shard_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            self.write_state(root, "scripts/alpha.py", {"scripts.alpha.killed": 1})
+            self.write_shard_plan(root)
+            (root / "mutants" / "mutmut-stats.json").write_text("{}", encoding="utf-8")
+
+            prepare_mutation_cache.record_cache(root)
+            manifest = prepare_mutation_cache.load_manifest(
+                root / "mutants" / prepare_mutation_cache.MANIFEST_NAME
+            )
+            self.assertIn(prepare_mutation_cache.SHARD_PLAN_NAME, manifest.state_hashes)
+            result = prepare_mutation_cache.prepare_cache(root)
+
+            self.assertFalse(result.full_reset)
+            self.assertTrue(
+                (root / "mutants" / prepare_mutation_cache.SHARD_PLAN_NAME).is_file()
+            )
+            self.assertTrue(
+                (
+                    root / "mutants" / prepare_mutation_cache.REUSABLE_SOURCES_NAME
+                ).is_file()
+            )
+
+    def test_invalid_shard_plan_forces_full_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            self.write_state(root, "scripts/alpha.py", {"scripts.alpha.killed": 1})
+            self.write_shard_plan(root)
+            (root / "mutants" / "mutmut-stats.json").write_text("{}", encoding="utf-8")
+            prepare_mutation_cache.record_cache(root)
+            self.write_shard_plan(root, invalid=True)
+
+            result = prepare_mutation_cache.prepare_cache(root)
+
+            self.assertTrue(result.full_reset)
+            self.assertEqual(list((root / "mutants").iterdir()), [])
+
+    def test_shard_plan_validator_rejects_unsafe_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            mutation_root = root / "mutants"
+            mutation_root.mkdir()
+            plan = mutation_root / prepare_mutation_cache.SHARD_PLAN_NAME
+
+            with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "could not read"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text('{"schema_version":1,"schema_version":1}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "could not read"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text('{"schema_version":1,"shards":[["one"]]}', encoding="utf-8")
+            with mock.patch.object(prepare_mutation_cache, "MAX_META_BYTES", 0):
+                with self.assertRaisesRegex(ValueError, "oversized"):
+                    prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            invalid_documents: tuple[object, ...] = (
+                [],
+                {"schema_version": 0, "shards": [["one"]]},
+                {"schema_version": 1, "shards": "one"},
+                {"schema_version": 1, "shards": []},
+                {
+                    "schema_version": 1,
+                    "shards": [[str(index) for index in range(100_001)]],
+                },
+            )
+            for document in invalid_documents:
+                with self.subTest(
+                    document=document if document == [] else type(document)
+                ):
+                    plan.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "invalid"):
+                        prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text('{"schema_version":1,"shards":[[]]}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid shard"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            with mock.patch.object(prepare_mutation_cache, "MAX_MUTANTS_PER_SHARD", 0):
+                plan.write_text(
+                    '{"schema_version":1,"shards":[["one"]]}', encoding="utf-8"
+                )
+                with self.assertRaisesRegex(ValueError, "invalid shard"):
+                    prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            invalid_names = (None, "", "a" * 4097, "bad\x00", "bad\r", "bad\n")
+            for name in invalid_names:
+                with self.subTest(name=repr(name)):
+                    plan.write_text(
+                        json.dumps({"schema_version": 1, "shards": [[name]]}),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(ValueError, "invalid mutant name"):
+                        prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text(
+                '{"schema_version":1,"shards":[["same"],["same"]]}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate mutants"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
     def test_record_and_prepare_preserve_only_killed_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -4708,6 +4708,9 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
     expected_plan_run = (
         "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64"
     )
+    expected_plan_condition = (
+        "${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}"
+    )
     plan_generation_steps = (
         [
             step
@@ -4720,6 +4723,7 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
     if (
         len(plan_generation_steps) != 1
         or plan_generation_steps[0].get("env") != expected_source_root_env
+        or plan_generation_steps[0].get("if") != expected_plan_condition
     ):
         return [
             ".github/workflows/mutation-testing.yml: mutation plan must expose "
@@ -4785,6 +4789,12 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         if isinstance(step, dict)
         and step.get("run") == "python scripts/prepare_mutation_cache.py prepare"
     ]
+    restore_prepare_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and step.get("name") == "Prepare restored mutation state"
+    ]
     plan_record_steps = [
         step
         for step in plan_steps
@@ -4817,7 +4827,16 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         len(cache_restore_steps) != 1
         or cache_restore_steps[0].get("id") != "mutation-cache"
         or cache_restore_steps[0].get("with") != expected_restore
-        or len(plan_prepare_steps) != 2
+        or len(restore_prepare_steps) != 1
+        or restore_prepare_steps[0].get("id") != "mutation-prepare"
+        or restore_prepare_steps[0].get("shell") != "bash"
+        or not isinstance(restore_prepare_steps[0].get("run"), str)
+        or "python scripts/prepare_mutation_cache.py prepare"
+        not in restore_prepare_steps[0]["run"]
+        or "mutation-shards.json" not in restore_prepare_steps[0]["run"]
+        or "plan-reuse=true" not in restore_prepare_steps[0]["run"]
+        or "plan-reuse=false" not in restore_prepare_steps[0]["run"]
+        or len(plan_prepare_steps) != 1
         or len(plan_record_steps) != 1
         or len(plan_upload_steps) != 1
         or plan_upload_steps[0].get("with", {}).get("include-hidden-files") != "true"
