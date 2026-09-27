@@ -324,15 +324,11 @@ class MutationRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             implementation = PlanningMutmut()
-            with mock.patch.dict(
-                os.environ, {"MUTANT_UNDER_TEST": "existing-run"}
-            ):
+            with mock.patch.dict(os.environ, {"MUTANT_UNDER_TEST": "existing-run"}):
                 path = run_mutation_testing.prepare_mutation_shards(
                     root, max_children=4, shard_count=2, mutmut_main=implementation
                 )
-                self.assertEqual(
-                    os.environ.get("MUTANT_UNDER_TEST"), "existing-run"
-                )
+                self.assertEqual(os.environ.get("MUTANT_UNDER_TEST"), "existing-run")
             self.assertEqual(implementation.arguments, ([], 4))
             self.assertEqual(
                 json.loads(path.read_text(encoding="utf-8"))["shards"],

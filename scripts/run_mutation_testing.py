@@ -313,9 +313,7 @@ def _generate_mutation_sources(
         mutmut_main.setup_source_paths()
         mutmut_main.store_lines_covered_by_tests()
         mutmut_main.create_mutants(max_children)
-        mutants, _ = mutmut_main.collect_source_file_mutation_data(
-            mutant_names=[]
-        )
+        mutants, _ = mutmut_main.collect_source_file_mutation_data(mutant_names=[])
         return [name for _, name, _ in mutants]
     finally:
         os.chdir(previous_cwd)
