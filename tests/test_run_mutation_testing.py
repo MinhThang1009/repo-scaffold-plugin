@@ -312,9 +312,15 @@ class MutationRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             implementation = PlanningMutmut()
-            path = run_mutation_testing.prepare_mutation_shards(
-                root, max_children=4, shard_count=2, mutmut_main=implementation
-            )
+            with mock.patch.dict(
+                os.environ, {"MUTANT_UNDER_TEST": "existing-run"}
+            ):
+                path = run_mutation_testing.prepare_mutation_shards(
+                    root, max_children=4, shard_count=2, mutmut_main=implementation
+                )
+                self.assertEqual(
+                    os.environ.get("MUTANT_UNDER_TEST"), "existing-run"
+                )
             self.assertEqual(implementation.arguments, ([], 4))
             self.assertEqual(
                 json.loads(path.read_text(encoding="utf-8"))["shards"],
@@ -323,6 +329,50 @@ class MutationRunnerTests(unittest.TestCase):
                     ["scripts.alpha__mutmut_2"],
                 ],
             )
+
+    def test_planning_rejects_invalid_or_linked_repository_roots(self) -> None:
+        with self.assertRaisesRegex(ValueError, "repository root"):
+            run_mutation_testing.prepare_mutation_shards(
+                Path("missing-mutation-repository"),
+                max_children=4,
+                shard_count=2,
+                mutmut_main=PlanningMutmut(),
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                mock.patch.object(
+                    run_mutation_testing,
+                    "_is_link_or_reparse",
+                    side_effect=lambda path: path == root,
+                ),
+                self.assertRaisesRegex(ValueError, "repository root is a link"),
+            ):
+                run_mutation_testing.prepare_mutation_shards(
+                    root,
+                    max_children=4,
+                    shard_count=2,
+                    mutmut_main=PlanningMutmut(),
+                )
+
+    def test_planning_reuse_requires_fork_process_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_marker(root, ["scripts/alpha.py"])
+            with (
+                mock.patch.object(
+                    run_mutation_testing.multiprocessing,
+                    "get_start_method",
+                    return_value="spawn",
+                ),
+                self.assertRaisesRegex(ValueError, "requires fork"),
+            ):
+                run_mutation_testing.prepare_mutation_shards(
+                    root,
+                    max_children=4,
+                    shard_count=2,
+                    mutmut_main=PlanningMutmut(),
+                )
 
     def test_planning_restores_process_state_after_generation_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
