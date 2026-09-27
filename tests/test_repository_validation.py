@@ -2685,6 +2685,17 @@ class MutationTestingContractTests(unittest.TestCase):
             [],
         )
 
+    def test_mutation_cache_documentation_matches_input_binding(self) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        contributing = (PLUGIN_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "matching source, test, mutation-workflow, and dependency inputs", readme
+        )
+        self.assertIn(
+            "same source, tests, mutation workflow and dependency", contributing
+        )
+        self.assertNotIn("state for a matching commit, runtime, and platform", readme)
+
     def test_missing_contract_files_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             problems = validate_repository.validate_mutation_testing_contract(

@@ -395,7 +395,8 @@ against the direct pin, and a compatible Dependabot bump passes the runner integ
 while an incompatible internal API change fails those behavioral checks. Its
 daily and manually dispatched workflow plans every mutant on Linux, executes
 each exact assignment in a 64-way matrix, and reuses only hash-validated mutation
-state for a matching commit, runtime, and platform. It rejects missing,
+state for matching source, test, mutation-workflow, and dependency inputs on the
+same branch, runtime, and platform. It rejects missing,
 duplicate, or incomplete shard results before enforcing the evidence-backed
 mutation score floor documented in `CONTRIBUTING.md`. It retains generated
 mutants and metadata for diagnosis. Native Windows is not supported by mutmut;
