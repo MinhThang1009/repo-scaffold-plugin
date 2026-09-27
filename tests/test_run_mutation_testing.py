@@ -142,7 +142,11 @@ class ShardMutmut(FakeMutmut):
         self, *, mutant_names: list[str]
     ) -> tuple[list[tuple[object, str, int | None]], dict[str, object]]:
         return (
-            [(object(), name, self.verdicts.get(name)) for name in mutant_names],
+            [
+                (object(), name, value)
+                for name, value in self.verdicts.items()
+                if not mutant_names or name in mutant_names
+            ],
             {},
         )
 
@@ -265,6 +269,33 @@ class MutationRunnerTests(unittest.TestCase):
                 )
             self.assertIsNone(implementation.arguments)
             self.assertFalse(marker.exists())
+
+    def test_pending_shard_lookup_is_exact_and_preserves_assignment_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            implementation = ShardMutmut(
+                {"first": None, "second": None, "killed": 1, "unassigned": None}
+            )
+            with mock.patch.object(
+                implementation,
+                "collect_source_file_mutation_data",
+                wraps=implementation.collect_source_file_mutation_data,
+            ) as collector:
+                pending = run_mutation_testing._pending_reusable_mutants(
+                    root, implementation, ["second", "killed", "first"]
+                )
+            self.assertEqual(pending, ["second", "first"])
+            collector.assert_called_once_with(mutant_names=[])
+
+    def test_pending_shard_lookup_rejects_missing_assignments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous_cwd = Path.cwd()
+            with self.assertRaisesRegex(ValueError, "missing a shard assignment"):
+                run_mutation_testing._pending_reusable_mutants(
+                    root, ShardMutmut({"killed": 1}), ["killed", "missing"]
+                )
+            self.assertEqual(Path.cwd(), previous_cwd)
 
     def test_marker_loader_rejects_malformed_and_unsafe_documents(self) -> None:
         invalid_documents: tuple[object, ...] = (

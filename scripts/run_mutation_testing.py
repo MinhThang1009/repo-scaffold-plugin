@@ -289,13 +289,16 @@ def _pending_reusable_mutants(
     try:
         os.chdir(repository_root)
         _ensure_mutmut_config(mutmut_main)
-        mutants, _ = mutmut_main.collect_source_file_mutation_data(
-            mutant_names=mutant_names
-        )
+        # Shards contain exact names; upstream glob filtering scans every pattern
+        # for every mutant before we even check which verdicts are reusable.
+        mutants, _ = mutmut_main.collect_source_file_mutation_data(mutant_names=[])
     finally:
         os.chdir(previous_cwd)
-    pending = {name for _, name, result in mutants if result is None}
-    return [name for name in mutant_names if name in pending]
+    requested = set(mutant_names)
+    verdicts = {name: result for _, name, result in mutants if name in requested}
+    if verdicts.keys() != requested:
+        raise ValueError("mutation metadata is missing a shard assignment")
+    return [name for name in mutant_names if verdicts[name] is None]
 
 
 def _generate_mutation_sources(

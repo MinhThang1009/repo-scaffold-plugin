@@ -151,6 +151,13 @@ class LinuxMutationRunnerIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 set(metadata["durations_by_key"]), set(metadata["exit_code_by_key"])
             )
+            self.run_command(root, preparer, "record")
+            self.run_command(root, preparer, "prepare")
+            metadata_path = root / "mutants/scripts/decision.py.meta"
+            before_reuse = metadata_path.read_bytes()
+            self.run_command(root, runner, "--max-children", "1", "--shard-index", "0")
+            self.assertEqual(metadata_path.read_bytes(), before_reuse)
+            self.assertFalse((root / "mutants/.incremental-sources.json").exists())
 
 
 if __name__ == "__main__":
