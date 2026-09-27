@@ -70,6 +70,27 @@ class MergeMutationShardsTests(unittest.TestCase):
             )
             self.assertEqual(result["exit_code_by_key"], {"alpha": 1, "beta": 0})
 
+    def test_merges_preserved_killed_results_without_rerunning_them(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            base = root / "mutants" / "source.meta"
+            base_document = json.loads(base.read_text(encoding="utf-8"))
+            base_document["exit_code_by_key"]["alpha"] = 1
+            base.write_text(json.dumps(base_document), encoding="utf-8")
+
+            overlay = root / "mutation-shards" / "mutation-shard-0" / "source.meta"
+            overlay_document = json.loads(overlay.read_text(encoding="utf-8"))
+            overlay_document["exit_code_by_key"]["alpha"] = 1
+            overlay.write_text(json.dumps(overlay_document), encoding="utf-8")
+            overlay = root / "mutation-shards" / "mutation-shard-1" / "source.meta"
+            overlay_document = json.loads(overlay.read_text(encoding="utf-8"))
+            overlay_document["exit_code_by_key"]["alpha"] = 1
+            overlay.write_text(json.dumps(overlay_document), encoding="utf-8")
+            merge_mutation_shards.merge(root, root / "mutation-shards")
+            result = json.loads(base.read_text(encoding="utf-8"))
+            self.assertEqual(result["exit_code_by_key"], {"alpha": 1, "beta": 0})
+
     def test_rejects_invalid_plan_and_incomplete_or_unassigned_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -139,7 +160,15 @@ class MergeMutationShardsTests(unittest.TestCase):
             document = json.loads(base.read_text(encoding="utf-8"))
             document["exit_code_by_key"]["alpha"] = 0
             base.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "already contains"):
+            with self.assertRaisesRegex(ValueError, "untrusted result"):
+                merge_mutation_shards.merge(root, root / "mutation-shards")
+
+            self.fixture(root)
+            document = json.loads(base.read_text(encoding="utf-8"))
+            document["exit_code_by_key"]["alpha"] = 1
+            base.write_text(json.dumps(document), encoding="utf-8")
+            self.set_overlay_value(root, 0, "exit_code_by_key", "alpha", 0)
+            with self.assertRaisesRegex(ValueError, "preserved result"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
 
     def test_rejects_metadata_that_does_not_match_assignments(self) -> None:

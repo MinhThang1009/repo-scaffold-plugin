@@ -15,6 +15,7 @@ RESULT_FIELDS = (
     "durations_by_key",
     "estimated_durations_by_key",
 )
+PRESERVED_KILLED_EXIT_CODES = frozenset({1, 3})
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -60,9 +61,14 @@ def merge(repository_root: Path, artifacts_root: Path) -> None:
         if unknown or seen & set(results):
             raise ValueError("mutation metadata does not match the shard plan")
         seen.update(results)
-        if any(value is not None for value in results.values()):
-            raise ValueError("base mutation metadata already contains results")
+        if any(
+            value is not None
+            and (type(value) is not int or value not in PRESERVED_KILLED_EXIT_CODES)
+            for value in results.values()
+        ):
+            raise ValueError("base mutation metadata contains an untrusted result")
         relative = base_path.relative_to(mutants)
+        baseline_values_by_field: dict[str, dict[str, Any]] = {}
         for index in range(len(shards)):
             overlay = load_json(artifacts_root / f"mutation-shard-{index}" / relative)
             for field in RESULT_FIELDS:
@@ -74,10 +80,20 @@ def merge(repository_root: Path, artifacts_root: Path) -> None:
                     raise ValueError(f"metadata field {field!r} is invalid")
                 if set(base_values) != set(overlay_values):
                     raise ValueError("mutation shard metadata keys differ")
+                baseline_values = baseline_values_by_field.setdefault(
+                    field, dict(base_values)
+                )
                 for name, value in overlay_values.items():
                     if assignments[name] == index:
+                        if (
+                            baseline_values[name] is not None
+                            and value != baseline_values[name]
+                        ):
+                            raise ValueError(
+                                "mutation shard changed a preserved result"
+                            )
                         base_values[name] = value
-                    elif value is not None:
+                    elif value != baseline_values[name]:
                         raise ValueError("mutation shard changed an unassigned mutant")
         if any(value is None for value in results.values()):
             raise ValueError("a mutation shard did not finish every assignment")

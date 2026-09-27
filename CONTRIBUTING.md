@@ -93,8 +93,9 @@ plan every mutant, executes the exact assignment in 64 Linux workers, and merges
 only a complete non-overlapping result set. A hash-validated mutation cache may
 reuse state only for the same commit, runtime, and platform. The aggregate job rejects a missing
 artifact, an unassigned result, or a shard that did not finish before it exports
-statistics. This preserves a full mutation run without accepting partial cache
-state or lowering the score gate.
+statistics. On a validated cache hit, preserved killed verdicts are carried into
+the merge and only pending assignments execute again. This preserves a full
+mutation run without accepting partial cache state or lowering the score gate.
 
 ## Make a change
 

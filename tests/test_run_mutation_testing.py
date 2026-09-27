@@ -128,6 +128,25 @@ class ModernPlanningMutmut(PlanningMutmut):
             os.environ["MUTANT_UNDER_TEST"] = name
 
 
+class ShardMutmut(FakeMutmut):
+    class Config:
+        @staticmethod
+        def ensure_loaded() -> None:
+            return None
+
+    def __init__(self, verdicts: dict[str, int | None]) -> None:
+        super().__init__()
+        self.verdicts = verdicts
+
+    def collect_source_file_mutation_data(
+        self, *, mutant_names: list[str]
+    ) -> tuple[list[tuple[object, str, int | None]], dict[str, object]]:
+        return (
+            [(object(), name, self.verdicts.get(name)) for name in mutant_names],
+            {},
+        )
+
+
 class MutationRunnerTests(unittest.TestCase):
     def write_marker(self, root: Path, sources: object) -> Path:
         marker = root / "mutants" / run_mutation_testing.REUSABLE_SOURCES_NAME
@@ -207,6 +226,44 @@ class MutationRunnerTests(unittest.TestCase):
 
             self.assertEqual(Path.cwd(), previous_cwd)
             self.assertEqual(implementation.create_mutants_for_file, original)
+            self.assertFalse(marker.exists())
+
+    def test_shard_reuse_runs_only_mutants_without_cached_kills(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = self.write_marker(root, ["scripts/alpha.py"])
+            implementation = ShardMutmut({"killed": 1, "pending": None})
+            with mock.patch.object(
+                run_mutation_testing.multiprocessing,
+                "get_start_method",
+                return_value="fork",
+            ):
+                run_mutation_testing.run_mutation_testing(
+                    root,
+                    max_children=1,
+                    mutant_names=["killed", "pending"],
+                    mutmut_main=implementation,
+                )
+            self.assertEqual(implementation.arguments, (["pending"], 1))
+            self.assertFalse(marker.exists())
+
+    def test_shard_reuse_skips_a_fully_cached_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = self.write_marker(root, ["scripts/alpha.py"])
+            implementation = ShardMutmut({"killed": 3})
+            with mock.patch.object(
+                run_mutation_testing.multiprocessing,
+                "get_start_method",
+                return_value="fork",
+            ):
+                run_mutation_testing.run_mutation_testing(
+                    root,
+                    max_children=1,
+                    mutant_names=["killed"],
+                    mutmut_main=implementation,
+                )
+            self.assertIsNone(implementation.arguments)
             self.assertFalse(marker.exists())
 
     def test_marker_loader_rejects_malformed_and_unsafe_documents(self) -> None:

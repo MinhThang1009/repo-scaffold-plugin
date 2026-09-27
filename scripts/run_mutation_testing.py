@@ -272,6 +272,32 @@ def prepare_mutation_shards(
     return write_shard_plan(repository_root, captured, shard_count)
 
 
+def _ensure_mutmut_config(mutmut_main: Any) -> None:
+    """Load either the current or legacy pinned mutmut configuration API."""
+    config_loader = getattr(mutmut_main, "config", None)
+    if callable(config_loader):
+        config_loader()
+    else:
+        mutmut_main.Config.ensure_loaded()
+
+
+def _pending_reusable_mutants(
+    repository_root: Path, mutmut_main: Any, mutant_names: list[str]
+) -> list[str]:
+    """Return only shard assignments without a validated cached verdict."""
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(repository_root)
+        _ensure_mutmut_config(mutmut_main)
+        mutants, _ = mutmut_main.collect_source_file_mutation_data(
+            mutant_names=mutant_names
+        )
+    finally:
+        os.chdir(previous_cwd)
+    pending = {name for _, name, result in mutants if result is None}
+    return [name for name in mutant_names if name in pending]
+
+
 def _generate_mutation_sources(
     repository_root: Path, *, max_children: int, mutmut_main: Any
 ) -> list[str]:
@@ -296,17 +322,13 @@ def _generate_mutation_sources(
     _REUSABLE_SOURCES = reusable_sources
     mutmut_main.create_mutants_for_file = _create_or_reuse_mutants
     set_mutant_under_test = getattr(mutmut_main, "set_mutant_under_test", None)
-    config_loader = getattr(mutmut_main, "config", None)
     try:
         os.chdir(root)
         if callable(set_mutant_under_test):
             set_mutant_under_test("mutant_generation")
         else:
             os.environ["MUTANT_UNDER_TEST"] = "mutant_generation"
-        if callable(config_loader):
-            config_loader()
-        else:
-            mutmut_main.Config.ensure_loaded()
+        _ensure_mutmut_config(mutmut_main)
         Path("mutants").mkdir(parents=True, exist_ok=True)
         mutmut_main.copy_src_dir()
         mutmut_main.copy_also_copy_files()
@@ -351,6 +373,12 @@ def run_mutation_testing(
     implementation = mutmut_main if mutmut_main is not None else load_mutmut()
     if reusable_sources and multiprocessing.get_start_method() != "fork":
         raise ValueError("incremental mutation reuse requires fork process semantics")
+    if reusable_sources and mutant_names:
+        mutant_names = _pending_reusable_mutants(root, implementation, mutant_names)
+        if not mutant_names:
+            _assert_safe_marker_path(root, marker)
+            marker.unlink(missing_ok=True)
+            return
     original = implementation.create_mutants_for_file
     previous_cwd = Path.cwd()
     _MUTMUT_MAIN = implementation
