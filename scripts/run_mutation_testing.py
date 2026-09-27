@@ -264,26 +264,63 @@ def prepare_mutation_shards(
     shard_count: int,
     mutmut_main: Any | None = None,
 ) -> Path:
-    """Generate mutants and test associations without executing a mutant."""
+    """Generate mutation metadata and an exact shard assignment only."""
     implementation = mutmut_main if mutmut_main is not None else load_mutmut()
-    collector = implementation.collect_source_file_mutation_data
-    captured: list[str] = []
-
-    def capture_mutants(*, mutant_names: list[str]) -> tuple[list[Any], dict[str, Any]]:
-        mutants, sources = collector(mutant_names=mutant_names)
-        captured.extend(name for _, name, _ in mutants)
-        return [], sources
-
-    implementation.collect_source_file_mutation_data = capture_mutants
-    try:
-        run_mutation_testing(
-            repository_root,
-            max_children=max_children,
-            mutmut_main=implementation,
-        )
-    finally:
-        implementation.collect_source_file_mutation_data = collector
+    captured = _generate_mutation_sources(
+        repository_root, max_children=max_children, mutmut_main=implementation
+    )
     return write_shard_plan(repository_root, captured, shard_count)
+
+
+def _generate_mutation_sources(
+    repository_root: Path, *, max_children: int, mutmut_main: Any
+) -> list[str]:
+    """Generate mutation metadata and return names without running mutant tests."""
+    global _MUTMUT_MAIN, _ORIGINAL_CREATE_MUTANTS, _REUSABLE_SOURCES
+
+    root = Path(os.path.abspath(repository_root))
+    if not root.is_dir():
+        raise ValueError(f"repository root is not a directory: {root}")
+    if _is_link_or_reparse(root):
+        raise ValueError(f"repository root is a link or reparse point: {root}")
+    marker = root / "mutants" / REUSABLE_SOURCES_NAME
+    reusable_sources = load_reusable_sources(root)
+    if reusable_sources and multiprocessing.get_start_method() != "fork":
+        raise ValueError("incremental mutation reuse requires fork process semantics")
+
+    original = mutmut_main.create_mutants_for_file
+    previous_cwd = Path.cwd()
+    previous_mutant_under_test = os.environ.get("MUTANT_UNDER_TEST")
+    _MUTMUT_MAIN = mutmut_main
+    _ORIGINAL_CREATE_MUTANTS = original
+    _REUSABLE_SOURCES = reusable_sources
+    mutmut_main.create_mutants_for_file = _create_or_reuse_mutants
+    try:
+        os.chdir(root)
+        os.environ["MUTANT_UNDER_TEST"] = "mutant_generation"
+        mutmut_main.Config.ensure_loaded()
+        Path("mutants").mkdir(parents=True, exist_ok=True)
+        mutmut_main.copy_src_dir()
+        mutmut_main.copy_also_copy_files()
+        mutmut_main.setup_source_paths()
+        mutmut_main.store_lines_covered_by_tests()
+        mutmut_main.create_mutants(max_children)
+        mutants, _ = mutmut_main.collect_source_file_mutation_data(
+            mutant_names=[]
+        )
+        return [name for _, name, _ in mutants]
+    finally:
+        os.chdir(previous_cwd)
+        if previous_mutant_under_test is None:
+            os.environ.pop("MUTANT_UNDER_TEST", None)
+        else:
+            os.environ["MUTANT_UNDER_TEST"] = previous_mutant_under_test
+        mutmut_main.create_mutants_for_file = original
+        _MUTMUT_MAIN = None
+        _ORIGINAL_CREATE_MUTANTS = None
+        _REUSABLE_SOURCES = frozenset()
+        _assert_safe_marker_path(root, marker)
+        marker.unlink(missing_ok=True)
 
 
 def run_mutation_testing(

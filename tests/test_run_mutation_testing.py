@@ -74,6 +74,35 @@ class PlanningMutmut(FakeMutmut):
         super().__init__()
         self.collect_source_file_mutation_data = self._collect
 
+        class Config:
+            @staticmethod
+            def ensure_loaded() -> None:
+                return None
+
+        self.Config = Config
+
+    @staticmethod
+    def copy_src_dir() -> None:
+        return None
+
+    @staticmethod
+    def copy_also_copy_files() -> None:
+        return None
+
+    @staticmethod
+    def setup_source_paths() -> None:
+        return None
+
+    @staticmethod
+    def store_lines_covered_by_tests() -> None:
+        return None
+
+    def create_mutants(self, max_children: int) -> None:
+        self.arguments = ([], max_children)
+
+    def _run(self, names: list[str], max_children: int) -> None:
+        raise AssertionError("plan generation must not execute mutant tests")
+
     @staticmethod
     def _collect(
         *, mutant_names: list[str]
@@ -86,11 +115,6 @@ class PlanningMutmut(FakeMutmut):
             ],
             {},
         )
-
-    def _run(self, names: list[str], max_children: int) -> None:
-        self.arguments = (names, max_children)
-        self.collect_source_file_mutation_data(mutant_names=names)
-
 
 class MutationRunnerTests(unittest.TestCase):
     def write_marker(self, root: Path, sources: object) -> Path:
@@ -299,6 +323,33 @@ class MutationRunnerTests(unittest.TestCase):
                     ["scripts.alpha__mutmut_2"],
                 ],
             )
+
+    def test_planning_restores_process_state_after_generation_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            implementation = PlanningMutmut()
+            original = implementation.create_mutants_for_file
+            previous_cwd = Path.cwd()
+            previous_marker = os.environ.get("MUTANT_UNDER_TEST")
+            with (
+                mock.patch.object(
+                    implementation,
+                    "create_mutants",
+                    side_effect=OSError("generation failed"),
+                ),
+                self.assertRaisesRegex(OSError, "generation failed"),
+            ):
+                run_mutation_testing.prepare_mutation_shards(
+                    root, max_children=4, shard_count=2, mutmut_main=implementation
+                )
+            self.assertEqual(Path.cwd(), previous_cwd)
+            self.assertEqual(implementation.create_mutants_for_file, original)
+            self.assertFalse(
+                root.joinpath(
+                    "mutants", run_mutation_testing.REUSABLE_SOURCES_NAME
+                ).exists()
+            )
+            self.assertEqual(os.environ.get("MUTANT_UNDER_TEST"), previous_marker)
 
     def test_shard_plan_rejects_invalid_names_shapes_and_indices(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
