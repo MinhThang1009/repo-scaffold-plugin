@@ -25,9 +25,64 @@ HEAD_SHA = "A" * 40
 TEMPLATE_MARKER = "<!-- repo-scaffold:pr-template=bugfix -->"
 START_MARKER = "<!-- repo-scaffold:pr-head:start -->"
 END_MARKER = "<!-- repo-scaffold:pr-head:end -->"
+HEAD_REPOSITORY = "MinhThang1009/repo-scaffold-plugin"
+BODY_TEMPLATE = (
+    f"{TEMPLATE_MARKER}\n\n"
+    "## Purpose\n\nExplain the purpose.\n\n"
+    "Latest revision: {{HEAD_SHA}} in {{HEAD_REPOSITORY}}.\n"
+)
 
 
 class UpdatePullRequestBodyTests(unittest.TestCase):
+    def test_render_body_rejects_non_text_templates(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be text"):
+            update_pr_body.render_body(None, HEAD_SHA, HEAD_REPOSITORY)  # type: ignore[arg-type]
+
+    def test_render_body_updates_every_section_from_the_template(self) -> None:
+        rendered = update_pr_body.render_body(BODY_TEMPLATE, HEAD_SHA, HEAD_REPOSITORY)
+
+        self.assertIn(
+            f"Latest revision: {HEAD_SHA.lower()} in {HEAD_REPOSITORY}.", rendered
+        )
+        self.assertNotIn("{{HEAD_", rendered)
+        self.assertEqual(rendered.count("## Purpose"), 1)
+
+    def test_render_body_rejects_unknown_or_missing_placeholders_and_markers(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported placeholders"):
+            update_pr_body.render_body(
+                f"{TEMPLATE_MARKER}\n{{{{UNKNOWN}}}}\n", HEAD_SHA, HEAD_REPOSITORY
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported placeholders"):
+            update_pr_body.render_body(
+                f"{TEMPLATE_MARKER}\n{{{{unknown}}}}\n", HEAD_SHA, HEAD_REPOSITORY
+            )
+        with self.assertRaisesRegex(ValueError, "must bind HEAD_REPOSITORY"):
+            update_pr_body.render_body(
+                f"{TEMPLATE_MARKER}\n{{{{HEAD_SHA}}}}\n", HEAD_SHA, HEAD_REPOSITORY
+            )
+        with self.assertRaisesRegex(ValueError, "legacy partial"):
+            update_pr_body.render_body(
+                BODY_TEMPLATE + START_MARKER + "\n" + END_MARKER,
+                HEAD_SHA,
+                HEAD_REPOSITORY,
+            )
+        with self.assertRaisesRegex(ValueError, "trusted template marker"):
+            update_pr_body.render_body("body\n", HEAD_SHA, HEAD_REPOSITORY)
+
+    def test_render_body_rejects_invalid_head_inputs_and_line_endings(self) -> None:
+        with self.assertRaisesRegex(ValueError, "40 hexadecimal"):
+            update_pr_body.render_body(BODY_TEMPLATE, "short", HEAD_REPOSITORY)
+        with self.assertRaisesRegex(ValueError, "OWNER/REPOSITORY"):
+            update_pr_body.render_body(BODY_TEMPLATE, HEAD_SHA, "unsafe")
+        with self.assertRaisesRegex(ValueError, "unsupported carriage"):
+            update_pr_body.render_body(
+                f"{TEMPLATE_MARKER}\rbody {{HEAD_SHA}} {{HEAD_REPOSITORY}}",
+                HEAD_SHA,
+                HEAD_REPOSITORY,
+            )
+
     def test_inserts_block_after_the_trusted_template_marker(self) -> None:
         body = f"{TEMPLATE_MARKER}\n\n## Purpose\nExplain the change.\n"
 
@@ -175,6 +230,74 @@ class UpdatePullRequestBodyTests(unittest.TestCase):
                 )
             self.assertEqual(result, 0)
             self.assertIn("no trusted", output.getvalue())
+
+    def test_cli_renders_the_complete_template(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_file = root / "template.md"
+            output_file = root / "updated.md"
+            template_file.write_text(BODY_TEMPLATE, encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                result = update_pr_body.main(
+                    [
+                        "--template-file",
+                        str(template_file),
+                        "--output",
+                        str(output_file),
+                        "--head-sha",
+                        HEAD_SHA,
+                        "--head-repository",
+                        HEAD_REPOSITORY,
+                    ]
+                )
+            self.assertEqual(result, 0)
+            self.assertIn("complete pull-request body", output.getvalue())
+            self.assertIn(HEAD_REPOSITORY, output_file.read_text(encoding="utf-8"))
+
+    def test_cli_requires_template_repository_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_file = root / "template.md"
+            output_file = root / "updated.md"
+            template_file.write_text(BODY_TEMPLATE, encoding="utf-8")
+            errors = StringIO()
+            with redirect_stderr(errors):
+                result = update_pr_body.main(
+                    [
+                        "--template-file",
+                        str(template_file),
+                        "--output",
+                        str(output_file),
+                        "--head-sha",
+                        HEAD_SHA,
+                    ]
+                )
+            self.assertEqual(result, 1)
+            self.assertIn("head-repository", errors.getvalue())
+
+    def test_cli_rejects_a_repository_binding_in_legacy_body_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            body_file = root / "body.md"
+            output_file = root / "updated.md"
+            body_file.write_text(f"{TEMPLATE_MARKER}\n", encoding="utf-8")
+            errors = StringIO()
+            with redirect_stderr(errors):
+                result = update_pr_body.main(
+                    [
+                        "--body-file",
+                        str(body_file),
+                        "--output",
+                        str(output_file),
+                        "--head-sha",
+                        HEAD_SHA,
+                        "--head-repository",
+                        HEAD_REPOSITORY,
+                    ]
+                )
+            self.assertEqual(result, 1)
+            self.assertIn("requires --template-file", errors.getvalue())
 
     def test_cli_reports_invalid_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

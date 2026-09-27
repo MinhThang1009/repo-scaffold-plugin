@@ -143,6 +143,7 @@ VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND = (
     VERSION_SYNC_PR_BODY_PATH.as_posix(),
 )
 PR_BODY_SYNC_WORKFLOW_PATH = Path(".github/workflows/pr-body-sync.yml")
+PR_BODY_SYNC_TEMPLATE_PATH = Path(".github/pr-body-template.md")
 PR_BODY_SYNC_CONCURRENCY_GROUP = (
     "${{ github.workflow }}-pr-body-${{ github.event.pull_request.number }}"
 )
@@ -7533,18 +7534,20 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         "GH_TOKEN": "${{ github.token }}",
         "REPOSITORY": "${{ github.repository }}",
         "PR_NUMBER": "${{ github.event.pull_request.number }}",
+        "PR_TITLE": "${{ github.event.pull_request.title }}",
         "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+        "PR_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
     }
     if (
         not isinstance(update, dict)
         or set(update) != {"name", "env", "shell", "run"}
-        or update.get("name") != "Update the latest head section"
+        or update.get("name") != "Render and update the complete pull-request body"
         or update.get("env") != expected_environment
         or update.get("shell") != "bash"
         or not isinstance(update.get("run"), str)
     ):
         problems.append(
-            f"{relative}: body-sync must pass only repository, PR, head, and token data through env"
+            f"{relative}: body-sync must pass only repository, PR title, head, and token data through env"
         )
         return problems
 
@@ -7552,11 +7555,18 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
     required_fragments = (
         "set -euo pipefail",
         'if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
+        'if [[ ! "$PR_HEAD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
         "gh api --hostname github.com",
         '"repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"',
-        'python scripts/markdown_body_preflight.py --body-file "$body"',
+        '"repos/$PR_HEAD_REPOSITORY/contents/.github/pr-body-template.md?ref=$PR_HEAD_SHA"',
+        'template_payload="$RUNNER_TEMP/pr-body-template.json"',
+        'template="$RUNNER_TEMP/pr-body-template.md"',
         "python scripts/update_pr_body.py",
+        '--template-file "$template"',
+        '--head-repository "$PR_HEAD_REPOSITORY"',
         'python scripts/markdown_body_preflight.py --body-file "$updated"',
+        "python scripts/pr_template_preflight.py",
+        '--title "$PR_TITLE"',
         'gh pr edit "$PR_NUMBER"',
         '--repo "github.com/$REPOSITORY"',
         '--body-file "$updated"',
@@ -7569,22 +7579,69 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
                 f"{relative}: body-sync must fetch, preflight, update, and verify the bounded body section"
             )
             break
-    if (
-        "github.event.pull_request.head.ref" in run
-        or "github.event.pull_request.head.repo" in run
-    ):
+    if "github.event.pull_request.head.ref" in run:
         problems.append(
             f"{relative}: body-sync must not execute or check out pull-request head code"
         )
     preflight_index = run.find(
         'python scripts/markdown_body_preflight.py --body-file "$updated"'
     )
+    template_preflight_index = run.find("python scripts/pr_template_preflight.py")
     mutation_index = run.find('gh pr edit "$PR_NUMBER"')
-    if preflight_index < 0 or mutation_index < 0 or preflight_index > mutation_index:
+    if (
+        preflight_index < 0
+        or template_preflight_index < 0
+        or mutation_index < 0
+        or preflight_index > mutation_index
+        or template_preflight_index > mutation_index
+    ):
         problems.append(
             f"{relative}: body-sync must complete body preflight before the GitHub mutation"
         )
     return problems
+
+
+def validate_pr_body_sync_template_contract(repository_root: Path) -> list[str]:
+    """Validate the checked-in source used to render the complete PR body."""
+    path = repository_root / PR_BODY_SYNC_TEMPLATE_PATH
+    relative = PR_BODY_SYNC_TEMPLATE_PATH.as_posix()
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        return [f"{relative}: pull-request body template is unreadable: {error}"]
+    if len(payload) > 1 * 1024 * 1024:
+        return [f"{relative}: pull-request body template exceeds the 1 MiB safety cap"]
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        return [f"{relative}: pull-request body template is not valid UTF-8: {error}"]
+    marker_pattern = re.compile(
+        r"(?m)^\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*(?=\r?$)"
+    )
+    markers = list(marker_pattern.finditer(text))
+    if len(markers) != 1 or markers[0].start() != 0:
+        return [
+            f"{relative}: pull-request body template must begin with exactly one trusted template marker"
+        ]
+    if (
+        "<!-- repo-scaffold:pr-head:start -->" in text
+        or "<!-- repo-scaffold:pr-head:end -->" in text
+    ):
+        return [
+            f"{relative}: pull-request body template must not contain legacy partial head markers"
+        ]
+    placeholders = re.findall(r"\{\{([A-Za-z][A-Za-z0-9_]*)\}\}", text)
+    unsupported = sorted(set(placeholders) - {"HEAD_SHA", "HEAD_REPOSITORY"})
+    if unsupported:
+        return [
+            f"{relative}: unsupported pull-request body placeholders: {', '.join(unsupported)}"
+        ]
+    missing = sorted({"HEAD_SHA", "HEAD_REPOSITORY"} - set(placeholders))
+    if missing:
+        return [
+            f"{relative}: pull-request body template must bind {', '.join(missing)}"
+        ]
+    return []
 
 
 def read_front_matter(path: Path) -> tuple[Any, str]:
@@ -9903,6 +9960,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_scorecard_manual_dispatch,
         validate_action_pin_sync_contract,
         validate_required_check_concurrency,
+        validate_pr_body_sync_template_contract,
         validate_pr_body_sync_workflow_contract,
         validate_issue_templates,
         validate_release_notes_config,

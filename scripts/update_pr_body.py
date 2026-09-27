@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update the bounded, repository-owned head section in a pull-request body."""
+"""Render a complete pull-request body from a bounded source template."""
 
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ from pathlib import Path
 
 MAX_BODY_BYTES = 1 * 1024 * 1024
 HEAD_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{40}\Z")
+REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+PLACEHOLDER_PATTERN = re.compile(r"\{\{([A-Za-z][A-Za-z0-9_]*)\}\}")
+ALLOWED_PLACEHOLDERS = frozenset({"HEAD_SHA", "HEAD_REPOSITORY"})
 TEMPLATE_MARKER_PATTERN = re.compile(
     r"(?m)^\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*(?=\r?$)"
 )
@@ -55,6 +58,45 @@ def _head_block(head_sha: str, newline: str) -> str:
             HEAD_END_MARKER,
         )
     )
+
+
+def _validate_head_inputs(head_sha: str, head_repository: str) -> None:
+    """Validate immutable GitHub identifiers before rendering any body text."""
+    if not HEAD_SHA_PATTERN.fullmatch(head_sha):
+        raise ValueError("head SHA must be exactly 40 hexadecimal characters")
+    if not REPOSITORY_PATTERN.fullmatch(head_repository):
+        raise ValueError("head repository must be an OWNER/REPOSITORY identifier")
+
+
+def render_body(template: str, head_sha: str, head_repository: str) -> str:
+    """Render every PR section from ``template`` and the exact head identity."""
+    if not isinstance(template, str):
+        raise ValueError("pull-request template must be text")
+    _validate_head_inputs(head_sha, head_repository)
+    _line_ending(template)
+    template_markers = list(TEMPLATE_MARKER_PATTERN.finditer(template))
+    if len(template_markers) != 1 or template_markers[0].start() != 0:
+        raise ValueError(
+            "pull-request template must begin with exactly one trusted template marker"
+        )
+    if HEAD_START_MARKER in template or HEAD_END_MARKER in template:
+        raise ValueError(
+            "pull-request template must not contain the legacy partial head markers"
+        )
+    placeholders = PLACEHOLDER_PATTERN.findall(template)
+    unknown = sorted(set(placeholders) - ALLOWED_PLACEHOLDERS)
+    if unknown:
+        raise ValueError(
+            "pull-request template contains unsupported placeholders: "
+            + ", ".join(unknown)
+        )
+    missing = sorted(ALLOWED_PLACEHOLDERS - set(placeholders))
+    if missing:
+        raise ValueError("pull-request template must bind " + ", ".join(missing))
+    rendered = template.replace("{{HEAD_SHA}}", head_sha.lower()).replace(
+        "{{HEAD_REPOSITORY}}", head_repository
+    )
+    return rendered
 
 
 def update_body(body: str, head_sha: str) -> str:
@@ -126,19 +168,33 @@ def write_body(path: Path, body: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--body-file", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--template-file", type=Path)
+    source.add_argument("--body-file", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--head-repository")
     args = parser.parse_args(argv)
     try:
-        body = read_body(args.body_file)
-        updated = update_body(body, args.head_sha)
+        if args.template_file is not None:
+            if args.head_repository is None:
+                raise ValueError("--head-repository is required with --template-file")
+            template = read_body(args.template_file)
+            updated = render_body(template, args.head_sha, args.head_repository)
+            original = None
+        else:
+            if args.head_repository is not None:
+                raise ValueError("--head-repository requires --template-file")
+            original = read_body(args.body_file)
+            updated = update_body(original, args.head_sha)
         write_body(args.output, updated)
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    if updated == body:
+    if original is not None and updated == original:
         print("Pull-request body has no trusted head block to update.")
+    elif args.template_file is not None:
+        print("Rendered the complete pull-request body from the source template.")
     else:
         print("Updated the trusted pull-request head block.")
     return 0

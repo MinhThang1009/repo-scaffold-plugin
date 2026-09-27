@@ -4238,6 +4238,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_scorecard_manual_dispatch",
             "validate_action_pin_sync_contract",
             "validate_required_check_concurrency",
+            "validate_pr_body_sync_template_contract",
             "validate_pr_body_sync_workflow_contract",
             "validate_issue_templates",
             "validate_release_notes_config",
@@ -6840,6 +6841,77 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         self.assertTrue(
             any("pinned checkout of the PR base SHA" in item for item in problems)
         )
+
+    def test_body_template_contract_is_current(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_pr_body_sync_template_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_body_template_contract_rejects_missing_or_unknown_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n{{UNKNOWN}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("unsupported" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text("body\n", encoding="utf-8")
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("trusted template marker" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                "<!-- repo-scaffold:pr-head:start -->\n"
+                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("legacy partial" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n{{HEAD_SHA}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("must bind HEAD_REPOSITORY" in item for item in problems))
+
+    def test_body_template_contract_reports_io_encoding_and_size_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing = validate_repository.validate_pr_body_sync_template_contract(root)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_bytes(b"\xff")
+            invalid = validate_repository.validate_pr_body_sync_template_contract(root)
+            template_path.write_bytes(b"x" * (1024 * 1024 + 1))
+            oversized = validate_repository.validate_pr_body_sync_template_contract(
+                root
+            )
+
+        self.assertTrue(any("unreadable" in item for item in missing))
+        self.assertTrue(any("valid UTF-8" in item for item in invalid))
+        self.assertTrue(any("1 MiB" in item for item in oversized))
 
 
 class PullRequestTemplateContractTests(unittest.TestCase):

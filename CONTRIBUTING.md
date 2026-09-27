@@ -184,11 +184,14 @@ mapping, add `--template security`, `--template deployment`, or
 After preparing the UTF-8 body file, rerun the preflight with `--body-file <path>`;
 it rejects hard-wrapped prose before the GitHub mutation.
 
-This repository's `pr-body-sync` workflow updates only the bounded
-`repo-scaffold:pr-head` block when a pull request is opened or receives a new
-commit. It checks the current head and body immediately before the edit, keeps
-the rest of the review text unchanged, and verifies the body after the GitHub
-mutation. Do not put review content inside that managed block.
+This repository's `pr-body-sync` workflow renders the complete pull-request
+body from `.github/pr-body-template.md` when a pull request is opened or
+receives a new commit. The source template is read at the exact head SHA and
+may use only `{{HEAD_SHA}}` and `{{HEAD_REPOSITORY}}` placeholders. The workflow
+preflights the rendered body, rechecks the head, title, repository, and current
+body immediately before editing, then verifies the complete body after the
+GitHub mutation. Edit the source template when any PR section needs to change;
+do not edit the generated body as a separate source.
 
 Use the default PR template for ordinary changes. Choose a specialized template
 only when its review workflow applies:
