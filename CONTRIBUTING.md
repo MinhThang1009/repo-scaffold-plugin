@@ -95,6 +95,9 @@ reuse state only for the same source, tests, mutation workflow and dependency
 fingerprint, branch, runtime, and platform. The plan job saves generated state
 after recording its input and state hashes. A failed shard run can then reuse
 the plan. Completed verdicts are saved after aggregation and the score gate.
+Shard artifacts contain only `.meta` result files with their paths relative to
+`mutants/`. Generated sources remain in the shared plan artifact, avoiding their
+repeated upload by all 64 shards and download by the aggregate job.
 The aggregate job rejects a missing
 artifact, an unassigned result, or a shard that did not finish before it exports
 statistics. On a validated cache hit, preserved killed verdicts are carried into

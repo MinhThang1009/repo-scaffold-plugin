@@ -4784,6 +4784,29 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
             ".github/workflows/mutation-testing.yml: plan, execute, and merge "
             "exact mutation shards"
         ]
+    raw_shard_steps = shards.get("steps")
+    shard_upload_steps = [
+        step
+        for step in (raw_shard_steps if isinstance(raw_shard_steps, list) else [])
+        if isinstance(step, dict) and step.get("name") == "Upload mutation shard"
+    ]
+    if (
+        len(shard_upload_steps) != 1
+        or not isinstance(shard_upload_steps[0].get("uses"), str)
+        or not shard_upload_steps[0]["uses"].startswith("actions/upload-artifact@")
+        or shard_upload_steps[0].get("if") != "${{ always() }}"
+        or shard_upload_steps[0].get("with")
+        != {
+            "name": "mutation-shard-${{ matrix.shard }}",
+            "path": "mutants/**/*.meta",
+            "if-no-files-found": "error",
+            "retention-days": "14",
+        }
+    ):
+        return [
+            ".github/workflows/mutation-testing.yml: upload only shard metadata "
+            "with relative paths preserved and reject missing files"
+        ]
     cache_restore_steps = [
         step
         for step in plan_steps

@@ -2439,7 +2439,18 @@ class MutationTestingContractTests(unittest.TestCase):
                     "steps": [
                         {
                             "run": 'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"'
-                        }
+                        },
+                        {
+                            "name": "Upload mutation shard",
+                            "uses": "actions/upload-artifact@" + "a" * 40,
+                            "if": "${{ always() }}",
+                            "with": {
+                                "name": "mutation-shard-${{ matrix.shard }}",
+                                "path": "mutants/**/*.meta",
+                                "if-no-files-found": "error",
+                                "retention-days": "14",
+                            },
+                        },
                     ],
                 },
                 "mutation-quality": {
@@ -2544,6 +2555,45 @@ class MutationTestingContractTests(unittest.TestCase):
         self.assertEqual(
             validate_repository.validate_sharded_mutation_workflow(valid), []
         )
+
+    def test_sharded_workflow_uploads_only_metadata_and_rejects_empty_artifacts(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github/workflows/mutation-testing.yml"
+        )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(workflow), []
+        )
+        for changes in (
+            {"with": {"path": "mutants/"}},
+            {"with": {"path": "mutants/scripts/*.meta"}},
+            {"with": {"if-no-files-found": "warn"}},
+            {"if": "${{ success() }}"},
+            {"uses": None},
+            {"uses": "actions/download-artifact@" + "a" * 40},
+            {"name": "Missing shard upload"},
+        ):
+            with self.subTest(changes=changes):
+                candidate = copy.deepcopy(workflow)
+                upload = next(
+                    step
+                    for step in candidate["jobs"]["mutation-shards"]["steps"]
+                    if step.get("name") == "Upload mutation shard"
+                )
+                for key, value in changes.items():
+                    if key == "with":
+                        upload[key].update(value)
+                    else:
+                        upload[key] = value
+                self.assertTrue(
+                    any(
+                        "upload only shard metadata" in problem
+                        for problem in validate_repository.validate_sharded_mutation_workflow(
+                            candidate
+                        )
+                    )
+                )
 
     def test_sharded_workflow_cache_is_bound_and_preserves_reuse_marker(self) -> None:
         workflow = validate_repository.load_yaml(

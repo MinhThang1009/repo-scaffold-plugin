@@ -69,31 +69,50 @@ def merge(repository_root: Path, artifacts_root: Path) -> None:
             raise ValueError("base mutation metadata contains an untrusted result")
         relative = base_path.relative_to(mutants)
         baseline_values_by_field: dict[str, dict[str, Any]] = {}
+        for field in RESULT_FIELDS:
+            values = base.get(field)
+            if not isinstance(values, dict):
+                raise ValueError(f"metadata field {field!r} is invalid")
+            if not set(values).issubset(results):
+                raise ValueError("mutation shard metadata keys differ")
+            baseline_values_by_field[field] = dict(values)
+        preserved = {
+            name
+            for name, value in results.items()
+            if value in PRESERVED_KILLED_EXIT_CODES
+        }
+        missing = object()
         for index in range(len(shards)):
             overlay = load_json(artifacts_root / f"mutation-shard-{index}" / relative)
             for field in RESULT_FIELDS:
-                base_values = base.get(field)
+                base_values = base[field]
                 overlay_values = overlay.get(field)
-                if not isinstance(base_values, dict) or not isinstance(
-                    overlay_values, dict
-                ):
+                if not isinstance(overlay_values, dict):
                     raise ValueError(f"metadata field {field!r} is invalid")
-                if set(base_values) != set(overlay_values):
+                baseline_values = baseline_values_by_field[field]
+                if not set(overlay_values).issubset(results):
                     raise ValueError("mutation shard metadata keys differ")
-                baseline_values = baseline_values_by_field.setdefault(
-                    field, dict(base_values)
-                )
-                for name, value in overlay_values.items():
+                if field == "exit_code_by_key":
+                    if set(overlay_values) != set(results):
+                        raise ValueError("mutation shard metadata keys differ")
+                    if any(
+                        value is not None and type(value) is not int
+                        for value in overlay_values.values()
+                    ):
+                        raise ValueError("mutation shard contains an invalid verdict")
+                for name in sorted(baseline_values.keys() | overlay_values.keys()):
+                    before = baseline_values.get(name, missing)
+                    value = overlay_values.get(name, missing)
                     if assignments[name] == index:
-                        if (
-                            baseline_values[name] is not None
-                            and value != baseline_values[name]
-                        ):
+                        if name in preserved and value != before:
                             raise ValueError(
                                 "mutation shard changed a preserved result"
                             )
-                        base_values[name] = value
-                    elif value != baseline_values[name]:
+                        if value is missing:
+                            base_values.pop(name, None)
+                        else:
+                            base_values[name] = value
+                    elif value != before:
                         raise ValueError("mutation shard changed an unassigned mutant")
         if any(value is None for value in results.values()):
             raise ValueError("a mutation shard did not finish every assignment")
