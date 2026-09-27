@@ -691,6 +691,21 @@ class MutationCacheTests(unittest.TestCase):
 
             unlink.assert_called_once_with(linked)
 
+    def test_state_sanitizer_rejects_oversized_aggregate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "scripts" / "alpha.py"
+            state.parent.mkdir()
+            state.write_text("state", encoding="utf-8")
+            digest = prepare_mutation_cache._sha256(state.read_bytes())
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_STATE_BYTES", 1),
+                self.assertRaisesRegex(ValueError, "failed integrity"),
+            ):
+                prepare_mutation_cache._sanitize_restored_state(
+                    root, {"scripts/alpha.py": digest}
+                )
+
     def test_cache_cleanup_removes_directory_reparse_points_with_rmdir(self) -> None:
         mutation_root = mock.Mock(spec=Path)
         mutation_root.mkdir.return_value = None

@@ -35,10 +35,11 @@ KILLED_EXIT_CODES = {1, 3}
 MAX_PROJECT_FILES = 10_000
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
-# The repository validator generates a large instrumented source file. Keep the
-# bound above its observed artifact size while still rejecting oversized cache input.
+# The repository validator generates large per-source mutation metadata. Keep the
+# aggregate bound above the observed full plan while still rejecting oversized
+# cache input.
 MAX_META_BYTES = 128 * 1024 * 1024
-MAX_STATE_BYTES = 256 * 1024 * 1024
+MAX_STATE_BYTES = 1024 * 1024 * 1024
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 IGNORED_DIRECTORIES = {
     ".git",
@@ -466,13 +467,19 @@ def _collect_state_hashes(
 
 def _sanitize_restored_state(mutation_root: Path, state_hashes: dict[str, str]) -> None:
     allowed = set(state_hashes) | {MANIFEST_NAME}
+    total_bytes = 0
     for relative, expected_digest in state_hashes.items():
         path = mutation_root.joinpath(*PurePosixPath(relative).parts)
         _assert_safe_cache_path(mutation_root, path)
         if not path.is_file():
             raise ValueError(f"restored mutation state is missing {relative!r}")
         content = path.read_bytes()
-        if len(content) > MAX_META_BYTES or _sha256(content) != expected_digest:
+        total_bytes += len(content)
+        if (
+            len(content) > MAX_META_BYTES
+            or total_bytes > MAX_STATE_BYTES
+            or _sha256(content) != expected_digest
+        ):
             raise ValueError(
                 f"restored mutation state failed integrity for {relative!r}"
             )
