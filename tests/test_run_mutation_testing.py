@@ -116,6 +116,18 @@ class PlanningMutmut(FakeMutmut):
             {},
         )
 
+
+class ModernPlanningMutmut(PlanningMutmut):
+    @staticmethod
+    def config() -> None:
+        return None
+
+    @staticmethod
+    def set_mutant_under_test(name: str | None) -> None:
+        if name is not None:
+            os.environ["MUTANT_UNDER_TEST"] = name
+
+
 class MutationRunnerTests(unittest.TestCase):
     def write_marker(self, root: Path, sources: object) -> Path:
         marker = root / "mutants" / run_mutation_testing.REUSABLE_SOURCES_NAME
@@ -329,6 +341,16 @@ class MutationRunnerTests(unittest.TestCase):
                     ["scripts.alpha__mutmut_2"],
                 ],
             )
+
+    def test_planning_supports_current_mutmut_config_api(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            implementation = ModernPlanningMutmut()
+            path = run_mutation_testing.prepare_mutation_shards(
+                root, max_children=4, shard_count=2, mutmut_main=implementation
+            )
+            self.assertTrue(path.is_file())
+            self.assertNotIn("MUTANT_UNDER_TEST", os.environ)
 
     def test_planning_rejects_invalid_or_linked_repository_roots(self) -> None:
         with self.assertRaisesRegex(ValueError, "repository root"):

@@ -295,10 +295,18 @@ def _generate_mutation_sources(
     _ORIGINAL_CREATE_MUTANTS = original
     _REUSABLE_SOURCES = reusable_sources
     mutmut_main.create_mutants_for_file = _create_or_reuse_mutants
+    set_mutant_under_test = getattr(mutmut_main, "set_mutant_under_test", None)
+    config_loader = getattr(mutmut_main, "config", None)
     try:
         os.chdir(root)
-        os.environ["MUTANT_UNDER_TEST"] = "mutant_generation"
-        mutmut_main.Config.ensure_loaded()
+        if callable(set_mutant_under_test):
+            set_mutant_under_test("mutant_generation")
+        else:
+            os.environ["MUTANT_UNDER_TEST"] = "mutant_generation"
+        if callable(config_loader):
+            config_loader()
+        else:
+            mutmut_main.Config.ensure_loaded()
         Path("mutants").mkdir(parents=True, exist_ok=True)
         mutmut_main.copy_src_dir()
         mutmut_main.copy_also_copy_files()
@@ -311,6 +319,8 @@ def _generate_mutation_sources(
         return [name for _, name, _ in mutants]
     finally:
         os.chdir(previous_cwd)
+        if callable(set_mutant_under_test):
+            set_mutant_under_test(None)
         if previous_mutant_under_test is None:
             os.environ.pop("MUTANT_UNDER_TEST", None)
         else:
