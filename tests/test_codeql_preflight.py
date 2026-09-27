@@ -255,8 +255,8 @@ if elapsed >= 1.0:
     raise AssertionError(f"Regex probe took {elapsed:.3f} seconds")
 """
         environment = os.environ.copy()
-        environment.pop("MUTANT_UNDER_TEST", None)
-        environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
+        environment["MUTANT_UNDER_TEST"] = ""
+        environment["MUTMUT_DEPENDENCY_DEPTH"] = "-1"
         subprocess.run(
             [sys.executable, "-c", probe, str(SCRIPT_PATH), case],
             check=True,

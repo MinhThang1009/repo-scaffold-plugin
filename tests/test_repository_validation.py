@@ -53,8 +53,8 @@ def run_test_subprocess(
         if inherited_environment is None
         else inherited_environment.copy()
     )
-    environment.pop("MUTANT_UNDER_TEST", None)
-    environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
+    environment["MUTANT_UNDER_TEST"] = ""
+    environment["MUTMUT_DEPENDENCY_DEPTH"] = "-1"
     return subprocess.run(command, env=environment, **kwargs)
 
 
@@ -73,8 +73,8 @@ class SerializedFileValidationTests(unittest.TestCase):
                 )
 
         child_environment = run.call_args.kwargs["env"]
-        self.assertNotIn("MUTANT_UNDER_TEST", child_environment)
-        self.assertNotIn("MUTMUT_DEPENDENCY_DEPTH", child_environment)
+        self.assertEqual(child_environment["MUTANT_UNDER_TEST"], "")
+        self.assertEqual(child_environment["MUTMUT_DEPENDENCY_DEPTH"], "-1")
         self.assertEqual(child_environment["CHILD_TEST_VALUE"], "preserved")
 
     def test_yaml_loader_rejects_duplicate_keys(self) -> None:
@@ -186,7 +186,14 @@ class SerializedFileValidationTests(unittest.TestCase):
                 clear=True,
             ):
                 child_environment = validate_repository.child_process_environment()
-                self.assertEqual(child_environment, {"PRESERVED_VALUE": "yes"})
+                self.assertEqual(
+                    child_environment,
+                    {
+                        "PRESERVED_VALUE": "yes",
+                        "MUTANT_UNDER_TEST": "",
+                        "MUTMUT_DEPENDENCY_DEPTH": "-1",
+                    },
+                )
                 self.assertEqual(os.environ["MUTANT_UNDER_TEST"], "stats")
                 self.assertEqual(os.environ["MUTMUT_DEPENDENCY_DEPTH"], "1")
             self.assertEqual(

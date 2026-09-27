@@ -32,8 +32,8 @@ if BASH is None and os.name == "nt":
 def child_cli_environment(overrides: dict[str, str]) -> dict[str, str]:
     """Keep mutmut's parent-test trampoline state out of copied CLI children."""
     environment = os.environ.copy()
-    environment.pop("MUTANT_UNDER_TEST", None)
-    environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
+    environment["MUTANT_UNDER_TEST"] = ""
+    environment["MUTMUT_DEPENDENCY_DEPTH"] = "-1"
     environment.update(overrides)
     return environment
 
@@ -63,8 +63,8 @@ class ReminderWorkflowTests(unittest.TestCase):
         ):
             environment = child_cli_environment({"CHILD_TEST_VALUE": "preserved"})
 
-        self.assertNotIn("MUTANT_UNDER_TEST", environment)
-        self.assertNotIn("MUTMUT_DEPENDENCY_DEPTH", environment)
+        self.assertEqual(environment["MUTANT_UNDER_TEST"], "")
+        self.assertEqual(environment["MUTMUT_DEPENDENCY_DEPTH"], "-1")
         self.assertEqual(environment["CHILD_TEST_VALUE"], "preserved")
 
     def test_every_issue_body_writer_preflights_before_edit_or_create(self) -> None:

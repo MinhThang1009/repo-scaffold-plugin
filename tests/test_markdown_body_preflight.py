@@ -22,8 +22,8 @@ SKILL_PREFLIGHT = (
 def child_test_environment() -> dict[str, str]:
     """Keep mutmut's in-process state out of CLI subprocesses."""
     environment = os.environ.copy()
-    environment.pop("MUTANT_UNDER_TEST", None)
-    environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
+    environment["MUTANT_UNDER_TEST"] = ""
+    environment["MUTMUT_DEPENDENCY_DEPTH"] = "-1"
     return environment
 
 

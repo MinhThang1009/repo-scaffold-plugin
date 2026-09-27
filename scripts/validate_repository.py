@@ -3263,8 +3263,11 @@ def schema_version_is(document: object, expected: int) -> bool:
 def child_process_environment() -> dict[str, str]:
     """Keep mutmut's in-process selector out of child Python processes."""
     environment = os.environ.copy()
-    environment.pop("MUTANT_UNDER_TEST", None)
-    environment.pop("MUTMUT_DEPENDENCY_DEPTH", None)
+    # Mutmut 3.8 keeps a process-local selector that can survive environment
+    # scrubbing in copied CLI children. Explicit inert values prevent stats or
+    # mutant dispatch when a child imports trampoline-instrumented source.
+    environment["MUTANT_UNDER_TEST"] = ""
+    environment["MUTMUT_DEPENDENCY_DEPTH"] = "-1"
     return environment
 
 
