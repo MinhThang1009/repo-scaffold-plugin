@@ -36,11 +36,12 @@ KILLED_EXIT_CODES = {1, 3}
 MAX_PROJECT_FILES = 10_000
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
-# The repository validator generates large per-source mutation metadata. Keep the
-# aggregate bound above the observed full plan while still rejecting oversized
-# cache input.
-MAX_META_BYTES = 128 * 1024 * 1024
-MAX_STATE_BYTES = 1024 * 1024 * 1024
+# Mutmut's generated per-source files contain every instrumented mutant, so they
+# can be much larger than the source and metadata alone. Keep the per-file and
+# aggregate bounds above the observed full plan while still bounding cache input
+# below the hosted runner's artifact/cache capacity.
+MAX_META_BYTES = 512 * 1024 * 1024
+MAX_STATE_BYTES = 4 * 1024 * 1024 * 1024
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 IGNORED_DIRECTORIES = {
     ".git",
