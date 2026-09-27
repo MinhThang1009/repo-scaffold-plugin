@@ -1,0 +1,158 @@
+name: Update pull request body
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-pr-body-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: pr-body-sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # Use only trusted base-branch tooling. Never check out or execute the PR head.
+      - name: Check out trusted base tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Update the latest head section
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            printf 'Invalid pull-request number.\n' >&2
+            exit 1
+          fi
+          if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            printf 'Invalid repository binding.\n' >&2
+            exit 1
+          fi
+          if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            printf 'Invalid pull-request head SHA.\n' >&2
+            exit 1
+          fi
+
+          payload="$RUNNER_TEMP/pr-body-payload.json"
+          body="$RUNNER_TEMP/pr-body-current.md"
+          updated="$RUNNER_TEMP/pr-body-updated.md"
+          latest_payload="$RUNNER_TEMP/pr-body-latest.json"
+          latest_body="$RUNNER_TEMP/pr-body-latest.md"
+          verified_payload="$RUNNER_TEMP/pr-body-verified.json"
+          gh api --hostname github.com \
+            "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"
+          python - "$payload" "$body" "$PR_HEAD_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload_path = Path(sys.argv[1])
+          body_path = Path(sys.argv[2])
+          expected_sha = sys.argv[3]
+          raw = payload_path.read_bytes()
+          if len(raw) > 2 * 1024 * 1024:
+              raise SystemExit("Pull-request API payload exceeds the safety cap.")
+          try:
+              payload = json.loads(raw.decode("utf-8"))
+          except (UnicodeDecodeError, json.JSONDecodeError) as error:
+              raise SystemExit(f"Pull-request API payload is invalid: {error}") from error
+          head = payload.get("head") if isinstance(payload, dict) else None
+          actual_sha = head.get("sha") if isinstance(head, dict) else None
+          if actual_sha != expected_sha:
+              raise SystemExit("Pull-request head advanced; retry the workflow.")
+          body = payload.get("body") if isinstance(payload, dict) else None
+          if body is None:
+              body = ""
+          if not isinstance(body, str):
+              raise SystemExit("Pull-request body is not text.")
+          body_path.write_text(body, encoding="utf-8", newline="")
+          PY
+
+          python scripts/markdown_body_preflight.py --body-file "$body"
+          python scripts/update_pr_body.py \
+            --body-file "$body" \
+            --output "$updated" \
+            --head-sha "$PR_HEAD_SHA"
+          python scripts/markdown_body_preflight.py --body-file "$updated"
+          if cmp -s "$body" "$updated"; then
+            printf 'No trusted pull-request body section needed an update.\n'
+            exit 0
+          fi
+
+          gh api --hostname github.com \
+            "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$latest_payload"
+          python - "$latest_payload" "$latest_body" "$body" "$PR_HEAD_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload_path = Path(sys.argv[1])
+          latest_body_path = Path(sys.argv[2])
+          original_body_path = Path(sys.argv[3])
+          expected_sha = sys.argv[4]
+          raw = payload_path.read_bytes()
+          if len(raw) > 2 * 1024 * 1024:
+              raise SystemExit("Pull-request API payload exceeds the safety cap.")
+          try:
+              payload = json.loads(raw.decode("utf-8"))
+          except (UnicodeDecodeError, json.JSONDecodeError) as error:
+              raise SystemExit(f"Pull-request API payload is invalid: {error}") from error
+          head = payload.get("head") if isinstance(payload, dict) else None
+          if not isinstance(head, dict) or head.get("sha") != expected_sha:
+              raise SystemExit("Pull-request head advanced; retry the workflow.")
+          body = payload.get("body") if isinstance(payload, dict) else None
+          if body is None:
+              body = ""
+          if not isinstance(body, str):
+              raise SystemExit("Pull-request body is not text.")
+          original = original_body_path.read_text(encoding="utf-8")
+          if body != original:
+              raise SystemExit("Pull-request body changed during preparation; retry the workflow.")
+          latest_body_path.write_text(body, encoding="utf-8", newline="")
+          PY
+
+          gh pr edit "$PR_NUMBER" \
+            --repo "github.com/$REPOSITORY" \
+            --body-file "$updated"
+
+          gh api --hostname github.com \
+            "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$verified_payload"
+          python - "$verified_payload" "$updated" "$PR_HEAD_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload_path = Path(sys.argv[1])
+          expected_body_path = Path(sys.argv[2])
+          expected_sha = sys.argv[3]
+          raw = payload_path.read_bytes()
+          if len(raw) > 2 * 1024 * 1024:
+              raise SystemExit("Pull-request API payload exceeds the safety cap.")
+          try:
+              payload = json.loads(raw.decode("utf-8"))
+          except (UnicodeDecodeError, json.JSONDecodeError) as error:
+              raise SystemExit(f"Pull-request API payload is invalid: {error}") from error
+          head = payload.get("head") if isinstance(payload, dict) else None
+          if not isinstance(head, dict) or head.get("sha") != expected_sha:
+              raise SystemExit("Pull-request head changed during the body update.")
+          actual_body = payload.get("body") if isinstance(payload, dict) else None
+          expected_body = expected_body_path.read_text(encoding="utf-8")
+          if actual_body != expected_body:
+              raise SystemExit("GitHub did not retain the generated pull-request body.")
+          PY

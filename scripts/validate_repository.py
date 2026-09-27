@@ -142,6 +142,11 @@ VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND = (
     "--body-file",
     VERSION_SYNC_PR_BODY_PATH.as_posix(),
 )
+PR_BODY_SYNC_WORKFLOW_PATH = Path(".github/workflows/pr-body-sync.yml")
+PR_BODY_SYNC_CONCURRENCY_GROUP = (
+    "${{ github.workflow }}-pr-body-${{ github.event.pull_request.number }}"
+)
+PR_BODY_SYNC_CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
 FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
 FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
@@ -7462,6 +7467,126 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
     return problems
 
 
+def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
+    """Keep the PR-body writer least-privileged and bound to trusted inputs."""
+    path = repository_root / PR_BODY_SYNC_WORKFLOW_PATH
+    relative = PR_BODY_SYNC_WORKFLOW_PATH.as_posix()
+    try:
+        workflow = load_yaml(path)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        return [f"{relative}: body-sync workflow is unreadable: {error}"]
+    if not isinstance(workflow, dict):
+        return [f"{relative}: body-sync workflow must be a mapping"]
+
+    problems: list[str] = []
+    if workflow.get("on") != {
+        "pull_request_target": {"types": ["opened", "synchronize"]}
+    }:
+        problems.append(
+            f"{relative}: body-sync workflow must run only for opened and synchronized pull requests"
+        )
+    if workflow.get("permissions") != {"contents": "read"}:
+        problems.append(
+            f"{relative}: body-sync workflow must keep top-level permissions read-only"
+        )
+    if workflow.get("concurrency") != {
+        "group": PR_BODY_SYNC_CONCURRENCY_GROUP,
+        "cancel-in-progress": "false",
+    }:
+        problems.append(
+            f"{relative}: body-sync workflow must serialize each pull request without cancellation"
+        )
+
+    jobs = workflow.get("jobs")
+    job = jobs.get("update") if isinstance(jobs, dict) else None
+    if (
+        not isinstance(jobs, dict)
+        or set(jobs) != {"update"}
+        or not isinstance(job, dict)
+        or set(job) != {"name", "runs-on", "timeout-minutes", "permissions", "steps"}
+        or job.get("name") != "pr-body-sync"
+        or job.get("runs-on") != "ubuntu-latest"
+        or job.get("timeout-minutes") != "5"
+        or job.get("permissions") != {"contents": "read", "pull-requests": "write"}
+    ):
+        problems.append(
+            f"{relative}: body-sync job must isolate pull-requests: write with a five-minute trusted runner"
+        )
+        return problems
+
+    steps = job.get("steps")
+    checkout = steps[0] if isinstance(steps, list) and len(steps) >= 1 else None
+    update = steps[1] if isinstance(steps, list) and len(steps) >= 2 else None
+    expected_checkout = {
+        "name": "Check out trusted base tooling",
+        "uses": PR_BODY_SYNC_CHECKOUT,
+        "with": {
+            "ref": "${{ github.event.pull_request.base.sha }}",
+            "persist-credentials": "false",
+        },
+    }
+    if not isinstance(steps, list) or len(steps) != 2 or checkout != expected_checkout:
+        problems.append(
+            f"{relative}: body-sync must use exactly one pinned checkout of the PR base SHA"
+        )
+    expected_environment = {
+        "GH_TOKEN": "${{ github.token }}",
+        "REPOSITORY": "${{ github.repository }}",
+        "PR_NUMBER": "${{ github.event.pull_request.number }}",
+        "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+    }
+    if (
+        not isinstance(update, dict)
+        or set(update) != {"name", "env", "shell", "run"}
+        or update.get("name") != "Update the latest head section"
+        or update.get("env") != expected_environment
+        or update.get("shell") != "bash"
+        or not isinstance(update.get("run"), str)
+    ):
+        problems.append(
+            f"{relative}: body-sync must pass only repository, PR, head, and token data through env"
+        )
+        return problems
+
+    run = update["run"]
+    required_fragments = (
+        "set -euo pipefail",
+        'if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
+        "gh api --hostname github.com",
+        '"repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"',
+        'python scripts/markdown_body_preflight.py --body-file "$body"',
+        "python scripts/update_pr_body.py",
+        'python scripts/markdown_body_preflight.py --body-file "$updated"',
+        'gh pr edit "$PR_NUMBER"',
+        '--repo "github.com/$REPOSITORY"',
+        '--body-file "$updated"',
+        'verified_payload="$RUNNER_TEMP/pr-body-verified.json"',
+        "GitHub did not retain the generated pull-request body.",
+    )
+    for fragment in required_fragments:
+        if fragment not in run:
+            problems.append(
+                f"{relative}: body-sync must fetch, preflight, update, and verify the bounded body section"
+            )
+            break
+    if (
+        "github.event.pull_request.head.ref" in run
+        or "github.event.pull_request.head.repo" in run
+    ):
+        problems.append(
+            f"{relative}: body-sync must not execute or check out pull-request head code"
+        )
+    preflight_index = run.find(
+        'python scripts/markdown_body_preflight.py --body-file "$updated"'
+    )
+    mutation_index = run.find('gh pr edit "$PR_NUMBER"')
+    if preflight_index < 0 or mutation_index < 0 or preflight_index > mutation_index:
+        problems.append(
+            f"{relative}: body-sync must complete body preflight before the GitHub mutation"
+        )
+    return problems
+
+
 def read_front_matter(path: Path) -> tuple[Any, str]:
     """Return parsed YAML front matter and the remaining Markdown body."""
     text = path.read_text(encoding="utf-8")
@@ -9778,6 +9903,7 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_scorecard_manual_dispatch,
         validate_action_pin_sync_contract,
         validate_required_check_concurrency,
+        validate_pr_body_sync_workflow_contract,
         validate_issue_templates,
         validate_release_notes_config,
         validate_dependabot,

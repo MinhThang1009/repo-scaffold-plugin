@@ -4238,6 +4238,7 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_scorecard_manual_dispatch",
             "validate_action_pin_sync_contract",
             "validate_required_check_concurrency",
+            "validate_pr_body_sync_workflow_contract",
             "validate_issue_templates",
             "validate_release_notes_config",
             "validate_dependabot",
@@ -6709,6 +6710,136 @@ class CodeScanningGateContractTests(unittest.TestCase):
                 ),
                 2,
             )
+
+
+class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
+    def _copy_workflow(self, root: Path) -> tuple[Path, dict[str, Any]]:
+        workflow_path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        workflow_path.parent.mkdir(parents=True, exist_ok=True)
+        workflow = yaml.safe_load(
+            (PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH).read_text(
+                encoding="utf-8"
+            )
+        )
+        workflow_path.write_text(
+            yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+        )
+        return workflow_path, workflow
+
+    def test_body_sync_workflow_has_a_narrow_write_boundary(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_pr_body_sync_workflow_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_body_sync_workflow_reports_unreadable_and_non_mapping_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unreadable = validate_repository.validate_pr_body_sync_workflow_contract(
+                root
+            )
+            workflow_path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            workflow_path.parent.mkdir(parents=True)
+            workflow_path.write_text("[]\n", encoding="utf-8")
+            non_mapping = validate_repository.validate_pr_body_sync_workflow_contract(
+                root
+            )
+
+        self.assertTrue(any("workflow is unreadable" in item for item in unreadable))
+        self.assertEqual(
+            non_mapping,
+            [
+                ".github/workflows/pr-body-sync.yml: body-sync workflow must be a mapping"
+            ],
+        )
+
+    def test_body_sync_workflow_rejects_trigger_concurrency_and_job_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
+            workflow["on"] = {"pull_request_target": {"types": ["edited"]}}
+            workflow["concurrency"]["cancel-in-progress"] = "true"
+            workflow["jobs"]["update"]["permissions"] = {"contents": "read"}
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("opened and synchronized" in item for item in problems))
+        self.assertTrue(any("without cancellation" in item for item in problems))
+        self.assertTrue(any("isolate pull-requests" in item for item in problems))
+
+    def test_body_sync_workflow_rejects_step_shape_and_unsafe_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
+            update_step = workflow["jobs"]["update"]["steps"][1]
+            update_step["env"] = {}
+            update_step["run"] = "github.event.pull_request.head.ref\n"
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("pass only repository" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
+            workflow["jobs"]["update"]["steps"][1]["run"] += (
+                "\ngithub.event.pull_request.head.ref\n"
+            )
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("must not execute" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
+            run = workflow["jobs"]["update"]["steps"][1]["run"]
+            workflow["jobs"]["update"]["steps"][1]["run"] = run.replace(
+                'python scripts/markdown_body_preflight.py --body-file "$updated"\n',
+                "",
+            )
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("fetch, preflight" in item for item in problems))
+        self.assertTrue(any("before the GitHub mutation" in item for item in problems))
+
+    def test_body_sync_workflow_rejects_head_checkout_and_broad_permissions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            workflow_path.parent.mkdir(parents=True)
+            workflow = yaml.safe_load(
+                (
+                    PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+                ).read_text(encoding="utf-8")
+            )
+            workflow["permissions"] = {"contents": "read", "pull-requests": "write"}
+            workflow["jobs"]["update"]["steps"][0]["with"]["ref"] = (
+                "${{ github.event.pull_request.head.sha }}"
+            )
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(
+            any("top-level permissions read-only" in item for item in problems)
+        )
+        self.assertTrue(
+            any("pinned checkout of the PR base SHA" in item for item in problems)
+        )
 
 
 class PullRequestTemplateContractTests(unittest.TestCase):
