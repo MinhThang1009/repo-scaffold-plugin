@@ -4758,6 +4758,13 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         "path": "mutants/",
         "key": expected_restore["key"],
     }
+    expected_plan_save = {
+        "path": "mutants/",
+        "key": (
+            f"{cache_prefix}-plan-${{{{ github.run_id }}}}-"
+            "${{ github.run_attempt }}"
+        ),
+    }
     runs = {
         step.get("run")
         for job in (jobs["mutation-plan"], shards, aggregate)
@@ -4808,6 +4815,13 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         if isinstance(step, dict)
         and step.get("run") == "python scripts/prepare_mutation_cache.py record"
     ]
+    plan_cache_save_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/cache/save@")
+    ]
     plan_upload_steps = [
         step
         for step in plan_steps
@@ -4856,6 +4870,9 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         or "plan-reuse=false" not in restore_prepare_steps[0]["run"]
         or len(plan_prepare_steps) != 1
         or len(plan_record_steps) != 1
+        or len(plan_cache_save_steps) != 1
+        or plan_cache_save_steps[0].get("if") != expected_plan_condition
+        or plan_cache_save_steps[0].get("with") != expected_plan_save
         or len(plan_upload_steps) != 1
         or plan_upload_steps[0].get("with", {}).get("include-hidden-files") != "true"
         or len(aggregate_record_steps) != 1
@@ -4872,6 +4889,19 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
             ".github/workflows/mutation-testing.yml: mutation state cache must "
             "restore and prepare validated state, preserve its marker for shard "
             "reuse, and save completed state under an input-bound branch cache key"
+        ]
+    if not (
+        plan_steps.index(cache_restore_steps[0])
+        < plan_steps.index(restore_prepare_steps[0])
+        < plan_steps.index(plan_generation_steps[0])
+        < plan_steps.index(plan_record_steps[0])
+        < plan_steps.index(plan_cache_save_steps[0])
+        < plan_steps.index(plan_prepare_steps[0])
+        < plan_steps.index(plan_upload_steps[0])
+    ):
+        return [
+            ".github/workflows/mutation-testing.yml: save the recorded plan "
+            "before preparing and uploading shard state"
         ]
     return []
 

@@ -2413,6 +2413,18 @@ class MutationTestingContractTests(unittest.TestCase):
                             "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64",
                         },
                         {"run": "python scripts/prepare_mutation_cache.py record"},
+                        {
+                            "uses": "actions/cache/save@" + "b" * 40,
+                            "if": "${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}",
+                            "with": {
+                                "path": "mutants/",
+                                "key": (
+                                    "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+                                    "${{ steps.mutation-fingerprint.outputs.fingerprint }}-plan-${{ github.run_id }}-${{ github.run_attempt }}"
+                                ),
+                            },
+                        },
                         {"run": "python scripts/prepare_mutation_cache.py prepare"},
                         {
                             "name": "Upload mutation plan",
@@ -2572,6 +2584,39 @@ class MutationTestingContractTests(unittest.TestCase):
                     any("mutation state cache" in problem for problem in problems),
                     problems,
                 )
+
+    def test_sharded_workflow_saves_recorded_plan_before_shard_preparation(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "mutation-testing.yml"
+        )
+        steps = workflow["jobs"]["mutation-plan"]["steps"]
+        save_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Save generated mutation plan cache"
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["mutation-plan"]["steps"].pop(save_index)
+        self.assertTrue(
+            validate_repository.validate_sharded_mutation_workflow(candidate)
+        )
+
+        candidate = copy.deepcopy(workflow)
+        candidate_steps = candidate["jobs"]["mutation-plan"]["steps"]
+        candidate_steps[save_index], candidate_steps[save_index + 1] = (
+            candidate_steps[save_index + 1],
+            candidate_steps[save_index],
+        )
+        self.assertTrue(
+            any(
+                "save the recorded plan" in problem
+                for problem in validate_repository.validate_sharded_mutation_workflow(
+                    candidate
+                )
+            )
+        )
 
     def copy_contract(self, root: Path) -> None:
         for relative in self.CONTRACT_FILES:
