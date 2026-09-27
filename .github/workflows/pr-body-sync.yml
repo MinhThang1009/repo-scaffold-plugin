@@ -33,6 +33,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
         shell: bash
@@ -54,14 +55,61 @@ jobs:
             printf 'Invalid pull-request head SHA.\n' >&2
             exit 1
           fi
+          if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            printf 'Invalid pull-request base SHA.\n' >&2
+            exit 1
+          fi
 
           payload="$RUNNER_TEMP/pr-body-payload.json"
+          compare_payload="$RUNNER_TEMP/pr-body-compare.json"
           body="$RUNNER_TEMP/pr-body-current.md"
           template_payload="$RUNNER_TEMP/pr-body-template.json"
           template="$RUNNER_TEMP/pr-body-template.md"
           updated="$RUNNER_TEMP/pr-body-updated.md"
           latest_payload="$RUNNER_TEMP/pr-body-latest.json"
           verified_payload="$RUNNER_TEMP/pr-body-verified.json"
+          gh api --hostname github.com \
+            "repos/$REPOSITORY/compare/$PR_BASE_SHA...$PR_HEAD_SHA" > "$compare_payload"
+          source_state=$(python - "$compare_payload" "$PR_BASE_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload_path = Path(sys.argv[1])
+          expected_base_sha = sys.argv[2]
+          raw = payload_path.read_bytes()
+          if len(raw) > 10 * 1024 * 1024:
+              raise SystemExit("Pull-request comparison payload exceeds the safety cap.")
+          try:
+              payload = json.loads(raw.decode("utf-8"))
+          except (UnicodeDecodeError, json.JSONDecodeError) as error:
+              raise SystemExit(f"Pull-request comparison payload is invalid: {error}") from error
+          if not isinstance(payload, dict):
+              raise SystemExit("Pull-request comparison payload is not an object.")
+          base_commit = payload.get("base_commit")
+          files = payload.get("files")
+          if (
+              not isinstance(base_commit, dict)
+              or base_commit.get("sha") != expected_base_sha
+              or not isinstance(files, list)
+          ):
+              raise SystemExit("Pull-request comparison evidence is incomplete.")
+          template_changed = any(
+              isinstance(item, dict)
+              and item.get("filename") == ".github/pr-body-template.md"
+              for item in files
+          )
+          if not template_changed and len(files) >= 300:
+              raise SystemExit(
+                  "Pull-request comparison is truncated; cannot prove template opt-in."
+              )
+          print("changed" if template_changed else "unchanged")
+          PY
+          )
+          if [[ "$source_state" == 'unchanged' ]]; then
+            printf 'Pull-request body source was not changed in this PR; leaving the body unchanged.\n'
+            exit 0
+          fi
           gh api --hostname github.com \
             "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"
           python - "$payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" <<'PY'
