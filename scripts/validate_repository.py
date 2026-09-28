@@ -7658,6 +7658,14 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         problems.append(
             f"{relative}: body-sync must revalidate the pull-request head, repository, and title at every API boundary"
         )
+    if (
+        run.count("if not isinstance(body, str):") != 2
+        or run.count("if body != original:") != 1
+        or run.count("if actual_body != expected_body:") != 1
+    ):
+        problems.append(
+            f"{relative}: body-sync must enforce text input and exact body postconditions"
+        )
     if "github.event.pull_request.head.ref" in run:
         problems.append(
             f"{relative}: body-sync must not execute or check out pull-request head code"
