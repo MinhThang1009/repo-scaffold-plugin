@@ -6880,6 +6880,10 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         run = workflow["jobs"]["update"]["steps"][1]["run"]
         self.assertIn('if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then', run)
         self.assertIn('if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then', run)
+        self.assertEqual(run.count("actual_sha != expected_sha"), 1)
+        self.assertEqual(run.count('head.get("sha") != expected_sha'), 2)
+        self.assertEqual(run.count("actual_repository != expected_repository"), 3)
+        self.assertEqual(run.count('payload.get("title") != expected_title'), 3)
         self.assertIn('managed_state=$(python - "$body"', run)
         self.assertIn("import re", run)
         self.assertIn('base_commit = payload.get("base_commit")', run)
@@ -6958,6 +6962,24 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
 
         self.assertTrue(any("fetch, preflight, update" in item for item in problems))
+
+        without_final_head_guard = run.replace(
+            'or head.get("sha") != expected_sha',
+            "or False",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_head_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("head, repository, and title" in item for item in problems))
 
         compare_start = run.index(
             'source_state=$(python - "$compare_payload" "$PR_BASE_SHA" "$PR_HEAD_SHA" <<\'PY\'\n'

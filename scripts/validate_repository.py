@@ -7649,6 +7649,15 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         problems.append(
             f"{relative}: body-sync must revalidate the pull-request base SHA before and after editing"
         )
+    if (
+        run.count("actual_sha != expected_sha") != 1
+        or run.count('head.get("sha") != expected_sha') != 2
+        or run.count("actual_repository != expected_repository") != 3
+        or run.count('payload.get("title") != expected_title') != 3
+    ):
+        problems.append(
+            f"{relative}: body-sync must revalidate the pull-request head, repository, and title at every API boundary"
+        )
     if "github.event.pull_request.head.ref" in run:
         problems.append(
             f"{relative}: body-sync must not execute or check out pull-request head code"
