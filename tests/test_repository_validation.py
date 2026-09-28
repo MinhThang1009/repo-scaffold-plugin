@@ -6880,8 +6880,17 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         run = workflow["jobs"]["update"]["steps"][1]["run"]
         self.assertIn('managed_state=$(python - "$body"', run)
         self.assertIn("import re", run)
+        self.assertIn("template_pattern = re.compile(", run)
+        self.assertIn("managed_marker_pattern = re.compile(", run)
         self.assertIn("managed_pattern = re.compile(", run)
-        self.assertIn("if managed_pattern.match(body)", run)
+        self.assertIn("template_markers = list(template_pattern.finditer(body))", run)
+        self.assertIn(
+            "managed_markers = list(managed_marker_pattern.finditer(body))", run
+        )
+        self.assertIn("len(template_markers) == 1", run)
+        self.assertIn("len(managed_markers) == 1", run)
+        self.assertIn('r"(?m)\\A\\ufeff?<!-- repo-scaffold:pr-template=', run)
+        self.assertIn("managed_pattern.match(body) is not None", run)
         self.assertNotIn("from scripts.update_pr_body import", run)
         self.assertNotIn("body.count(marker)", run)
         self.assertIn('--template-file "$template"', run)
@@ -6904,6 +6913,67 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
 
         self.assertTrue(any("fetch, preflight, update" in item for item in problems))
+
+        without_marker_uniqueness = run.replace(
+            "len(managed_markers) == 1\n",
+            "",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_marker_uniqueness
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
+
+    def test_body_sync_detector_requires_multiline_suffix_and_unique_markers(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        )
+        run = workflow["jobs"]["update"]["steps"][1]["run"]
+        start = run.index("managed_state=$(python - \"$body\" <<'PY'")
+        start = run.index("\n", start) + 1
+        detector = run[start : run.index("\nPY", start)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            body_path = Path(directory) / "body.md"
+            cases = (
+                (
+                    "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
+                    "## Purpose\nKeep this body.\n",
+                    "managed",
+                ),
+                (
+                    "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
+                    "body\n<!-- repo-scaffold:pr-body-managed -->\n",
+                    "unmanaged",
+                ),
+                (
+                    "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
+                    "body\n<!-- repo-scaffold:pr-template=bugfix -->\n",
+                    "unmanaged",
+                ),
+            )
+            for body, expected in cases:
+                body_path.write_text(body, encoding="utf-8")
+                result = run_test_subprocess(
+                    [sys.executable, "-c", detector, str(body_path)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.stdout.strip(), expected)
 
     def test_body_sync_revalidates_the_base_sha_at_each_mutation_boundary(
         self,

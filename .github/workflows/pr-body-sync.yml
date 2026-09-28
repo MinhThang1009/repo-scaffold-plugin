@@ -163,13 +163,27 @@ jobs:
           from pathlib import Path
 
           body = Path(sys.argv[1]).read_text(encoding="utf-8")
+          template_pattern = re.compile(
+              r"(?m)^\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*(?=\r?$)"
+          )
+          managed_marker_pattern = re.compile(
+              r"(?m)^<!-- repo-scaffold:pr-body-managed -->[ \t]*(?=\r?$)"
+          )
           managed_pattern = re.compile(
-              r"\A\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*\r?\n"
+              r"(?m)\A\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*\r?\n"
               r"<!-- repo-scaffold:pr-body-managed -->[ \t]*(?=\r?$)"
+          )
+          template_markers = list(template_pattern.finditer(body))
+          managed_markers = list(managed_marker_pattern.finditer(body))
+          is_managed = (
+              len(template_markers) == 1
+              and template_markers[0].start() == 0
+              and len(managed_markers) == 1
+              and managed_pattern.match(body) is not None
           )
           print(
               "managed"
-              if managed_pattern.match(body)
+              if is_managed
               else "unmanaged"
           )
           PY
