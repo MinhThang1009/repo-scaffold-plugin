@@ -6879,8 +6879,10 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         )
         run = workflow["jobs"]["update"]["steps"][1]["run"]
         self.assertIn('managed_state=$(python - "$body"', run)
-        self.assertIn("from scripts.update_pr_body import is_managed_body", run)
-        self.assertIn('print("managed" if is_managed_body(body) else "unmanaged")', run)
+        self.assertIn("import re", run)
+        self.assertIn("managed_pattern = re.compile(", run)
+        self.assertIn("if len(managed_pattern.findall(body)) == 1", run)
+        self.assertNotIn("from scripts.update_pr_body import", run)
         self.assertNotIn("body.count(marker)", run)
         self.assertIn('--template-file "$template"', run)
         self.assertNotIn('--body-file "$body"', run)

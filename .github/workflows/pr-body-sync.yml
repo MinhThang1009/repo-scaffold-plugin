@@ -158,13 +158,19 @@ jobs:
           PY
 
           managed_state=$(python - "$body" <<'PY'
+          import re
           import sys
           from pathlib import Path
 
-          from scripts.update_pr_body import is_managed_body
-
           body = Path(sys.argv[1]).read_text(encoding="utf-8")
-          print("managed" if is_managed_body(body) else "unmanaged")
+          managed_pattern = re.compile(
+              r"(?m)^<!-- repo-scaffold:pr-body-managed -->[ \t]*(?=\r?$)"
+          )
+          print(
+              "managed"
+              if len(managed_pattern.findall(body)) == 1
+              else "unmanaged"
+          )
           PY
           )
           if [[ "$source_state" == 'unchanged' && "$managed_state" != 'managed' ]]; then
