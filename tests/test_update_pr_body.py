@@ -79,10 +79,26 @@ class UpdatePullRequestBodyTests(unittest.TestCase):
             )
 
     def test_managed_body_detection_requires_exactly_one_marker(self) -> None:
+        self.assertFalse(update_pr_body.is_managed_body(None))  # type: ignore[arg-type]
         self.assertTrue(update_pr_body.is_managed_body(BODY_TEMPLATE))
         self.assertFalse(update_pr_body.is_managed_body("body\n"))
         self.assertFalse(
             update_pr_body.is_managed_body(BODY_TEMPLATE + MANAGED_BODY_MARKER + "\n")
+        )
+        self.assertFalse(
+            update_pr_body.is_managed_body(
+                f"{TEMPLATE_MARKER}\n```\n{MANAGED_BODY_MARKER}\n```\n"
+            )
+        )
+        self.assertFalse(
+            update_pr_body.is_managed_body(
+                f"{TEMPLATE_MARKER}\n\n{MANAGED_BODY_MARKER}\n"
+            )
+        )
+        self.assertFalse(
+            update_pr_body.is_managed_body(
+                f"{TEMPLATE_MARKER}\r\n{MANAGED_BODY_MARKER}\n"
+            )
         )
 
     def test_render_body_rejects_invalid_head_inputs_and_line_endings(self) -> None:

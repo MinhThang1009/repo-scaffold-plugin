@@ -7587,8 +7587,9 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         "managed_state=$(python - \"$body\" <<'PY'",
         "import re",
         "managed_pattern = re.compile(",
-        'r"(?m)^<!-- repo-scaffold:pr-body-managed -->[ \\t]*(?=\\r?$)"',
-        "if len(managed_pattern.findall(body)) == 1",
+        'r"\\A\\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \\t]*\\r?\\n"',
+        'r"<!-- repo-scaffold:pr-body-managed -->[ \\t]*(?=\\r?$)"',
+        "if managed_pattern.match(body)",
         "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
         "Pull-request body is not managed and its source template was not changed; leaving it unchanged.",
         "expected_base_sha = sys.argv[6]",
@@ -7690,6 +7691,13 @@ def validate_pr_body_sync_template_contract(repository_root: Path) -> list[str]:
     if len(managed_markers) != 1:
         return [
             f"{relative}: pull-request body template must contain exactly one managed-body marker"
+        ]
+    template_marker_end = markers[0].end()
+    line_ending = "\r\n" if "\r\n" in text else "\n"
+    managed_start = text.find(managed_markers[0])
+    if managed_start != template_marker_end + len(line_ending):
+        return [
+            f"{relative}: managed-body marker must immediately follow the template marker"
         ]
     return []
 

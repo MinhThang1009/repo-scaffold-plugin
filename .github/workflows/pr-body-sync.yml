@@ -164,11 +164,12 @@ jobs:
 
           body = Path(sys.argv[1]).read_text(encoding="utf-8")
           managed_pattern = re.compile(
-              r"(?m)^<!-- repo-scaffold:pr-body-managed -->[ \t]*(?=\r?$)"
+              r"\A\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*\r?\n"
+              r"<!-- repo-scaffold:pr-body-managed -->[ \t]*(?=\r?$)"
           )
           print(
               "managed"
-              if len(managed_pattern.findall(body)) == 1
+              if managed_pattern.match(body)
               else "unmanaged"
           )
           PY

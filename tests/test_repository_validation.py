@@ -6881,7 +6881,7 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         self.assertIn('managed_state=$(python - "$body"', run)
         self.assertIn("import re", run)
         self.assertIn("managed_pattern = re.compile(", run)
-        self.assertIn("if len(managed_pattern.findall(body)) == 1", run)
+        self.assertIn("if managed_pattern.match(body)", run)
         self.assertNotIn("from scripts.update_pr_body import", run)
         self.assertNotIn("body.count(marker)", run)
         self.assertIn('--template-file "$template"', run)
@@ -6999,6 +6999,20 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             problems = validate_repository.validate_pr_body_sync_template_contract(root)
 
         self.assertTrue(any("managed-body marker" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n\n"
+                "<!-- repo-scaffold:pr-body-managed -->\n"
+                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("immediately follow" in item for item in problems))
 
     def test_body_template_contract_reports_io_encoding_and_size_failures(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

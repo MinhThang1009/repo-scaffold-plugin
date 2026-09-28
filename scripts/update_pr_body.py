@@ -74,7 +74,20 @@ def _validate_head_inputs(head_sha: str, head_repository: str) -> None:
 
 def is_managed_body(body: str) -> bool:
     """Return whether one complete body is explicitly repository-managed."""
-    return isinstance(body, str) and len(MANAGED_BODY_PATTERN.findall(body)) == 1
+    if not isinstance(body, str):
+        return False
+    try:
+        newline = _line_ending(body)
+    except ValueError:
+        return False
+    template_markers = list(TEMPLATE_MARKER_PATTERN.finditer(body))
+    managed_markers = list(MANAGED_BODY_PATTERN.finditer(body))
+    return (
+        len(template_markers) == 1
+        and template_markers[0].start() == 0
+        and len(managed_markers) == 1
+        and managed_markers[0].start() == template_markers[0].end() + len(newline)
+    )
 
 
 def render_body(template: str, head_sha: str, head_repository: str) -> str:
@@ -102,9 +115,9 @@ def render_body(template: str, head_sha: str, head_repository: str) -> str:
     missing = sorted(ALLOWED_PLACEHOLDERS - set(placeholders))
     if missing:
         raise ValueError("pull-request template must bind " + ", ".join(missing))
-    if len(MANAGED_BODY_PATTERN.findall(template)) != 1:
+    if not is_managed_body(template):
         raise ValueError(
-            "pull-request body template must contain exactly one managed-body marker"
+            "pull-request body template must contain one managed-body marker immediately after the template marker"
         )
     rendered = template.replace("{{HEAD_SHA}}", head_sha.lower()).replace(
         "{{HEAD_REPOSITORY}}", head_repository
