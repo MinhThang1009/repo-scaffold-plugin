@@ -7013,6 +7013,49 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             any("head, repository, title, and open state" in item for item in problems)
         )
 
+        body_fetch_start = run.index(
+            'python - "$payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" <<\'PY\'\n'
+        )
+        body_fetch_start = run.index("\n", body_fetch_start) + 1
+        body_fetch_script = run[body_fetch_start : run.index("\nPY", body_fetch_start)]
+        with tempfile.TemporaryDirectory() as directory:
+            payload_path = Path(directory) / "pull-request.json"
+            body_path = Path(directory) / "body.md"
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "head": {
+                            "sha": "a" * 40,
+                            "repo": {"full_name": "owner/repo"},
+                        },
+                        "base": {"sha": "b" * 40},
+                        "title": "title",
+                        "state": "closed",
+                        "body": "body",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            body_path.write_text("", encoding="utf-8")
+            result = run_test_subprocess(
+                [
+                    sys.executable,
+                    "-c",
+                    body_fetch_script,
+                    str(payload_path),
+                    str(body_path),
+                    "a" * 40,
+                    "owner/repo",
+                    "title",
+                    "b" * 40,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ref, title, or state advanced", result.stderr)
+
         without_final_body_guard = run.replace(
             "if actual_body != expected_body:\n",
             "if False:\n",
