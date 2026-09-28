@@ -191,6 +191,35 @@ class MergeMutationShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not an object"):
                 merge_mutation_shards.load_json(path)
 
+            with (
+                mock.patch.object(
+                    merge_mutation_shards,
+                    "_is_link_or_reparse",
+                    side_effect=lambda candidate: candidate == path,
+                ),
+                self.assertRaisesRegex(ValueError, "link or reparse point"),
+            ):
+                path.write_text("{}", encoding="utf-8")
+                merge_mutation_shards.load_json(path)
+
+            with mock.patch.object(Path, "is_symlink", return_value=True):
+                self.assertTrue(merge_mutation_shards._is_link_or_reparse(path))
+
+            with self.assertRaisesRegex(ValueError, "escapes its boundary"):
+                merge_mutation_shards._assert_safe_path(
+                    path.parent, path.parent.parent / "outside.json"
+                )
+
+            with (
+                mock.patch.object(
+                    merge_mutation_shards,
+                    "_is_link_or_reparse",
+                    return_value=True,
+                ),
+                self.assertRaisesRegex(ValueError, "link or reparse point"),
+            ):
+                merge_mutation_shards._assert_safe_path(path.parent, path)
+
             path.write_text('{"shards": [], "shards": []}', encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "could not read"):
                 merge_mutation_shards.load_json(path)

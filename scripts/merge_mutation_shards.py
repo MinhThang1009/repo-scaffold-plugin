@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -37,9 +39,46 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return document
 
 
-def load_json(path: Path) -> dict[str, Any]:
+def _is_link_or_reparse(path: Path) -> bool:
+    """Return whether a path is a link-like filesystem boundary."""
+    if path.is_symlink():
+        return True
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+def _assert_safe_path(boundary: Path, path: Path) -> None:
+    """Reject a path that crosses a link or reparse point below its boundary."""
+    boundary = Path(os.path.abspath(boundary))
+    candidate = Path(os.path.abspath(path))
+    try:
+        relative = candidate.relative_to(boundary)
+    except ValueError as error:
+        raise ValueError(f"metadata path escapes its boundary: {path}") from error
+    current = boundary
+    for part in (None, *relative.parts):
+        if part is not None:
+            current /= part
+        if _is_link_or_reparse(current):
+            raise ValueError(
+                f"metadata path contains a link or reparse point: {current}"
+            )
+        if not current.exists():
+            break
+
+
+def load_json(path: Path, *, boundary: Path | None = None) -> dict[str, Any]:
     """Read one metadata document without accepting an unexpected shape."""
     try:
+        if boundary is not None:
+            _assert_safe_path(boundary, path)
+        elif _is_link_or_reparse(path):
+            raise ValueError(f"metadata path is a link or reparse point: {path}")
         if path.stat().st_size > MAX_METADATA_BYTES:
             raise ValueError(
                 f"metadata exceeds the {MAX_METADATA_BYTES}-byte size limit"
@@ -89,7 +128,7 @@ def validate_shard_plan(plan: dict[str, Any]) -> list[list[str]]:
 def merge(repository_root: Path, artifacts_root: Path) -> None:
     """Merge only results assigned to each shard and reject incomplete state."""
     mutants = repository_root / "mutants"
-    plan = load_json(mutants / "mutation-shards.json")
+    plan = load_json(mutants / "mutation-shards.json", boundary=mutants)
     shards = validate_shard_plan(plan)
     assignments = {
         name: index
@@ -104,7 +143,7 @@ def merge(repository_root: Path, artifacts_root: Path) -> None:
         raise ValueError("mutation shard metadata is missing")
     seen: set[str] = set()
     for base_path in base_paths:
-        base = load_json(base_path)
+        base = load_json(base_path, boundary=mutants)
         results = base.get("exit_code_by_key")
         if not isinstance(results, dict):
             raise ValueError(f"metadata lacks mutation results: {base_path}")
@@ -134,7 +173,10 @@ def merge(repository_root: Path, artifacts_root: Path) -> None:
         }
         missing = object()
         for index in range(len(shards)):
-            overlay = load_json(artifacts_root / f"mutation-shard-{index}" / relative)
+            overlay = load_json(
+                artifacts_root / f"mutation-shard-{index}" / relative,
+                boundary=artifacts_root,
+            )
             for field in RESULT_FIELDS:
                 base_values = base[field]
                 overlay_values = overlay.get(field)
