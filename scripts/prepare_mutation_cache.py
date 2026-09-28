@@ -93,6 +93,11 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return document
 
 
+def reject_json_constant(value: str) -> None:
+    """Reject non-standard JSON constants such as NaN and Infinity."""
+    raise ValueError(f"non-standard JSON constant {value!r}")
+
+
 def _is_within(path: PurePosixPath, root: PurePosixPath) -> bool:
     return path == root or root in path.parents
 
@@ -185,7 +190,9 @@ def _validate_shard_plan(path: Path, mutation_root: Path) -> None:
         raise ValueError("cached mutation shard plan is oversized")
     try:
         document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+            parse_constant=reject_json_constant,
         )
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(
@@ -390,7 +397,9 @@ def load_manifest(path: Path) -> ProjectSnapshot:
         raise ValueError("mutation cache manifest exceeds the size limit")
     try:
         document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+            parse_constant=reject_json_constant,
         )
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation cache manifest: {error}") from error
@@ -548,7 +557,9 @@ def _load_meta(path: Path) -> dict[str, Any]:
         raise ValueError("mutation metadata is unsafe or oversized")
     try:
         document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+            parse_constant=reject_json_constant,
         )
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation metadata: {error}") from error

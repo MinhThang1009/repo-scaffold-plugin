@@ -630,6 +630,7 @@ class MutationCacheTests(unittest.TestCase):
                         "type_check_error_by_key": [],
                     }
                 ),
+                '{"exit_code_by_key":{},"durations_by_key":{"mutant":NaN},"estimated_durations_by_key":{}}',
             )
             for document in metadata_documents:
                 with self.subTest(document=document):

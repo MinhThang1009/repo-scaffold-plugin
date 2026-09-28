@@ -184,8 +184,15 @@ class MergeMutationShardsTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "could not read"):
                     merge_mutation_shards.load_json(path)
 
-            path.write_text('{"a":' * 4096 + "0" + "}" * 4096, encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "could not read"):
+            path.write_text("{}", encoding="utf-8")
+            with (
+                mock.patch.object(
+                    merge_mutation_shards.json,
+                    "loads",
+                    side_effect=RecursionError("nested JSON"),
+                ),
+                self.assertRaisesRegex(ValueError, "could not read"),
+            ):
                 merge_mutation_shards.load_json(path)
             path.write_text("[]", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "not an object"):
