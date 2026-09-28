@@ -164,6 +164,10 @@ class MergeMutationShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not an object"):
                 merge_mutation_shards.load_json(path)
 
+            path.write_text('{"shards": [], "shards": []}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "could not read"):
+                merge_mutation_shards.load_json(path)
+
     def test_rejects_duplicate_names_and_missing_base_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

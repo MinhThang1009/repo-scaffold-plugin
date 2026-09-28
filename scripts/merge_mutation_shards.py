@@ -18,10 +18,26 @@ RESULT_FIELDS = (
 PRESERVED_KILLED_EXIT_CODES = frozenset({1, 3})
 
 
+class DuplicateJsonMember(ValueError):
+    """Raised when mutation metadata contains an ambiguous duplicate key."""
+
+
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object without accepting duplicate members."""
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
+        document[key] = value
+    return document
+
+
 def load_json(path: Path) -> dict[str, Any]:
     """Read one metadata document without accepting an unexpected shape."""
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+        )
     except (OSError, UnicodeError, ValueError) as error:
         raise ValueError(f"could not read {path}: {error}") from error
     if not isinstance(document, dict):
