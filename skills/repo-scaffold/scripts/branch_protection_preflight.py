@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import yaml
@@ -284,6 +284,7 @@ def verify_check_run_workflow_source(
     context: str,
     workflow_path: str,
     check_run: dict[str, Any],
+    allowed_events: frozenset[str] = CHECK_RUN_WORKFLOW_EVENTS,
 ) -> None:
     check_head_sha = check_run.get("head_sha")
     suite = check_run.get("check_suite")
@@ -321,7 +322,7 @@ def verify_check_run_workflow_source(
         not isinstance(workflow_run.get("head_sha"), str)
         or workflow_run["head_sha"].casefold() != sha.casefold()
         or not isinstance(event, str)
-        or event.casefold() not in CHECK_RUN_WORKFLOW_EVENTS
+        or event.casefold() not in allowed_events
         or not isinstance(path, str)
         or not (path == workflow_path or path.startswith(workflow_path + "@"))
     ):
@@ -401,6 +402,8 @@ def inspect_commit_evidence(
     context: str,
     now: datetime,
     workflow_path: str,
+    *,
+    allowed_events: frozenset[str] = CHECK_RUN_WORKFLOW_EVENTS,
 ) -> tuple[int | None, bool]:
     """Read one commit and report its source app and whether it has any status."""
     if not FULL_OBJECT_ID.fullmatch(sha):
@@ -425,7 +428,14 @@ def inspect_commit_evidence(
     if matches:
         app_id = app_id_for_check(checks, context, now)
         verify_check_run_workflow_source(
-            client, owner, repo, sha, context, workflow_path, matches[0]
+            client,
+            owner,
+            repo,
+            sha,
+            context,
+            workflow_path,
+            matches[0],
+            allowed_events,
         )
     return app_id, bool(check_runs or status_entries)
 
@@ -496,9 +506,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     head = pr.get("head")
     head_sha = head.get("sha") if isinstance(head, dict) else None
     merge_sha = pr.get("merge_commit_sha")
-    if not isinstance(head_sha, str) or not isinstance(merge_sha, str):
+    if (
+        not isinstance(head_sha, str)
+        or not FULL_OBJECT_ID.fullmatch(head_sha)
+        or not isinstance(merge_sha, str)
+        or not FULL_OBJECT_ID.fullmatch(merge_sha)
+    ):
         raise InspectionError(
-            "Representative pull request has no head or test-merge SHA."
+            "Representative pull request has no valid full head or test-merge SHA."
         )
     if pr.get("mergeable") is not True:
         raise InspectionError("Representative pull request is not confirmed mergeable.")
@@ -533,7 +548,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ):
             raise InspectionError("Effective rule has an invalid or missing type.")
     queue_required = any(rule["type"] == "merge_queue" for rule in rules)
-    producers = workflow_producers(client, owner, repo, head_sha, args.default_branch)
+    merge_group_sha = getattr(args, "merge_group_sha", None)
+    if queue_required:
+        if not isinstance(merge_group_sha, str) or not FULL_OBJECT_ID.fullmatch(
+            merge_group_sha
+        ):
+            raise InspectionError(
+                "A verified full merge-group SHA is required when a merge queue applies."
+            )
+        merge_group_producers = workflow_producers(
+            client, owner, repo, merge_group_sha, args.default_branch
+        )
+    else:
+        if merge_group_sha is not None:
+            raise InspectionError(
+                "A merge-group SHA was supplied but no effective merge queue applies."
+            )
+        merge_group_producers = []
+    # pull_request runs the merged workflow definition, so inspect the exact
+    # test-merge tree whose status evidence controls this preflight.
+    producers = workflow_producers(client, owner, repo, merge_sha, args.default_branch)
     target_contexts = {
         context.casefold()
         for context in contexts
@@ -607,6 +641,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise InspectionError(
                 f"Required check {context!r} lacks merge_group coverage."
             )
+        merge_group_producer: Producer | None = None
+        if queue_required:
+            merge_group_matches = [
+                candidate
+                for candidate in merge_group_producers
+                if candidate.context.casefold() == context.casefold()
+            ]
+            if len(merge_group_matches) != 1:
+                raise InspectionError(
+                    f"Required check {context!r} has {len(merge_group_matches)} "
+                    "merge_group workflow producers."
+                )
+            merge_group_producer = merge_group_matches[0]
+            if (
+                not merge_group_producer.merge_group_coverage
+                or not merge_group_producer.unconditional
+                or not merge_group_producer.executable
+                or merge_group_producer.identity != producer.identity
+                or merge_group_producer.workflow_blob_sha != producer.workflow_blob_sha
+            ):
+                raise InspectionError(
+                    f"Required check {context!r} has no matching executable "
+                    "merge_group producer from the verified workflow blob."
+                )
         merge_app, merge_has_status = inspect_commit_evidence(
             client, owner, repo, merge_sha, context, now, producer.workflow_path
         )
@@ -627,6 +685,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "controlling head SHA."
                 )
             controlling_app = head_app
+        if merge_group_producer is not None:
+            merge_group_app, _merge_group_has_status = inspect_commit_evidence(
+                client,
+                owner,
+                repo,
+                cast(str, merge_group_sha),
+                context,
+                now,
+                merge_group_producer.workflow_path,
+                allowed_events=frozenset({"merge_group"}),
+            )
+            if merge_group_app is None:
+                raise InspectionError(
+                    f"Required check {context!r} has no successful Check Run "
+                    "on the verified merge_group SHA."
+                )
+            if merge_group_app != controlling_app:
+                raise InspectionError(
+                    f"Required check {context!r} uses different GitHub Apps on "
+                    "the PR and merge_group SHAs."
+                )
         verified.append(
             {
                 "context": context,
@@ -644,6 +723,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "head_sha": head_sha,
         "test_merge_sha": merge_sha,
         "merge_queue_required": queue_required,
+        "merge_group_sha": merge_group_sha,
         "required_checks": verified,
         "github_api_requests": client.request_count,
     }
@@ -654,6 +734,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--default-branch", required=True)
     parser.add_argument("--pull-request", required=True, type=int)
+    parser.add_argument("--merge-group-sha")
     parser.add_argument("--required-check", action="append", default=[])
     parser.add_argument("--hostname", default="github.com")
     return parser.parse_args()

@@ -270,6 +270,7 @@ class DependencyReviewPreflightTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("dependency_review_preflight.py", skill)
         self.assertIn("dependency_review_preflight.py", setup)
+        self.assertIn('dependencyReviewPreflightResult.repository, "OWNER/REPO"', setup)
         self.assertIn("dependency-graph/sbom", SCRIPT_PATH.read_text(encoding="utf-8"))
 
 

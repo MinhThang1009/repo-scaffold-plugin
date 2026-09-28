@@ -43,7 +43,40 @@ sys.modules[WORKFLOW_SPEC.name] = validate_workflows
 WORKFLOW_SPEC.loader.exec_module(validate_workflows)
 
 
+def run_test_subprocess(
+    command: list[str], **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """Keep mutmut's in-process state out of test child processes."""
+    inherited_environment = kwargs.pop("env", None)
+    environment = (
+        os.environ.copy()
+        if inherited_environment is None
+        else inherited_environment.copy()
+    )
+    environment["MUTANT_UNDER_TEST"] = ""
+    environment["MUTMUT_DEPENDENCY_DEPTH"] = "-1"
+    return subprocess.run(command, env=environment, **kwargs)
+
+
 class SerializedFileValidationTests(unittest.TestCase):
+    def test_test_subprocess_environment_does_not_inherit_mutmut_runtime_flags(
+        self,
+    ) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"MUTANT_UNDER_TEST": "stats", "MUTMUT_DEPENDENCY_DEPTH": "1"},
+        ):
+            with mock.patch("subprocess.run") as run:
+                run_test_subprocess(
+                    [sys.executable, "-c", "pass"],
+                    env={**os.environ, "CHILD_TEST_VALUE": "preserved"},
+                )
+
+        child_environment = run.call_args.kwargs["env"]
+        self.assertEqual(child_environment["MUTANT_UNDER_TEST"], "")
+        self.assertEqual(child_environment["MUTMUT_DEPENDENCY_DEPTH"], "-1")
+        self.assertEqual(child_environment["CHILD_TEST_VALUE"], "preserved")
+
     def test_yaml_loader_rejects_duplicate_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "duplicate.yml"
@@ -145,12 +178,24 @@ class SerializedFileValidationTests(unittest.TestCase):
             self.assertFalse(validate_repository.nonempty_string(7))
             with mock.patch.dict(
                 os.environ,
-                {"MUTANT_UNDER_TEST": "stats", "PRESERVED_VALUE": "yes"},
+                {
+                    "MUTANT_UNDER_TEST": "stats",
+                    "MUTMUT_DEPENDENCY_DEPTH": "1",
+                    "PRESERVED_VALUE": "yes",
+                },
                 clear=True,
             ):
                 child_environment = validate_repository.child_process_environment()
-                self.assertEqual(child_environment, {"PRESERVED_VALUE": "yes"})
+                self.assertEqual(
+                    child_environment,
+                    {
+                        "PRESERVED_VALUE": "yes",
+                        "MUTANT_UNDER_TEST": "",
+                        "MUTMUT_DEPENDENCY_DEPTH": "-1",
+                    },
+                )
                 self.assertEqual(os.environ["MUTANT_UNDER_TEST"], "stats")
+                self.assertEqual(os.environ["MUTMUT_DEPENDENCY_DEPTH"], "1")
             self.assertEqual(
                 validate_repository.reject_duplicate_json_pairs(
                     [("first", 1), ("second", 2)]
@@ -869,6 +914,26 @@ class ActionPinSyncContractTests(unittest.TestCase):
             [],
         )
 
+    def test_docs_bound_the_manual_dispatch_trust_assumption(self) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        workflow_contracts = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "workflow-contracts.md"
+        ).read_text(encoding="utf-8")
+        workflow = (
+            PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow definition associated with the selected", readme)
+        self.assertIn("only trusted writers may dispatch", workflow)
+        self.assertIn(
+            "This checkout does not pin the workflow definition itself",
+            workflow_contracts,
+        )
+        self.assertIn("dispatchers and trusted workflow refs", workflow_contracts)
+
     def test_synchronizer_job_cannot_disable_its_body_preflight(self) -> None:
         workflow_path = PLUGIN_ROOT / ".github" / "workflows" / "action-pin-sync.yml"
         original_load_yaml = validate_repository.load_yaml
@@ -935,6 +1000,12 @@ class ActionPinSyncContractTests(unittest.TestCase):
 
             self.assertEqual(
                 validate_repository.validate_action_pin_sync_contract(root), []
+            )
+            workflow_document = validate_repository.load_yaml(workflow)
+            assert isinstance(workflow_document, dict)
+            self.assertEqual(
+                workflow_document["jobs"]["synchronize"]["if"],
+                validate_repository.VERSION_SYNC_DEFAULT_REF_IF,
             )
             original = workflow.read_text(encoding="utf-8")
             workflow.write_text(
@@ -1101,6 +1172,18 @@ class ActionPinSyncContractTests(unittest.TestCase):
             )
 
             workflow.write_text(
+                original.replace(
+                    "if: ${{ github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}",
+                    "if: true",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            invalid_dispatch_ref_guard = (
+                validate_repository.validate_action_pin_sync_contract(root)
+            )
+
+            workflow.write_text(
                 original.replace("Verify version-sync token", "Bypass token check", 1),
                 encoding="utf-8",
             )
@@ -1251,6 +1334,12 @@ class ActionPinSyncContractTests(unittest.TestCase):
             any(
                 "job permissions must remain contents: read" in problem
                 for problem in invalid_job_permissions
+            )
+        )
+        self.assertTrue(
+            any(
+                "synchronizer job contract is invalid" in problem
+                for problem in invalid_dispatch_ref_guard
             )
         )
         self.assertTrue(
@@ -2287,25 +2376,117 @@ class MutationTestingContractTests(unittest.TestCase):
                     "timeout-minutes": "360",
                     "steps": [
                         {
+                            "id": "mutation-cache",
+                            "uses": "actions/cache/restore@" + "a" * 40,
+                            "with": {
+                                "path": "mutants/",
+                                "key": (
+                                    "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+                                    "${{ steps.mutation-fingerprint.outputs.fingerprint }}-${{ github.run_id }}-${{ github.run_attempt }}"
+                                ),
+                                "restore-keys": (
+                                    "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+                                    "${{ steps.mutation-fingerprint.outputs.fingerprint }}-\n"
+                                ),
+                            },
+                        },
+                        {
+                            "id": "mutation-prepare",
+                            "name": "Prepare restored mutation state",
+                            "shell": "bash",
+                            "run": (
+                                "set -euo pipefail\n"
+                                "python scripts/prepare_mutation_cache.py prepare\n"
+                                "if [[ -f mutants/mutation-shards.json ]]; then\n"
+                                "  printf 'plan-reuse=true\\n' >> \"$GITHUB_OUTPUT\"\n"
+                                "else\n"
+                                "  printf 'plan-reuse=false\\n' >> \"$GITHUB_OUTPUT\"\n"
+                                "fi"
+                            ),
+                        },
+                        {
+                            "id": "mutation-fingerprint",
+                            "name": "Compute mutation input fingerprint",
+                            "shell": "bash",
+                            "run": "python scripts/prepare_mutation_cache.py fingerprint",
+                        },
+                        {
                             "env": {
                                 "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
                             },
-                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32",
-                        }
+                            "if": "${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}",
+                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64",
+                        },
+                        {"run": "python scripts/prepare_mutation_cache.py record"},
+                        {
+                            "uses": "actions/cache/save@" + "b" * 40,
+                            "if": "${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}",
+                            "with": {
+                                "path": "mutants/",
+                                "key": (
+                                    "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+                                    "${{ steps.mutation-fingerprint.outputs.fingerprint }}-plan-${{ github.run_id }}-${{ github.run_attempt }}"
+                                ),
+                            },
+                        },
+                        {"run": "python scripts/prepare_mutation_cache.py prepare"},
+                        {
+                            "name": "Upload mutation plan",
+                            "with": {"include-hidden-files": "true"},
+                        },
                     ],
                 },
                 "mutation-shards": {
                     "strategy": {
-                        "matrix": {"shard": [str(index) for index in range(32)]}
+                        "matrix": {"shard": [str(index) for index in range(64)]}
                     },
                     "steps": [
                         {
-                            "run": 'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"'
-                        }
+                            "env": {
+                                "SHARD_INDEX": "${{ matrix.shard }}",
+                                "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}",
+                            },
+                            "run": 'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"',
+                        },
+                        {
+                            "name": "Upload mutation shard",
+                            "uses": "actions/upload-artifact@" + "a" * 40,
+                            "if": "${{ always() }}",
+                            "with": {
+                                "name": "mutation-shard-${{ matrix.shard }}",
+                                "path": "mutants/**/*.meta",
+                                "if-no-files-found": "error",
+                                "retention-days": "14",
+                            },
+                        },
                     ],
                 },
                 "mutation-quality": {
-                    "steps": [{"run": "python scripts/merge_mutation_shards.py"}]
+                    "steps": [
+                        {
+                            "id": "mutation-fingerprint",
+                            "name": "Compute mutation input fingerprint",
+                            "shell": "bash",
+                            "run": "python scripts/prepare_mutation_cache.py fingerprint",
+                        },
+                        {"run": "python scripts/merge_mutation_shards.py"},
+                        {"run": "python scripts/prepare_mutation_cache.py record"},
+                        {
+                            "uses": "actions/cache/save@" + "b" * 40,
+                            "if": "${{ success() }}",
+                            "with": {
+                                "path": "mutants/",
+                                "key": (
+                                    "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+                                    "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+                                    "${{ steps.mutation-fingerprint.outputs.fingerprint }}-${{ github.run_id }}-${{ github.run_attempt }}"
+                                ),
+                            },
+                        },
+                    ]
                 },
             }
         }
@@ -2326,7 +2507,7 @@ class MutationTestingContractTests(unittest.TestCase):
                         },
                     }
                 },
-                "run all 32 exact mutation shards",
+                "run all 64 exact mutation shards",
             ),
             (
                 {
@@ -2345,14 +2526,39 @@ class MutationTestingContractTests(unittest.TestCase):
                             **valid["jobs"]["mutation-plan"],
                             "steps": [
                                 {
-                                    **valid["jobs"]["mutation-plan"]["steps"][0],
+                                    **step,
                                     "env": {},
                                 }
+                                if step.get("run")
+                                == (
+                                    "python scripts/run_mutation_testing.py "
+                                    "--max-children 4 --plan-shards 64"
+                                )
+                                else step
+                                for step in valid["jobs"]["mutation-plan"]["steps"]
                             ],
                         },
                     }
                 },
                 "mutation plan must expose the tracked source root",
+            ),
+            (
+                {
+                    "jobs": {
+                        **valid["jobs"],
+                        "mutation-shards": {
+                            **valid["jobs"]["mutation-shards"],
+                            "steps": [
+                                {
+                                    **valid["jobs"]["mutation-shards"]["steps"][0],
+                                    "env": {"SHARD_INDEX": "${{ matrix.shard }}"},
+                                },
+                                valid["jobs"]["mutation-shards"]["steps"][1],
+                            ],
+                        },
+                    }
+                },
+                "mutation shards must expose the tracked source root",
             ),
             (
                 {
@@ -2379,6 +2585,118 @@ class MutationTestingContractTests(unittest.TestCase):
             validate_repository.validate_sharded_mutation_workflow(valid), []
         )
 
+    def test_sharded_workflow_uploads_only_metadata_and_rejects_empty_artifacts(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github/workflows/mutation-testing.yml"
+        )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(workflow), []
+        )
+        for changes in (
+            {"with": {"path": "mutants/"}},
+            {"with": {"path": "mutants/scripts/*.meta"}},
+            {"with": {"if-no-files-found": "warn"}},
+            {"if": "${{ success() }}"},
+            {"uses": None},
+            {"uses": "actions/download-artifact@" + "a" * 40},
+            {"name": "Missing shard upload"},
+        ):
+            with self.subTest(changes=changes):
+                candidate = copy.deepcopy(workflow)
+                upload = next(
+                    step
+                    for step in candidate["jobs"]["mutation-shards"]["steps"]
+                    if step.get("name") == "Upload mutation shard"
+                )
+                for key, value in changes.items():
+                    if key == "with":
+                        upload[key].update(value)
+                    else:
+                        upload[key] = value
+                self.assertTrue(
+                    any(
+                        "upload only shard metadata" in problem
+                        for problem in validate_repository.validate_sharded_mutation_workflow(
+                            candidate
+                        )
+                    )
+                )
+
+    def test_sharded_workflow_cache_is_bound_and_preserves_reuse_marker(self) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "mutation-testing.yml"
+        )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(workflow), []
+        )
+        mutations = (
+            lambda value: value["jobs"]["mutation-plan"]["steps"].pop(
+                next(
+                    index
+                    for index, step in enumerate(
+                        value["jobs"]["mutation-plan"]["steps"]
+                    )
+                    if step.get("id") == "mutation-cache"
+                )
+            ),
+            lambda value: next(
+                step
+                for step in value["jobs"]["mutation-plan"]["steps"]
+                if step.get("id") == "mutation-cache"
+            )["with"].update({"key": "mutable-cache-key"}),
+            lambda value: next(
+                step
+                for step in value["jobs"]["mutation-plan"]["steps"]
+                if step.get("name") == "Upload mutation plan"
+            )["with"].update({"include-hidden-files": "false"}),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                candidate = copy.deepcopy(workflow)
+                mutate(candidate)
+                problems = validate_repository.validate_sharded_mutation_workflow(
+                    candidate
+                )
+                self.assertTrue(
+                    any("mutation state cache" in problem for problem in problems),
+                    problems,
+                )
+
+    def test_sharded_workflow_saves_recorded_plan_before_shard_preparation(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github" / "workflows" / "mutation-testing.yml"
+        )
+        steps = workflow["jobs"]["mutation-plan"]["steps"]
+        save_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Save generated mutation plan cache"
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["mutation-plan"]["steps"].pop(save_index)
+        self.assertTrue(
+            validate_repository.validate_sharded_mutation_workflow(candidate)
+        )
+
+        candidate = copy.deepcopy(workflow)
+        candidate_steps = candidate["jobs"]["mutation-plan"]["steps"]
+        candidate_steps[save_index], candidate_steps[save_index + 1] = (
+            candidate_steps[save_index + 1],
+            candidate_steps[save_index],
+        )
+        self.assertTrue(
+            any(
+                "save the recorded plan" in problem
+                for problem in validate_repository.validate_sharded_mutation_workflow(
+                    candidate
+                )
+            )
+        )
+
     def copy_contract(self, root: Path) -> None:
         for relative in self.CONTRACT_FILES:
             source = PLUGIN_ROOT / relative
@@ -2395,6 +2713,17 @@ class MutationTestingContractTests(unittest.TestCase):
             validate_repository.validate_mutation_testing_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_mutation_cache_documentation_matches_input_binding(self) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        contributing = (PLUGIN_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "matching source, test, mutation-workflow, and dependency inputs", readme
+        )
+        self.assertIn(
+            "same source, tests, mutation workflow and dependency", contributing
+        )
+        self.assertNotIn("state for a matching commit, runtime, and platform", readme)
 
     def test_missing_contract_files_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3938,6 +4267,8 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_scorecard_manual_dispatch",
             "validate_action_pin_sync_contract",
             "validate_required_check_concurrency",
+            "validate_pr_body_sync_template_contract",
+            "validate_pr_body_sync_workflow_contract",
             "validate_issue_templates",
             "validate_release_notes_config",
             "validate_dependabot",
@@ -4729,9 +5060,9 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             ".agents/plugins/marketplace.json",
             ".codex-plugin",
             ".claude-plugin",
-            "claude-community",
+            "directory developer portal",
+            "paid claude.ai plan",
             "separately curated Anthropic marketplace",
-            "in-app forms",
             "Skills only",
             "Apps Management write access",
             "identity verification",
@@ -4740,28 +5071,27 @@ class MultiAgentPluginContractTests(unittest.TestCase):
         ):
             self.assertIn(fragment, dossier)
 
-    def test_claude_submission_guidance_uses_community_marketplace(self) -> None:
+    def test_claude_submission_guidance_uses_anthropic_directory(self) -> None:
         documents = {
-            PLUGIN_ROOT
-            / "README.md": "`claude-community` marketplace through its in-app forms.",
-            PLUGIN_ROOT
-            / "PLUGIN_SUBMISSION.md": "`claude-community` marketplace through one of its current in-app forms",
+            PLUGIN_ROOT / "README.md": "account sync",
+            PLUGIN_ROOT / "PLUGIN_SUBMISSION.md": "account sync",
             PLUGIN_ROOT
             / "skills"
             / "repo-scaffold"
             / "references"
-            / "agent-compatibility.md": "`claude-community` marketplace through one of its current in-app forms.",
+            / "agent-compatibility.md": "account sync",
             PLUGIN_ROOT
             / "skills"
             / "repo-scaffold"
             / "references"
-            / "agent-compatibility.vi.md": "`claude-community` của Anthropic qua một trong các form trong app hiện hành.",
+            / "agent-compatibility.vi.md": "account sync",
         }
 
         for path, expected in documents.items():
             text = path.read_text(encoding="utf-8")
 
             self.assertIn(expected, text, path.name)
+            self.assertIn("code.claude.com/docs/en/plugins/publish", text, path.name)
             self.assertIn("claude-plugins-official", text, path.name)
 
     def test_readme_uninstalls_from_the_documented_marketplace(self) -> None:
@@ -6412,6 +6742,596 @@ class CodeScanningGateContractTests(unittest.TestCase):
             )
 
 
+class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
+    def _copy_workflow(self, root: Path) -> tuple[Path, dict[str, Any]]:
+        workflow_path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        workflow_path.parent.mkdir(parents=True, exist_ok=True)
+        workflow = yaml.safe_load(
+            (PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH).read_text(
+                encoding="utf-8"
+            )
+        )
+        workflow_path.write_text(
+            yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+        )
+        return workflow_path, workflow
+
+    def test_body_sync_workflow_has_a_narrow_write_boundary(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_pr_body_sync_workflow_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_body_sync_workflow_reports_unreadable_and_non_mapping_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unreadable = validate_repository.validate_pr_body_sync_workflow_contract(
+                root
+            )
+            workflow_path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            workflow_path.parent.mkdir(parents=True)
+            workflow_path.write_text("[]\n", encoding="utf-8")
+            non_mapping = validate_repository.validate_pr_body_sync_workflow_contract(
+                root
+            )
+
+        self.assertTrue(any("workflow is unreadable" in item for item in unreadable))
+        self.assertEqual(
+            non_mapping,
+            [
+                ".github/workflows/pr-body-sync.yml: body-sync workflow must be a mapping"
+            ],
+        )
+
+    def test_body_sync_workflow_rejects_trigger_concurrency_and_job_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
+            workflow["on"] = {"pull_request_target": {"types": ["edited"]}}
+            workflow["concurrency"]["cancel-in-progress"] = "true"
+            workflow["jobs"]["update"]["permissions"] = {"contents": "read"}
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("opened and synchronized" in item for item in problems))
+        self.assertTrue(any("without cancellation" in item for item in problems))
+        self.assertTrue(any("isolate pull-requests" in item for item in problems))
+
+    def test_body_sync_workflow_rejects_step_shape_and_unsafe_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
+            update_step = workflow["jobs"]["update"]["steps"][1]
+            update_step["env"] = {}
+            update_step["run"] = "github.event.pull_request.head.ref\n"
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("pass only repository" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
+            workflow["jobs"]["update"]["steps"][1]["run"] += (
+                "\ngithub.event.pull_request.head.ref\n"
+            )
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("must not execute" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
+            run = workflow["jobs"]["update"]["steps"][1]["run"]
+            workflow["jobs"]["update"]["steps"][1]["run"] = run.replace(
+                'python scripts/markdown_body_preflight.py --body-file "$updated"\n',
+                "",
+            )
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("fetch, preflight" in item for item in problems))
+        self.assertTrue(any("before the GitHub mutation" in item for item in problems))
+
+    def test_body_sync_workflow_rejects_head_checkout_and_broad_permissions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            workflow_path.parent.mkdir(parents=True)
+            workflow = yaml.safe_load(
+                (
+                    PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+                ).read_text(encoding="utf-8")
+            )
+            workflow["permissions"] = {"contents": "read", "pull-requests": "write"}
+            workflow["jobs"]["update"]["steps"][0]["with"]["ref"] = (
+                "${{ github.event.pull_request.head.sha }}"
+            )
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(
+            any("top-level permissions read-only" in item for item in problems)
+        )
+        self.assertTrue(
+            any("pinned checkout of the PR base SHA" in item for item in problems)
+        )
+
+    def test_body_sync_renders_full_managed_body_without_template_diffs(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        )
+        run = workflow["jobs"]["update"]["steps"][1]["run"]
+        self.assertIn('if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then', run)
+        self.assertIn('if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then', run)
+        self.assertIn(
+            "Pull-request ref, title, or state advanced; retry the workflow.", run
+        )
+        self.assertIn(
+            "Pull-request ref, title, or state changed during the body update.", run
+        )
+        self.assertEqual(run.count("actual_sha != expected_sha"), 1)
+        self.assertEqual(run.count('head.get("sha") != expected_sha'), 2)
+        self.assertEqual(run.count("actual_repository != expected_repository"), 3)
+        self.assertEqual(run.count('payload.get("title") != expected_title'), 3)
+        self.assertEqual(run.count('payload.get("state") != "open"'), 3)
+        self.assertEqual(run.count("if not isinstance(body, str):"), 2)
+        self.assertEqual(run.count("if body != original:"), 1)
+        self.assertEqual(run.count("if actual_body != expected_body:"), 1)
+        self.assertIn('managed_state=$(python - "$body"', run)
+        self.assertIn("import re", run)
+        self.assertIn('base_commit = payload.get("base_commit")', run)
+        self.assertIn("not isinstance(base_commit, dict)", run)
+        self.assertIn('base_commit.get("sha") != expected_base_sha', run)
+        self.assertIn('commits = payload.get("commits")', run)
+        self.assertIn("not isinstance(commits, list)", run)
+        self.assertIn('files = payload.get("files")', run)
+        self.assertIn("not isinstance(files, list)", run)
+        self.assertIn("template_pattern = re.compile(", run)
+        self.assertIn("managed_marker_pattern = re.compile(", run)
+        self.assertIn("managed_pattern = re.compile(", run)
+        self.assertIn('body = Path(sys.argv[1]).read_bytes().decode("utf-8")', run)
+        self.assertIn("template_markers = list(template_pattern.finditer(body))", run)
+        self.assertIn(
+            "managed_markers = list(managed_marker_pattern.finditer(body))", run
+        )
+        self.assertIn('without_crlf = body.replace("\\r\\n", "")', run)
+        self.assertIn("line_endings_are_consistent = (", run)
+        self.assertIn("len(template_markers) == 1", run)
+        self.assertIn("len(managed_markers) == 1", run)
+        self.assertIn('r"(?m)\\A\\ufeff?<!-- repo-scaffold:pr-template=', run)
+        self.assertIn("line_endings_are_consistent", run)
+        self.assertIn("managed_pattern.match(body) is not None", run)
+        self.assertIn('status = payload.get("status")', run)
+        self.assertIn('if status == "identical":', run)
+        self.assertIn("expected_head_sha != expected_base_sha or commits or files", run)
+        self.assertIn('status != "ahead"', run)
+        self.assertIn('original = original_body_path.read_bytes().decode("utf-8")', run)
+        self.assertIn(
+            'expected_body = expected_body_path.read_bytes().decode("utf-8")', run
+        )
+        self.assertNotIn(
+            'original = original_body_path.read_text(encoding="utf-8")', run
+        )
+        self.assertNotIn(
+            'expected_body = expected_body_path.read_text(encoding="utf-8")', run
+        )
+        self.assertNotIn("from scripts.update_pr_body import", run)
+        self.assertNotIn("body.count(marker)", run)
+        self.assertIn('--template-file "$template"', run)
+        self.assertNotIn('--body-file "$body"', run)
+
+        without_managed_check = run.replace(
+            'managed_state=$(python - "$body"',
+            "",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_managed_check
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
+
+        without_head_sha_guard = run.replace(
+            'if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
+            "if true; then",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_head_sha_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
+
+        without_final_head_guard = run.replace(
+            'or head.get("sha") != expected_sha',
+            "or False",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_head_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(
+            any("head, repository, title, and open state" in item for item in problems)
+        )
+
+        without_final_state_guard = run.replace(
+            'or payload.get("state") != "open"',
+            "or False",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_state_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(
+            any("head, repository, title, and open state" in item for item in problems)
+        )
+
+        body_fetch_start = run.index(
+            'python - "$payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" <<\'PY\'\n'
+        )
+        body_fetch_start = run.index("\n", body_fetch_start) + 1
+        body_fetch_script = run[body_fetch_start : run.index("\nPY", body_fetch_start)]
+        with tempfile.TemporaryDirectory() as directory:
+            payload_path = Path(directory) / "pull-request.json"
+            body_path = Path(directory) / "body.md"
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "head": {
+                            "sha": "a" * 40,
+                            "repo": {"full_name": "owner/repo"},
+                        },
+                        "base": {"sha": "b" * 40},
+                        "title": "title",
+                        "state": "closed",
+                        "body": "body",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            body_path.write_text("", encoding="utf-8")
+            result = run_test_subprocess(
+                [
+                    sys.executable,
+                    "-c",
+                    body_fetch_script,
+                    str(payload_path),
+                    str(body_path),
+                    "a" * 40,
+                    "owner/repo",
+                    "title",
+                    "b" * 40,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ref, title, or state advanced", result.stderr)
+
+        without_final_body_guard = run.replace(
+            "if actual_body != expected_body:\n",
+            "if False:\n",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_body_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("exact body postconditions" in item for item in problems))
+
+        compare_start = run.index(
+            'source_state=$(python - "$compare_payload" "$PR_BASE_SHA" "$PR_HEAD_SHA" <<\'PY\'\n'
+        )
+        compare_start = run.index("\n", compare_start) + 1
+        compare_script = run[compare_start : run.index("\nPY", compare_start)]
+        with tempfile.TemporaryDirectory() as directory:
+            payload_path = Path(directory) / "compare.json"
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "base_commit": {"sha": "a" * 40},
+                        "status": "identical",
+                        "commits": [],
+                        "files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = run_test_subprocess(
+                [
+                    sys.executable,
+                    "-c",
+                    compare_script,
+                    str(payload_path),
+                    "a" * 40,
+                    "a" * 40,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.stdout.strip(), "unchanged")
+
+        without_files_guard = run.replace(
+            "or not isinstance(files, list)\n",
+            "",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_files_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
+
+        without_marker_uniqueness = run.replace(
+            "len(managed_markers) == 1\n",
+            "",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_marker_uniqueness
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
+
+    def test_body_sync_detector_requires_multiline_suffix_and_unique_markers(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        )
+        run = workflow["jobs"]["update"]["steps"][1]["run"]
+        start = run.index("managed_state=$(python - \"$body\" <<'PY'")
+        start = run.index("\n", start) + 1
+        detector = run[start : run.index("\nPY", start)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            body_path = Path(directory) / "body.md"
+            cases = (
+                (
+                    "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
+                    "## Purpose\nKeep this body.\n",
+                    "managed",
+                ),
+                (
+                    "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
+                    "body\n<!-- repo-scaffold:pr-body-managed -->\n",
+                    "unmanaged",
+                ),
+                (
+                    "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
+                    "body\n<!-- repo-scaffold:pr-template=bugfix -->\n",
+                    "unmanaged",
+                ),
+                (
+                    "<!-- repo-scaffold:pr-template=bugfix -->\r\n"
+                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
+                    "body\n",
+                    "unmanaged",
+                ),
+            )
+            for body, expected in cases:
+                body_path.write_bytes(body.encode("utf-8"))
+                result = run_test_subprocess(
+                    [sys.executable, "-c", detector, str(body_path)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.stdout.strip(), expected)
+
+    def test_body_sync_revalidates_the_base_sha_at_each_mutation_boundary(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        )
+        run = workflow["jobs"]["update"]["steps"][1]["run"]
+        self.assertEqual(run.count("expected_base_sha = sys.argv[6]"), 3)
+        self.assertEqual(run.count("or actual_base_sha != expected_base_sha"), 3)
+
+        without_final_base_check = run.replace(
+            "or actual_base_sha != expected_base_sha", "", 1
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_base_check
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(
+            any("revalidate the pull-request base SHA" in item for item in problems)
+        )
+
+    def test_body_template_contract_is_current(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_pr_body_sync_template_contract(PLUGIN_ROOT),
+            [],
+        )
+
+    def test_body_template_contract_rejects_missing_or_unknown_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n{{UNKNOWN}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("unsupported" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text("body\n", encoding="utf-8")
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("trusted template marker" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                "<!-- repo-scaffold:pr-head:start -->\n"
+                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("legacy partial" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n{{HEAD_SHA}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("must bind HEAD_REPOSITORY" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("managed-body marker" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n\n"
+                "<!-- repo-scaffold:pr-body-managed -->\n"
+                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("immediately follow" in item for item in problems))
+
+    def test_body_template_contract_reports_io_encoding_and_size_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing = validate_repository.validate_pr_body_sync_template_contract(root)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_bytes(b"\xff")
+            invalid = validate_repository.validate_pr_body_sync_template_contract(root)
+            template_path.write_bytes(b"x" * (1024 * 1024 + 1))
+            oversized = validate_repository.validate_pr_body_sync_template_contract(
+                root
+            )
+
+        self.assertTrue(any("unreadable" in item for item in missing))
+        self.assertTrue(any("valid UTF-8" in item for item in invalid))
+        self.assertTrue(any("1 MiB" in item for item in oversized))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_bytes(
+                b"<!-- repo-scaffold:pr-template=bugfix -->\r\n"
+                b"<!-- repo-scaffold:pr-body-managed -->\n"
+                b"{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n"
+            )
+            mixed = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("consistent line ending" in item for item in mixed))
+
+
 class PullRequestTemplateContractTests(unittest.TestCase):
     def test_release_please_owner_exception_matches_workflow_contract(self) -> None:
         contract_text = (
@@ -6835,7 +7755,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             feature_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "feature.md"
             ).read_text(encoding="utf-8")
-            result = subprocess.run(
+            result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": feature_body},
@@ -6848,7 +7768,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             comment_heavy_body = feature_body.replace(
                 "## Purpose", "## Purpose " + "<!-- ignored -->" * 2000, 1
             )
-            comment_heavy_result = subprocess.run(
+            comment_heavy_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": comment_heavy_body},
@@ -6860,7 +7780,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 comment_heavy_result.returncode, 0, comment_heavy_result.stderr
             )
 
-            cr_only_result = subprocess.run(
+            cr_only_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": feature_body.replace("\n", "\r")},
@@ -6870,7 +7790,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             )
             self.assertEqual(cr_only_result.returncode, 0, cr_only_result.stderr)
 
-            hard_wrapped_result = subprocess.run(
+            hard_wrapped_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -6887,7 +7807,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             malformed_html_body = (
                 feature_body + "\n<div/x>\nwrapped prose line\ncontinued prose line\n\n"
             )
-            malformed_html_result = subprocess.run(
+            malformed_html_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": malformed_html_body},
@@ -6898,7 +7818,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             self.assertNotEqual(malformed_html_result.returncode, 0)
             self.assertIn("hard-wrapped prose", malformed_html_result.stderr)
 
-            explicit_list_break = subprocess.run(
+            explicit_list_break = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -6917,7 +7837,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             deployment_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "deployment.md"
             ).read_text(encoding="utf-8")
-            deployment_result = subprocess.run(
+            deployment_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": deployment_body},
@@ -6930,7 +7850,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             dependency_update_body = (
                 template_root / "PULL_REQUEST_TEMPLATE" / "dependency-update.md"
             ).read_text(encoding="utf-8")
-            dependency_update_result = subprocess.run(
+            dependency_update_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": dependency_update_body},
@@ -6954,7 +7874,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     template_root / "PULL_REQUEST_TEMPLATE" / f"{template_id}.md"
                 ).read_text(encoding="utf-8")
                 with self.subTest(title=title, template_id=template_id):
-                    selected_result = subprocess.run(
+                    selected_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={
@@ -6969,7 +7889,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     self.assertEqual(
                         selected_result.returncode, 0, selected_result.stderr
                     )
-                    default_result = subprocess.run(
+                    default_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={
@@ -6987,7 +7907,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                         default_result.stderr,
                     )
 
-            maintenance_result = subprocess.run(
+            maintenance_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7003,7 +7923,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 maintenance_result.returncode, 0, maintenance_result.stderr
             )
 
-            ready_incomplete = subprocess.run(
+            ready_incomplete = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": feature_body, "PR_IS_DRAFT": "false"},
@@ -7025,7 +7945,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 feature_body,
                 flags=re.DOTALL,
             )
-            ready_completed = subprocess.run(
+            ready_completed = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": ready_body, "PR_IS_DRAFT": "false"},
@@ -7059,7 +7979,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             vietnamese_body = (
                 vietnamese_template_root / "PULL_REQUEST_TEMPLATE" / "feature.md"
             ).read_text(encoding="utf-8")
-            vietnamese_result = subprocess.run(
+            vietnamese_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=vietnamese_root,
                 env={**os.environ, "PR_BODY": vietnamese_body},
@@ -7108,7 +8028,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 ),
             ):
                 with self.subTest(environment=environment):
-                    exempt_result = subprocess.run(
+                    exempt_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={**os.environ, **environment},
@@ -7131,7 +8051,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 },
             ):
                 with self.subTest(hard_wrapped_environment=environment):
-                    hard_wrapped_exempt = subprocess.run(
+                    hard_wrapped_exempt = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={
@@ -7147,7 +8067,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                     self.assertNotEqual(hard_wrapped_exempt.returncode, 0)
                     self.assertIn("hard-wrapped prose", hard_wrapped_exempt.stderr)
 
-            unverified_release_prefix = subprocess.run(
+            unverified_release_prefix = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7175,7 +8095,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 feature_body,
                 flags=re.DOTALL,
             )
-            without_optional_items = subprocess.run(
+            without_optional_items = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={**os.environ, "PR_BODY": body_without_optional_items},
@@ -7187,7 +8107,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 without_optional_items.returncode, 0, without_optional_items.stderr
             )
 
-            missing_marker = subprocess.run(
+            missing_marker = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7269,7 +8189,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             }
             for hiding_method, hidden_body in hidden_content_bodies.items():
                 with self.subTest(hiding_method=hiding_method):
-                    hidden_result = subprocess.run(
+                    hidden_result = run_test_subprocess(
                         [sys.executable, "-c", script],
                         cwd=root,
                         env={**os.environ, "PR_BODY": hidden_body},
@@ -7310,7 +8230,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 security_template,
             )
 
-            result = subprocess.run(
+            result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7345,7 +8265,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE" / "security.md",
                 security_template,
             )
-            txt_result = subprocess.run(
+            txt_result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7401,7 +8321,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 docs_template,
             )
             feature_body = docs_template.read_text(encoding="utf-8")
-            result = subprocess.run(
+            result = run_test_subprocess(
                 [sys.executable, "-c", script],
                 cwd=root,
                 env={
@@ -7433,6 +8353,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
         engine = {
             "jobs": {
                 "build": {
+                    "if": validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF,
                     "permissions": {"contents": "read"},
                     "steps": [
                         {
@@ -7446,6 +8367,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                 },
                 "attest": {
                     "needs": "build",
+                    "if": validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF,
                     "runs-on": "ubuntu-latest",
                     "timeout-minutes": 15,
                     "permissions": {
@@ -7476,6 +8398,7 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                 },
                 "publish": {
                     "needs": ["build", "attest"],
+                    "if": validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF,
                     "permissions": {"contents": "write"},
                 },
             }
@@ -7509,6 +8432,40 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
             self.write_valid_configuration(root)
 
             self.assertEqual(validate_repository.validate_release_attestation(root), [])
+
+    def test_release_dispatch_ref_must_be_the_default_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_configuration(root)
+            release_paths = (
+                root / ".github" / "workflows" / "release.yml",
+                root
+                / "skills"
+                / "repo-scaffold"
+                / "assets"
+                / "workflows"
+                / "release.yml",
+            )
+            for path in release_paths:
+                workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+                for job_name in ("build", "attest", "publish"):
+                    workflow["jobs"][job_name].pop("if")
+                    path.write_text(
+                        yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+                    )
+                    problems = validate_repository.validate_release_attestation(root)
+                    relative = path.relative_to(root).as_posix()
+                    self.assertIn(
+                        f"{relative}: {job_name} must restrict dispatch and reusable calls "
+                        "to trusted release refs",
+                        problems,
+                    )
+                    workflow["jobs"][job_name]["if"] = (
+                        validate_repository.RELEASE_ENGINE_TRUSTED_CALLER_IF
+                    )
+                path.write_text(
+                    yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+                )
 
     def test_release_attestation_reports_malformed_build_step_name(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -7724,6 +8681,499 @@ class ReleaseAttestationValidationTests(unittest.TestCase):
                     for item in validate_repository.validate_release_attestation(root)
                 )
             )
+
+    def test_release_publish_rechecks_draft_assets_and_published_state(self) -> None:
+        workflow_paths = (
+            PLUGIN_ROOT / ".github" / "workflows" / "release.yml",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "release.yml",
+        )
+        for workflow_path in workflow_paths:
+            with self.subTest(workflow=str(workflow_path.relative_to(PLUGIN_ROOT))):
+                workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+                publish_steps = workflow["jobs"]["publish"]["steps"]
+                publish_step = next(
+                    step
+                    for step in publish_steps
+                    if step.get("name")
+                    == "Attach assets and publish the GitHub Release"
+                )
+                script = publish_step["run"]
+                self.assertIn("local page_budget=16", script)
+                self.assertIn("expected_asset_manifest='[]'", script)
+                self.assertIn("sha256sum --", script)
+                self.assertIn(".assets[] | {name, size, digest, state}", script)
+                self.assertIn('if [[ -z "${release_record}" ]]; then', script)
+                self.assertIn("prepare_missing_release_assets()", script)
+                self.assertNotIn("--clobber", script)
+                upload_positions = list(
+                    re.finditer(r"(?m)^\s*gh release upload", script)
+                )
+                self.assertEqual(len(upload_positions), 2)
+                for upload in upload_positions:
+                    self.assertGreater(
+                        script.rfind("assert_draft_release", 0, upload.start()),
+                        script.rfind("if [[ -z", 0, upload.start()),
+                    )
+                    self.assertGreater(
+                        script.find("assert_release_assets draft", upload.end()),
+                        upload.end(),
+                    )
+                edit_index = script.index("gh release edit")
+                self.assertLess(
+                    script.rfind("assert_release_assets draft", 0, edit_index),
+                    edit_index,
+                )
+                self.assertLess(
+                    edit_index,
+                    script.index("assert_release_assets published", edit_index),
+                )
+                self.assertIn(
+                    "Release history exceeded the ${page_budget}-page", script
+                )
+
+                bash = shutil.which("bash")
+                if bash is None:
+                    git_bash = (
+                        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+                        / "Git"
+                        / "bin"
+                        / "bash.exe"
+                    )
+                    if git_bash.is_file():
+                        bash = str(git_bash)
+                if bash is None:
+                    self.skipTest(
+                        "bash is unavailable for the release script syntax check"
+                    )
+                with tempfile.NamedTemporaryFile(
+                    suffix=".sh", mode="w", encoding="utf-8", newline="\n"
+                ) as shell_file:
+                    shell_file.write(script)
+                    shell_file.flush()
+                    checked = run_test_subprocess(
+                        [bash, "-n", shell_file.name],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_release_publisher_create_resume_and_fail_closed_paths(self) -> None:
+        bash = shutil.which("bash")
+        if bash is None:
+            git_bash = (
+                Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+                / "Git"
+                / "bin"
+                / "bash.exe"
+            )
+            if git_bash.is_file():
+                bash = str(git_bash)
+        if bash is None:
+            self.skipTest(
+                "bash is unavailable for the release publisher integration test"
+            )
+        compatible_bash = run_test_subprocess(
+            [
+                bash,
+                "-c",
+                "type mapfile >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if compatible_bash.returncode != 0:
+            self.skipTest(
+                "the release publisher integration requires Bash mapfile and sha256sum"
+            )
+
+        fake_tool = r"""#!/usr/bin/env python
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+from urllib.parse import parse_qs, quote, urlsplit
+
+
+def compact(value):
+    return json.dumps(value, separators=(",", ":"))
+
+
+def emit(value, raw=False):
+    if raw and isinstance(value, str):
+        print(value)
+    elif raw and isinstance(value, bool):
+        print("true" if value else "false")
+    elif raw and value is None:
+        print("null")
+    else:
+        print(compact(value))
+
+
+def jq_main():
+    args = sys.argv[1:]
+    flags = set()
+    values = {}
+    positional = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token in ("--arg", "--argjson"):
+            key, value = args[index + 1], args[index + 2]
+            values[key] = json.loads(value) if token == "--argjson" else value
+            index += 3
+        elif token.startswith("-") and not token.startswith("--"):
+            flags.update(token[1:])
+            index += 1
+        else:
+            positional.append(token)
+            index += 1
+    expression = positional[-1] if positional else ""
+    raw_input = "" if "n" in flags else sys.stdin.read()
+    try:
+        data = (
+            None if "n" in flags
+            else raw_input.rstrip("\n") if "R" in flags
+            else json.loads(raw_input)
+        )
+    except json.JSONDecodeError as error:
+        print(str(error) + "; filter=" + expression + "; input=" + repr(raw_input), file=sys.stderr)
+        return 4
+
+    if "n" in flags and "$current + [{name:" in expression:
+        value = values["current"] + [{
+            "name": values["name"], "size": int(values["size"]),
+            "digest": values["digest"], "state": "uploaded",
+        }]
+    elif "n" in flags and "$current + $next" in expression:
+        value = values["current"] + values["next"]
+    elif expression == "@uri":
+        value = quote(data, safe="~")
+    elif expression == ".count":
+        value = data["count"]
+    elif expression == ".matching":
+        value = data["matching"]
+    elif expression == "length":
+        value = len(data)
+    elif expression == ".[0]":
+        value = data[0]
+    elif expression == ".object.type // empty":
+        value = data.get("object", {}).get("type", "")
+    elif expression == ".object.sha // empty":
+        value = data.get("object", {}).get("sha", "")
+    elif expression == ".draft":
+        value = data["draft"]
+    elif expression == ".immutable":
+        value = data["immutable"]
+    elif "(.count | type == \"number\"" in expression:
+        value = (
+            isinstance(data, dict) and type(data.get("count")) is int
+            and 0 <= data["count"] <= 100 and isinstance(data.get("matching"), list)
+        )
+    elif 'type == "array" and length <= 1' in expression:
+        value = isinstance(data, list) and len(data) <= 1
+    elif "all(.assets[];" in expression:
+        expected = values["expected"]
+        assets = data.get("assets")
+        value = (
+            data.get("tag_name") == values["tag"] and data.get("draft") is True
+            and data.get("immutable") is False and isinstance(assets, list)
+            and len([asset.get("name") for asset in assets])
+                == len(set(asset.get("name") for asset in assets))
+            and all(asset in expected for asset in assets)
+        )
+    elif "$draft_state" in expression:
+        expected = values["expected"]
+        expected_draft = values["draft_state"] == "draft"
+        assets = data.get("assets")
+        value = (
+            data.get("tag_name") == values["tag"]
+            and data.get("draft") is expected_draft
+            and (data.get("immutable") is False if expected_draft
+                 else type(data.get("immutable")) is bool)
+            and isinstance(assets, list)
+            and sorted(assets, key=lambda item: item.get("name", ""))
+                == sorted(expected, key=lambda item: item.get("name", ""))
+        )
+    elif "any(.assets[]; .name == $name)" in expression:
+        value = any(asset.get("name") == values["name"] for asset in data["assets"])
+    elif '.tag_name == $tag and .draft == true' in expression:
+        value = (
+            data.get("tag_name") == values["tag"] and data.get("draft") is True
+            and data.get("immutable") is False
+        )
+    else:
+        print("unsupported jq filter in release integration test: " + expression, file=sys.stderr)
+        return 2
+
+    if "e" in flags and (value is False or value is None):
+        return 1
+    emit(value, raw="r" in flags)
+    return 0
+
+
+def gh_main():
+    args = sys.argv[1:]
+    state_path = Path(os.environ["AUDIT_RELEASE_STATE"])
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.setdefault("calls", []).append(args)
+    command = args[:2]
+    if command[0] == "api":
+        endpoint = next((item for item in args if item.startswith("repos/")), "")
+        if "/releases?" in endpoint:
+            page = int(parse_qs(urlsplit(endpoint).query).get("page", ["1"])[0])
+            if os.environ.get("AUDIT_RELEASE_MODE") == "full-pages":
+                result = {"count": 100, "matching": []}
+            else:
+                records = list(state.get("extra_releases", []))
+                if state.get("release") is not None:
+                    records.append(state["release"])
+                matching = [item for item in records if item.get("tag_name") == os.environ["RELEASE_TAG"]]
+                start = (page - 1) * 100
+                page_records = records[start:start + 100]
+                result = {
+                    "count": len(page_records),
+                    "matching": [item for item in page_records if item.get("tag_name") == os.environ["RELEASE_TAG"]],
+                }
+            print(compact(result))
+        elif "/git/ref/tags/" in endpoint:
+            sha = os.environ.get("AUDIT_TAG_TARGET_SHA", os.environ["RELEASE_COMMIT_SHA"])
+            print(compact({"object": {"type": "commit", "sha": sha}}))
+        else:
+            print("unsupported GitHub API request: " + endpoint, file=sys.stderr)
+            return 2
+    elif command == ["release", "create"]:
+        if state.get("release") is not None:
+            print("release already exists", file=sys.stderr)
+            return 1
+        state["release"] = {
+            "tag_name": args[2], "draft": True, "immutable": False, "assets": []
+        }
+    elif command == ["release", "upload"]:
+        asset_paths = [item for item in args[3:] if Path(item).is_file()]
+        for index, asset_path in enumerate(asset_paths):
+            content = Path(asset_path).read_bytes()
+            state["release"]["assets"].append({
+                "name": Path(asset_path).name,
+                "size": len(content),
+                "digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+                "state": "uploaded",
+            })
+            state_path.write_text(compact(state), encoding="utf-8")
+            if os.environ.get("FAIL_AFTER_FIRST_UPLOAD") == "1" and index == 0:
+                return 1
+    elif command == ["release", "edit"]:
+        state["release"]["draft"] = False
+        state["release"]["immutable"] = True
+    else:
+        print("unsupported GitHub CLI call: " + " ".join(args), file=sys.stderr)
+        return 2
+    state_path.write_text(compact(state), encoding="utf-8")
+    return 0
+
+
+if Path(sys.argv[0]).name == "jq":
+    raise SystemExit(jq_main())
+raise SystemExit(gh_main())
+"""
+
+        artifact_bytes = {
+            "first.bin": b"first artifact",
+            "second.bin": b"second artifact",
+        }
+
+        def run_publisher(
+            script: str,
+            initial_state: dict[str, Any],
+            *,
+            fail_after_first_upload: bool = False,
+            mode: str | None = None,
+            tag_target_sha: str | None = None,
+        ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bin_directory = root / "bin"
+                bin_directory.mkdir()
+                tool_names = ("gh",) if shutil.which("jq") else ("gh", "jq")
+                for name in tool_names:
+                    tool_path = bin_directory / name
+                    tool_path.write_text(fake_tool, encoding="utf-8", newline="\n")
+                    tool_path.chmod(
+                        tool_path.stat().st_mode
+                        | stat.S_IXUSR
+                        | stat.S_IXGRP
+                        | stat.S_IXOTH
+                    )
+                work_directory = root / "work"
+                dist_directory = work_directory / "dist"
+                dist_directory.mkdir(parents=True)
+                for name, contents in artifact_bytes.items():
+                    (dist_directory / name).write_bytes(contents)
+                state_path = root / "release-state.json"
+                state_path.write_text(json.dumps(initial_state), encoding="utf-8")
+                environment = os.environ.copy()
+                environment.update(
+                    {
+                        "PATH": str(bin_directory)
+                        + os.pathsep
+                        + environment.get("PATH", ""),
+                        "GITHUB_REPOSITORY": "octo/example",
+                        "RELEASE_TAG": "v9.9.9",
+                        "RELEASE_COMMIT_SHA": "a" * 40,
+                        "AUDIT_RELEASE_STATE": str(state_path),
+                    }
+                )
+                if fail_after_first_upload:
+                    environment["FAIL_AFTER_FIRST_UPLOAD"] = "1"
+                else:
+                    environment.pop("FAIL_AFTER_FIRST_UPLOAD", None)
+                if mode is not None:
+                    environment["AUDIT_RELEASE_MODE"] = mode
+                if tag_target_sha is not None:
+                    environment["AUDIT_TAG_TARGET_SHA"] = tag_target_sha
+                completed = run_test_subprocess(
+                    [bash, "-s"],
+                    input=script,
+                    cwd=work_directory,
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                )
+                final_state = json.loads(state_path.read_text(encoding="utf-8"))
+                return completed, final_state
+
+        publish_paths = (
+            PLUGIN_ROOT / ".github" / "workflows" / "release.yml",
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "assets"
+            / "workflows"
+            / "release.yml",
+        )
+        for workflow_path in publish_paths:
+            workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+            script = next(
+                step["run"]
+                for step in workflow["jobs"]["publish"]["steps"]
+                if step.get("name") == "Attach assets and publish the GitHub Release"
+            )
+            with self.subTest(workflow=str(workflow_path.relative_to(PLUGIN_ROOT))):
+                fresh, fresh_state = run_publisher(
+                    script, {"release": None, "extra_releases": [], "calls": []}
+                )
+                self.assertEqual(fresh.returncode, 0, fresh.stderr)
+                self.assertFalse(fresh_state["release"]["draft"])
+                self.assertEqual(
+                    {asset["name"] for asset in fresh_state["release"]["assets"]},
+                    set(artifact_bytes),
+                )
+                self.assertFalse(
+                    any("--clobber" in call for call in fresh_state["calls"])
+                )
+
+                partial, partial_state = run_publisher(
+                    script,
+                    {"release": None, "extra_releases": [], "calls": []},
+                    fail_after_first_upload=True,
+                )
+                self.assertNotEqual(partial.returncode, 0)
+                self.assertTrue(partial_state["release"]["draft"])
+                self.assertEqual(len(partial_state["release"]["assets"]), 1)
+                resumed, resumed_state = run_publisher(script, partial_state)
+                self.assertEqual(resumed.returncode, 0, resumed.stderr)
+                self.assertFalse(resumed_state["release"]["draft"])
+                self.assertEqual(
+                    {asset["name"] for asset in resumed_state["release"]["assets"]},
+                    set(artifact_bytes),
+                )
+                upload_calls = [
+                    call
+                    for call in resumed_state["calls"]
+                    if call[:2] == ["release", "upload"]
+                ]
+                self.assertEqual(len(upload_calls), 2)
+                self.assertEqual(
+                    len([item for item in upload_calls[-1] if item.endswith(".bin")]), 1
+                )
+
+                if workflow_path != publish_paths[0]:
+                    continue
+
+                wrong_digest_asset = {
+                    "name": "first.bin",
+                    "size": len(artifact_bytes["first.bin"]),
+                    "digest": "sha256:" + "0" * 64,
+                    "state": "uploaded",
+                }
+                conflicting = {
+                    "release": {
+                        "tag_name": "v9.9.9",
+                        "draft": True,
+                        "immutable": False,
+                        "assets": [wrong_digest_asset],
+                    },
+                    "extra_releases": [],
+                    "calls": [],
+                }
+                failed_conflict, conflict_state = run_publisher(script, conflicting)
+                self.assertNotEqual(failed_conflict.returncode, 0)
+                self.assertEqual(
+                    conflict_state["release"]["assets"], [wrong_digest_asset]
+                )
+                self.assertFalse(
+                    any(
+                        call[:2] == ["release", "upload"]
+                        for call in conflict_state["calls"]
+                    )
+                )
+
+                published = {
+                    "release": {
+                        "tag_name": "v9.9.9",
+                        "draft": False,
+                        "immutable": False,
+                        "assets": [],
+                    },
+                    "extra_releases": [],
+                    "calls": [],
+                }
+                failed_published, published_state = run_publisher(script, published)
+                self.assertNotEqual(failed_published.returncode, 0)
+                self.assertFalse(
+                    any(
+                        call[:2] == ["release", "upload"]
+                        for call in published_state["calls"]
+                    )
+                )
+                self.assertFalse(published_state["release"]["draft"])
+
+                bad_tag, bad_tag_state = run_publisher(
+                    script,
+                    {"release": None, "extra_releases": [], "calls": []},
+                    tag_target_sha="b" * 40,
+                )
+                self.assertNotEqual(bad_tag.returncode, 0)
+                self.assertIsNone(bad_tag_state["release"])
+
+                oversized, oversized_state = run_publisher(
+                    script,
+                    {"release": None, "extra_releases": [], "calls": []},
+                    mode="full-pages",
+                )
+                self.assertNotEqual(oversized.returncode, 0)
+                self.assertIsNone(oversized_state["release"])
 
 
 class IssueFormValidationTests(unittest.TestCase):
@@ -13213,10 +14663,15 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-actions-permissions-api": [
                     "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                     "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
                     "skills/repo-scaffold/scripts/scorecard_preflight.py",
                 ],
                 "github-actions-workflow-permissions-syntax": "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
-                "github-actions-workflow-runs-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-actions-workflow-runs-api": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
+                ],
                 "github-pull-request-target-policy": [
                     "README.md",
                     "skills/repo-scaffold/SKILL.md",
@@ -13245,6 +14700,43 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 "github-git-refs-api": "skills/repo-scaffold/assets/workflows/release.yml",
                 "github-git-tags-api": "skills/repo-scaffold/assets/workflows/release.yml",
                 "github-releases-api": "skills/repo-scaffold/scripts/ci_toolchain.py",
+                "github-release-asset-upload-api": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                ],
+                "github-rest-unsafe-conditional-requests": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                ],
+                "github-actions-workflow-ref-selection": [
+                    "README.md",
+                    ".github/workflows/action-pin-sync.yml",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                ],
+                "github-actions-pull-request-merge-workflow-source": [
+                    "README.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
+                ],
+                "github-actions-reusable-workflow-caller-context": [
+                    ".github/workflows/release.yml",
+                    ".github/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                ],
                 "github-pull-requests-api": [
                     "scripts/check_code_scanning_alerts.py",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
@@ -13275,6 +14767,15 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 ],
                 "github-reminder-issue-search-api": "skills/repo-scaffold/assets/workflows/freshness.yml",
                 "github-repository-labels-api": "skills/repo-scaffold/references/github-setup.md",
+                "github-repository-labeler-action-permissions": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/labeler.yml",
+                    "skills/repo-scaffold/assets/labeler.yml",
+                ],
+                "github-actions-stale-label-contract": [
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/stale.yml",
+                ],
                 "github-branch-protection-status-checks": [
                     "README.md",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
@@ -13294,6 +14795,14 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                     "skills/repo-scaffold/assets/workflows/auto-merge.yml",
                 ],
                 "github-security-analysis-settings": "skills/repo-scaffold/scripts/security_features_preflight.py",
+                "github-secret-protection-eligibility": [
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
+                "github-push-protection-secret-protection-entitlement": [
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                ],
                 "github-repository-security-features-api": [
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/security_features_preflight.py",
@@ -13551,6 +15060,11 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-git-refs-api",
             "github-git-tags-api",
             "github-releases-api",
+            "github-release-asset-upload-api",
+            "github-rest-unsafe-conditional-requests",
+            "github-actions-workflow-ref-selection",
+            "github-actions-pull-request-merge-workflow-source",
+            "github-actions-reusable-workflow-caller-context",
             "github-pull-requests-api",
             "github-git-commits-api",
             "github-repository-commits-api",
@@ -13566,6 +15080,8 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             "github-effective-branch-rules-api",
             "github-merge-queue-auto-merge",
             "github-security-analysis-settings",
+            "github-secret-protection-eligibility",
+            "github-push-protection-secret-protection-entitlement",
             "github-repository-security-features-api",
             "github-users-api",
             "github-artifact-attestations",

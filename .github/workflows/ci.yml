@@ -163,6 +163,7 @@ jobs:
           scripts/run_mutation_testing.py
           scripts/sync_action_pins.py
           scripts/sync_versioned_inputs.py
+          scripts/update_pr_body.py
           scripts/validate_mutation_results.py
           scripts/validate_repository.py
           scripts/validate_workflows.py

@@ -265,6 +265,7 @@ class ScorecardPreflightTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("scorecard_preflight.py", skill)
         self.assertIn("scorecard_preflight.py", setup)
+        self.assertIn('scorecardPreflightResult.repository, "OWNER/REPO"', setup)
         self.assertIn("advanced_security", SCRIPT_PATH.read_text(encoding="utf-8"))
 
 

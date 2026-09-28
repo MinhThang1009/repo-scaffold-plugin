@@ -47,21 +47,19 @@ Code listing.
 
 ## Claude Code distribution
 
-Public third-party Claude Code distribution is submitted to Anthropic's
-`claude-community` marketplace through one of its current in-app forms, as
-documented in the [Claude Code plugin guide](https://code.claude.com/docs/en/plugins).
-`claude-plugins-official` is a separately curated Anthropic marketplace.
-Do not claim that the Codex Plugin Directory also makes the plugin available in
-Claude Code, or that the plugin has a Claude Code listing, until Anthropic
-accepts the submission and the catalog sync completes.
+Submit public third-party Claude Code listings through Anthropic's
+[directory developer portal](https://code.claude.com/docs/en/plugins/publish);
+submission requires a paid claude.ai plan. Directory listings are available on
+claude.ai and Cowork and reach Claude Code through account sync.
+`claude-plugins-official` is a separately curated Anthropic marketplace. Do not
+claim an Anthropic directory listing until it is published.
 
 Before submitting, run `claude plugin validate --strict .`, load the release
 ZIP with `claude --plugin-dir` on Claude Code v2.1.128 or later (or extract it
 first on an older release), and record the positive and negative test evidence
 above. The ZIP is direct-session test evidence, not a substitute for the
-current submission form or its requested source details. The Claude Code review
-pipeline performs its own validation and safety screening; use its current
-marketplace scope rather than copying Codex portal settings.
+directory submission, its pre-submission checklist, or portal validation. Use
+the directory's current requirements rather than copying Codex portal settings.
 
 Long description:
 

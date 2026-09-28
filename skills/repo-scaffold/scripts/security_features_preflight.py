@@ -7,7 +7,12 @@ import argparse
 import json
 from typing import Any
 
-from codeql_preflight import GitHubClient, InspectionError, split_repository
+from codeql_preflight import (
+    GitHubClient,
+    InspectionError,
+    github_api_status,
+    split_repository,
+)
 
 
 SECURITY_FEATURES = (
@@ -17,6 +22,7 @@ SECURITY_FEATURES = (
     "push_protection",
     "private_vulnerability_reporting",
 )
+SECRET_PROTECTION_FEATURES = frozenset({"secret_scanning", "push_protection"})
 SECURITY_ANALYSIS_FIELDS = (
     "dependabot_security_updates",
     "secret_scanning",
@@ -74,9 +80,15 @@ def dependabot_alerts_precondition(
     try:
         client.raw(f"repos/{owner}/{repo}/vulnerability-alerts")
     except InspectionError as exc:
+        status = github_api_status(exc)
+        detail = (
+            f" GitHub returned HTTP {status}; the alert state remains unverified."
+            if status is not None
+            else " The alert state remains unverified."
+        )
         raise InspectionError(
             "Automated security fixes require Dependabot alerts to be enabled "
-            "or requested for prior enablement."
+            "or requested for prior enablement." + detail
         ) from exc
     return "verified-enabled"
 
@@ -86,6 +98,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError("Security-feature preflight supports GitHub.com only.")
     owner, repo = split_repository(args.repository)
     requested = requested_features(args)
+    private_eligibility_confirmed = getattr(
+        args, "confirm_private_secret_protection_eligibility", False
+    )
+    if not isinstance(private_eligibility_confirmed, bool):
+        raise InspectionError(
+            "Private Secret Protection eligibility confirmation must be boolean."
+        )
+    private_feature_requested = bool(SECRET_PROTECTION_FEATURES.intersection(requested))
+    if private_eligibility_confirmed and not private_feature_requested:
+        raise InspectionError(
+            "Private Secret Protection eligibility confirmation was supplied "
+            "without requesting secret scanning or push protection."
+        )
     client = GitHubClient(args.hostname)
     repository = client.json(f"repos/{owner}/{repo}")
     if not isinstance(repository, dict):
@@ -138,10 +163,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "Private vulnerability reporting is limited to public non-fork repositories."
         )
     alerts_precondition = dependabot_alerts_precondition(client, owner, repo, args)
+    private_security_feature_eligibility = "not-required"
+    if private_feature_requested and visibility != "public":
+        private_security_feature_eligibility = (
+            "user-confirmed"
+            if private_eligibility_confirmed
+            else "confirmation-required"
+        )
 
     return {
         "inspection_complete": True,
-        "decision": "may-configure-security-features",
+        "decision": (
+            "confirm-private-secret-protection-eligibility"
+            if private_security_feature_eligibility == "confirmation-required"
+            else "may-configure-security-features"
+        ),
         "requested_features": requested,
         "repository": args.repository,
         "administration_permission": True,
@@ -150,6 +186,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "owner_type": owner_type,
         "security_and_analysis": statuses,
         "dependabot_alerts_precondition": alerts_precondition,
+        "private_security_feature_eligibility": private_security_feature_eligibility,
         "github_api_requests": client.request_count,
     }
 
@@ -164,6 +201,9 @@ def parse_args() -> argparse.Namespace:
             dest=feature,
             action="store_true",
         )
+    parser.add_argument(
+        "--confirm-private-secret-protection-eligibility", action="store_true"
+    )
     return parser.parse_args()
 
 
@@ -171,15 +211,16 @@ def main() -> int:
     try:
         result = run(parse_args())
     except (InspectionError, OSError, UnicodeError) as exc:
-        print(
-            json.dumps(
-                {
-                    "inspection_complete": False,
-                    "decision": "inconclusive",
-                    "error": str(exc),
-                }
-            )
-        )
+        error_result: dict[str, Any] = {
+            "inspection_complete": False,
+            "decision": "inconclusive",
+            "error": "Security-feature preflight could not verify current GitHub state.",
+        }
+        if isinstance(exc, InspectionError):
+            status = github_api_status(exc)
+            if status is not None:
+                error_result["github_http_status"] = status
+        print(json.dumps(error_result))
         return 2
     print(json.dumps(result))
     return 0

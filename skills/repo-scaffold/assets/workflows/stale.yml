@@ -18,6 +18,8 @@ jobs:
         with:
           days-before-stale: 60
           days-before-close: 14
+          stale-issue-label: "Stale"
+          stale-pr-label: "Stale"
           stale-issue-message: "Inactive for 60 days; closing in 14 days without further activity."
           stale-pr-message: "Inactive for 60 days; closing in 14 days without further activity."
           exempt-issue-labels: "pinned,security"

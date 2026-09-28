@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +38,8 @@ class MergeMutationShardsTests(unittest.TestCase):
         mutants = root / "mutants"
         mutants.mkdir(parents=True, exist_ok=True)
         (mutants / "mutation-shards.json").write_text(
-            json.dumps({"shards": [["alpha"], ["beta"]]}), encoding="utf-8"
+            json.dumps({"schema_version": 1, "shards": [["alpha"], ["beta"]]}),
+            encoding="utf-8",
         )
         (mutants / "source.meta").write_text(
             json.dumps(self.document({"alpha": None, "beta": None})), encoding="utf-8"
@@ -70,6 +72,64 @@ class MergeMutationShardsTests(unittest.TestCase):
             )
             self.assertEqual(result["exit_code_by_key"], {"alpha": 1, "beta": 0})
 
+    def test_merges_sparse_metadata_from_nested_shard_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            directories = [root / "mutants"] + [
+                root / "mutation-shards" / f"mutation-shard-{index}"
+                for index in range(2)
+            ]
+            for index, parent in enumerate(directories):
+                path = parent / "source.meta"
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document["type_check_error_by_key"] = {}
+                document["durations_by_key"] = {}
+                document["estimated_durations_by_key"] = {}
+                if index:
+                    name = ("alpha", "beta")[index - 1]
+                    document["durations_by_key"][name] = index / 10
+                    document["estimated_durations_by_key"][name] = index / 5
+                nested = parent / "skills/repo-scaffold/scripts/source.py.meta"
+                nested.parent.mkdir(parents=True)
+                nested.write_text(json.dumps(document), encoding="utf-8")
+                path.unlink()
+
+            merge_mutation_shards.merge(root, root / "mutation-shards")
+
+            result = json.loads(
+                (
+                    root / "mutants/skills/repo-scaffold/scripts/source.py.meta"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["exit_code_by_key"], {"alpha": 1, "beta": 0})
+            self.assertEqual(result["durations_by_key"], {"alpha": 0.1, "beta": 0.2})
+            self.assertEqual(
+                result["estimated_durations_by_key"], {"alpha": 0.2, "beta": 0.4}
+            )
+            self.assertEqual(result["type_check_error_by_key"], {})
+
+    def test_merges_preserved_killed_results_without_rerunning_them(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            base = root / "mutants" / "source.meta"
+            base_document = json.loads(base.read_text(encoding="utf-8"))
+            base_document["exit_code_by_key"]["alpha"] = 1
+            base.write_text(json.dumps(base_document), encoding="utf-8")
+
+            overlay = root / "mutation-shards" / "mutation-shard-0" / "source.meta"
+            overlay_document = json.loads(overlay.read_text(encoding="utf-8"))
+            overlay_document["exit_code_by_key"]["alpha"] = 1
+            overlay.write_text(json.dumps(overlay_document), encoding="utf-8")
+            overlay = root / "mutation-shards" / "mutation-shard-1" / "source.meta"
+            overlay_document = json.loads(overlay.read_text(encoding="utf-8"))
+            overlay_document["exit_code_by_key"]["alpha"] = 1
+            overlay.write_text(json.dumps(overlay_document), encoding="utf-8")
+            merge_mutation_shards.merge(root, root / "mutation-shards")
+            result = json.loads(base.read_text(encoding="utf-8"))
+            self.assertEqual(result["exit_code_by_key"], {"alpha": 1, "beta": 0})
+
     def test_rejects_invalid_plan_and_incomplete_or_unassigned_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -78,6 +138,22 @@ class MergeMutationShardsTests(unittest.TestCase):
             plan.write_text('{"shards": []}', encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "invalid schema"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
+
+            for invalid_plan, message in (
+                (
+                    {"schema_version": 1, "shards": [[]]},
+                    "invalid shard",
+                ),
+                (
+                    {"schema_version": 1, "shards": [["bad\nname"]]},
+                    "invalid mutant name",
+                ),
+            ):
+                with self.subTest(invalid_plan=invalid_plan):
+                    self.fixture(root)
+                    plan.write_text(json.dumps(invalid_plan), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, message):
+                        merge_mutation_shards.merge(root, root / "mutation-shards")
 
             self.fixture(root / "second")
             root = root / "second"
@@ -102,8 +178,61 @@ class MergeMutationShardsTests(unittest.TestCase):
             path = Path(directory) / "metadata.json"
             with self.assertRaisesRegex(ValueError, "could not read"):
                 merge_mutation_shards.load_json(path)
+
+            with mock.patch.object(merge_mutation_shards, "MAX_METADATA_BYTES", 1):
+                path.write_text("{}", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "could not read"):
+                    merge_mutation_shards.load_json(path)
+
+            path.write_text("{}", encoding="utf-8")
+            with (
+                mock.patch.object(
+                    merge_mutation_shards.json,
+                    "loads",
+                    side_effect=RecursionError("nested JSON"),
+                ),
+                self.assertRaisesRegex(ValueError, "could not read"),
+            ):
+                merge_mutation_shards.load_json(path)
             path.write_text("[]", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "not an object"):
+                merge_mutation_shards.load_json(path)
+
+            path.write_text('{"value": NaN}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "could not read"):
+                merge_mutation_shards.load_json(path)
+
+            with (
+                mock.patch.object(
+                    merge_mutation_shards,
+                    "_is_link_or_reparse",
+                    side_effect=lambda candidate: candidate == path,
+                ),
+                self.assertRaisesRegex(ValueError, "link or reparse point"),
+            ):
+                path.write_text("{}", encoding="utf-8")
+                merge_mutation_shards.load_json(path)
+
+            with mock.patch.object(Path, "is_symlink", return_value=True):
+                self.assertTrue(merge_mutation_shards._is_link_or_reparse(path))
+
+            with self.assertRaisesRegex(ValueError, "escapes its boundary"):
+                merge_mutation_shards._assert_safe_path(
+                    path.parent, path.parent.parent / "outside.json"
+                )
+
+            with (
+                mock.patch.object(
+                    merge_mutation_shards,
+                    "_is_link_or_reparse",
+                    return_value=True,
+                ),
+                self.assertRaisesRegex(ValueError, "link or reparse point"),
+            ):
+                merge_mutation_shards._assert_safe_path(path.parent, path)
+
+            path.write_text('{"shards": [], "shards": []}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "could not read"):
                 merge_mutation_shards.load_json(path)
 
     def test_rejects_duplicate_names_and_missing_base_metadata(self) -> None:
@@ -112,14 +241,16 @@ class MergeMutationShardsTests(unittest.TestCase):
             self.fixture(root)
             plan = root / "mutants" / "mutation-shards.json"
             plan.write_text(
-                json.dumps({"shards": [["alpha"], ["alpha"]]}), encoding="utf-8"
+                json.dumps({"schema_version": 1, "shards": [["alpha"], ["alpha"]]}),
+                encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "duplicate or invalid"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
 
             (root / "mutants" / "source.meta").unlink()
             plan.write_text(
-                json.dumps({"shards": [["alpha"], ["beta"]]}), encoding="utf-8"
+                json.dumps({"schema_version": 1, "shards": [["alpha"], ["beta"]]}),
+                encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "metadata is missing"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
@@ -139,7 +270,15 @@ class MergeMutationShardsTests(unittest.TestCase):
             document = json.loads(base.read_text(encoding="utf-8"))
             document["exit_code_by_key"]["alpha"] = 0
             base.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "already contains"):
+            with self.assertRaisesRegex(ValueError, "untrusted result"):
+                merge_mutation_shards.merge(root, root / "mutation-shards")
+
+            self.fixture(root)
+            document = json.loads(base.read_text(encoding="utf-8"))
+            document["exit_code_by_key"]["alpha"] = 1
+            base.write_text(json.dumps(document), encoding="utf-8")
+            self.set_overlay_value(root, 0, "exit_code_by_key", "alpha", 0)
+            with self.assertRaisesRegex(ValueError, "preserved result"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
 
     def test_rejects_metadata_that_does_not_match_assignments(self) -> None:
@@ -156,7 +295,12 @@ class MergeMutationShardsTests(unittest.TestCase):
             self.fixture(root)
             plan = root / "mutants" / "mutation-shards.json"
             plan.write_text(
-                json.dumps({"shards": [["alpha"], ["beta"], ["gamma"]]}),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "shards": [["alpha"], ["beta"], ["gamma"]],
+                    }
+                ),
                 encoding="utf-8",
             )
             third_overlay = root / "mutation-shards" / "mutation-shard-2"
@@ -203,7 +347,69 @@ class MergeMutationShardsTests(unittest.TestCase):
             document = json.loads(overlay.read_text(encoding="utf-8"))
             document["durations_by_key"].pop("beta")
             overlay.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "keys differ"):
+            with self.assertRaisesRegex(ValueError, "unassigned"):
+                merge_mutation_shards.merge(root, root / "mutation-shards")
+
+    def test_rejects_missing_or_invalid_verdicts_and_unknown_metadata_keys(
+        self,
+    ) -> None:
+        for field, value, message in (
+            ("exit_code_by_key", {"alpha": 1}, "keys differ"),
+            ("exit_code_by_key", {"alpha": True, "beta": None}, "invalid verdict"),
+            ("durations_by_key", {"unknown": 0.1}, "keys differ"),
+        ):
+            with (
+                self.subTest(field=field, value=value),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.fixture(root)
+                path = root / "mutation-shards/mutation-shard-0/source.meta"
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document[field] = value
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    merge_mutation_shards.merge(root, root / "mutation-shards")
+
+    def test_rejects_invalid_base_metadata_fields(self) -> None:
+        for value, message in (([], "field"), ({"unknown": 0.1}, "keys differ")):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.fixture(root)
+                path = root / "mutants/source.meta"
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document["durations_by_key"] = value
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    merge_mutation_shards.merge(root, root / "mutation-shards")
+
+    def test_pending_assignment_can_replace_or_drop_previous_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            base = root / "mutants/source.meta"
+            document = json.loads(base.read_text(encoding="utf-8"))
+            document["durations_by_key"]["alpha"] = 9.0
+            base.write_text(json.dumps(document), encoding="utf-8")
+            self.set_overlay_value(root, 1, "durations_by_key", "alpha", 9.0)
+            path = root / "mutation-shards/mutation-shard-0/source.meta"
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["durations_by_key"].pop("alpha")
+            document["estimated_durations_by_key"]["alpha"] = 0.2
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+            merge_mutation_shards.merge(root, root / "mutation-shards")
+
+            result = json.loads(base.read_text(encoding="utf-8"))
+            self.assertNotIn("alpha", result["durations_by_key"])
+            self.assertEqual(result["estimated_durations_by_key"]["alpha"], 0.2)
+
+    def test_missing_metadata_only_shard_still_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            (root / "mutation-shards/mutation-shard-1/source.meta").unlink()
+            with self.assertRaisesRegex(ValueError, "could not read"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
 
     def test_main_and_entrypoint_return_expected_status(self) -> None:

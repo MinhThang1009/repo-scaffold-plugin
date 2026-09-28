@@ -57,11 +57,12 @@ claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
 claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-Submit a public third-party Claude Code listing to Anthropic's
-`claude-community` marketplace through one of its current in-app forms.
-`claude-plugins-official` is a separately curated Anthropic marketplace. This
-repository's `repo-scaffold-plugins` marketplace remains a separate local or
-private distribution source.
+Submit a public third-party listing through Anthropic's [directory developer
+portal](https://code.claude.com/docs/en/plugins/publish); submission requires a
+paid claude.ai plan. Directory listings are available on claude.ai and Cowork
+and reach Claude Code through account sync. `claude-plugins-official` is a
+separately curated Anthropic marketplace. This repository's
+`repo-scaffold-plugins` marketplace remains a separate local or private source.
 
 Restart Claude Code, then invoke `/repo-scaffold:repo-scaffold` or ask Claude
 to scaffold the repository. For local verification without installation, run

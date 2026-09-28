@@ -20,9 +20,14 @@ MANIFEST_SCHEMA_VERSION = 2
 REUSABLE_SOURCES_SCHEMA_VERSION = 1
 MANIFEST_NAME = "mutation-cache-manifest.json"
 REUSABLE_SOURCES_NAME = ".incremental-sources.json"
+SHARD_PLAN_NAME = "mutation-shards.json"
+SHARD_PLAN_SCHEMA_VERSION = 1
+MAX_MUTATION_SHARDS = 64
+MAX_MUTANTS_PER_SHARD = 100_000
 SOURCE_ROOTS = (PurePosixPath("scripts"), PurePosixPath("skills/repo-scaffold/scripts"))
 CACHE_CONTROL_FILES = frozenset(
     {
+        PurePosixPath(".github/workflows/mutation-testing.yml"),
         PurePosixPath("pyproject.toml"),
         PurePosixPath("requirements-mutation.txt"),
     }
@@ -31,10 +36,12 @@ KILLED_EXIT_CODES = {1, 3}
 MAX_PROJECT_FILES = 10_000
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
-# The repository validator generates a large instrumented source file. Keep the
-# bound above its observed artifact size while still rejecting oversized cache input.
-MAX_META_BYTES = 128 * 1024 * 1024
-MAX_STATE_BYTES = 256 * 1024 * 1024
+# Mutmut's generated per-source files contain every instrumented mutant, so they
+# can be much larger than the source and metadata alone. Keep the per-file and
+# aggregate bounds above the observed full plan while still bounding cache input
+# below the hosted runner's artifact/cache capacity.
+MAX_META_BYTES = 512 * 1024 * 1024
+MAX_STATE_BYTES = 4 * 1024 * 1024 * 1024
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 IGNORED_DIRECTORIES = {
     ".git",
@@ -84,6 +91,11 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
         document[key] = value
     return document
+
+
+def reject_json_constant(value: str) -> None:
+    """Reject non-standard JSON constants such as NaN and Infinity."""
+    raise ValueError(f"non-standard JSON constant {value!r}")
 
 
 def _is_within(path: PurePosixPath, root: PurePosixPath) -> bool:
@@ -150,7 +162,7 @@ def _validate_source_paths(source_hashes: dict[str, str]) -> None:
 
 
 def _expected_state_paths(source_hashes: dict[str, str]) -> set[str]:
-    paths = {"mutmut-stats.json"}
+    paths = {"mutmut-stats.json", SHARD_PLAN_NAME}
     for relative in source_hashes:
         paths.add(relative)
         paths.add(f"{relative}.meta")
@@ -167,6 +179,56 @@ def _validate_state_paths(
         metadata_path = f"{relative}.meta" in state_hashes
         if state_path != metadata_path:
             raise ValueError("manifest source state and metadata must be paired")
+
+
+def _validate_shard_plan(path: Path, mutation_root: Path) -> None:
+    """Validate one cached deterministic assignment before it can be reused."""
+    _assert_safe_cache_path(mutation_root, path)
+    if not path.is_file() or _is_link_or_reparse(path):
+        raise ValueError("cached mutation shard plan is missing or unsafe")
+    if path.stat().st_size > MAX_META_BYTES:
+        raise ValueError("cached mutation shard plan is oversized")
+    try:
+        document = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+            parse_constant=reject_json_constant,
+        )
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
+        raise ValueError(
+            f"could not read cached mutation shard plan: {error}"
+        ) from error
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema_version", "shards"}
+        or document["schema_version"] != SHARD_PLAN_SCHEMA_VERSION
+        or not isinstance(document["shards"], list)
+        or len(document["shards"]) not in range(1, MAX_MUTATION_SHARDS + 1)
+    ):
+        raise ValueError("cached mutation shard plan has an invalid schema")
+    names: list[str] = []
+    for shard in document["shards"]:
+        if (
+            not isinstance(shard, list)
+            or not shard
+            or len(shard) > MAX_MUTANTS_PER_SHARD
+        ):
+            raise ValueError("cached mutation shard plan has an invalid shard")
+        for name in shard:
+            if (
+                not isinstance(name, str)
+                or not name
+                or len(name) > 4_096
+                or "\x00" in name
+                or "\r" in name
+                or "\n" in name
+            ):
+                raise ValueError(
+                    "cached mutation shard plan has an invalid mutant name"
+                )
+            names.append(name)
+    if len(names) != len(set(names)):
+        raise ValueError("cached mutation shard plan contains duplicate mutants")
 
 
 def _sha256(content: bytes) -> str:
@@ -316,13 +378,28 @@ def manifest_document(snapshot: ProjectSnapshot) -> dict[str, Any]:
     }
 
 
+def mutation_input_fingerprint(repository_root: Path) -> str:
+    """Return a stable key for inputs that can affect mutation verdicts."""
+    snapshot = snapshot_project(repository_root)
+    document = {
+        "source_hashes": snapshot.source_hashes,
+        "test_sources": snapshot.test_sources,
+        "control_hashes": snapshot.control_hashes,
+    }
+    return _sha256(
+        json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+
 def load_manifest(path: Path) -> ProjectSnapshot:
     """Load and strictly validate a cache manifest."""
     if path.stat().st_size > MAX_TOTAL_BYTES:
         raise ValueError("mutation cache manifest exceeds the size limit")
     try:
         document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+            parse_constant=reject_json_constant,
         )
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation cache manifest: {error}") from error
@@ -414,16 +491,24 @@ def _collect_state_hashes(
 
 def _sanitize_restored_state(mutation_root: Path, state_hashes: dict[str, str]) -> None:
     allowed = set(state_hashes) | {MANIFEST_NAME}
+    total_bytes = 0
     for relative, expected_digest in state_hashes.items():
         path = mutation_root.joinpath(*PurePosixPath(relative).parts)
         _assert_safe_cache_path(mutation_root, path)
         if not path.is_file():
             raise ValueError(f"restored mutation state is missing {relative!r}")
         content = path.read_bytes()
-        if len(content) > MAX_META_BYTES or _sha256(content) != expected_digest:
+        total_bytes += len(content)
+        if (
+            len(content) > MAX_META_BYTES
+            or total_bytes > MAX_STATE_BYTES
+            or _sha256(content) != expected_digest
+        ):
             raise ValueError(
                 f"restored mutation state failed integrity for {relative!r}"
             )
+    if SHARD_PLAN_NAME in state_hashes:
+        _validate_shard_plan(mutation_root / SHARD_PLAN_NAME, mutation_root)
 
     for directory, child_directories, filenames in os.walk(
         mutation_root, topdown=False, followlinks=False
@@ -472,7 +557,9 @@ def _load_meta(path: Path) -> dict[str, Any]:
         raise ValueError("mutation metadata is unsafe or oversized")
     try:
         document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+            parse_constant=reject_json_constant,
         )
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation metadata: {error}") from error
@@ -600,6 +687,9 @@ def record_cache(repository_root: Path) -> None:
     reusable_path = mutation_root / REUSABLE_SOURCES_NAME
     _assert_safe_cache_path(mutation_root, reusable_path)
     reusable_path.unlink(missing_ok=True)
+    shard_plan = mutation_root / SHARD_PLAN_NAME
+    if shard_plan.exists():
+        _validate_shard_plan(shard_plan, mutation_root)
     snapshot = snapshot_project(repository_root)
     snapshot = ProjectSnapshot(
         source_hashes=snapshot.source_hashes,
@@ -617,7 +707,7 @@ def record_cache(repository_root: Path) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the cache operation and repository root."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("prepare", "record"))
+    parser.add_argument("operation", choices=("prepare", "record", "fingerprint"))
     parser.add_argument("--repository-root", type=Path, default=Path("."))
     return parser.parse_args(argv)
 
@@ -626,7 +716,9 @@ def main(argv: list[str] | None = None) -> int:
     """Prepare or record mutation state with actionable diagnostics."""
     arguments = parse_args(argv)
     try:
-        if arguments.operation == "record":
+        if arguments.operation == "fingerprint":
+            print(mutation_input_fingerprint(arguments.repository_root))
+        elif arguments.operation == "record":
             record_cache(arguments.repository_root)
             print("Recorded mutation cache inputs and progress.")
         else:

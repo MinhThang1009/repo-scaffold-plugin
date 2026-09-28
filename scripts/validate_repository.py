@@ -116,6 +116,25 @@ FRESHNESS_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-freshness-${{ github.repository }}"
 )
 VERSION_SYNC_CONCURRENCY_GROUP = "repo-scaffold-version-sync-${{ github.repository }}"
+WORKFLOW_DISPATCH_DEFAULT_BRANCH_IF = (
+    "${{ github.event_name != 'workflow_dispatch' || github.ref == "
+    "format('refs/heads/{0}', github.event.repository.default_branch) }}"
+)
+VERSION_SYNC_DEFAULT_REF_IF = WORKFLOW_DISPATCH_DEFAULT_BRANCH_IF
+RELEASE_ENGINE_TRUSTED_CALLER_IF = (
+    "${{ (github.event_name == 'workflow_dispatch' && github.ref == "
+    "format('refs/heads/{0}', github.event.repository.default_branch) && "
+    "github.workflow_ref == format('{0}/.github/workflows/release.yml@refs/heads/{1}', "
+    "github.repository, github.event.repository.default_branch)) || "
+    "(github.event_name == 'push' && github.ref == "
+    "format('refs/heads/{0}', github.event.repository.default_branch) && "
+    "github.workflow_ref == format('{0}/.github/workflows/release-please.yml@refs/heads/{1}', "
+    "github.repository, github.event.repository.default_branch)) || "
+    "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
+    "inputs.tag == github.ref_name && inputs.commit_sha == github.sha && "
+    "github.workflow_ref == format('{0}/.github/workflows/release-tag.yml@{1}', "
+    "github.repository, github.ref)) }}"
+)
 VERSION_SYNC_PR_BODY_PATH = Path(".github/action-pin-sync-pr-body.md")
 VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND = (
     "python",
@@ -123,6 +142,12 @@ VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND = (
     "--body-file",
     VERSION_SYNC_PR_BODY_PATH.as_posix(),
 )
+PR_BODY_SYNC_WORKFLOW_PATH = Path(".github/workflows/pr-body-sync.yml")
+PR_BODY_SYNC_TEMPLATE_PATH = Path(".github/pr-body-template.md")
+PR_BODY_SYNC_CONCURRENCY_GROUP = (
+    "${{ github.workflow }}-pr-body-${{ github.event.pull_request.number }}"
+)
+PR_BODY_SYNC_CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 FRESHNESS_REMINDER_JOB_NAME = "freshness-audit"
 FRESHNESS_REMINDER_TIMEOUT_MINUTES = "15"
 FRESHNESS_REMINDER_REPOSITORY = "github.com/$GITHUB_REPOSITORY"
@@ -3238,7 +3263,11 @@ def schema_version_is(document: object, expected: int) -> bool:
 def child_process_environment() -> dict[str, str]:
     """Keep mutmut's in-process selector out of child Python processes."""
     environment = os.environ.copy()
-    environment.pop("MUTANT_UNDER_TEST", None)
+    # Mutmut 3.8 keeps a process-local selector that can survive environment
+    # scrubbing in copied CLI children. Explicit inert values prevent stats or
+    # mutant dispatch when a child imports trampoline-instrumented source.
+    environment["MUTANT_UNDER_TEST"] = ""
+    environment["MUTMUT_DEPENDENCY_DEPTH"] = "-1"
     return environment
 
 
@@ -4681,14 +4710,21 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
     expected_source_root_env = {
         "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
     }
-    plan_steps = plan.get("steps")
+    raw_plan_steps = plan.get("steps")
+    plan_steps: list[object] = (
+        raw_plan_steps if isinstance(raw_plan_steps, list) else []
+    )
+    expected_plan_run = (
+        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64"
+    )
+    expected_plan_condition = (
+        "${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}"
+    )
     plan_generation_steps = (
         [
             step
             for step in plan_steps
-            if isinstance(step, dict)
-            and step.get("run")
-            == "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32"
+            if isinstance(step, dict) and step.get("run") == expected_plan_run
         ]
         if isinstance(plan_steps, list)
         else []
@@ -4696,6 +4732,7 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
     if (
         len(plan_generation_steps) != 1
         or plan_generation_steps[0].get("env") != expected_source_root_env
+        or plan_generation_steps[0].get("if") != expected_plan_condition
     ):
         return [
             ".github/workflows/mutation-testing.yml: mutation plan must expose "
@@ -4708,10 +4745,49 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         ]
     matrix = shards.get("strategy", {}).get("matrix", {})
     assigned = matrix.get("shard") if isinstance(matrix, dict) else None
-    if assigned != [str(index) for index in range(32)]:
+    if assigned != [str(index) for index in range(64)]:
         return [
-            ".github/workflows/mutation-testing.yml: run all 32 exact mutation shards"
+            ".github/workflows/mutation-testing.yml: run all 64 exact mutation shards"
         ]
+    expected_shard_run = (
+        "python scripts/run_mutation_testing.py --max-children 4 --shard-index "
+        '"$SHARD_INDEX"'
+    )
+    raw_shard_steps = shards.get("steps")
+    shard_run_steps = [
+        step
+        for step in (raw_shard_steps if isinstance(raw_shard_steps, list) else [])
+        if isinstance(step, dict) and step.get("run") == expected_shard_run
+    ]
+    if len(shard_run_steps) != 1 or shard_run_steps[0].get("env") != {
+        "SHARD_INDEX": "${{ matrix.shard }}",
+        **expected_source_root_env,
+    }:
+        return [
+            ".github/workflows/mutation-testing.yml: mutation shards must expose "
+            "the tracked source root"
+        ]
+    cache_prefix = (
+        "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
+        "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
+        "${{ steps.mutation-fingerprint.outputs.fingerprint }}"
+    )
+    expected_restore = {
+        "path": "mutants/",
+        "key": f"{cache_prefix}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}",
+        "restore-keys": f"{cache_prefix}-\n",
+    }
+    expected_save = {
+        "path": "mutants/",
+        "key": expected_restore["key"],
+    }
+    expected_plan_save = {
+        "path": "mutants/",
+        "key": (
+            f"{cache_prefix}-plan-${{{{ github.run_id }}}}-"
+            "${{ github.run_attempt }}"
+        ),
+    }
     runs = {
         step.get("run")
         for job in (jobs["mutation-plan"], shards, aggregate)
@@ -4720,14 +4796,157 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         if isinstance(step, dict) and isinstance(step.get("run"), str)
     }
     required = {
-        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 32",
-        'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"',
+        expected_plan_run,
+        expected_shard_run,
+        "python scripts/prepare_mutation_cache.py prepare",
+        "python scripts/prepare_mutation_cache.py record",
         "python scripts/merge_mutation_shards.py",
     }
     if not required.issubset(runs):
         return [
             ".github/workflows/mutation-testing.yml: plan, execute, and merge "
             "exact mutation shards"
+        ]
+    shard_upload_steps = [
+        step
+        for step in (raw_shard_steps if isinstance(raw_shard_steps, list) else [])
+        if isinstance(step, dict) and step.get("name") == "Upload mutation shard"
+    ]
+    if (
+        len(shard_upload_steps) != 1
+        or not isinstance(shard_upload_steps[0].get("uses"), str)
+        or not shard_upload_steps[0]["uses"].startswith("actions/upload-artifact@")
+        or shard_upload_steps[0].get("if") != "${{ always() }}"
+        or shard_upload_steps[0].get("with")
+        != {
+            "name": "mutation-shard-${{ matrix.shard }}",
+            "path": "mutants/**/*.meta",
+            "if-no-files-found": "error",
+            "retention-days": "14",
+        }
+    ):
+        return [
+            ".github/workflows/mutation-testing.yml: upload only shard metadata "
+            "with relative paths preserved and reject missing files"
+        ]
+    cache_restore_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/cache/restore@")
+    ]
+    plan_prepare_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py prepare"
+    ]
+    plan_fingerprint_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and step.get("name") == "Compute mutation input fingerprint"
+    ]
+    restore_prepare_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and step.get("name") == "Prepare restored mutation state"
+    ]
+    plan_record_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py record"
+    ]
+    plan_cache_save_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/cache/save@")
+    ]
+    plan_upload_steps = [
+        step
+        for step in plan_steps
+        if isinstance(step, dict) and step.get("name") == "Upload mutation plan"
+    ]
+    raw_aggregate_steps = aggregate.get("steps")
+    aggregate_steps: list[object] = (
+        raw_aggregate_steps if isinstance(raw_aggregate_steps, list) else []
+    )
+    aggregate_record_steps = [
+        step
+        for step in aggregate_steps
+        if isinstance(step, dict)
+        and step.get("run") == "python scripts/prepare_mutation_cache.py record"
+    ]
+    aggregate_fingerprint_steps = [
+        step
+        for step in aggregate_steps
+        if isinstance(step, dict)
+        and step.get("name") == "Compute mutation input fingerprint"
+    ]
+    cache_save_steps = [
+        step
+        for step in aggregate_steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/cache/save@")
+    ]
+    if (
+        len(cache_restore_steps) != 1
+        or cache_restore_steps[0].get("id") != "mutation-cache"
+        or cache_restore_steps[0].get("with") != expected_restore
+        or len(plan_fingerprint_steps) != 1
+        or plan_fingerprint_steps[0].get("id") != "mutation-fingerprint"
+        or plan_fingerprint_steps[0].get("shell") != "bash"
+        or "python scripts/prepare_mutation_cache.py fingerprint"
+        not in plan_fingerprint_steps[0].get("run", "")
+        or len(restore_prepare_steps) != 1
+        or restore_prepare_steps[0].get("id") != "mutation-prepare"
+        or restore_prepare_steps[0].get("shell") != "bash"
+        or not isinstance(restore_prepare_steps[0].get("run"), str)
+        or "python scripts/prepare_mutation_cache.py prepare"
+        not in restore_prepare_steps[0]["run"]
+        or "mutation-shards.json" not in restore_prepare_steps[0]["run"]
+        or "plan-reuse=true" not in restore_prepare_steps[0]["run"]
+        or "plan-reuse=false" not in restore_prepare_steps[0]["run"]
+        or len(plan_prepare_steps) != 1
+        or len(plan_record_steps) != 1
+        or len(plan_cache_save_steps) != 1
+        or plan_cache_save_steps[0].get("if") != expected_plan_condition
+        or plan_cache_save_steps[0].get("with") != expected_plan_save
+        or len(plan_upload_steps) != 1
+        or plan_upload_steps[0].get("with", {}).get("include-hidden-files") != "true"
+        or len(aggregate_record_steps) != 1
+        or len(aggregate_fingerprint_steps) != 1
+        or aggregate_fingerprint_steps[0].get("id") != "mutation-fingerprint"
+        or aggregate_fingerprint_steps[0].get("shell") != "bash"
+        or "python scripts/prepare_mutation_cache.py fingerprint"
+        not in aggregate_fingerprint_steps[0].get("run", "")
+        or len(cache_save_steps) != 1
+        or cache_save_steps[0].get("if") != "${{ success() }}"
+        or cache_save_steps[0].get("with") != expected_save
+    ):
+        return [
+            ".github/workflows/mutation-testing.yml: mutation state cache must "
+            "restore and prepare validated state, preserve its marker for shard "
+            "reuse, and save completed state under an input-bound branch cache key"
+        ]
+    if not (
+        plan_steps.index(cache_restore_steps[0])
+        < plan_steps.index(restore_prepare_steps[0])
+        < plan_steps.index(plan_generation_steps[0])
+        < plan_steps.index(plan_record_steps[0])
+        < plan_steps.index(plan_cache_save_steps[0])
+        < plan_steps.index(plan_prepare_steps[0])
+        < plan_steps.index(plan_upload_steps[0])
+    ):
+        return [
+            ".github/workflows/mutation-testing.yml: save the recorded plan "
+            "before preparing and uploading shard state"
         ]
     return []
 
@@ -6330,6 +6549,16 @@ def validate_release_attestation(repository_root: Path) -> list[str]:
         build = jobs.get("build")
         attest = jobs.get("attest")
         publish = jobs.get("publish")
+        for job_name in ("build", "attest", "publish"):
+            job = jobs.get(job_name)
+            if (
+                isinstance(job, dict)
+                and job.get("if") != RELEASE_ENGINE_TRUSTED_CALLER_IF
+            ):
+                problems.append(
+                    f"{relative}: {job_name} must restrict dispatch and reusable calls "
+                    "to trusted release refs"
+                )
         if not isinstance(build, dict):
             problems.append(f"{relative}: build job is missing")
         else:
@@ -6680,8 +6909,10 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     steps = job.get("steps") if isinstance(job, dict) else None
     if (
         not isinstance(job, dict)
-        or set(job) != {"name", "runs-on", "timeout-minutes", "permissions", "steps"}
+        or set(job)
+        != {"if", "name", "runs-on", "timeout-minutes", "permissions", "steps"}
         or job.get("name") != "synchronize-versioned-inputs"
+        or job.get("if") != VERSION_SYNC_DEFAULT_REF_IF
         or job.get("runs-on") != "ubuntu-latest"
         or job.get("timeout-minutes") != "15"
         or not isinstance(steps, list)
@@ -7251,6 +7482,275 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
                     f"{relative}: required pr-template check must use one unconditional producer"
                 )
     return problems
+
+
+def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
+    """Keep the PR-body writer least-privileged and bound to trusted inputs."""
+    path = repository_root / PR_BODY_SYNC_WORKFLOW_PATH
+    relative = PR_BODY_SYNC_WORKFLOW_PATH.as_posix()
+    try:
+        workflow = load_yaml(path)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        return [f"{relative}: body-sync workflow is unreadable: {error}"]
+    if not isinstance(workflow, dict):
+        return [f"{relative}: body-sync workflow must be a mapping"]
+
+    problems: list[str] = []
+    if workflow.get("on") != {
+        "pull_request_target": {"types": ["opened", "reopened", "synchronize"]}
+    }:
+        problems.append(
+            f"{relative}: body-sync workflow must run only for opened and synchronized pull requests"
+        )
+    if workflow.get("permissions") != {"contents": "read"}:
+        problems.append(
+            f"{relative}: body-sync workflow must keep top-level permissions read-only"
+        )
+    if workflow.get("concurrency") != {
+        "group": PR_BODY_SYNC_CONCURRENCY_GROUP,
+        "cancel-in-progress": "false",
+    }:
+        problems.append(
+            f"{relative}: body-sync workflow must serialize each pull request without cancellation"
+        )
+
+    jobs = workflow.get("jobs")
+    job = jobs.get("update") if isinstance(jobs, dict) else None
+    if (
+        not isinstance(jobs, dict)
+        or set(jobs) != {"update"}
+        or not isinstance(job, dict)
+        or set(job) != {"name", "runs-on", "timeout-minutes", "permissions", "steps"}
+        or job.get("name") != "pr-body-sync"
+        or job.get("runs-on") != "ubuntu-latest"
+        or job.get("timeout-minutes") != "5"
+        or job.get("permissions") != {"contents": "read", "pull-requests": "write"}
+    ):
+        problems.append(
+            f"{relative}: body-sync job must isolate pull-requests: write with a five-minute trusted runner"
+        )
+        return problems
+
+    steps = job.get("steps")
+    checkout = steps[0] if isinstance(steps, list) and len(steps) >= 1 else None
+    update = steps[1] if isinstance(steps, list) and len(steps) >= 2 else None
+    expected_checkout = {
+        "name": "Check out trusted base tooling",
+        "uses": PR_BODY_SYNC_CHECKOUT,
+        "with": {
+            "ref": "${{ github.event.pull_request.base.sha }}",
+            "persist-credentials": "false",
+        },
+    }
+    if not isinstance(steps, list) or len(steps) != 2 or checkout != expected_checkout:
+        problems.append(
+            f"{relative}: body-sync must use exactly one pinned checkout of the PR base SHA"
+        )
+    expected_environment = {
+        "GH_TOKEN": "${{ github.token }}",
+        "REPOSITORY": "${{ github.repository }}",
+        "PR_NUMBER": "${{ github.event.pull_request.number }}",
+        "PR_TITLE": "${{ github.event.pull_request.title }}",
+        "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+        "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+        "PR_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
+    }
+    if (
+        not isinstance(update, dict)
+        or set(update) != {"name", "env", "shell", "run"}
+        or update.get("name") != "Render and update the complete pull-request body"
+        or update.get("env") != expected_environment
+        or update.get("shell") != "bash"
+        or not isinstance(update.get("run"), str)
+    ):
+        problems.append(
+            f"{relative}: body-sync must pass only repository, PR title, head, and token data through env"
+        )
+        return problems
+
+    run = update["run"]
+    required_fragments = (
+        "set -euo pipefail",
+        'if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then',
+        'if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
+        'if [[ ! "$PR_HEAD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
+        'if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
+        'if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
+        "gh api --hostname github.com",
+        '"repos/$REPOSITORY/compare/$PR_BASE_SHA...$PR_HEAD_SHA" > "$compare_payload"',
+        'source_state=$(python - "$compare_payload" "$PR_BASE_SHA" "$PR_HEAD_SHA" <<\'PY\'',
+        '".github/pr-body-template.md"',
+        'base_commit = payload.get("base_commit")',
+        "not isinstance(base_commit, dict)",
+        'base_commit.get("sha") != expected_base_sha',
+        'commits = payload.get("commits")',
+        "not isinstance(commits, list)",
+        'files = payload.get("files")',
+        "not isinstance(files, list)",
+        "expected_head_sha = sys.argv[3]",
+        'status = payload.get("status")',
+        'if status == "identical":',
+        "expected_head_sha != expected_base_sha or commits or files",
+        "Pull-request identical comparison evidence is inconsistent.",
+        'status != "ahead"',
+        'commits[-1].get("sha") != expected_head_sha',
+        "Pull-request comparison is truncated; cannot prove template opt-in.",
+        "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
+        '"repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"',
+        "Pull-request ref, title, or state advanced; retry the workflow.",
+        "managed_state=$(python - \"$body\" <<'PY'",
+        "import re",
+        "template_pattern = re.compile(",
+        "managed_marker_pattern = re.compile(",
+        "managed_pattern = re.compile(",
+        'body = Path(sys.argv[1]).read_bytes().decode("utf-8")',
+        "template_markers = list(template_pattern.finditer(body))",
+        "managed_markers = list(managed_marker_pattern.finditer(body))",
+        'without_crlf = body.replace("\\r\\n", "")',
+        "line_endings_are_consistent = (",
+        "len(template_markers) == 1",
+        "len(managed_markers) == 1",
+        "template_markers[0].start() == 0",
+        "line_endings_are_consistent",
+        'r"(?m)\\A\\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \\t]*\\r?\\n"',
+        'r"<!-- repo-scaffold:pr-body-managed -->[ \\t]*(?=\\r?$)"',
+        "managed_pattern.match(body) is not None",
+        "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
+        "Pull-request body is not managed and its source template was not changed; leaving it unchanged.",
+        "expected_base_sha = sys.argv[6]",
+        'actual_base_sha = base.get("sha") if isinstance(base, dict) else None',
+        "or actual_base_sha != expected_base_sha",
+        '"repos/$PR_HEAD_REPOSITORY/contents/.github/pr-body-template.md?ref=$PR_HEAD_SHA"',
+        'template_payload="$RUNNER_TEMP/pr-body-template.json"',
+        'template="$RUNNER_TEMP/pr-body-template.md"',
+        "python scripts/update_pr_body.py",
+        '--template-file "$template"',
+        '--head-repository "$PR_HEAD_REPOSITORY"',
+        'python scripts/markdown_body_preflight.py --body-file "$updated"',
+        "python scripts/pr_template_preflight.py",
+        '--title "$PR_TITLE"',
+        'gh pr edit "$PR_NUMBER"',
+        '--repo "github.com/$REPOSITORY"',
+        '--body-file "$updated"',
+        'original = original_body_path.read_bytes().decode("utf-8")',
+        'verified_payload="$RUNNER_TEMP/pr-body-verified.json"',
+        'expected_body = expected_body_path.read_bytes().decode("utf-8")',
+        "Pull-request ref, title, or state changed during the body update.",
+        "GitHub did not retain the generated pull-request body.",
+    )
+    for fragment in required_fragments:
+        if fragment not in run:
+            problems.append(
+                f"{relative}: body-sync must fetch, preflight, update, and verify the bounded body section"
+            )
+            break
+    if (
+        run.count("expected_base_sha = sys.argv[6]") != 3
+        or run.count("or actual_base_sha != expected_base_sha") != 3
+    ):
+        problems.append(
+            f"{relative}: body-sync must revalidate the pull-request base SHA before and after editing"
+        )
+    if (
+        run.count("actual_sha != expected_sha") != 1
+        or run.count('head.get("sha") != expected_sha') != 2
+        or run.count("actual_repository != expected_repository") != 3
+        or run.count('payload.get("title") != expected_title') != 3
+        or run.count('payload.get("state") != "open"') != 3
+    ):
+        problems.append(
+            f"{relative}: body-sync must revalidate the pull-request head, repository, title, and open state at every API boundary"
+        )
+    if (
+        run.count("if not isinstance(body, str):") != 2
+        or run.count("if body != original:") != 1
+        or run.count("if actual_body != expected_body:") != 1
+    ):
+        problems.append(
+            f"{relative}: body-sync must enforce text input and exact body postconditions"
+        )
+    if "github.event.pull_request.head.ref" in run:
+        problems.append(
+            f"{relative}: body-sync must not execute or check out pull-request head code"
+        )
+    preflight_index = run.find(
+        'python scripts/markdown_body_preflight.py --body-file "$updated"'
+    )
+    template_preflight_index = run.find("python scripts/pr_template_preflight.py")
+    mutation_index = run.find('gh pr edit "$PR_NUMBER"')
+    if (
+        preflight_index < 0
+        or template_preflight_index < 0
+        or mutation_index < 0
+        or preflight_index > mutation_index
+        or template_preflight_index > mutation_index
+    ):
+        problems.append(
+            f"{relative}: body-sync must complete body preflight before the GitHub mutation"
+        )
+    return problems
+
+
+def validate_pr_body_sync_template_contract(repository_root: Path) -> list[str]:
+    """Validate the checked-in source used to render the complete PR body."""
+    path = repository_root / PR_BODY_SYNC_TEMPLATE_PATH
+    relative = PR_BODY_SYNC_TEMPLATE_PATH.as_posix()
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        return [f"{relative}: pull-request body template is unreadable: {error}"]
+    if len(payload) > 1 * 1024 * 1024:
+        return [f"{relative}: pull-request body template exceeds the 1 MiB safety cap"]
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        return [f"{relative}: pull-request body template is not valid UTF-8: {error}"]
+    without_crlf = text.replace("\r\n", "")
+    if "\r" in without_crlf or ("\r\n" in text and "\n" in without_crlf):
+        return [
+            f"{relative}: pull-request body template must use one consistent line ending"
+        ]
+    marker_pattern = re.compile(
+        r"(?m)^\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*(?=\r?$)"
+    )
+    markers = list(marker_pattern.finditer(text))
+    if len(markers) != 1 or markers[0].start() != 0:
+        return [
+            f"{relative}: pull-request body template must begin with exactly one trusted template marker"
+        ]
+    if (
+        "<!-- repo-scaffold:pr-head:start -->" in text
+        or "<!-- repo-scaffold:pr-head:end -->" in text
+    ):
+        return [
+            f"{relative}: pull-request body template must not contain legacy partial head markers"
+        ]
+    placeholders = re.findall(r"\{\{([A-Za-z][A-Za-z0-9_]*)\}\}", text)
+    unsupported = sorted(set(placeholders) - {"HEAD_SHA", "HEAD_REPOSITORY"})
+    if unsupported:
+        return [
+            f"{relative}: unsupported pull-request body placeholders: {', '.join(unsupported)}"
+        ]
+    missing = sorted({"HEAD_SHA", "HEAD_REPOSITORY"} - set(placeholders))
+    if missing:
+        return [
+            f"{relative}: pull-request body template must bind {', '.join(missing)}"
+        ]
+    managed_markers = re.findall(
+        r"(?m)^<!-- repo-scaffold:pr-body-managed -->[ \t]*(?=\r?$)", text
+    )
+    if len(managed_markers) != 1:
+        return [
+            f"{relative}: pull-request body template must contain exactly one managed-body marker"
+        ]
+    template_marker_end = markers[0].end()
+    line_ending = "\r\n" if "\r\n" in text else "\n"
+    managed_start = text.find(managed_markers[0])
+    if managed_start != template_marker_end + len(line_ending):
+        return [
+            f"{relative}: managed-body marker must immediately follow the template marker"
+        ]
+    return []
 
 
 def read_front_matter(path: Path) -> tuple[Any, str]:
@@ -8476,6 +8976,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                     "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
                     "skills/repo-scaffold/scripts/scorecard_preflight.py",
                 },
                 "github-actions-workflow-permissions-syntax": {
@@ -8485,6 +8986,8 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 },
                 "github-actions-workflow-runs-api": {
                     "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
                 },
                 "github-pull-request-target-policy": {
                     "README.md",
@@ -8552,6 +9055,43 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     ".github/workflows/release.yml",
                     "skills/repo-scaffold/assets/workflows/release.yml",
                 },
+                "github-release-asset-upload-api": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                },
+                "github-rest-unsafe-conditional-requests": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                },
+                "github-actions-workflow-ref-selection": {
+                    "README.md",
+                    ".github/workflows/action-pin-sync.yml",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                },
+                "github-actions-pull-request-merge-workflow-source": {
+                    "README.md",
+                    ".github/workflows/release.yml",
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+                    "tests/test_branch_protection_preflight.py",
+                },
+                "github-actions-reusable-workflow-caller-context": {
+                    ".github/workflows/release.yml",
+                    ".github/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release.yml",
+                    "skills/repo-scaffold/assets/workflows/release-please.yml",
+                    "skills/repo-scaffold/assets/workflows/release-tag.yml",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/references/workflow-contracts.md",
+                },
                 "github-pull-requests-api": {
                     "scripts/check_code_scanning_alerts.py",
                     "skills/repo-scaffold/scripts/branch_protection_preflight.py",
@@ -8595,6 +9135,15 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 "github-repository-labels-api": {
                     "skills/repo-scaffold/references/github-setup.md",
                 },
+                "github-repository-labeler-action-permissions": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/labeler.yml",
+                    "skills/repo-scaffold/assets/labeler.yml",
+                },
+                "github-actions-stale-label-contract": {
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/stale.yml",
+                },
                 "github-branch-protection-status-checks": {
                     "README.md",
                     "skills/repo-scaffold/SKILL.md",
@@ -8625,6 +9174,14 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/scripts/security_features_preflight.py",
+                },
+                "github-secret-protection-eligibility": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                },
+                "github-push-protection-secret-protection-entitlement": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
                 },
                 "github-repository-security-features-api": {
                     "skills/repo-scaffold/references/github-setup.md",
@@ -9512,6 +10069,8 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_scorecard_manual_dispatch,
         validate_action_pin_sync_contract,
         validate_required_check_concurrency,
+        validate_pr_body_sync_template_contract,
+        validate_pr_body_sync_workflow_contract,
         validate_issue_templates,
         validate_release_notes_config,
         validate_dependabot,

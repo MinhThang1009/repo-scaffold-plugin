@@ -172,9 +172,9 @@
       "review-period-days": 90
     },
     {
-      "id": "claude-plugin-community-marketplace",
-      "label": "Claude Code community marketplace submission",
-      "url": "https://code.claude.com/docs/en/plugins",
+      "id": "claude-plugin-anthropic-directory-submission",
+      "label": "Claude Code Anthropic directory submission",
+      "url": "https://code.claude.com/docs/en/plugins/publish",
       "allowed-hosts": ["code.claude.com"],
       "paths": [
         "README.md",
@@ -183,10 +183,10 @@
         "skills/repo-scaffold/references/agent-compatibility.vi.md"
       ],
       "required-markers": [
-        "claude-community",
-        "in-app forms"
+        "developer portal",
+        "paid claude.ai plan"
       ],
-      "reviewed-on": "2026-09-01",
+      "reviewed-on": "2026-09-26",
       "review-period-days": 90
     },
     {
@@ -366,14 +366,16 @@
         "skills/repo-scaffold/references/github-setup.md",
         "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
         "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
+        "skills/repo-scaffold/scripts/codeql_preflight.py",
         "skills/repo-scaffold/scripts/scorecard_preflight.py"
       ],
       "required-markers": [
         "allowed_actions",
         "patterns_allowed",
+        "enabled",
         "only applies to public repositories"
       ],
-      "reviewed-on": "2026-09-07",
+      "reviewed-on": "2026-09-25",
       "review-period-days": 90
     },
     {
@@ -401,7 +403,9 @@
       "url": "https://docs.github.com/en/rest/actions/workflow-runs",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
-        "skills/repo-scaffold/references/github-setup.md"
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+        "tests/test_branch_protection_preflight.py"
       ],
       "required-markers": [
         "Get a workflow run",
@@ -443,9 +447,11 @@
       "required-markers": [
         "code-scanning/default-setup",
         "default setup configuration",
-        "state"
+        "state",
+        "Administration",
+        "403"
       ],
-      "reviewed-on": "2026-09-07",
+      "reviewed-on": "2026-09-25",
       "review-period-days": 90
     },
     {
@@ -604,9 +610,108 @@
       "required-markers": [
         "List releases",
         "Get the latest release",
-        "immutable"
+        "immutable",
+        "digest"
       ],
-      "reviewed-on": "2026-09-07",
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-release-asset-upload-api",
+      "label": "GitHub release asset upload and replacement behavior",
+      "url": "https://docs.github.com/en/rest/releases/assets",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        ".github/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release.yml"
+      ],
+      "required-markers": [
+        "Upload a release asset",
+        "same filename as another uploaded asset",
+        "digest"
+      ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-rest-unsafe-conditional-requests",
+      "label": "GitHub REST conditional request support for unsafe methods",
+      "url": "https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        ".github/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release.yml"
+      ],
+      "required-markers": [
+        "Conditional requests for unsafe methods",
+        "are not supported unless otherwise noted in the documentation for a specific endpoint"
+      ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-workflow-ref-selection",
+      "label": "GitHub Actions workflow version selected by event ref",
+      "url": "https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "README.md",
+        ".github/workflows/action-pin-sync.yml",
+        ".github/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release.yml",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/references/workflow-contracts.md"
+      ],
+      "required-markers": [
+        "associated commit SHA or Git ref",
+        "Each workflow run will use the version of the workflow",
+        "GITHUB_REF"
+      ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-pull-request-merge-workflow-source",
+      "label": "GitHub pull_request merge workflow source",
+      "url": "https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "README.md",
+        ".github/workflows/release.yml",
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/assets/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release-tag.yml",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/branch_protection_preflight.py",
+        "tests/test_branch_protection_preflight.py"
+      ],
+      "required-markers": [
+        "Tip commit pushed to the ref",
+        "pull_request",
+        "pull_request_target",
+        "merge_group"
+      ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-reusable-workflow-caller-context",
+      "label": "GitHub reusable workflow caller context",
+      "url": "https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        ".github/workflows/release.yml",
+        ".github/workflows/release-please.yml",
+        "skills/repo-scaffold/assets/workflows/release.yml",
+        "skills/repo-scaffold/assets/workflows/release-please.yml",
+        "skills/repo-scaffold/assets/workflows/release-tag.yml",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/references/workflow-contracts.md"
+      ],
+      "required-markers": ["`github` context", "caller workflow"],
+      "reviewed-on": "2026-09-25",
       "review-period-days": 90
     },
     {
@@ -839,7 +944,7 @@
         "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml"
       ],
       "required-markers": ["merge queue", "auto-merge", "squash"],
-      "reviewed-on": "2026-09-07",
+      "reviewed-on": "2026-09-25",
       "review-period-days": 90
     },
     {
@@ -854,6 +959,35 @@
       ],
       "required-markers": ["Dependabot alerts", "Secret scanning"],
       "reviewed-on": "2026-09-07",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-secret-protection-eligibility",
+      "label": "GitHub Secret Protection eligibility",
+      "url": "https://docs.github.com/en/code-security/concepts/secret-security/secret-scanning",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md"
+      ],
+      "required-markers": [
+        "GitHub Secret Protection",
+        "Enterprise Managed Users"
+      ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-push-protection-secret-protection-entitlement",
+      "label": "GitHub repository push-protection eligibility",
+      "url": "https://docs.github.com/en/code-security/concepts/secret-security/push-protection",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md"
+      ],
+      "required-markers": ["push protection", "Secret Protection"],
+      "reviewed-on": "2026-09-25",
       "review-period-days": 90
     },
     {
@@ -943,8 +1077,51 @@
         "skills/repo-scaffold/scripts/security_features_preflight.py",
         "skills/repo-scaffold/scripts/workflow_installation_preflight.py"
       ],
-      "required-markers": ["REST API endpoints for repositories"],
-      "reviewed-on": "2026-09-07",
+      "required-markers": [
+        "REST API endpoints for repositories",
+        "delete_branch_on_merge",
+        "squash_merge_commit_title",
+        "PR_TITLE",
+        "COMMIT_OR_PR_TITLE"
+      ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-repository-labeler-action-permissions",
+      "label": "Pinned GitHub Labeler action permissions and label prerequisites",
+      "url": "https://raw.githubusercontent.com/actions/labeler/bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13/README.md",
+      "allowed-hosts": ["raw.githubusercontent.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/assets/workflows/labeler.yml",
+        "skills/repo-scaffold/assets/labeler.yml"
+      ],
+      "required-markers": [
+        "Adding Existing Labels",
+        "pull-requests: write",
+        "issues: write",
+        "Manual Label Creation as an Alternative to Granting issues write Permission"
+      ],
+      "reviewed-on": "2026-09-25",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-actions-stale-label-contract",
+      "label": "Pinned GitHub stale action label inputs",
+      "url": "https://raw.githubusercontent.com/actions/stale/4391f3da665fdf50b6810c1a66712fb9ba21aa93/README.md",
+      "allowed-hosts": ["raw.githubusercontent.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/assets/workflows/stale.yml"
+      ],
+      "required-markers": [
+        "stale-issue-label",
+        "stale-pr-label",
+        "Stale",
+        "exempt-issue-labels"
+      ],
+      "reviewed-on": "2026-09-25",
       "review-period-days": 90
     },
     {

@@ -58,8 +58,10 @@ claude plugin marketplace add MinhThang1009/repo-scaffold-plugin
 claude plugin install repo-scaffold@repo-scaffold-plugins
 ```
 
-Để có public listing Claude Code bên thứ ba, hãy nộp plugin vào marketplace
-`claude-community` của Anthropic qua một trong các form trong app hiện hành.
+Để có public listing bên thứ ba, hãy nộp plugin qua [developer portal cho
+directory của Anthropic](https://code.claude.com/docs/en/plugins/publish); việc
+nộp yêu cầu gói claude.ai trả phí. Listing trong directory xuất hiện trên
+claude.ai và Cowork, đồng thời đến Claude Code qua account sync.
 `claude-plugins-official` là marketplace được Anthropic tuyển chọn riêng.
 Marketplace `repo-scaffold-plugins` của repository này vẫn là nguồn phân phối
 private hoặc local riêng biệt.

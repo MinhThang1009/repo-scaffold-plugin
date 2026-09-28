@@ -6352,3 +6352,11 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         ):
             self.assertEqual(workflow_installation_preflight.main(), 2)
         self.assertIn("inconclusive", print_mock.call_args.args[0])
+
+        setup = (
+            PLUGIN_ROOT / "skills" / "repo-scaffold" / "references" / "github-setup.md"
+        ).read_text(encoding="utf-8")
+        installation = setup.split("## Workflow installation preflight", 1)[1].split(
+            "\n## ", 1
+        )[0]
+        self.assertIn('workflowPreflightResult.repository, "OWNER/REPO"', installation)

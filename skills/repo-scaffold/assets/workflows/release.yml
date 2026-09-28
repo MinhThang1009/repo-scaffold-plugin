@@ -37,6 +37,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.workflow_ref == format('{0}/.github/workflows/release.yml@refs/heads/{1}', github.repository, github.event.repository.default_branch)) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.workflow_ref == format('{0}/.github/workflows/release-please.yml@refs/heads/{1}', github.repository, github.event.repository.default_branch)) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.tag == github.ref_name && inputs.commit_sha == github.sha && github.workflow_ref == format('{0}/.github/workflows/release-tag.yml@{1}', github.repository, github.ref)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -185,6 +186,7 @@ jobs:
 
   attest:
     needs: build
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.workflow_ref == format('{0}/.github/workflows/release.yml@refs/heads/{1}', github.repository, github.event.repository.default_branch)) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.workflow_ref == format('{0}/.github/workflows/release-please.yml@refs/heads/{1}', github.repository, github.event.repository.default_branch)) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.tag == github.ref_name && inputs.commit_sha == github.sha && github.workflow_ref == format('{0}/.github/workflows/release-tag.yml@{1}', github.repository, github.ref)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -222,6 +224,7 @@ jobs:
 
   publish:
     needs: [build, attest]
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.workflow_ref == format('{0}/.github/workflows/release.yml@refs/heads/{1}', github.repository, github.event.repository.default_branch)) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.workflow_ref == format('{0}/.github/workflows/release-please.yml@refs/heads/{1}', github.repository, github.event.repository.default_branch)) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.tag == github.ref_name && inputs.commit_sha == github.sha && github.workflow_ref == format('{0}/.github/workflows/release-tag.yml@{1}', github.repository, github.ref)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -279,6 +282,128 @@ jobs:
             done
           done
 
+          expected_asset_manifest='[]'
+          for asset in "${assets[@]}"; do
+            asset_size="$(wc -c <"${asset}" | tr -d '[:space:]')"
+            asset_digest="sha256:$(sha256sum -- "${asset}" | cut -d ' ' -f 1)"
+            expected_asset_manifest="$(
+              jq -cn \
+                --argjson current "${expected_asset_manifest}" \
+                --arg name "${asset##*/}" \
+                --arg size "${asset_size}" \
+                --arg digest "${asset_digest}" \
+                '$current + [{name: $name, size: ($size | tonumber), digest: $digest, state: "uploaded"}]'
+            )"
+          done
+
+          read_release_record() {
+            local page page_count response matching_records='[]'
+            local page_budget=16
+            for ((page = 1; page <= page_budget; page++)); do
+              if ! response="$(
+                gh api --hostname github.com \
+                  "repos/${GITHUB_REPOSITORY}/releases?per_page=100&page=${page}" \
+                  --jq '{count: length, matching: [.[] | select(.tag_name == env.RELEASE_TAG)]}'
+              )"; then
+                echo "::error::Could not re-read release state for the exact tag." >&2
+                return 1
+              fi
+              if ! jq -e '
+                type == "object" and
+                (.count | type == "number" and . >= 0 and . <= 100) and
+                (.matching | type == "array")
+              ' <<<"${response}" >/dev/null; then
+                echo "::error::Release-list API returned malformed state." >&2
+                return 1
+              fi
+              page_count="$(jq -r '.count' <<<"${response}")"
+              matching_records="$(
+                jq -cn \
+                  --argjson current "${matching_records}" \
+                  --argjson next "$(jq -c '.matching' <<<"${response}")" \
+                  '$current + $next'
+              )"
+              if [[ "${page_count}" -lt 100 ]]; then
+                break
+              fi
+              if [[ "${page}" -eq "${page_budget}" ]]; then
+                echo "::error::Release history exceeded the ${page_budget}-page verification limit." >&2
+                return 1
+              fi
+            done
+            if ! jq -e 'type == "array" and length <= 1' <<<"${matching_records}" >/dev/null; then
+              echo "::error::Multiple releases use the exact requested tag." >&2
+              return 1
+            fi
+            if [[ "$(jq 'length' <<<"${matching_records}")" -eq 0 ]]; then
+              printf '%s' ''
+            else
+              jq -c '.[0]' <<<"${matching_records}"
+            fi
+          }
+
+          assert_draft_release() {
+            local release_record
+            release_record="$(read_release_record)" || return 1
+            if [[ -z "${release_record}" ]] || ! jq -e --arg tag "${RELEASE_TAG}" '
+              .tag_name == $tag and .draft == true and .immutable == false
+            ' <<<"${release_record}" >/dev/null; then
+              echo "::error::The exact release is not verified as an editable draft." >&2
+              return 1
+            fi
+          }
+
+          prepare_missing_release_assets() {
+            local release_record asset asset_name
+            assets_to_upload=()
+            release_record="$(read_release_record)" || return 1
+            if [[ -z "${release_record}" ]] || ! jq -e \
+              --arg tag "${RELEASE_TAG}" \
+              --argjson expected "${expected_asset_manifest}" '
+                .tag_name == $tag and .draft == true and .immutable == false and
+                (.assets | type) == "array" and
+                ([.assets[].name] | length) == ([.assets[].name] | unique | length) and
+                all(.assets[]; . as $asset |
+                  any($expected[];
+                    .name == $asset.name and .size == $asset.size and
+                    .digest == $asset.digest and .state == $asset.state
+                  )
+                )
+              ' <<<"${release_record}" >/dev/null; then
+              echo "::error::Draft release assets contain an unexpected or conflicting entry; preserving the draft without overwriting assets." >&2
+              return 1
+            fi
+            for asset in "${assets[@]}"; do
+              asset_name="${asset##*/}"
+              if ! jq -e --arg name "${asset_name}" \
+                'any(.assets[]; .name == $name)' <<<"${release_record}" >/dev/null; then
+                assets_to_upload+=("${asset}")
+              fi
+            done
+          }
+
+          assert_release_assets() {
+            local expected_draft_state="$1" release_record
+            release_record="$(read_release_record)" || return 1
+            if [[ -z "${release_record}" ]] || ! jq -e \
+              --arg tag "${RELEASE_TAG}" \
+              --arg draft_state "${expected_draft_state}" \
+              --argjson expected "${expected_asset_manifest}" '
+                .tag_name == $tag and
+                (if $draft_state == "draft"
+                 then .draft == true and .immutable == false
+                 else .draft == false and (.immutable | type == "boolean")
+                 end) and
+                (if (.assets | type) != "array" then false else
+                  ([.assets[] | {name, size, digest, state}] | sort_by(.name)) ==
+                    ($expected | sort_by(.name))
+                 end)
+              ' <<<"${release_record}" >/dev/null; then
+              echo "::error::The release state or uploaded asset manifest did not match the verified tag and build artifacts." >&2
+              return 1
+            fi
+          }
+
           # Re-check immediately before mutating the Release. Build input remains
           # pinned to RELEASE_COMMIT_SHA even if a tag is moved meanwhile.
           verify_tag_target() {
@@ -332,36 +457,57 @@ jobs:
             # Keep a moved tag from crossing the publication boundary. The second
             # check detects the remaining request-sized race window; immutable
             # releases lock the tag when publication succeeds.
+            assert_release_assets draft
             verify_tag_target
             gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
             if ! verify_tag_target; then
               echo "::error::The Release was published while its tag target changed. Treat this as a release-integrity incident."
               return 1
             fi
+            assert_release_assets published
           }
 
-          release_state="$(
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '.[] | select(.tag_name == env.RELEASE_TAG) | [.draft, .immutable] | @tsv'
-          )"
-          read -r is_draft is_immutable <<<"${release_state}"
+          release_record="$(read_release_record)"
+          if [[ -z "${release_record}" ]]; then
+            release_draft_state=""
+            release_immutable_state=""
+          else
+            release_draft_state="$(jq -r '.draft' <<<"${release_record}")"
+            release_immutable_state="$(jq -r '.immutable' <<<"${release_record}")"
+          fi
 
-          if [[ -z "${release_state}" ]]; then
+          if [[ -z "${release_record}" ]]; then
             # Never let gh recreate a tag that disappeared after verification.
+            verify_tag_target
             gh release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --verify-tag --draft \
               --title "${RELEASE_TAG}" --generate-notes
-            gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" "${assets[@]}" --clobber
+            assert_draft_release
+            verify_tag_target
+            assets_to_upload=("${assets[@]}")
+            if [[ "${#assets_to_upload[@]}" -gt 0 ]]; then
+              gh release upload "${RELEASE_TAG}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                "${assets_to_upload[@]}"
+            fi
+            assert_release_assets draft
             publish_draft
-          elif [[ "${is_draft}" == "true" ]]; then
-            gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" "${assets[@]}" --clobber
+          elif [[ "${release_draft_state}" == "true" && "${release_immutable_state}" == "false" ]]; then
+            assert_draft_release
+            prepare_missing_release_assets
+            verify_tag_target
+            if [[ "${#assets_to_upload[@]}" -gt 0 ]]; then
+              gh release upload "${RELEASE_TAG}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                "${assets_to_upload[@]}"
+            fi
+            assert_release_assets draft
             publish_draft
-          elif [[ "${is_immutable}" == "true" ]]; then
+          elif [[ "${release_immutable_state}" == "true" ]]; then
             echo "::error::The Release is already published and immutable; its assets cannot be changed."
             exit 1
           else
-            # `gh release upload --clobber` deletes an existing asset before it uploads
-            # the replacement. A failed upload would therefore damage a published
-            # mutable Release, so reruns may repair drafts but never published Releases.
+            # Never add or replace assets on a published mutable Release. Reruns
+            # may repair drafts without replacing any existing asset.
             echo "::error::The Release is already published and mutable; refusing to replace public assets. Create a new version tag instead."
             exit 1
           fi

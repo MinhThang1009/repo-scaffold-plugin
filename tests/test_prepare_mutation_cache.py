@@ -33,6 +33,7 @@ class MutationCacheTests(unittest.TestCase):
             "tests/test_alpha.py": ("def test_alpha():\n    assert True\n"),
             "pyproject.toml": "[tool.mutmut]\n",
             "requirements-mutation.txt": "mutmut==3.7.0\n",
+            ".github/workflows/mutation-testing.yml": "name: Mutation testing\n",
             "README.md": "# Fixture\n",
         }
         for relative, content in files.items():
@@ -76,6 +77,126 @@ class MutationCacheTests(unittest.TestCase):
             "stale", encoding="utf-8"
         )
         prepare_mutation_cache.record_cache(root)
+
+    def write_shard_plan(self, root: Path, *, invalid: bool = False) -> None:
+        path = root / "mutants" / prepare_mutation_cache.SHARD_PLAN_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        document = (
+            {"schema_version": 1, "shards": [["scripts.alpha.killed"]]}
+            if not invalid
+            else {"schema_version": 0, "shards": [["scripts.alpha.killed"]]}
+        )
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    def test_record_and_prepare_preserve_a_valid_shard_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            self.write_state(root, "scripts/alpha.py", {"scripts.alpha.killed": 1})
+            self.write_shard_plan(root)
+            (root / "mutants" / "mutmut-stats.json").write_text("{}", encoding="utf-8")
+
+            prepare_mutation_cache.record_cache(root)
+            manifest = prepare_mutation_cache.load_manifest(
+                root / "mutants" / prepare_mutation_cache.MANIFEST_NAME
+            )
+            self.assertIn(prepare_mutation_cache.SHARD_PLAN_NAME, manifest.state_hashes)
+            result = prepare_mutation_cache.prepare_cache(root)
+
+            self.assertFalse(result.full_reset)
+            self.assertTrue(
+                (root / "mutants" / prepare_mutation_cache.SHARD_PLAN_NAME).is_file()
+            )
+            self.assertTrue(
+                (
+                    root / "mutants" / prepare_mutation_cache.REUSABLE_SOURCES_NAME
+                ).is_file()
+            )
+
+    def test_invalid_shard_plan_forces_full_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            self.write_state(root, "scripts/alpha.py", {"scripts.alpha.killed": 1})
+            self.write_shard_plan(root)
+            (root / "mutants" / "mutmut-stats.json").write_text("{}", encoding="utf-8")
+            prepare_mutation_cache.record_cache(root)
+            self.write_shard_plan(root, invalid=True)
+
+            result = prepare_mutation_cache.prepare_cache(root)
+
+            self.assertTrue(result.full_reset)
+            self.assertEqual(list((root / "mutants").iterdir()), [])
+
+    def test_shard_plan_validator_rejects_unsafe_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            mutation_root = root / "mutants"
+            mutation_root.mkdir()
+            plan = mutation_root / prepare_mutation_cache.SHARD_PLAN_NAME
+
+            with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "could not read"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text('{"schema_version":1,"schema_version":1}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "could not read"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text('{"schema_version":1,"shards":[["one"]]}', encoding="utf-8")
+            with mock.patch.object(prepare_mutation_cache, "MAX_META_BYTES", 0):
+                with self.assertRaisesRegex(ValueError, "oversized"):
+                    prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            invalid_documents: tuple[object, ...] = (
+                [],
+                {"schema_version": 0, "shards": [["one"]]},
+                {"schema_version": 1, "shards": "one"},
+                {"schema_version": 1, "shards": []},
+                {
+                    "schema_version": 1,
+                    "shards": [[str(index) for index in range(100_001)]],
+                },
+            )
+            for document in invalid_documents:
+                with self.subTest(
+                    document=document if document == [] else type(document)
+                ):
+                    plan.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "invalid"):
+                        prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text('{"schema_version":1,"shards":[[]]}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid shard"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            with mock.patch.object(prepare_mutation_cache, "MAX_MUTANTS_PER_SHARD", 0):
+                plan.write_text(
+                    '{"schema_version":1,"shards":[["one"]]}', encoding="utf-8"
+                )
+                with self.assertRaisesRegex(ValueError, "invalid shard"):
+                    prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            invalid_names = (None, "", "a" * 4097, "bad\x00", "bad\r", "bad\n")
+            for name in invalid_names:
+                with self.subTest(name=repr(name)):
+                    plan.write_text(
+                        json.dumps({"schema_version": 1, "shards": [[name]]}),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(ValueError, "invalid mutant name"):
+                        prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
+
+            plan.write_text(
+                '{"schema_version":1,"shards":[["same"],["same"]]}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate mutants"):
+                prepare_mutation_cache._validate_shard_plan(plan, mutation_root)
 
     def test_record_and_prepare_preserve_only_killed_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -193,6 +314,9 @@ class MutationCacheTests(unittest.TestCase):
             ),
             lambda root: (root / "requirements-mutation.txt").write_text(
                 "mutmut==3.8.0\n", encoding="utf-8"
+            ),
+            lambda root: (root / ".github/workflows/mutation-testing.yml").write_text(
+                "name: Changed mutation testing\n", encoding="utf-8"
             ),
             lambda root: (root / "tests" / "test_alpha.py").unlink(),
         )
@@ -506,6 +630,7 @@ class MutationCacheTests(unittest.TestCase):
                         "type_check_error_by_key": [],
                     }
                 ),
+                '{"exit_code_by_key":{},"durations_by_key":{"mutant":NaN},"estimated_durations_by_key":{}}',
             )
             for document in metadata_documents:
                 with self.subTest(document=document):
@@ -570,6 +695,21 @@ class MutationCacheTests(unittest.TestCase):
                 prepare_mutation_cache._sanitize_restored_state(root, {})
 
             unlink.assert_called_once_with(linked)
+
+    def test_state_sanitizer_rejects_oversized_aggregate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "scripts" / "alpha.py"
+            state.parent.mkdir()
+            state.write_text("state", encoding="utf-8")
+            digest = prepare_mutation_cache._sha256(state.read_bytes())
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_STATE_BYTES", 1),
+                self.assertRaisesRegex(ValueError, "failed integrity"),
+            ):
+                prepare_mutation_cache._sanitize_restored_state(
+                    root, {"scripts/alpha.py": digest}
+                )
 
     def test_cache_cleanup_removes_directory_reparse_points_with_rmdir(self) -> None:
         mutation_root = mock.Mock(spec=Path)
@@ -759,6 +899,43 @@ class MutationCacheTests(unittest.TestCase):
                 all(path.name not in before.control_hashes for path in coverage_files)
             )
 
+    def test_mutation_input_fingerprint_tracks_only_verdict_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            before = prepare_mutation_cache.mutation_input_fingerprint(root)
+
+            (root / "README.md").write_text("# Changed\n", encoding="utf-8")
+            self.assertEqual(
+                before, prepare_mutation_cache.mutation_input_fingerprint(root)
+            )
+
+            workflow = root / ".github/workflows/mutation-testing.yml"
+            workflow.write_text("name: Changed mutation testing\n", encoding="utf-8")
+            self.assertNotEqual(
+                before, prepare_mutation_cache.mutation_input_fingerprint(root)
+            )
+            workflow.write_text("name: Mutation testing\n", encoding="utf-8")
+
+            source = root / "scripts" / "alpha.py"
+            source.write_text("def alpha():\n    return 2\n", encoding="utf-8")
+            self.assertNotEqual(
+                before, prepare_mutation_cache.mutation_input_fingerprint(root)
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    prepare_mutation_cache.main(
+                        ["fingerprint", "--repository-root", str(root)]
+                    ),
+                    0,
+                )
+            self.assertEqual(
+                output.getvalue().strip(),
+                prepare_mutation_cache.mutation_input_fingerprint(root),
+            )
+
     def test_main_and_entrypoint_report_operations_and_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -822,13 +999,13 @@ class MutationCacheTests(unittest.TestCase):
                 "Recorded mutation cache inputs and progress", output.getvalue()
             )
 
-    def test_help_documents_both_cache_operations(self) -> None:
+    def test_help_documents_cache_operations(self) -> None:
         output = StringIO()
         with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
             prepare_mutation_cache.parse_args(["--help"])
 
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("{prepare,record}", output.getvalue())
+        self.assertIn("{prepare,record,fingerprint}", output.getvalue())
 
 
 if __name__ == "__main__":

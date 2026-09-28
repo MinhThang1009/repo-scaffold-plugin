@@ -74,6 +74,35 @@ class PlanningMutmut(FakeMutmut):
         super().__init__()
         self.collect_source_file_mutation_data = self._collect
 
+        class Config:
+            @staticmethod
+            def ensure_loaded() -> None:
+                return None
+
+        self.Config = Config
+
+    @staticmethod
+    def copy_src_dir() -> None:
+        return None
+
+    @staticmethod
+    def copy_also_copy_files() -> None:
+        return None
+
+    @staticmethod
+    def setup_source_paths() -> None:
+        return None
+
+    @staticmethod
+    def store_lines_covered_by_tests() -> None:
+        return None
+
+    def create_mutants(self, max_children: int) -> None:
+        self.arguments = ([], max_children)
+
+    def _run(self, names: list[str], max_children: int) -> None:
+        raise AssertionError("plan generation must not execute mutant tests")
+
     @staticmethod
     def _collect(
         *, mutant_names: list[str]
@@ -87,9 +116,39 @@ class PlanningMutmut(FakeMutmut):
             {},
         )
 
-    def _run(self, names: list[str], max_children: int) -> None:
-        self.arguments = (names, max_children)
-        self.collect_source_file_mutation_data(mutant_names=names)
+
+class ModernPlanningMutmut(PlanningMutmut):
+    @staticmethod
+    def config() -> None:
+        return None
+
+    @staticmethod
+    def set_mutant_under_test(name: str | None) -> None:
+        if name is not None:
+            os.environ["MUTANT_UNDER_TEST"] = name
+
+
+class ShardMutmut(FakeMutmut):
+    class Config:
+        @staticmethod
+        def ensure_loaded() -> None:
+            return None
+
+    def __init__(self, verdicts: dict[str, int | None]) -> None:
+        super().__init__()
+        self.verdicts = verdicts
+
+    def collect_source_file_mutation_data(
+        self, *, mutant_names: list[str]
+    ) -> tuple[list[tuple[object, str, int | None]], dict[str, object]]:
+        return (
+            [
+                (object(), name, value)
+                for name, value in self.verdicts.items()
+                if not mutant_names or name in mutant_names
+            ],
+            {},
+        )
 
 
 class MutationRunnerTests(unittest.TestCase):
@@ -172,6 +231,71 @@ class MutationRunnerTests(unittest.TestCase):
             self.assertEqual(Path.cwd(), previous_cwd)
             self.assertEqual(implementation.create_mutants_for_file, original)
             self.assertFalse(marker.exists())
+
+    def test_shard_reuse_runs_only_mutants_without_cached_kills(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = self.write_marker(root, ["scripts/alpha.py"])
+            implementation = ShardMutmut({"killed": 1, "pending": None})
+            with mock.patch.object(
+                run_mutation_testing.multiprocessing,
+                "get_start_method",
+                return_value="fork",
+            ):
+                run_mutation_testing.run_mutation_testing(
+                    root,
+                    max_children=1,
+                    mutant_names=["killed", "pending"],
+                    mutmut_main=implementation,
+                )
+            self.assertEqual(implementation.arguments, (["pending"], 1))
+            self.assertFalse(marker.exists())
+
+    def test_shard_reuse_skips_a_fully_cached_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = self.write_marker(root, ["scripts/alpha.py"])
+            implementation = ShardMutmut({"killed": 3})
+            with mock.patch.object(
+                run_mutation_testing.multiprocessing,
+                "get_start_method",
+                return_value="fork",
+            ):
+                run_mutation_testing.run_mutation_testing(
+                    root,
+                    max_children=1,
+                    mutant_names=["killed"],
+                    mutmut_main=implementation,
+                )
+            self.assertIsNone(implementation.arguments)
+            self.assertFalse(marker.exists())
+
+    def test_pending_shard_lookup_is_exact_and_preserves_assignment_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            implementation = ShardMutmut(
+                {"first": None, "second": None, "killed": 1, "unassigned": None}
+            )
+            with mock.patch.object(
+                implementation,
+                "collect_source_file_mutation_data",
+                wraps=implementation.collect_source_file_mutation_data,
+            ) as collector:
+                pending = run_mutation_testing._pending_reusable_mutants(
+                    root, implementation, ["second", "killed", "first"]
+                )
+            self.assertEqual(pending, ["second", "first"])
+            collector.assert_called_once_with(mutant_names=[])
+
+    def test_pending_shard_lookup_rejects_missing_assignments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous_cwd = Path.cwd()
+            with self.assertRaisesRegex(ValueError, "missing a shard assignment"):
+                run_mutation_testing._pending_reusable_mutants(
+                    root, ShardMutmut({"killed": 1}), ["killed", "missing"]
+                )
+            self.assertEqual(Path.cwd(), previous_cwd)
 
     def test_marker_loader_rejects_malformed_and_unsafe_documents(self) -> None:
         invalid_documents: tuple[object, ...] = (
@@ -288,9 +412,11 @@ class MutationRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             implementation = PlanningMutmut()
-            path = run_mutation_testing.prepare_mutation_shards(
-                root, max_children=4, shard_count=2, mutmut_main=implementation
-            )
+            with mock.patch.dict(os.environ, {"MUTANT_UNDER_TEST": "existing-run"}):
+                path = run_mutation_testing.prepare_mutation_shards(
+                    root, max_children=4, shard_count=2, mutmut_main=implementation
+                )
+                self.assertEqual(os.environ.get("MUTANT_UNDER_TEST"), "existing-run")
             self.assertEqual(implementation.arguments, ([], 4))
             self.assertEqual(
                 json.loads(path.read_text(encoding="utf-8"))["shards"],
@@ -299,6 +425,87 @@ class MutationRunnerTests(unittest.TestCase):
                     ["scripts.alpha__mutmut_2"],
                 ],
             )
+
+    def test_planning_supports_current_mutmut_config_api(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            implementation = ModernPlanningMutmut()
+            path = run_mutation_testing.prepare_mutation_shards(
+                root, max_children=4, shard_count=2, mutmut_main=implementation
+            )
+            self.assertTrue(path.is_file())
+            self.assertNotIn("MUTANT_UNDER_TEST", os.environ)
+
+    def test_planning_rejects_invalid_or_linked_repository_roots(self) -> None:
+        with self.assertRaisesRegex(ValueError, "repository root"):
+            run_mutation_testing.prepare_mutation_shards(
+                Path("missing-mutation-repository"),
+                max_children=4,
+                shard_count=2,
+                mutmut_main=PlanningMutmut(),
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                mock.patch.object(
+                    run_mutation_testing,
+                    "_is_link_or_reparse",
+                    side_effect=lambda path: path == root,
+                ),
+                self.assertRaisesRegex(ValueError, "repository root is a link"),
+            ):
+                run_mutation_testing.prepare_mutation_shards(
+                    root,
+                    max_children=4,
+                    shard_count=2,
+                    mutmut_main=PlanningMutmut(),
+                )
+
+    def test_planning_reuse_requires_fork_process_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_marker(root, ["scripts/alpha.py"])
+            with (
+                mock.patch.object(
+                    run_mutation_testing.multiprocessing,
+                    "get_start_method",
+                    return_value="spawn",
+                ),
+                self.assertRaisesRegex(ValueError, "requires fork"),
+            ):
+                run_mutation_testing.prepare_mutation_shards(
+                    root,
+                    max_children=4,
+                    shard_count=2,
+                    mutmut_main=PlanningMutmut(),
+                )
+
+    def test_planning_restores_process_state_after_generation_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            implementation = PlanningMutmut()
+            original = implementation.create_mutants_for_file
+            previous_cwd = Path.cwd()
+            previous_marker = os.environ.get("MUTANT_UNDER_TEST")
+            with (
+                mock.patch.object(
+                    implementation,
+                    "create_mutants",
+                    side_effect=OSError("generation failed"),
+                ),
+                self.assertRaisesRegex(OSError, "generation failed"),
+            ):
+                run_mutation_testing.prepare_mutation_shards(
+                    root, max_children=4, shard_count=2, mutmut_main=implementation
+                )
+            self.assertEqual(Path.cwd(), previous_cwd)
+            self.assertEqual(implementation.create_mutants_for_file, original)
+            self.assertFalse(
+                root.joinpath(
+                    "mutants", run_mutation_testing.REUSABLE_SOURCES_NAME
+                ).exists()
+            )
+            self.assertEqual(os.environ.get("MUTANT_UNDER_TEST"), previous_marker)
 
     def test_shard_plan_rejects_invalid_names_shapes_and_indices(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
