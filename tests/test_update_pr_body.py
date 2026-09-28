@@ -112,6 +112,13 @@ class UpdatePullRequestBodyTests(unittest.TestCase):
                 HEAD_SHA,
                 HEAD_REPOSITORY,
             )
+        with self.assertRaisesRegex(ValueError, "mixes CRLF and LF"):
+            update_pr_body.render_body(
+                f"{TEMPLATE_MARKER}\r\n{MANAGED_BODY_MARKER}\n"
+                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
+                HEAD_SHA,
+                HEAD_REPOSITORY,
+            )
 
     def test_inserts_block_after_the_trusted_template_marker(self) -> None:
         body = f"{TEMPLATE_MARKER}\n\n## Purpose\nExplain the change.\n"
