@@ -161,9 +161,10 @@ jobs:
           import sys
           from pathlib import Path
 
-          marker = "<!-- repo-scaffold:pr-body-managed -->"
+          from scripts.update_pr_body import is_managed_body
+
           body = Path(sys.argv[1]).read_text(encoding="utf-8")
-          print("managed" if body.count(marker) == 1 else "unmanaged")
+          print("managed" if is_managed_body(body) else "unmanaged")
           PY
           )
           if [[ "$source_state" == 'unchanged' && "$managed_state" != 'managed' ]]; then
