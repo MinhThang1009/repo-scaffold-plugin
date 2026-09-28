@@ -7584,6 +7584,8 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         "Pull-request comparison is truncated; cannot prove template opt-in.",
         "if [[ \"$source_state\" == 'unchanged' ]]; then",
         '"repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"',
+        "python scripts/update_pr_body.py",
+        '--body-file "$body"',
         '"repos/$PR_HEAD_REPOSITORY/contents/.github/pr-body-template.md?ref=$PR_HEAD_SHA"',
         'template_payload="$RUNNER_TEMP/pr-body-template.json"',
         'template="$RUNNER_TEMP/pr-body-template.md"',

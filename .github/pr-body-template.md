@@ -18,8 +18,8 @@ Mutation planning and cache reuse could spend time on unnecessary execution and 
 
 ## Verification
 
-- `python -m pytest -q`: 1271 passed, 4 skipped, 2836 subtests passed.
-- Coverage-instrumented full suite: 1271 passed, 4 skipped; `coverage report --fail-under=100` reports 100.00% statement and branch coverage.
+- `python -m pytest -q`: 1272 passed, 4 skipped, 2837 subtests passed.
+- Coverage-instrumented full suite: 1272 passed, 4 skipped; `coverage report --fail-under=100` reports 100.00% statement and branch coverage.
 - `python scripts/validate_repository.py`, `python skills/repo-scaffold/scripts/validate_scaffold.py --repository-root . --template-root skills/repo-scaffold/assets`, and `python scripts/validate_workflows.py` passed.
 - `python -m ruff format --check skills scripts tests`, `python -m ruff check skills scripts tests`, the reviewed mypy command, compileall, markdownlint, and `claude plugin validate --strict .` passed.
 - The current pull-request body is rendered from this file at head `{{HEAD_SHA}}` in `{{HEAD_REPOSITORY}}`; mutation-quality remains a separate dispatched evidence path and is not claimed by this body.

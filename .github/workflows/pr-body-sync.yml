@@ -113,10 +113,6 @@ jobs:
           print("changed" if template_changed else "unchanged")
           PY
           )
-          if [[ "$source_state" == 'unchanged' ]]; then
-            printf 'Pull-request body source was not changed in this PR; leaving the body unchanged.\n'
-            exit 0
-          fi
           gh api --hostname github.com \
             "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"
           python - "$payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" <<'PY'
@@ -157,10 +153,20 @@ jobs:
           body_path.write_bytes(body.encode("utf-8"))
           PY
 
-          gh api --hostname github.com \
-            "repos/$PR_HEAD_REPOSITORY/contents/.github/pr-body-template.md?ref=$PR_HEAD_SHA" \
-            > "$template_payload"
-          python - "$template_payload" "$template" <<'PY'
+          if [[ "$source_state" == 'unchanged' ]]; then
+            python scripts/update_pr_body.py \
+              --body-file "$body" \
+              --output "$updated" \
+              --head-sha "$PR_HEAD_SHA"
+            if cmp -s "$body" "$updated"; then
+              printf 'Pull-request body source was not changed and the body is not opted in; leaving it unchanged.\n'
+              exit 0
+            fi
+          else
+            gh api --hostname github.com \
+              "repos/$PR_HEAD_REPOSITORY/contents/.github/pr-body-template.md?ref=$PR_HEAD_SHA" \
+              > "$template_payload"
+            python - "$template_payload" "$template" <<'PY'
           import base64
           import binascii
           import json
@@ -198,11 +204,12 @@ jobs:
           template_path.write_bytes(template)
           PY
 
-          python scripts/update_pr_body.py \
-            --template-file "$template" \
-            --output "$updated" \
-            --head-sha "$PR_HEAD_SHA" \
-            --head-repository "$PR_HEAD_REPOSITORY"
+            python scripts/update_pr_body.py \
+              --template-file "$template" \
+              --output "$updated" \
+              --head-sha "$PR_HEAD_SHA" \
+              --head-repository "$PR_HEAD_REPOSITORY"
+          fi
           python scripts/markdown_body_preflight.py --body-file "$updated"
           python scripts/pr_template_preflight.py \
             --title "$PR_TITLE" \
