@@ -6989,7 +6989,9 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             )
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
 
-        self.assertTrue(any("head, repository, and title" in item for item in problems))
+        self.assertTrue(
+            any("head, repository, title, and open state" in item for item in problems)
+        )
 
         without_final_state_guard = run.replace(
             'or payload.get("state") != "open"',
@@ -7007,7 +7009,9 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             )
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
 
-        self.assertTrue(any("head, repository, and title" in item for item in problems))
+        self.assertTrue(
+            any("head, repository, title, and open state" in item for item in problems)
+        )
 
         without_final_body_guard = run.replace(
             "if actual_body != expected_body:\n",

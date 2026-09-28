@@ -7659,7 +7659,7 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         or run.count('payload.get("state") != "open"') != 3
     ):
         problems.append(
-            f"{relative}: body-sync must revalidate the pull-request head, repository, and title at every API boundary"
+            f"{relative}: body-sync must revalidate the pull-request head, repository, title, and open state at every API boundary"
         )
     if (
         run.count("if not isinstance(body, str):") != 2
