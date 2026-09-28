@@ -156,6 +156,7 @@ jobs:
               or actual_repository != expected_repository
               or payload.get("title") != expected_title
               or actual_base_sha != expected_base_sha
+              or payload.get("state") != "open"
           ):
             raise SystemExit("Pull-request ref or title advanced; retry the workflow.")
           body = payload.get("body") if isinstance(payload, dict) else None
@@ -300,6 +301,7 @@ jobs:
               or actual_repository != expected_repository
               or payload.get("title") != expected_title
               or actual_base_sha != expected_base_sha
+              or payload.get("state") != "open"
           ):
               raise SystemExit("Pull-request ref or title advanced; retry the workflow.")
           body = payload.get("body") if isinstance(payload, dict) else None
@@ -350,6 +352,7 @@ jobs:
               or actual_repository != expected_repository
               or payload.get("title") != expected_title
               or actual_base_sha != expected_base_sha
+              or payload.get("state") != "open"
           ):
               raise SystemExit("Pull-request ref or title changed during the body update.")
           actual_body = payload.get("body") if isinstance(payload, dict) else None

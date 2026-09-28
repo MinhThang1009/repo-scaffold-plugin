@@ -6884,6 +6884,7 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         self.assertEqual(run.count('head.get("sha") != expected_sha'), 2)
         self.assertEqual(run.count("actual_repository != expected_repository"), 3)
         self.assertEqual(run.count('payload.get("title") != expected_title'), 3)
+        self.assertEqual(run.count('payload.get("state") != "open"'), 3)
         self.assertEqual(run.count("if not isinstance(body, str):"), 2)
         self.assertEqual(run.count("if body != original:"), 1)
         self.assertEqual(run.count("if actual_body != expected_body:"), 1)
@@ -6973,6 +6974,24 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         )
         candidate = copy.deepcopy(workflow)
         candidate["jobs"]["update"]["steps"][1]["run"] = without_final_head_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("head, repository, and title" in item for item in problems))
+
+        without_final_state_guard = run.replace(
+            'or payload.get("state") != "open"',
+            "or False",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_state_guard
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH

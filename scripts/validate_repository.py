@@ -7654,6 +7654,7 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         or run.count('head.get("sha") != expected_sha') != 2
         or run.count("actual_repository != expected_repository") != 3
         or run.count('payload.get("title") != expected_title') != 3
+        or run.count('payload.get("state") != "open"') != 3
     ):
         problems.append(
             f"{relative}: body-sync must revalidate the pull-request head, repository, and title at every API boundary"
