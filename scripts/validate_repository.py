@@ -7586,6 +7586,9 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         '"repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"',
         "python scripts/update_pr_body.py",
         '--body-file "$body"',
+        "expected_base_sha = sys.argv[6]",
+        'actual_base_sha = base.get("sha") if isinstance(base, dict) else None',
+        "or actual_base_sha != expected_base_sha",
         '"repos/$PR_HEAD_REPOSITORY/contents/.github/pr-body-template.md?ref=$PR_HEAD_SHA"',
         'template_payload="$RUNNER_TEMP/pr-body-template.json"',
         'template="$RUNNER_TEMP/pr-body-template.md"',
@@ -7607,6 +7610,13 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
                 f"{relative}: body-sync must fetch, preflight, update, and verify the bounded body section"
             )
             break
+    if (
+        run.count("expected_base_sha = sys.argv[6]") != 3
+        or run.count("or actual_base_sha != expected_base_sha") != 3
+    ):
+        problems.append(
+            f"{relative}: body-sync must revalidate the pull-request base SHA before and after editing"
+        )
     if "github.event.pull_request.head.ref" in run:
         problems.append(
             f"{relative}: body-sync must not execute or check out pull-request head code"

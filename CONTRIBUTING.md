@@ -192,10 +192,10 @@ is opt-in: it renders the complete body only when that template is changed in
 the pull request's base-to-head diff, so it cannot overwrite unrelated pull
 requests with this repository's review text. For an already opted-in body, a
 new commit still refreshes the bounded head block. The workflow preflights any
-body it will write, rechecks the head, title, repository, and current body
-immediately before editing, then verifies the complete body after the GitHub
-mutation. Edit the source template when any PR section needs to change; do not
-edit the generated body as a separate source.
+body it will write, rechecks the head, base, title, repository, and current
+body immediately before editing, then verifies the complete body after the
+GitHub mutation. Edit the source template when any PR section needs to change;
+do not edit the generated body as a separate source.
 
 Use the default PR template for ordinary changes. Choose a specialized template
 only when its review workflow applies:

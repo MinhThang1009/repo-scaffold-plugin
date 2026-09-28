@@ -6894,6 +6894,34 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
 
         self.assertTrue(any("fetch, preflight, update" in item for item in problems))
 
+    def test_body_sync_revalidates_the_base_sha_at_each_mutation_boundary(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        )
+        run = workflow["jobs"]["update"]["steps"][1]["run"]
+        self.assertEqual(run.count("expected_base_sha = sys.argv[6]"), 3)
+        self.assertEqual(run.count("or actual_base_sha != expected_base_sha"), 3)
+
+        without_final_base_check = run.replace(
+            "or actual_base_sha != expected_base_sha", "", 1
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_base_check
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(
+            any("revalidate the pull-request base SHA" in item for item in problems)
+        )
+
     def test_body_template_contract_is_current(self) -> None:
         self.assertEqual(
             validate_repository.validate_pr_body_sync_template_contract(PLUGIN_ROOT),

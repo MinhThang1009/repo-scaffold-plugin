@@ -115,7 +115,7 @@ jobs:
           )
           gh api --hostname github.com \
             "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"
-          python - "$payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" <<'PY'
+          python - "$payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -125,6 +125,7 @@ jobs:
           expected_sha = sys.argv[3]
           expected_repository = sys.argv[4]
           expected_title = sys.argv[5]
+          expected_base_sha = sys.argv[6]
           raw = payload_path.read_bytes()
           if len(raw) > 2 * 1024 * 1024:
               raise SystemExit("Pull-request API payload exceeds the safety cap.")
@@ -139,12 +140,15 @@ jobs:
               if isinstance(head, dict) and isinstance(head.get("repo"), dict)
               else None
           )
+          base = payload.get("base") if isinstance(payload, dict) else None
+          actual_base_sha = base.get("sha") if isinstance(base, dict) else None
           if (
               actual_sha != expected_sha
               or actual_repository != expected_repository
               or payload.get("title") != expected_title
+              or actual_base_sha != expected_base_sha
           ):
-            raise SystemExit("Pull-request head advanced; retry the workflow.")
+            raise SystemExit("Pull-request ref or title advanced; retry the workflow.")
           body = payload.get("body") if isinstance(payload, dict) else None
           if body is None:
               body = ""
@@ -221,7 +225,7 @@ jobs:
 
           gh api --hostname github.com \
             "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$latest_payload"
-          python - "$latest_payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" <<'PY'
+          python - "$latest_payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -231,6 +235,7 @@ jobs:
           expected_sha = sys.argv[3]
           expected_repository = sys.argv[4]
           expected_title = sys.argv[5]
+          expected_base_sha = sys.argv[6]
           raw = payload_path.read_bytes()
           if len(raw) > 2 * 1024 * 1024:
               raise SystemExit("Pull-request API payload exceeds the safety cap.")
@@ -244,13 +249,16 @@ jobs:
               if isinstance(head, dict) and isinstance(head.get("repo"), dict)
               else None
           )
+          base = payload.get("base") if isinstance(payload, dict) else None
+          actual_base_sha = base.get("sha") if isinstance(base, dict) else None
           if (
               not isinstance(head, dict)
               or head.get("sha") != expected_sha
               or actual_repository != expected_repository
               or payload.get("title") != expected_title
+              or actual_base_sha != expected_base_sha
           ):
-              raise SystemExit("Pull-request head advanced; retry the workflow.")
+              raise SystemExit("Pull-request ref or title advanced; retry the workflow.")
           body = payload.get("body") if isinstance(payload, dict) else None
           if body is None:
               body = ""
@@ -267,7 +275,7 @@ jobs:
 
           gh api --hostname github.com \
             "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$verified_payload"
-          python - "$verified_payload" "$updated" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" <<'PY'
+          python - "$verified_payload" "$updated" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -277,6 +285,7 @@ jobs:
           expected_sha = sys.argv[3]
           expected_repository = sys.argv[4]
           expected_title = sys.argv[5]
+          expected_base_sha = sys.argv[6]
           raw = payload_path.read_bytes()
           if len(raw) > 2 * 1024 * 1024:
               raise SystemExit("Pull-request API payload exceeds the safety cap.")
@@ -290,13 +299,16 @@ jobs:
               if isinstance(head, dict) and isinstance(head.get("repo"), dict)
               else None
           )
+          base = payload.get("base") if isinstance(payload, dict) else None
+          actual_base_sha = base.get("sha") if isinstance(base, dict) else None
           if (
               not isinstance(head, dict)
               or head.get("sha") != expected_sha
               or actual_repository != expected_repository
               or payload.get("title") != expected_title
+              or actual_base_sha != expected_base_sha
           ):
-              raise SystemExit("Pull-request head changed during the body update.")
+              raise SystemExit("Pull-request ref or title changed during the body update.")
           actual_body = payload.get("body") if isinstance(payload, dict) else None
           expected_body = expected_body_path.read_text(encoding="utf-8")
           if actual_body != expected_body:
