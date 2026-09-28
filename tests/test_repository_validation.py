@@ -6880,6 +6880,12 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         run = workflow["jobs"]["update"]["steps"][1]["run"]
         self.assertIn('if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then', run)
         self.assertIn('if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then', run)
+        self.assertIn(
+            "Pull-request ref, title, or state advanced; retry the workflow.", run
+        )
+        self.assertIn(
+            "Pull-request ref, title, or state changed during the body update.", run
+        )
         self.assertEqual(run.count("actual_sha != expected_sha"), 1)
         self.assertEqual(run.count('head.get("sha") != expected_sha'), 2)
         self.assertEqual(run.count("actual_repository != expected_repository"), 3)

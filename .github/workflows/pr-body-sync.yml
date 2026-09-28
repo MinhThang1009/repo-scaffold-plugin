@@ -158,7 +158,7 @@ jobs:
               or actual_base_sha != expected_base_sha
               or payload.get("state") != "open"
           ):
-            raise SystemExit("Pull-request ref or title advanced; retry the workflow.")
+            raise SystemExit("Pull-request ref, title, or state advanced; retry the workflow.")
           body = payload.get("body") if isinstance(payload, dict) else None
           if body is None:
               body = ""
@@ -303,7 +303,7 @@ jobs:
               or actual_base_sha != expected_base_sha
               or payload.get("state") != "open"
           ):
-              raise SystemExit("Pull-request ref or title advanced; retry the workflow.")
+              raise SystemExit("Pull-request ref, title, or state advanced; retry the workflow.")
           body = payload.get("body") if isinstance(payload, dict) else None
           if body is None:
               body = ""
@@ -354,7 +354,7 @@ jobs:
               or actual_base_sha != expected_base_sha
               or payload.get("state") != "open"
           ):
-              raise SystemExit("Pull-request ref or title changed during the body update.")
+              raise SystemExit("Pull-request ref, title, or state changed during the body update.")
           actual_body = payload.get("body") if isinstance(payload, dict) else None
           expected_body = expected_body_path.read_bytes().decode("utf-8")
           if actual_body != expected_body:

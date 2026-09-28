@@ -7597,6 +7597,7 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         "Pull-request comparison is truncated; cannot prove template opt-in.",
         "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
         '"repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"',
+        "Pull-request ref, title, or state advanced; retry the workflow.",
         "managed_state=$(python - \"$body\" <<'PY'",
         "import re",
         "template_pattern = re.compile(",
@@ -7634,6 +7635,7 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         'original = original_body_path.read_bytes().decode("utf-8")',
         'verified_payload="$RUNNER_TEMP/pr-body-verified.json"',
         'expected_body = expected_body_path.read_bytes().decode("utf-8")',
+        "Pull-request ref, title, or state changed during the body update.",
         "GitHub did not retain the generated pull-request body.",
     )
     for fragment in required_fragments:
