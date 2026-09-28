@@ -39,6 +39,11 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return document
 
 
+def reject_json_constant(value: str) -> None:
+    """Reject non-standard JSON constants such as NaN and Infinity."""
+    raise ValueError(f"non-standard JSON constant {value!r}")
+
+
 def _is_link_or_reparse(path: Path) -> bool:
     """Return whether a path is a link-like filesystem boundary."""
     if path.is_symlink():
@@ -84,7 +89,9 @@ def load_json(path: Path, *, boundary: Path | None = None) -> dict[str, Any]:
                 f"metadata exceeds the {MAX_METADATA_BYTES}-byte size limit"
             )
         document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+            parse_constant=reject_json_constant,
         )
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read {path}: {error}") from error

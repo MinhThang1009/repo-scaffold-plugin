@@ -191,6 +191,10 @@ class MergeMutationShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not an object"):
                 merge_mutation_shards.load_json(path)
 
+            path.write_text('{"value": NaN}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "could not read"):
+                merge_mutation_shards.load_json(path)
+
             with (
                 mock.patch.object(
                     merge_mutation_shards,
