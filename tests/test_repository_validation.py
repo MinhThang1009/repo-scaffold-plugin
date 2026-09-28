@@ -6880,6 +6880,13 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         run = workflow["jobs"]["update"]["steps"][1]["run"]
         self.assertIn('managed_state=$(python - "$body"', run)
         self.assertIn("import re", run)
+        self.assertIn('base_commit = payload.get("base_commit")', run)
+        self.assertIn("not isinstance(base_commit, dict)", run)
+        self.assertIn('base_commit.get("sha") != expected_base_sha', run)
+        self.assertIn('commits = payload.get("commits")', run)
+        self.assertIn("not isinstance(commits, list)", run)
+        self.assertIn('files = payload.get("files")', run)
+        self.assertIn("not isinstance(files, list)", run)
         self.assertIn("template_pattern = re.compile(", run)
         self.assertIn("managed_marker_pattern = re.compile(", run)
         self.assertIn("managed_pattern = re.compile(", run)
@@ -6954,6 +6961,24 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
                 text=True,
             )
         self.assertEqual(result.stdout.strip(), "unchanged")
+
+        without_files_guard = run.replace(
+            "or not isinstance(files, list)\n",
+            "",
+            1,
+        )
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_files_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+
+        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
 
         without_marker_uniqueness = run.replace(
             "len(managed_markers) == 1\n",
