@@ -7183,6 +7183,19 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         self.assertTrue(any("valid UTF-8" in item for item in invalid))
         self.assertTrue(any("1 MiB" in item for item in oversized))
 
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_bytes(
+                b"<!-- repo-scaffold:pr-template=bugfix -->\r\n"
+                b"<!-- repo-scaffold:pr-body-managed -->\n"
+                b"{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n"
+            )
+            mixed = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("consistent line ending" in item for item in mixed))
+
 
 class PullRequestTemplateContractTests(unittest.TestCase):
     def test_release_please_owner_exception_matches_workflow_contract(self) -> None:

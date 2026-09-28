@@ -7683,6 +7683,11 @@ def validate_pr_body_sync_template_contract(repository_root: Path) -> list[str]:
         text = payload.decode("utf-8")
     except UnicodeDecodeError as error:
         return [f"{relative}: pull-request body template is not valid UTF-8: {error}"]
+    without_crlf = text.replace("\r\n", "")
+    if "\r" in without_crlf or ("\r\n" in text and "\n" in without_crlf):
+        return [
+            f"{relative}: pull-request body template must use one consistent line ending"
+        ]
     marker_pattern = re.compile(
         r"(?m)^\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*(?=\r?$)"
     )
