@@ -17,6 +17,10 @@ RESULT_FIELDS = (
 )
 PRESERVED_KILLED_EXIT_CODES = frozenset({1, 3})
 MAX_METADATA_BYTES = 512 * 1024 * 1024
+SHARD_PLAN_SCHEMA_VERSION = 1
+MAX_MUTATION_SHARDS = 64
+MAX_MUTANTS_PER_SHARD = 100_000
+MAX_MUTANT_NAME_LENGTH = 4_096
 
 
 class DuplicateJsonMember(ValueError):
@@ -50,17 +54,43 @@ def load_json(path: Path) -> dict[str, Any]:
     return document
 
 
+def validate_shard_plan(plan: dict[str, Any]) -> list[list[str]]:
+    """Validate the exact bounded plan shared by every mutation worker."""
+    shards = plan.get("shards")
+    if (
+        set(plan) != {"schema_version", "shards"}
+        or plan.get("schema_version") != SHARD_PLAN_SCHEMA_VERSION
+        or not isinstance(shards, list)
+        or len(shards) not in range(1, MAX_MUTATION_SHARDS + 1)
+    ):
+        raise ValueError("mutation shard plan has an invalid schema")
+    validated_shards: list[list[str]] = []
+    for names in shards:
+        if (
+            not isinstance(names, list)
+            or not names
+            or len(names) > MAX_MUTANTS_PER_SHARD
+        ):
+            raise ValueError("mutation shard plan has an invalid shard")
+        validated: list[str] = []
+        for name in names:
+            if (
+                not isinstance(name, str)
+                or not name
+                or len(name) > MAX_MUTANT_NAME_LENGTH
+                or any(character in name for character in ("\x00", "\r", "\n"))
+            ):
+                raise ValueError("mutation shard plan has an invalid mutant name")
+            validated.append(name)
+        validated_shards.append(validated)
+    return validated_shards
+
+
 def merge(repository_root: Path, artifacts_root: Path) -> None:
     """Merge only results assigned to each shard and reject incomplete state."""
     mutants = repository_root / "mutants"
     plan = load_json(mutants / "mutation-shards.json")
-    shards = plan.get("shards")
-    if (
-        not isinstance(shards, list)
-        or not shards
-        or any(not isinstance(names, list) or not names for names in shards)
-    ):
-        raise ValueError("mutation shard plan has an invalid schema")
+    shards = validate_shard_plan(plan)
     assignments = {
         name: index
         for index, names in enumerate(shards)

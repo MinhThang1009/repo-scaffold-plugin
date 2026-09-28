@@ -38,7 +38,8 @@ class MergeMutationShardsTests(unittest.TestCase):
         mutants = root / "mutants"
         mutants.mkdir(parents=True, exist_ok=True)
         (mutants / "mutation-shards.json").write_text(
-            json.dumps({"shards": [["alpha"], ["beta"]]}), encoding="utf-8"
+            json.dumps({"schema_version": 1, "shards": [["alpha"], ["beta"]]}),
+            encoding="utf-8",
         )
         (mutants / "source.meta").write_text(
             json.dumps(self.document({"alpha": None, "beta": None})), encoding="utf-8"
@@ -138,6 +139,22 @@ class MergeMutationShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid schema"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
 
+            for invalid_plan, message in (
+                (
+                    {"schema_version": 1, "shards": [[]]},
+                    "invalid shard",
+                ),
+                (
+                    {"schema_version": 1, "shards": [["bad\nname"]]},
+                    "invalid mutant name",
+                ),
+            ):
+                with self.subTest(invalid_plan=invalid_plan):
+                    self.fixture(root)
+                    plan.write_text(json.dumps(invalid_plan), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, message):
+                        merge_mutation_shards.merge(root, root / "mutation-shards")
+
             self.fixture(root / "second")
             root = root / "second"
             overlay = root / "mutation-shards" / "mutation-shard-1" / "source.meta"
@@ -184,14 +201,16 @@ class MergeMutationShardsTests(unittest.TestCase):
             self.fixture(root)
             plan = root / "mutants" / "mutation-shards.json"
             plan.write_text(
-                json.dumps({"shards": [["alpha"], ["alpha"]]}), encoding="utf-8"
+                json.dumps({"schema_version": 1, "shards": [["alpha"], ["alpha"]]}),
+                encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "duplicate or invalid"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
 
             (root / "mutants" / "source.meta").unlink()
             plan.write_text(
-                json.dumps({"shards": [["alpha"], ["beta"]]}), encoding="utf-8"
+                json.dumps({"schema_version": 1, "shards": [["alpha"], ["beta"]]}),
+                encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "metadata is missing"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
@@ -236,7 +255,12 @@ class MergeMutationShardsTests(unittest.TestCase):
             self.fixture(root)
             plan = root / "mutants" / "mutation-shards.json"
             plan.write_text(
-                json.dumps({"shards": [["alpha"], ["beta"], ["gamma"]]}),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "shards": [["alpha"], ["beta"], ["gamma"]],
+                    }
+                ),
                 encoding="utf-8",
             )
             third_overlay = root / "mutation-shards" / "mutation-shard-2"

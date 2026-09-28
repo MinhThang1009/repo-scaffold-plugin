@@ -18,7 +18,7 @@ Mutation planning and cache reuse could spend time on unnecessary execution and 
 
 ## Verification
 
-- `python -m pytest -q`: 1273 passed, 4 skipped, 2837 subtests passed.
+- `python -m pytest -q`: 1273 passed, 4 skipped, 2839 subtests passed.
 - Coverage-instrumented full suite: 1273 passed, 4 skipped; `coverage report --fail-under=100` reports 100.00% statement and branch coverage.
 - `python scripts/validate_repository.py`, `python skills/repo-scaffold/scripts/validate_scaffold.py --repository-root . --template-root skills/repo-scaffold/assets`, and `python scripts/validate_workflows.py` passed.
 - `python -m ruff format --check skills scripts tests`, `python -m ruff check skills scripts tests`, the reviewed mypy command, compileall, markdownlint, and `claude plugin validate --strict .` passed.
