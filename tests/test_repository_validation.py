@@ -6895,6 +6895,10 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         self.assertIn('r"(?m)\\A\\ufeff?<!-- repo-scaffold:pr-template=', run)
         self.assertIn("line_endings_are_consistent", run)
         self.assertIn("managed_pattern.match(body) is not None", run)
+        self.assertIn('status = payload.get("status")', run)
+        self.assertIn('if status == "identical":', run)
+        self.assertIn("expected_head_sha != expected_base_sha or commits or files", run)
+        self.assertIn('status != "ahead"', run)
         self.assertNotIn("from scripts.update_pr_body import", run)
         self.assertNotIn("body.count(marker)", run)
         self.assertIn('--template-file "$template"', run)
@@ -6917,6 +6921,39 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
 
         self.assertTrue(any("fetch, preflight, update" in item for item in problems))
+
+        compare_start = run.index(
+            'source_state=$(python - "$compare_payload" "$PR_BASE_SHA" "$PR_HEAD_SHA" <<\'PY\'\n'
+        )
+        compare_start = run.index("\n", compare_start) + 1
+        compare_script = run[compare_start : run.index("\nPY", compare_start)]
+        with tempfile.TemporaryDirectory() as directory:
+            payload_path = Path(directory) / "compare.json"
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "base_commit": {"sha": "a" * 40},
+                        "status": "identical",
+                        "commits": [],
+                        "files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = run_test_subprocess(
+                [
+                    sys.executable,
+                    "-c",
+                    compare_script,
+                    str(payload_path),
+                    "a" * 40,
+                    "a" * 40,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.stdout.strip(), "unchanged")
 
         without_marker_uniqueness = run.replace(
             "len(managed_markers) == 1\n",

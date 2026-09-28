@@ -93,12 +93,21 @@ jobs:
           if (
               not isinstance(base_commit, dict)
               or base_commit.get("sha") != expected_base_sha
-              or payload.get("status") not in {"ahead", "identical"}
               or not isinstance(commits, list)
+              or not isinstance(files, list)
+          ):
+              raise SystemExit("Pull-request comparison evidence is incomplete.")
+          status = payload.get("status")
+          if status == "identical":
+              if expected_head_sha != expected_base_sha or commits or files:
+                  raise SystemExit("Pull-request identical comparison evidence is inconsistent.")
+              print("unchanged")
+              raise SystemExit(0)
+          if (
+              status != "ahead"
               or not commits
               or not isinstance(commits[-1], dict)
               or commits[-1].get("sha") != expected_head_sha
-              or not isinstance(files, list)
           ):
               raise SystemExit("Pull-request comparison evidence is incomplete.")
           template_changed = any(
