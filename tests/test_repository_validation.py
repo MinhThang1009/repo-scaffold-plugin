@@ -2445,7 +2445,11 @@ class MutationTestingContractTests(unittest.TestCase):
                     },
                     "steps": [
                         {
-                            "run": 'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"'
+                            "env": {
+                                "SHARD_INDEX": "${{ matrix.shard }}",
+                                "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}",
+                            },
+                            "run": 'python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"',
                         },
                         {
                             "name": "Upload mutation shard",
@@ -2537,6 +2541,24 @@ class MutationTestingContractTests(unittest.TestCase):
                     }
                 },
                 "mutation plan must expose the tracked source root",
+            ),
+            (
+                {
+                    "jobs": {
+                        **valid["jobs"],
+                        "mutation-shards": {
+                            **valid["jobs"]["mutation-shards"],
+                            "steps": [
+                                {
+                                    **valid["jobs"]["mutation-shards"]["steps"][0],
+                                    "env": {"SHARD_INDEX": "${{ matrix.shard }}"},
+                                },
+                                valid["jobs"]["mutation-shards"]["steps"][1],
+                            ],
+                        },
+                    }
+                },
+                "mutation shards must expose the tracked source root",
             ),
             (
                 {

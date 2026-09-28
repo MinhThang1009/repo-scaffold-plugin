@@ -141,6 +141,7 @@ jobs:
       - name: Run exact mutation shard
         env:
           SHARD_INDEX: ${{ matrix.shard }}
+          REPO_SCAFFOLD_MUTATION_SOURCE_ROOT: ${{ github.workspace }}
         shell: bash
         run: python scripts/run_mutation_testing.py --max-children 4 --shard-index "$SHARD_INDEX"
 

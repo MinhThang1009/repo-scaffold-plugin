@@ -4753,6 +4753,20 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         "python scripts/run_mutation_testing.py --max-children 4 --shard-index "
         '"$SHARD_INDEX"'
     )
+    raw_shard_steps = shards.get("steps")
+    shard_run_steps = [
+        step
+        for step in (raw_shard_steps if isinstance(raw_shard_steps, list) else [])
+        if isinstance(step, dict) and step.get("run") == expected_shard_run
+    ]
+    if len(shard_run_steps) != 1 or shard_run_steps[0].get("env") != {
+        "SHARD_INDEX": "${{ matrix.shard }}",
+        **expected_source_root_env,
+    }:
+        return [
+            ".github/workflows/mutation-testing.yml: mutation shards must expose "
+            "the tracked source root"
+        ]
     cache_prefix = (
         "mutmut-v8-${{ runner.os }}-${{ runner.arch }}-python-"
         "${{ steps.support.outputs.latest }}-branch-${{ github.ref }}-inputs-"
@@ -4793,7 +4807,6 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
             ".github/workflows/mutation-testing.yml: plan, execute, and merge "
             "exact mutation shards"
         ]
-    raw_shard_steps = shards.get("steps")
     shard_upload_steps = [
         step
         for step in (raw_shard_steps if isinstance(raw_shard_steps, list) else [])
