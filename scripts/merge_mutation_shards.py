@@ -16,6 +16,7 @@ RESULT_FIELDS = (
     "estimated_durations_by_key",
 )
 PRESERVED_KILLED_EXIT_CODES = frozenset({1, 3})
+MAX_METADATA_BYTES = 512 * 1024 * 1024
 
 
 class DuplicateJsonMember(ValueError):
@@ -35,10 +36,14 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def load_json(path: Path) -> dict[str, Any]:
     """Read one metadata document without accepting an unexpected shape."""
     try:
+        if path.stat().st_size > MAX_METADATA_BYTES:
+            raise ValueError(
+                f"metadata exceeds the {MAX_METADATA_BYTES}-byte size limit"
+            )
         document = json.loads(
             path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
         )
-    except (OSError, UnicodeError, ValueError) as error:
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read {path}: {error}") from error
     if not isinstance(document, dict):
         raise ValueError(f"metadata is not an object: {path}")
