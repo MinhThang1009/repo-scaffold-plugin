@@ -7571,8 +7571,10 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
     run = update["run"]
     required_fragments = (
         "set -euo pipefail",
+        'if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then',
         'if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
         'if [[ ! "$PR_HEAD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
+        'if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
         'if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
         "gh api --hostname github.com",
         '"repos/$REPOSITORY/compare/$PR_BASE_SHA...$PR_HEAD_SHA" > "$compare_payload"',
