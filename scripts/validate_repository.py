@@ -7629,7 +7629,9 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         'gh pr edit "$PR_NUMBER"',
         '--repo "github.com/$REPOSITORY"',
         '--body-file "$updated"',
+        'original = original_body_path.read_bytes().decode("utf-8")',
         'verified_payload="$RUNNER_TEMP/pr-body-verified.json"',
+        'expected_body = expected_body_path.read_bytes().decode("utf-8")',
         "GitHub did not retain the generated pull-request body.",
     )
     for fragment in required_fragments:

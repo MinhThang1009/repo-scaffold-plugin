@@ -307,7 +307,7 @@ jobs:
               body = ""
           if not isinstance(body, str):
               raise SystemExit("Pull-request body is not text.")
-          original = original_body_path.read_text(encoding="utf-8")
+          original = original_body_path.read_bytes().decode("utf-8")
           if body != original:
               raise SystemExit("Pull-request body changed during preparation; retry the workflow.")
           PY
@@ -353,7 +353,7 @@ jobs:
           ):
               raise SystemExit("Pull-request ref or title changed during the body update.")
           actual_body = payload.get("body") if isinstance(payload, dict) else None
-          expected_body = expected_body_path.read_text(encoding="utf-8")
+          expected_body = expected_body_path.read_bytes().decode("utf-8")
           if actual_body != expected_body:
               raise SystemExit("GitHub did not retain the generated pull-request body.")
           PY

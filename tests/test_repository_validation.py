@@ -6906,6 +6906,16 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         self.assertIn('if status == "identical":', run)
         self.assertIn("expected_head_sha != expected_base_sha or commits or files", run)
         self.assertIn('status != "ahead"', run)
+        self.assertIn('original = original_body_path.read_bytes().decode("utf-8")', run)
+        self.assertIn(
+            'expected_body = expected_body_path.read_bytes().decode("utf-8")', run
+        )
+        self.assertNotIn(
+            'original = original_body_path.read_text(encoding="utf-8")', run
+        )
+        self.assertNotIn(
+            'expected_body = expected_body_path.read_text(encoding="utf-8")', run
+        )
         self.assertNotIn("from scripts.update_pr_body import", run)
         self.assertNotIn("body.count(marker)", run)
         self.assertIn('--template-file "$template"', run)
