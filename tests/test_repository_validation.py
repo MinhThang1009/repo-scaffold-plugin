@@ -6883,13 +6883,17 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         self.assertIn("template_pattern = re.compile(", run)
         self.assertIn("managed_marker_pattern = re.compile(", run)
         self.assertIn("managed_pattern = re.compile(", run)
+        self.assertIn('body = Path(sys.argv[1]).read_bytes().decode("utf-8")', run)
         self.assertIn("template_markers = list(template_pattern.finditer(body))", run)
         self.assertIn(
             "managed_markers = list(managed_marker_pattern.finditer(body))", run
         )
+        self.assertIn('without_crlf = body.replace("\\r\\n", "")', run)
+        self.assertIn("line_endings_are_consistent = (", run)
         self.assertIn("len(template_markers) == 1", run)
         self.assertIn("len(managed_markers) == 1", run)
         self.assertIn('r"(?m)\\A\\ufeff?<!-- repo-scaffold:pr-template=', run)
+        self.assertIn("line_endings_are_consistent", run)
         self.assertIn("managed_pattern.match(body) is not None", run)
         self.assertNotIn("from scripts.update_pr_body import", run)
         self.assertNotIn("body.count(marker)", run)
@@ -6964,9 +6968,15 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
                     "body\n<!-- repo-scaffold:pr-template=bugfix -->\n",
                     "unmanaged",
                 ),
+                (
+                    "<!-- repo-scaffold:pr-template=bugfix -->\r\n"
+                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
+                    "body\n",
+                    "unmanaged",
+                ),
             )
             for body, expected in cases:
-                body_path.write_text(body, encoding="utf-8")
+                body_path.write_bytes(body.encode("utf-8"))
                 result = run_test_subprocess(
                     [sys.executable, "-c", detector, str(body_path)],
                     check=True,

@@ -162,7 +162,10 @@ jobs:
           import sys
           from pathlib import Path
 
-          body = Path(sys.argv[1]).read_text(encoding="utf-8")
+          try:
+              body = Path(sys.argv[1]).read_bytes().decode("utf-8")
+          except UnicodeDecodeError as error:
+              raise SystemExit(f"Pull-request body is not valid UTF-8: {error}") from error
           template_pattern = re.compile(
               r"(?m)^\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*(?=\r?$)"
           )
@@ -175,10 +178,16 @@ jobs:
           )
           template_markers = list(template_pattern.finditer(body))
           managed_markers = list(managed_marker_pattern.finditer(body))
+          without_crlf = body.replace("\r\n", "")
+          line_endings_are_consistent = (
+              "\r" not in without_crlf
+              and not ("\r\n" in body and "\n" in without_crlf)
+          )
           is_managed = (
               len(template_markers) == 1
               and template_markers[0].start() == 0
               and len(managed_markers) == 1
+              and line_endings_are_consistent
               and managed_pattern.match(body) is not None
           )
           print(
