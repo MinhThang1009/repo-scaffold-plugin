@@ -1,4 +1,5 @@
 <!-- repo-scaffold:pr-template=bugfix -->
+<!-- repo-scaffold:pr-body-managed -->
 
 ## Purpose
 
@@ -15,11 +16,12 @@ Mutation planning and cache reuse could spend time on unnecessary execution and 
 - Reuse pending mutants by exact shard assignment and retain sparse shard metadata while the merger enforces complete, valid, deterministic verdicts.
 - Keep source, generated workflow assets, validators, tests, and documentation synchronized for the mutation and pull-request contracts.
 - Render the entire pull-request body from this reviewed source template, with the current head SHA and head repository bound to the exact pull request revision.
+- Re-render explicitly managed pull-request bodies in full on every new commit while leaving unmanaged bodies unchanged.
 
 ## Verification
 
-- `python -m pytest -q`: 1273 passed, 4 skipped, 2840 subtests passed.
-- Coverage-instrumented full suite: 1273 passed, 4 skipped; `coverage report --fail-under=100` reports 100.00% statement and branch coverage.
+- `python -m pytest -q`: 1274 passed, 4 skipped, 2840 subtests passed.
+- Coverage-instrumented full suite: 1274 passed, 4 skipped; `coverage report --fail-under=100` reports 100.00% statement and branch coverage.
 - `python scripts/validate_repository.py`, `python skills/repo-scaffold/scripts/validate_scaffold.py --repository-root . --template-root skills/repo-scaffold/assets`, and `python scripts/validate_workflows.py` passed.
 - `python -m ruff format --check skills scripts tests`, `python -m ruff check skills scripts tests`, the reviewed mypy command, compileall, markdownlint, and `claude plugin validate --strict .` passed.
 - The current pull-request body is rendered from this file at head `{{HEAD_SHA}}` in `{{HEAD_REPOSITORY}}`; mutation-quality remains a separate dispatched evidence path and is not claimed by this body.

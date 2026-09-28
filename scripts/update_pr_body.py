@@ -17,6 +17,10 @@ ALLOWED_PLACEHOLDERS = frozenset({"HEAD_SHA", "HEAD_REPOSITORY"})
 TEMPLATE_MARKER_PATTERN = re.compile(
     r"(?m)^\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*(?=\r?$)"
 )
+MANAGED_BODY_MARKER = "<!-- repo-scaffold:pr-body-managed -->"
+MANAGED_BODY_PATTERN = re.compile(
+    rf"(?m)^{re.escape(MANAGED_BODY_MARKER)}[ \t]*(?=\r?$)"
+)
 HEAD_START_MARKER = "<!-- repo-scaffold:pr-head:start -->"
 HEAD_END_MARKER = "<!-- repo-scaffold:pr-head:end -->"
 HEAD_START_PATTERN = re.compile(rf"(?m)^{re.escape(HEAD_START_MARKER)}[ \t]*(?=\r?$)")
@@ -68,6 +72,11 @@ def _validate_head_inputs(head_sha: str, head_repository: str) -> None:
         raise ValueError("head repository must be an OWNER/REPOSITORY identifier")
 
 
+def is_managed_body(body: str) -> bool:
+    """Return whether one complete body is explicitly repository-managed."""
+    return isinstance(body, str) and len(MANAGED_BODY_PATTERN.findall(body)) == 1
+
+
 def render_body(template: str, head_sha: str, head_repository: str) -> str:
     """Render every PR section from ``template`` and the exact head identity."""
     if not isinstance(template, str):
@@ -93,6 +102,10 @@ def render_body(template: str, head_sha: str, head_repository: str) -> str:
     missing = sorted(ALLOWED_PLACEHOLDERS - set(placeholders))
     if missing:
         raise ValueError("pull-request template must bind " + ", ".join(missing))
+    if len(MANAGED_BODY_PATTERN.findall(template)) != 1:
+        raise ValueError(
+            "pull-request body template must contain exactly one managed-body marker"
+        )
     rendered = template.replace("{{HEAD_SHA}}", head_sha.lower()).replace(
         "{{HEAD_REPOSITORY}}", head_repository
     )

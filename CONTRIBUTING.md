@@ -187,15 +187,16 @@ it rejects hard-wrapped prose before the GitHub mutation.
 This repository's `pr-body-sync` workflow renders the complete pull-request
 body from `.github/pr-body-template.md` when a pull request is opened, reopened,
 or receives a new commit. The source template is read at the exact head SHA and
-may use only `{{HEAD_SHA}}` and `{{HEAD_REPOSITORY}}` placeholders. The workflow
-is opt-in: it renders the complete body only when that template is changed in
-the pull request's base-to-head diff, so it cannot overwrite unrelated pull
-requests with this repository's review text. For an already opted-in body, a
-new commit still refreshes the bounded head block. The workflow preflights any
-body it will write, rechecks the head, base, title, repository, and current
-body immediately before editing, then verifies the complete body after the
-GitHub mutation. Edit the source template when any PR section needs to change;
-do not edit the generated body as a separate source.
+may use only `{{HEAD_SHA}}` and `{{HEAD_REPOSITORY}}` placeholders. A template
+must contain the `repo-scaffold:pr-body-managed` marker to opt a body into
+continuous full-body rendering. The first render is allowed when the template
+changes in the pull request's base-to-head diff; later commits render the full
+body whenever the current body carries that managed marker. Unmanaged bodies
+are left unchanged. The workflow preflights any body it will write, rechecks the
+head, base, title, repository, and current body immediately before editing, then
+verifies the complete body after the GitHub mutation. Edit the source template
+when any PR section needs to change; do not edit a managed generated body as a
+separate source.
 
 Use the default PR template for ordinary changes. Choose a specialized template
 only when its review workflow applies:

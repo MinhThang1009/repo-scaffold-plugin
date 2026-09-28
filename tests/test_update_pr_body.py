@@ -23,11 +23,12 @@ SPEC.loader.exec_module(update_pr_body)
 
 HEAD_SHA = "A" * 40
 TEMPLATE_MARKER = "<!-- repo-scaffold:pr-template=bugfix -->"
+MANAGED_BODY_MARKER = "<!-- repo-scaffold:pr-body-managed -->"
 START_MARKER = "<!-- repo-scaffold:pr-head:start -->"
 END_MARKER = "<!-- repo-scaffold:pr-head:end -->"
 HEAD_REPOSITORY = "MinhThang1009/repo-scaffold-plugin"
 BODY_TEMPLATE = (
-    f"{TEMPLATE_MARKER}\n\n"
+    f"{TEMPLATE_MARKER}\n{MANAGED_BODY_MARKER}\n\n"
     "## Purpose\n\nExplain the purpose.\n\n"
     "Latest revision: {{HEAD_SHA}} in {{HEAD_REPOSITORY}}.\n"
 )
@@ -70,6 +71,19 @@ class UpdatePullRequestBodyTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "trusted template marker"):
             update_pr_body.render_body("body\n", HEAD_SHA, HEAD_REPOSITORY)
+        with self.assertRaisesRegex(ValueError, "managed-body marker"):
+            update_pr_body.render_body(
+                f"{TEMPLATE_MARKER}\n{{{{HEAD_SHA}}}} {{{{HEAD_REPOSITORY}}}}\n",
+                HEAD_SHA,
+                HEAD_REPOSITORY,
+            )
+
+    def test_managed_body_detection_requires_exactly_one_marker(self) -> None:
+        self.assertTrue(update_pr_body.is_managed_body(BODY_TEMPLATE))
+        self.assertFalse(update_pr_body.is_managed_body("body\n"))
+        self.assertFalse(
+            update_pr_body.is_managed_body(BODY_TEMPLATE + MANAGED_BODY_MARKER + "\n")
+        )
 
     def test_render_body_rejects_invalid_head_inputs_and_line_endings(self) -> None:
         with self.assertRaisesRegex(ValueError, "40 hexadecimal"):

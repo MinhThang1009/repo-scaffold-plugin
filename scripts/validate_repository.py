@@ -7582,10 +7582,13 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         "expected_head_sha = sys.argv[3]",
         'commits[-1].get("sha") != expected_head_sha',
         "Pull-request comparison is truncated; cannot prove template opt-in.",
-        "if [[ \"$source_state\" == 'unchanged' ]]; then",
+        "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
         '"repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"',
-        "python scripts/update_pr_body.py",
-        '--body-file "$body"',
+        "managed_state=$(python - \"$body\" <<'PY'",
+        'marker = "<!-- repo-scaffold:pr-body-managed -->"',
+        'print("managed" if body.count(marker) == 1 else "unmanaged")',
+        "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
+        "Pull-request body is not managed and its source template was not changed; leaving it unchanged.",
         "expected_base_sha = sys.argv[6]",
         'actual_base_sha = base.get("sha") if isinstance(base, dict) else None',
         "or actual_base_sha != expected_base_sha",
@@ -7678,6 +7681,13 @@ def validate_pr_body_sync_template_contract(repository_root: Path) -> list[str]:
     if missing:
         return [
             f"{relative}: pull-request body template must bind {', '.join(missing)}"
+        ]
+    managed_markers = re.findall(
+        r"(?m)^<!-- repo-scaffold:pr-body-managed -->[ \t]*(?=\r?$)", text
+    )
+    if len(managed_markers) != 1:
+        return [
+            f"{relative}: pull-request body template must contain exactly one managed-body marker"
         ]
     return []
 

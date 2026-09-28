@@ -6871,18 +6871,24 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             any("pinned checkout of the PR base SHA" in item for item in problems)
         )
 
-    def test_body_sync_keeps_refreshing_opted_in_heads_without_template_diffs(
+    def test_body_sync_renders_full_managed_body_without_template_diffs(
         self,
     ) -> None:
         workflow = validate_repository.load_yaml(
             PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
         )
         run = workflow["jobs"]["update"]["steps"][1]["run"]
-        self.assertIn('--body-file "$body"', run)
+        self.assertIn('managed_state=$(python - "$body"', run)
+        self.assertIn('--template-file "$template"', run)
+        self.assertNotIn('--body-file "$body"', run)
 
-        without_body_mode = run.replace('--body-file "$body"', "", 1)
+        without_managed_check = run.replace(
+            'managed_state=$(python - "$body"',
+            "",
+            1,
+        )
         candidate = copy.deepcopy(workflow)
-        candidate["jobs"]["update"]["steps"][1]["run"] = without_body_mode
+        candidate["jobs"]["update"]["steps"][1]["run"] = without_managed_check
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
@@ -6975,6 +6981,19 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             problems = validate_repository.validate_pr_body_sync_template_contract(root)
 
         self.assertTrue(any("must bind HEAD_REPOSITORY" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
+            template_path.parent.mkdir(parents=True)
+            template_path.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n"
+                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_pr_body_sync_template_contract(root)
+
+        self.assertTrue(any("managed-body marker" in item for item in problems))
 
     def test_body_template_contract_reports_io_encoding_and_size_failures(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
