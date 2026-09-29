@@ -38,6 +38,11 @@ COMMIT_PREFIX_PATTERN = re.compile(
     r"(?:\([^()\r\n]+\))?!?:\s*",
     re.IGNORECASE,
 )
+STRUCTURED_COMMIT_FIELD_PATTERN = re.compile(
+    r"^\s*(?:#+\s*)?(Why|Purpose|Root cause|Cause|Changes|Key changes|"
+    r"Verification|Tests?)\s*:?\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -261,10 +266,15 @@ def _plain(value: str) -> str:
 
 
 def _purpose_lines(commits: list[dict[str, str]], head_sha: str) -> list[str]:
-    subjects = [
-        _clean_subject(commit["message"].splitlines()[0].strip()) for commit in commits
-    ]
-    summary = subjects[0] if subjects else "the available commit evidence"
+    structured = _structured_values(commits, "purpose")
+    if structured:
+        summary = _summary_text(structured, limit=2)
+    else:
+        subjects = [
+            _clean_subject(commit["message"].splitlines()[0].strip())
+            for commit in commits
+        ]
+        summary = subjects[0] if subjects else "the available commit evidence"
     return [_sentence(summary)]
 
 
@@ -280,6 +290,9 @@ def _commit_details(commits: list[dict[str, str]]) -> list[str]:
 
 
 def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
+    structured = _structured_values(commits, "root")
+    if structured:
+        return [_sentence(_summary_text(structured, limit=2))]
     details = _commit_details(commits)
     if details == ["- No structured detail was supplied in the commit metadata."]:
         subjects = [
@@ -295,6 +308,27 @@ def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
         + "; ".join(item[2:] for item in details)
         + "."
     ]
+
+
+def _structured_values(commits: list[dict[str, str]], field: str) -> list[str]:
+    aliases = {
+        "purpose": {"why", "purpose"},
+        "root": {"root cause", "cause"},
+        "changes": {"changes", "key changes"},
+        "verification": {"verification", "test", "tests"},
+    }[field]
+    values: list[str] = []
+    seen: set[str] = set()
+    for commit in commits:
+        for line in commit["message"].splitlines()[1:]:
+            match = STRUCTURED_COMMIT_FIELD_PATTERN.match(line)
+            if match is None or match.group(1).casefold() not in aliases:
+                continue
+            value = _plain(match.group(2).strip())
+            if value and value.casefold() not in seen:
+                seen.add(value.casefold())
+                values.append(value)
+    return values
 
 
 def _summary_text(values: list[str], limit: int = 3) -> str:
@@ -326,6 +360,9 @@ def _changes_summary(
 ) -> list[str]:
     if not files:
         return ["No changed files were returned by the pull-request API."]
+    structured = _structured_values(commits, "changes")
+    if structured:
+        return [f"- {_sentence(value)}" for value in structured[:4]]
     subjects: list[str] = []
     seen: set[str] = set()
     for commit in commits:
@@ -371,7 +408,9 @@ def _diff_theme(files: list[dict[str, Any]]) -> str:
     return "Synchronize " + ", ".join(themes[:-1]) + ", and " + themes[-1] + "."
 
 
-def _verification_summary(checks: list[dict[str, Any]]) -> list[str]:
+def _verification_summary(
+    checks: list[dict[str, Any]], commits: list[dict[str, str]]
+) -> list[str]:
     if not checks:
         return ["- No check runs were returned for this head."]
     successful = sum(check["conclusion"] == "success" for check in checks)
@@ -382,10 +421,12 @@ def _verification_summary(checks: list[dict[str, Any]]) -> list[str]:
         for check in checks
     )
     skipped = sum(check["conclusion"] == "skipped" for check in checks)
-    return [
+    summary = (
         f"- Automated checks for this head: {successful} passed, {failed} failed, "
         f"{skipped} skipped, and {pending} pending."
-    ]
+    )
+    structured = _structured_values(commits, "verification")
+    return [summary, *[f"- {_sentence(value)}" for value in structured[:3]]]
 
 
 def _issue_lines(commits: list[dict[str, str]]) -> list[str]:
@@ -483,7 +524,7 @@ def render_dynamic_body(
         "purpose": _purpose_lines(commits, head_sha),
         "root_cause": _root_cause_lines(commits),
         "changes": _changes_summary(commits, files),
-        "verification": _verification_summary(checks),
+        "verification": _verification_summary(checks, commits),
         "related": _issue_lines(commits),
     }
     for heading_index in range(len(headings) - 1, -1, -1):

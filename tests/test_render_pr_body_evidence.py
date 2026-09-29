@@ -89,7 +89,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
 
         self.assertNotIn(renderer.MANAGED_BODY_MARKER, rendered)
         self.assertIn("Current subject.", rendered)
-        self.assertIn("The core rationale from the commit metadata is", rendered)
+        self.assertIn("Evidence.", rendered)
         self.assertIn("## Purpose\n\n", rendered)
         self.assertIn("## Key changes\n\n- Current subject.", rendered)
         self.assertIn("## Verification\n\n- Automated checks for this head", rendered)
@@ -97,6 +97,30 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertNotIn("Old purpose", rendered)
         self.assertIn("- [x] Existing evidence", rendered)
         self.assertIn("- [ ] Optional evidence", rendered)
+
+    def test_render_uses_structured_commit_summary_fields(self) -> None:
+        structured = [
+            [
+                {
+                    "sha": HEAD,
+                    "commit": {
+                        "message": (
+                            "fix: concise summary\n\n"
+                            "Why: Protect the mutation boundary.\n"
+                            "Root cause: Indeterminate evidence was treated as actionable.\n"
+                            "Changes: Add a fail-closed guard.\n"
+                            "Verification: Run the focused regression suite."
+                        )
+                    },
+                }
+            ]
+        ]
+        rendered = renderer.render_dynamic_body(BODY, PR, structured, FILES, CHECKS)
+
+        self.assertIn("Protect the mutation boundary", rendered)
+        self.assertIn("Indeterminate evidence was treated as actionable", rendered)
+        self.assertIn("Add a fail-closed guard", rendered)
+        self.assertIn("Run the focused regression suite", rendered)
 
     def test_render_is_deterministic_and_preserves_crlf(self) -> None:
         crlf_body = BODY.replace("\n", "\r\n")
@@ -271,6 +295,19 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             "The core issue addressed",
             renderer._root_cause_lines([{"sha": HEAD, "message": "subject"}])[0],
         )
+        self.assertIn(
+            "core rationale from the commit metadata",
+            renderer._root_cause_lines(
+                [{"sha": HEAD, "message": "subject\n\nUnstructured detail"}]
+            )[0],
+        )
+        self.assertEqual(
+            renderer._structured_values(
+                [{"sha": HEAD, "message": "subject\nWhy: same\nWhy: same"}],
+                "purpose",
+            ),
+            ["same"],
+        )
         self.assertEqual(
             len(
                 renderer._changes_summary(
@@ -294,7 +331,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         )
         self.assertEqual(renderer._diff_theme([{"filename": "src/app.py"}]), "")
         self.assertEqual(
-            renderer._verification_summary([]),
+            renderer._verification_summary([], []),
             ["- No check runs were returned for this head."],
         )
         self.assertEqual(renderer._summary_text([]), "the available commit evidence")
