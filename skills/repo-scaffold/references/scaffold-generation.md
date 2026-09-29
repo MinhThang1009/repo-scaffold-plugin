@@ -53,9 +53,10 @@ finished project.
 The `pr-body-sync.yml` asset is the opt-in PR metadata workflow. Install it
 with `scripts/render_pr_body_evidence.py`, `scripts/markdown_body_preflight.py`,
 and `scripts/pr_template_preflight.py`. It renders the body from the exact PR
-commits, changed files, issue references, and check-run evidence at the current
-head SHA. It does not consume a checked-in narrative body source or execute
-pull-request code.
+commits, structured commit fields, and diff themes at the current head SHA. It
+keeps live check status in GitHub's Checks tab instead of embedding a stale
+snapshot in the body. It does not consume a checked-in narrative body source or
+execute pull-request code.
 
 When installing the CodeQL or code-scanning gate asset, also copy
 `assets/code-scanning-allowlist.json` to

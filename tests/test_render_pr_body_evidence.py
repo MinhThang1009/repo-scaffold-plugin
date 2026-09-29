@@ -92,7 +92,10 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertIn("Evidence.", rendered)
         self.assertIn("## Purpose\n\n", rendered)
         self.assertIn("## Key changes\n\n- Current subject.", rendered)
-        self.assertIn("## Verification\n\n- Automated checks for this head", rendered)
+        self.assertIn(
+            "## Verification\n\n- Verification is tracked in the GitHub Checks tab",
+            rendered,
+        )
         self.assertIn("#42", rendered)
         self.assertNotIn("Old purpose", rendered)
         self.assertIn("- [x] Existing evidence", rendered)
@@ -158,7 +161,8 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         checks = [{"id": 1, "name": "pending", "status": "queued", "conclusion": None}]
         rendered = renderer.render_dynamic_body(BODY, PR, COMMITS[0], [], checks)
 
-        self.assertIn("pending", rendered)
+        self.assertNotIn("pending", rendered)
+        self.assertIn("Checks tab", rendered)
         self.assertIn("No changed files", rendered)
 
     def test_render_rejects_stale_or_untrusted_evidence(self) -> None:
@@ -177,13 +181,6 @@ class RenderPullRequestBodyTests(unittest.TestCase):
                 ],
                 CHECKS,
                 "duplicate",
-            ),
-            (
-                PR,
-                COMMITS,
-                FILES,
-                [[{"id": 1, "name": "x", "status": "unknown", "conclusion": None}]],
-                "unknown status",
             ),
         )
         for pr, commits, files, checks, message in cases:
@@ -331,8 +328,10 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         )
         self.assertEqual(renderer._diff_theme([{"filename": "src/app.py"}]), "")
         self.assertEqual(
-            renderer._verification_summary([], []),
-            ["- No check runs were returned for this head."],
+            renderer._verification_summary([]),
+            [
+                "- Verification is tracked in the GitHub Checks tab for this pull-request head."
+            ],
         )
         self.assertEqual(renderer._summary_text([]), "the available commit evidence")
         self.assertIn("; and", renderer._summary_text(["one", "two"]))

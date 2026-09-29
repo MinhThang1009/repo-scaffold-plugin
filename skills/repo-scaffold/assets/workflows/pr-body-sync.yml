@@ -63,7 +63,6 @@ jobs:
           payload="$RUNNER_TEMP/pr-body-pull-request.json"
           commits="$RUNNER_TEMP/pr-body-commits.json"
           files="$RUNNER_TEMP/pr-body-files.json"
-          checks="$RUNNER_TEMP/pr-body-checks.json"
           body="$RUNNER_TEMP/pr-body-current.md"
           updated="$RUNNER_TEMP/pr-body-updated.md"
           latest_payload="$RUNNER_TEMP/pr-body-latest.json"
@@ -173,14 +172,12 @@ jobs:
 
           collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/commits" commits commits 10
           collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/files" files files 30
-          collect_pages "repos/$REPOSITORY/commits/$PR_HEAD_SHA/check-runs" checks checks 20
 
           python scripts/render_pr_body_evidence.py \
             --body-file "$body" \
             --pr-file "$payload" \
             --commits-file "$commits" \
             --files-file "$files" \
-            --checks-file "$checks" \
             --output "$updated"
           python scripts/markdown_body_preflight.py --body-file "$updated"
           python scripts/pr_template_preflight.py \

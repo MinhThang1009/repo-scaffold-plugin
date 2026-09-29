@@ -7689,7 +7689,6 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         "Paginated API response exceeded the bounded page limit.",
         'collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/commits" commits commits 10',
         'collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/files" files files 30',
-        'collect_pages "repos/$REPOSITORY/commits/$PR_HEAD_SHA/check-runs" checks checks 20',
         "python scripts/render_pr_body_evidence.py",
         'python scripts/markdown_body_preflight.py --body-file "$updated"',
         "python scripts/pr_template_preflight.py",

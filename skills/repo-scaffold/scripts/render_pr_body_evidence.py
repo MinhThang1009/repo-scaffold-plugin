@@ -408,25 +408,13 @@ def _diff_theme(files: list[dict[str, Any]]) -> str:
     return "Synchronize " + ", ".join(themes[:-1]) + ", and " + themes[-1] + "."
 
 
-def _verification_summary(
-    checks: list[dict[str, Any]], commits: list[dict[str, str]]
-) -> list[str]:
-    if not checks:
-        return ["- No check runs were returned for this head."]
-    successful = sum(check["conclusion"] == "success" for check in checks)
-    pending = sum(check["status"] != "completed" for check in checks)
-    failed = sum(
-        check["status"] == "completed"
-        and check["conclusion"] not in {None, "success", "skipped"}
-        for check in checks
-    )
-    skipped = sum(check["conclusion"] == "skipped" for check in checks)
-    summary = (
-        f"- Automated checks for this head: {successful} passed, {failed} failed, "
-        f"{skipped} skipped, and {pending} pending."
-    )
+def _verification_summary(commits: list[dict[str, str]]) -> list[str]:
     structured = _structured_values(commits, "verification")
-    return [summary, *[f"- {_sentence(value)}" for value in structured[:3]]]
+    if structured:
+        return [f"- {_sentence(value)}" for value in structured[:3]]
+    return [
+        "- Verification is tracked in the GitHub Checks tab for this pull-request head."
+    ]
 
 
 def _issue_lines(commits: list[dict[str, str]]) -> list[str]:
@@ -507,7 +495,6 @@ def render_dynamic_body(
         raise ValueError("pull-request body changed before rendering")
     commits = _validate_commits(commits_document, head_sha)
     files = _validate_files(files_document)
-    checks = _validate_checks(checks_document)
     lines = normalized.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -524,7 +511,7 @@ def render_dynamic_body(
         "purpose": _purpose_lines(commits, head_sha),
         "root_cause": _root_cause_lines(commits),
         "changes": _changes_summary(commits, files),
-        "verification": _verification_summary(checks, commits),
+        "verification": _verification_summary(commits),
         "related": _issue_lines(commits),
     }
     for heading_index in range(len(headings) - 1, -1, -1):
@@ -574,7 +561,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pr-file", type=Path, required=True)
     parser.add_argument("--commits-file", type=Path, required=True)
     parser.add_argument("--files-file", type=Path, required=True)
-    parser.add_argument("--checks-file", type=Path, required=True)
+    parser.add_argument("--checks-file", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args(argv)
 
@@ -591,7 +578,7 @@ def main(argv: list[str] | None = None) -> int:
             pr,
             _read_json(arguments.commits_file, "pull-request commits"),
             _read_json(arguments.files_file, "pull-request files"),
-            _read_json(arguments.checks_file, "check-runs"),
+            None,
         )
         write_body(arguments.output, rendered)
     except (OSError, UnicodeError, ValueError) as error:

@@ -187,8 +187,9 @@ it rejects hard-wrapped prose before the GitHub mutation.
 This repository's `pr-body-sync` workflow renders the complete pull-request
 body from the exact pull-request API evidence whenever a pull request is
 opened, reopened, or receives a new commit. It derives commit subjects and
-details, changed files, issue references, check-run statuses, and the immutable
-base/head binding; it does not read a hard-coded PR-body narrative. The selected
+structured fields, changed files, diff themes, and the immutable base/head
+binding; live check status remains in GitHub's Checks tab. It does not read a
+hard-coded PR-body narrative. The selected
 trusted PR template supplies the headings and checklist contract, while the
 generated sections are replaced from the current evidence. The workflow runs
 the Markdown and PR-template preflights before editing, rechecks the head,
