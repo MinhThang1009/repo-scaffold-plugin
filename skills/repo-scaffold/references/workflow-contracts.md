@@ -107,6 +107,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   Commits that need richer generated prose may provide `Why:`, `Root cause:`,
   `Changes:`, and `Verification:` fields in their commit body; missing fields
   must use an explicit evidence fallback rather than inferred claims.
+  Generated summaries should state the review outcome and confirmed cause in
+  prose, keep key changes to a few themes, and leave detailed file and check
+  listings to GitHub's Commits, Files changed, and Checks views.
 - Branch protection: required-check producers must be unique, executable, and
   event-compatible and backed by regular workflow files; Check Run evidence
   must resolve to one Actions workflow run with the producer's exact path,
