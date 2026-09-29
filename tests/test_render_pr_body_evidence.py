@@ -116,6 +116,19 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         renderer.render_dynamic_body(
             no_trailing, {**PR, "body": no_trailing}, COMMITS, FILES, CHECKS
         )
+        legacy_body = BODY.replace(
+            "<!-- repo-scaffold:pr-template=bugfix -->\n",
+            "<!-- repo-scaffold:pr-template=bugfix -->\n"
+            + renderer.MANAGED_BODY_MARKER
+            + "\n",
+        )
+        renderer.render_dynamic_body(
+            legacy_body,
+            {**PR, "body": legacy_body},
+            COMMITS,
+            FILES,
+            CHECKS,
+        )
 
     def test_render_accepts_direct_check_run_pages_and_empty_files(self) -> None:
         checks = [{"id": 1, "name": "pending", "status": "queued", "conclusion": None}]
