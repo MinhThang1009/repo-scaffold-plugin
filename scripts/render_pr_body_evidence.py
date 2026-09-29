@@ -295,13 +295,8 @@ def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
         return [_sentence(_summary_text(structured, limit=2))]
     details = _commit_details(commits)
     if details == ["- No structured detail was supplied in the commit metadata."]:
-        subjects = [
-            _clean_subject(commit["message"].splitlines()[0].strip())
-            for commit in commits
-        ]
         return [
-            "The core issue addressed by this change was "
-            + _sentence(_summary_text(subjects))
+            "No structured root-cause evidence was provided in the commit metadata."
         ]
     return [
         "The core rationale from the commit metadata is "

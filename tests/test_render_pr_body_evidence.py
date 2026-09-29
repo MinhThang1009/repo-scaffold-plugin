@@ -289,7 +289,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             ["- No structured detail was supplied in the commit metadata."],
         )
         self.assertIn(
-            "The core issue addressed",
+            "No structured root-cause evidence",
             renderer._root_cause_lines([{"sha": HEAD, "message": "subject"}])[0],
         )
         self.assertIn(

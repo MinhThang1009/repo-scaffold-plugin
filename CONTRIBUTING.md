@@ -184,6 +184,16 @@ mapping, add `--template security`, `--template deployment`, or
 After preparing the UTF-8 body file, rerun the preflight with `--body-file <path>`;
 it rejects hard-wrapped prose before the GitHub mutation.
 
+When a commit changes behavior or policy, include structured summary fields in
+the commit body so the generated PR can preserve the review context:
+
+```text
+Why: the user or maintainer outcome
+Root cause: the confirmed technical cause
+Changes: the main implementation or policy changes
+Verification: the focused tests or checks run
+```
+
 This repository's `pr-body-sync` workflow renders the complete pull-request
 body from the exact pull-request API evidence whenever a pull request is
 opened, reopened, or receives a new commit. It derives commit subjects and
