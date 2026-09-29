@@ -88,16 +88,13 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         rendered = renderer.render_dynamic_body(BODY, PR, COMMITS, FILES, CHECKS)
 
         self.assertNotIn(renderer.MANAGED_BODY_MARKER, rendered)
-        self.assertIn(f"<!-- base: {BASE} -->", rendered)
-        self.assertIn(f"<!-- head: {HEAD} -->", rendered)
         self.assertIn("current subject", rendered)
-        self.assertIn("This pull request was generated from 1 commit", rendered)
-        self.assertIn(
-            "The commit metadata provides the following root-cause detail:", rendered
-        )
-        self.assertIn("Checks observed for this head:", rendered)
-        self.assertIn("scripts/example.py", rendered)
-        self.assertIn("quality", rendered)
+        self.assertIn("This change is summarized by", rendered)
+        self.assertIn("The core rationale from the commit metadata is", rendered)
+        self.assertIn("## Purpose\n\n", rendered)
+        self.assertIn("## Key changes\n\nUpdated 1 file(s)", rendered)
+        self.assertIn("## Verification\n\nObserved 1 check run(s)", rendered)
+        self.assertIn("1 passed", rendered)
         self.assertIn("#42", rendered)
         self.assertNotIn("Old purpose", rendered)
         self.assertIn("- [x] Existing evidence", rendered)
@@ -277,12 +274,24 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             renderer._root_cause_lines([{"sha": HEAD, "message": "subject"}])[0],
         )
         self.assertEqual(
-            renderer._check_lines([]), ["- No check runs were returned for this head."]
+            renderer._verification_summary([]),
+            ["No check runs were returned for this head."],
+        )
+        self.assertEqual(renderer._summary_text([]), "the available commit evidence")
+        self.assertIn("; and", renderer._summary_text(["one", "two"]))
+        self.assertIn(
+            "more commit(s)", renderer._summary_text(["one", "two", "three", "four"])
         )
         duplicate_issue = {"sha": HEAD, "message": "subject\nCloses #1 and #1"}
         self.assertEqual(len(renderer._issue_lines([duplicate_issue])), 1)
         with self.assertRaisesRegex(ValueError, "unterminated"):
             renderer._remove_protocol_lines([renderer.HEAD_START_MARKER])
+        self.assertEqual(
+            renderer._remove_protocol_lines(
+                [renderer.HEAD_START_MARKER, "old metadata", renderer.HEAD_END_MARKER]
+            ),
+            [],
+        )
         with mock.patch.object(renderer, "MAX_BODY_BYTES", 1):
             with self.assertRaisesRegex(ValueError, "generated"):
                 renderer.render_dynamic_body(BODY, PR, COMMITS, FILES, CHECKS)
@@ -328,7 +337,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertIn("current PR evidence", stdout.getvalue())
             self.assertIn(
-                renderer.HEAD_START_MARKER, output.read_text(encoding="utf-8")
+                "This change is summarized by", output.read_text(encoding="utf-8")
             )
 
             pr.write_text("{", encoding="utf-8")

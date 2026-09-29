@@ -256,12 +256,14 @@ def _plain(value: str) -> str:
 
 
 def _purpose_lines(commits: list[dict[str, str]], head_sha: str) -> list[str]:
-    latest = commits[-1]
-    subject = latest["message"].splitlines()[0].strip() or "(no commit subject)"
-    noun = "commit" if len(commits) == 1 else "commits"
+    subjects = [
+        commit["message"].splitlines()[0].strip() or "(no commit subject)"
+        for commit in commits
+    ]
+    summary = _summary_text(subjects)
     return [
-        f"This pull request was generated from {len(commits)} {noun} at head "
-        f"{_code(head_sha[:12])}. Latest commit: {_plain(subject)}."
+        f"This change is summarized by {summary} It is bound to head "
+        f"{_code(head_sha[:12])}."
     ]
 
 
@@ -281,28 +283,56 @@ def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
     if details == ["- No structured detail was supplied in the commit metadata."]:
         return ["No structured root-cause detail was provided in the commit metadata."]
     return [
-        "The commit metadata provides the following root-cause detail:",
-        *details,
+        "The core rationale from the commit metadata is "
+        + "; ".join(item[2:] for item in details)
+        + "."
     ]
 
 
-def _file_lines(files: list[dict[str, Any]]) -> list[str]:
+def _summary_text(values: list[str], limit: int = 3) -> str:
+    compact = [_plain(value).rstrip(".") for value in values if value.strip()]
+    if not compact:
+        return "the available commit evidence"
+    if len(compact) <= limit:
+        if len(compact) == 1:
+            return compact[0] + "."
+        return "; ".join(compact[:-1]) + "; and " + compact[-1] + "."
+    return "; ".join(compact[:limit]) + f"; and {len(compact) - limit} more commit(s)."
+
+
+def _changes_summary(files: list[dict[str, Any]]) -> list[str]:
     if not files:
-        return ["- No changed files were returned by the pull-request API."]
+        return ["No changed files were returned by the pull-request API."]
+    additions = sum(int(item["additions"]) for item in files)
+    deletions = sum(int(item["deletions"]) for item in files)
+    areas: dict[str, int] = {}
+    for item in files:
+        filename = str(item["filename"])
+        area = filename.split("/", 1)[0] if "/" in filename else "repository root"
+        areas[area] = areas.get(area, 0) + 1
+    area_text = _summary_text(
+        [f"{area} ({count} file(s))" for area, count in sorted(areas.items())],
+        limit=3,
+    )
     return [
-        "- "
-        + _code(str(item["filename"]))
-        + f" ({item['status']}, +{item['additions']}/-{item['deletions']})"
-        for item in files
+        f"Updated {len(files)} file(s), with +{additions}/-{deletions} lines, mainly across {area_text}"
     ]
 
 
-def _check_lines(checks: list[dict[str, Any]]) -> list[str]:
+def _verification_summary(checks: list[dict[str, Any]]) -> list[str]:
     if not checks:
-        return ["- No check runs were returned for this head."]
-    return [
-        f"- {_code(check['name'])}: {_plain(check['status'])}/{_plain(check['conclusion'] or 'pending')}"
+        return ["No check runs were returned for this head."]
+    successful = sum(check["conclusion"] == "success" for check in checks)
+    pending = sum(check["status"] != "completed" for check in checks)
+    failed = sum(
+        check["status"] == "completed"
+        and check["conclusion"] not in {None, "success", "skipped"}
         for check in checks
+    )
+    skipped = sum(check["conclusion"] == "skipped" for check in checks)
+    return [
+        f"Observed {len(checks)} check run(s): {successful} passed, {failed} failed, "
+        f"{skipped} skipped, and {pending} pending."
     ]
 
 
@@ -314,8 +344,12 @@ def _issue_lines(commits: list[dict[str, str]]) -> list[str]:
             if reference not in seen:
                 seen.add(reference)
                 references.append(reference)
-    return [f"- {_code(reference)}" for reference in references] or [
-        "- No issue reference was found in the commit metadata."
+    if not references:
+        return ["Not applicable."]
+    return [
+        "Referenced issues: "
+        + ", ".join(_code(reference) for reference in references)
+        + "."
     ]
 
 
@@ -374,7 +408,7 @@ def render_dynamic_body(
         raise ValueError(
             "pull-request body must begin with exactly one trusted template marker"
         )
-    head_sha, base_sha, repository, _title = _head_and_base(pr)
+    head_sha, _base_sha, _repository, _title = _head_and_base(pr)
     current_body = pr.get("body") or ""
     if not isinstance(current_body, str) or current_body != body:
         raise ValueError("pull-request body changed before rendering")
@@ -396,11 +430,8 @@ def render_dynamic_body(
     generated = {
         "purpose": _purpose_lines(commits, head_sha),
         "root_cause": _root_cause_lines(commits),
-        "changes": _file_lines(files),
-        "verification": [
-            "Checks observed for this head:",
-            *_check_lines(checks),
-        ],
+        "changes": _changes_summary(files),
+        "verification": _verification_summary(checks),
         "related": _issue_lines(commits),
     }
     for heading_index in range(len(headings) - 1, -1, -1):
@@ -414,6 +445,7 @@ def render_dynamic_body(
         if REQUIRED_START in section or OPTIONAL_START in section:
             continue
         lines[line_index + 1 : section_end] = [
+            "",
             *generated[_section_kind(heading)],
             "",
         ]
@@ -421,11 +453,6 @@ def render_dynamic_body(
         lines.pop()
     output = [
         marker_line,
-        HEAD_START_MARKER,
-        f"<!-- base: {base_sha} -->",
-        f"<!-- head: {head_sha} -->",
-        f"<!-- repository: {repository} -->",
-        HEAD_END_MARKER,
         "",
         *lines,
         "",
