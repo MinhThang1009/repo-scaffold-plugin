@@ -56,6 +56,8 @@ behavior and safety-boundary changes, not only PR-body tooling or documentation.
 Commit verification notes are author-reported at the
 source SHA; use GitHub Checks for the current revision. Review the complete
 body again after rendering and after GitHub accepts the update.
+The renderer adds the current Checks-tab status line automatically; do not
+repeat that live-status statement in a structured `Verification:` value.
 
 In the body file, keep each prose paragraph on one physical line and each list
 item on a single line; separate paragraphs with blank lines and let GitHub wrap
