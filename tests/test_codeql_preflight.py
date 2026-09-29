@@ -2962,7 +2962,7 @@ class WorkflowDiscoveryTests(unittest.TestCase):
             with (
                 mock.patch.object(
                     codeql_preflight.Path,
-                    "read_bytes",
+                    "open",
                     side_effect=OSError("read failed"),
                 ),
                 self.assertRaisesRegex(

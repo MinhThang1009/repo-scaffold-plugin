@@ -10,7 +10,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
+from io import BytesIO
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,6 +180,37 @@ class MergeMutationShardsTests(unittest.TestCase):
             path = Path(directory) / "metadata.json"
             with self.assertRaisesRegex(ValueError, "could not read"):
                 merge_mutation_shards.load_json(path)
+
+    def test_load_json_limits_the_read_when_a_file_grows_after_stat(self) -> None:
+        class TrackingReader(BytesIO):
+            def __init__(self) -> None:
+                super().__init__(b"x" * 100)
+                self.read_sizes: list[int] = []
+
+            def read(self, size: int | None = None) -> bytes:
+                self.read_sizes.append(-1 if size is None else size)
+                return super().read(-1 if size is None else size)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metadata.json"
+            path.write_text("{}", encoding="utf-8")
+            original_stat = Path.stat
+
+            def small_stat(candidate: Path, *, follow_symlinks: bool = True) -> object:
+                metadata = original_stat(candidate, follow_symlinks=follow_symlinks)
+                if candidate == path:
+                    return SimpleNamespace(st_mode=metadata.st_mode, st_size=0)
+                return metadata
+
+            source = TrackingReader()
+            with (
+                mock.patch.object(merge_mutation_shards, "MAX_METADATA_BYTES", 4),
+                mock.patch.object(Path, "stat", small_stat),
+                mock.patch.object(Path, "open", return_value=source),
+                self.assertRaisesRegex(ValueError, "could not read"),
+            ):
+                merge_mutation_shards.load_json(path)
+            self.assertEqual(source.read_sizes, [5])
 
             with mock.patch.object(merge_mutation_shards, "MAX_METADATA_BYTES", 1):
                 path.write_text("{}", encoding="utf-8")

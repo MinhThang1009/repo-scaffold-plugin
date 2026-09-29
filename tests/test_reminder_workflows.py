@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -588,3 +589,132 @@ class ReminderWorkflowTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0, result.stderr)
                     self.assertIn("unexpected exit status", result.stderr)
                     self.assertNotIn("MUTATION:", result.stdout)
+
+
+class PullRequestBodyPaginationTests(unittest.TestCase):
+    def _workflow_functions(self) -> tuple[str, str]:
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/pr-body-sync.yml").read_text(encoding="utf-8")
+        )
+        run = workflow["jobs"]["update"]["steps"][1]["run"]
+        api_start = run.index("gh_api_to_file() {")
+        api_end = run.index("\n}\n\n", api_start) + 2
+        pages_start = run.index("collect_pages() {")
+        pages_end = run.index("\n}\n\ncollect_pages ", pages_start) + 2
+        return run[api_start:api_end], run[pages_start:pages_end]
+
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
+    def test_api_file_reader_rejects_oversize_before_writing(self) -> None:
+        api_function, _ = self._workflow_functions()
+        stub = "gh() { printf '12345'; }\n"
+        script = (
+            "set -euo pipefail\n"
+            + stub
+            + api_function
+            + '\ngh_api_to_file "oversized.json" 4 "endpoint"\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = subprocess.run(
+                [str(BASH), "--noprofile", "--norc", "-s"],
+                input=script,
+                cwd=root,
+                env=child_cli_environment({"RUNNER_TEMP": "."}),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=15,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn("byte safety cap", result.stderr)
+            self.assertFalse((root / "oversized.json").exists())
+
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
+    def test_body_sync_collects_exactly_three_thousand_files(self) -> None:
+        api_function, pages_function = self._workflow_functions()
+        stub = """gh() {
+  local endpoint=""
+  for argument in "$@"; do endpoint="$argument"; done
+  local page="${endpoint##*page=}"
+  cat "$FAKE_PAGES/$page.json"
+}
+"""
+        script = (
+            "set -euo pipefail\n"
+            + stub
+            + api_function
+            + "\n"
+            + pages_function
+            + '\ncollect_pages "repos/synthetic/example/pulls/1/files" files files 30\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            page_root = root / "pages"
+            page_root.mkdir()
+            for page in range(1, 31):
+                rows = [
+                    {"filename": f"src/file-{page}-{item}.py"} for item in range(100)
+                ]
+                (page_root / f"{page}.json").write_text(
+                    json.dumps(rows), encoding="utf-8"
+                )
+            result = subprocess.run(
+                [str(BASH), "--noprofile", "--norc", "-s"],
+                input=script,
+                cwd=root,
+                env=child_cli_environment({"RUNNER_TEMP": ".", "FAKE_PAGES": "pages"}),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            pages = json.loads((root / "files.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(pages), 30)
+            self.assertEqual(sum(len(page) for page in pages), 3000)
+
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
+    def test_body_sync_rejects_combined_pagination_evidence_over_the_byte_cap(
+        self,
+    ) -> None:
+        api_function, pages_function = self._workflow_functions()
+        stub = """gh() {
+  local endpoint=""
+  for argument in "$@"; do endpoint="$argument"; done
+  local page="${endpoint##*page=}"
+  cat "$FAKE_PAGES/$page.json"
+}
+"""
+        script = (
+            "set -euo pipefail\n"
+            + stub
+            + api_function
+            + "\n"
+            + pages_function
+            + '\ncollect_pages "repos/synthetic/example/pulls/1/files" files files 30\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            page_root = root / "pages"
+            page_root.mkdir()
+            for page in range(1, 31):
+                rows = [{"filename": "\u5b57" * 2048} for _ in range(100)]
+                (page_root / f"{page}.json").write_text(
+                    json.dumps(rows, ensure_ascii=False), encoding="utf-8"
+                )
+            result = subprocess.run(
+                [str(BASH), "--noprofile", "--norc", "-s"],
+                input=script,
+                cwd=root,
+                env=child_cli_environment({"RUNNER_TEMP": ".", "FAKE_PAGES": "pages"}),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Combined paginated API evidence exceeds", result.stderr)
+            self.assertFalse((root / "files.json").exists())

@@ -68,8 +68,24 @@ jobs:
           latest_payload="$RUNNER_TEMP/pr-body-latest.json"
           verified_payload="$RUNNER_TEMP/pr-body-verified.json"
 
-          gh api --hostname github.com \
-            "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"
+          gh_api_to_file() {
+            local output="$1"
+            local byte_limit="$2"
+            shift 2
+            gh api --hostname github.com "$@" |
+              python -c '
+          import sys
+          from pathlib import Path
+
+          byte_limit = int(sys.argv[2])
+          payload = sys.stdin.buffer.read(byte_limit + 1)
+          if len(payload) > byte_limit:
+              raise SystemExit("GitHub API response exceeds the byte safety cap.")
+          Path(sys.argv[1]).write_bytes(payload)
+          ' "$output" "$byte_limit"
+          }
+
+          gh_api_to_file "$payload" 2097152 "repos/$REPOSITORY/pulls/$PR_NUMBER"
           python - "$payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" <<'PY'
           import json
           import sys
@@ -133,8 +149,8 @@ jobs:
             mkdir -p "$page_dir"
             while (( page <= max_pages )); do
               local page_path="$page_dir/$page.json"
-              gh api --hostname github.com \
-                "$endpoint?per_page=100&page=$page" > "$page_path"
+              gh_api_to_file "$page_path" 10485760 \
+                "$endpoint?per_page=100&page=$page"
               count=$(python - "$page_path" "$kind" <<'PY'
           import json
           import sys
@@ -158,7 +174,7 @@ jobs:
           print(len(items))
           PY
               )
-              if (( count < 100 )); then
+              if (( count < 100 || page == max_pages )); then
                 break
               fi
               page=$((page + 1))
@@ -167,19 +183,40 @@ jobs:
               printf 'Paginated API response exceeded the bounded page limit.\n' >&2
               exit 1
             fi
-            python - "$page_dir" <<'PY' > "$RUNNER_TEMP/$prefix.json"
+            python - "$page_dir" "$RUNNER_TEMP/$prefix.json" 10485760 <<'PY'
           import json
           import sys
           from pathlib import Path
 
           directory = Path(sys.argv[1])
+          output_path = Path(sys.argv[2])
+          total_limit = int(sys.argv[3])
           paths = sorted(directory.glob("*.json"), key=lambda path: int(path.stem))
-          pages = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
-          json.dump(pages, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+          encoded_pages = []
+          total_bytes = 2
+          for path in paths:
+              with path.open("rb") as source:
+                  raw = source.read(10485760 + 1)
+              if len(raw) > 10485760:
+                  raise SystemExit("Paginated API response exceeds the safety cap.")
+              try:
+                  page_payload = json.loads(raw.decode("utf-8"))
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  raise SystemExit(f"Paginated API response is invalid: {error}") from error
+              if not isinstance(page_payload, list):
+                  raise SystemExit("Paginated API response has an invalid item array.")
+              encoded = json.dumps(
+                  page_payload, ensure_ascii=False, separators=(",", ":")
+              ).encode("utf-8")
+              total_bytes += len(encoded) + (1 if encoded_pages else 0)
+              if total_bytes > total_limit:
+                  raise SystemExit("Combined paginated API evidence exceeds the safety cap.")
+              encoded_pages.append(encoded)
+          output_path.write_bytes(b"[" + b",".join(encoded_pages) + b"]")
           PY
           }
 
-          collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/commits" commits commits 10
+          collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/commits" commits commits 3
           collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/files" files files 30
 
           python scripts/render_pr_body_evidence.py \
@@ -197,8 +234,8 @@ jobs:
             exit 0
           fi
 
-          gh api --hostname github.com \
-            "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$latest_payload"
+          gh_api_to_file "$latest_payload" 2097152 \
+            "repos/$REPOSITORY/pulls/$PR_NUMBER"
           python - "$latest_payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" "$payload" <<'PY'
           import json
           import sys
@@ -257,8 +294,8 @@ jobs:
             --repo "github.com/$REPOSITORY" \
             --body-file "$updated"
 
-          gh api --hostname github.com \
-            "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$verified_payload"
+          gh_api_to_file "$verified_payload" 2097152 \
+            "repos/$REPOSITORY/pulls/$PR_NUMBER"
           python - "$verified_payload" "$updated" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" "$payload" <<'PY'
           import json
           import sys

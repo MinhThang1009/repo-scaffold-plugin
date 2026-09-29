@@ -61,7 +61,8 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _read_bytes(path: Path, label: str, limit: int) -> bytes:
     try:
-        payload = path.read_bytes()
+        with path.open("rb") as source:
+            payload = source.read(limit + 1)
     except OSError as error:
         raise ValueError(f"could not read {label}: {error}") from error
     if len(payload) > limit:
@@ -231,33 +232,38 @@ def _plain(value: str) -> str:
 
 def _purpose_lines(commits: list[dict[str, str]], head_sha: str) -> list[str]:
     source_commits = _core_commits(commits)
-    structured = _structured_values(source_commits, "purpose")
+    structured = _structured_evidence(source_commits, "purpose")
     if structured:
-        return [_summary_text(structured)]
+        return _author_reported_lines(structured, limit=3)
     subjects = [
-        _clean_subject(commit["message"].splitlines()[0]) for commit in source_commits
+        (commit["sha"], _clean_subject(commit["message"].splitlines()[0]))
+        for commit in source_commits
     ]
-    return [_summary_text(subjects)]
+    if not subjects:
+        return [_summary_text([])]
+    return _author_reported_lines(subjects, limit=3)
 
 
 def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
     source_commits = _core_commits(commits)
-    structured = _structured_values(source_commits, "root")
+    structured = _structured_evidence(source_commits, "root")
     if structured:
-        return [_summary_text(structured)]
+        return _author_reported_lines(structured, limit=3)
     return [
         "The confirmed cause was not documented in commit metadata; review the diff before completing this section."
     ]
 
 
-def _structured_values(commits: list[dict[str, str]], field: str) -> list[str]:
+def _structured_evidence(
+    commits: list[dict[str, str]], field: str
+) -> list[tuple[str, str]]:
     aliases = {
         "purpose": {"why", "purpose"},
         "root": {"root cause", "cause"},
         "changes": {"changes", "key changes"},
         "verification": {"verification", "test", "tests"},
     }[field]
-    values: list[str] = []
+    values: list[tuple[str, str]] = []
     seen: set[str] = set()
     for commit in commits:
         active: str | None = None
@@ -268,7 +274,7 @@ def _structured_values(commits: list[dict[str, str]], field: str) -> list[str]:
             key = value.casefold().rstrip(".")
             if active in aliases and value and key not in seen:
                 seen.add(key)
-                values.append(value)
+                values.append((commit["sha"], value))
             paragraph.clear()
 
         for line in commit["message"].splitlines()[1:]:
@@ -296,6 +302,21 @@ def _structured_values(commits: list[dict[str, str]], field: str) -> list[str]:
                     paragraph.append(line.strip())
         flush()
     return values
+
+
+def _structured_values(commits: list[dict[str, str]], field: str) -> list[str]:
+    return [value for _, value in _structured_evidence(commits, field)]
+
+
+def _author_reported_lines(evidence: list[tuple[str, str]], *, limit: int) -> list[str]:
+    if len(evidence) > limit:
+        raise ValueError(
+            "Too many narrative topics; provide a reviewed PR-summary-base commit instead of dropping context"
+        )
+    return [
+        f"- Author-reported at {_code(sha)}: {_sentence(value)}"
+        for sha, value in evidence
+    ]
 
 
 def _summary_text(values: list[str], limit: int = 3) -> str:
@@ -360,24 +381,25 @@ def _changes_summary(
 ) -> list[str]:
     if not files:
         return ["No changed files were returned by the pull-request API."]
-    selected: list[str] = []
+    selected: list[tuple[str, str]] = []
     seen: set[str] = set()
     for commit in _core_commits(commits):
-        facts = _structured_values([commit], "changes") or [
-            _clean_subject(commit["message"].splitlines()[0])
+        facts = _structured_evidence([commit], "changes") or [
+            (commit["sha"], _clean_subject(commit["message"].splitlines()[0]))
         ]
-        for value in facts:
+        for sha, value in facts:
             key = value.casefold().rstrip(".")
             if key not in seen:
                 seen.add(key)
-                selected.append(value)
+                selected.append((sha, value))
     if len(selected) > MAX_KEY_CHANGES:
         raise ValueError(
             "More than five key changes; provide a reviewed PR-summary-base commit instead of omitting changes"
         )
-    return [f"- {_sentence(value)}" for value in selected] or [
-        "- No non-merge change description was provided."
-    ]
+    return [
+        f"- Author-reported at {_code(sha)}: {_sentence(value)}"
+        for sha, value in selected
+    ] or ["- No non-merge change description was provided."]
 
 
 def _verification_summary(commits: list[dict[str, str]]) -> list[str]:
@@ -391,7 +413,7 @@ def _verification_summary(commits: list[dict[str, str]]) -> list[str]:
         )
     return [
         *[
-            f"- Author-reported at {_code(sha[:12])}: {_sentence(value)}"
+            f"- Author-reported at {_code(sha)}: {_sentence(value)}"
             for sha, value in evidence.values()
         ],
         "- Current CI and mutation results are available in the GitHub Checks tab; commit notes do not certify a later head.",
@@ -399,18 +421,18 @@ def _verification_summary(commits: list[dict[str, str]]) -> list[str]:
 
 
 def _issue_lines(commits: list[dict[str, str]]) -> list[str]:
-    references: list[str] = []
-    seen: set[str] = set()
+    references: dict[str, str] = {}
     for commit in commits:
         for reference in ISSUE_REFERENCE_PATTERN.findall(commit["message"]):
-            if reference not in seen:
-                seen.add(reference)
-                references.append(reference)
+            references.setdefault(reference, commit["sha"])
     if not references:
         return ["Not applicable."]
     return [
-        "Referenced issues: "
-        + ", ".join(_code(reference) for reference in references)
+        "Commit-referenced issues: "
+        + ", ".join(
+            f"{_code(reference)} ({_code(sha)})"
+            for reference, sha in references.items()
+        )
         + "."
     ]
 
@@ -475,7 +497,7 @@ def _localize_system_text(lines: list[str], language: str) -> list[str]:
         "- No non-merge change description was provided.": "- Chưa có mô tả thay đổi ngoài merge commit.",
         "- Current CI and mutation results are available in the GitHub Checks tab; commit notes do not certify a later head.": "- Xem kết quả CI và mutation hiện tại tại tab GitHub Checks; ghi chú của commit không chứng nhận head mới hơn.",
         "- Author-reported at ": "- Theo tác giả tại revision ",
-        "Referenced issues: ": "Issue được tham chiếu: ",
+        "Commit-referenced issues: ": "Issue được commit tham chiếu: ",
         "Not applicable.": "Không áp dụng.",
     }
     result: list[str] = []
@@ -484,6 +506,10 @@ def _localize_system_text(lines: list[str], language: str) -> list[str]:
             if line.startswith(source):
                 line = translation + line[len(source) :]
                 break
+        else:
+            raise ValueError(
+                "generated pull-request text has no Vietnamese translation"
+            )
         result.append(line)
     return result
 

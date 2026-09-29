@@ -211,21 +211,29 @@ PR-body tooling or documentation that makes them reviewable.
 This repository's `pr-body-sync` workflow renders the complete pull-request
 body from the exact pull-request API evidence whenever a pull request is
 opened, reopened, or receives a new commit. It derives commit subjects and
-structured fields, changed files, diff themes, and the immutable base/head
-binding; live check status remains in GitHub's Checks tab. It does not read a
-hard-coded PR-body narrative. The selected
-trusted PR template supplies the headings and checklist contract, while the
-generated sections are replaced from the current evidence. The workflow runs
-the Markdown and PR-template preflights before editing, rechecks the head,
-base, title, repository, and current body immediately before the mutation, then
-verifies the complete body after GitHub accepts it. Missing, malformed, stale,
-or over-limit evidence fails closed. Compare the fetched commit and file counts
-with the PR inventory; missing pages cannot produce a complete summary. The
-GitHub PR commit endpoint supports at most 250 commits and the files endpoint
-supports at most 3,000 files. Template preflight validates structure and prose
-layout; review the resulting description against the full diff to establish
+structured fields, and the complete changed-file inventory, bound to the
+immutable base/head. Commit-derived purpose, cause, key changes, and verification
+notes are author-reported and tagged with the full source SHA; the current
+Checks-tab reminder is generated separately. The file inventory verifies
+pagination and the PR file count; it does not establish
+change themes or verify narrative claims against patches. Live check status
+remains in GitHub's Checks tab. The workflow does not read a hard-coded PR-body
+narrative. The selected trusted PR template supplies the headings and checklist
+contract, while generated sections are replaced from current evidence. The
+workflow bounds API responses and combined evidence, runs the Markdown and
+PR-template preflights before editing, rechecks the head, base, title,
+repository, and current body immediately before the mutation, then verifies the
+complete body after GitHub accepts it. Missing, malformed, stale, incomplete,
+or over-limit evidence fails closed. The GitHub PR commit endpoint supports at
+most 250 commits and the files endpoint supports at most 3,000 files. Template
+preflight validates structure and prose layout; review the resulting
+description against the full diff to establish
 content completeness. Human-authored acceptance criteria, risk notes, and
 rollout or rollback plans remain part of that review.
+GitHub's pull-request update endpoint has no conditional body-write parameter.
+A concurrent human edit after the workflow's final read but before its update
+can be overwritten; the workflow minimizes that interval and verifies the
+accepted body afterward.
 
 Use the default PR template for ordinary changes. Choose a specialized template
 only when its review workflow applies:

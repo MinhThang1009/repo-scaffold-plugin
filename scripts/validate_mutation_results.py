@@ -22,6 +22,7 @@ COUNT_FIELDS = (
 )
 EXPECTED_FIELDS = {*COUNT_FIELDS, "total"}
 MINIMUM_MUTATION_SCORE_BASIS_POINTS = 10_000
+MAX_STATISTICS_BYTES = 1024 * 1024
 UNSAFE_RESULT_FIELDS = (
     "no_tests",
     "skipped",
@@ -48,9 +49,11 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def load_statistics(path: Path) -> dict[str, int]:
     """Load strict, nonnegative mutmut counters from a JSON artifact."""
     try:
-        document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
-        )
+        with path.open("rb") as source:
+            raw = source.read(MAX_STATISTICS_BYTES + 1)
+        if len(raw) > MAX_STATISTICS_BYTES:
+            raise ValueError("mutation statistics exceed the byte safety cap")
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_json_object)
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation statistics: {error}") from error
     if not isinstance(document, dict):

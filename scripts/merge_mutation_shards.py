@@ -88,8 +88,14 @@ def load_json(path: Path, *, boundary: Path | None = None) -> dict[str, Any]:
             raise ValueError(
                 f"metadata exceeds the {MAX_METADATA_BYTES}-byte size limit"
             )
+        with path.open("rb") as source:
+            raw = source.read(MAX_METADATA_BYTES + 1)
+        if len(raw) > MAX_METADATA_BYTES:
+            raise ValueError(
+                f"metadata exceeds the {MAX_METADATA_BYTES}-byte size limit"
+            )
         document = json.loads(
-            path.read_text(encoding="utf-8"),
+            raw.decode("utf-8"),
             object_pairs_hook=unique_json_object,
             parse_constant=reject_json_constant,
         )

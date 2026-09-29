@@ -98,6 +98,15 @@ def reject_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant {value!r}")
 
 
+def _read_bounded_bytes(path: Path, limit: int, message: str) -> bytes:
+    """Read at most one byte beyond a file limit, even if it grows after stat."""
+    with path.open("rb") as source:
+        content = source.read(limit + 1)
+    if len(content) > limit:
+        raise ValueError(message)
+    return content
+
+
 def _is_within(path: PurePosixPath, root: PurePosixPath) -> bool:
     return path == root or root in path.parents
 
@@ -189,8 +198,11 @@ def _validate_shard_plan(path: Path, mutation_root: Path) -> None:
     if path.stat().st_size > MAX_META_BYTES:
         raise ValueError("cached mutation shard plan is oversized")
     try:
+        raw = _read_bounded_bytes(
+            path, MAX_META_BYTES, "cached mutation shard plan is oversized"
+        )
         document = json.loads(
-            path.read_text(encoding="utf-8"),
+            raw.decode("utf-8"),
             object_pairs_hook=unique_json_object,
             parse_constant=reject_json_constant,
         )
@@ -350,7 +362,9 @@ def snapshot_project(repository_root: Path) -> ProjectSnapshot:
     control_hashes: dict[str, str] = {}
     for relative, path in _project_files(repository_root):
         posix_path = PurePosixPath(relative)
-        content = path.read_bytes()
+        content = _read_bounded_bytes(
+            path, MAX_FILE_BYTES, f"project file {relative!r} exceeds the size limit"
+        )
         if posix_path.suffix == ".py" and any(
             _is_within(posix_path, root) for root in SOURCE_ROOTS
         ):
@@ -396,8 +410,11 @@ def load_manifest(path: Path) -> ProjectSnapshot:
     if path.stat().st_size > MAX_TOTAL_BYTES:
         raise ValueError("mutation cache manifest exceeds the size limit")
     try:
+        raw = _read_bounded_bytes(
+            path, MAX_TOTAL_BYTES, "mutation cache manifest exceeds the size limit"
+        )
         document = json.loads(
-            path.read_text(encoding="utf-8"),
+            raw.decode("utf-8"),
             object_pairs_hook=unique_json_object,
             parse_constant=reject_json_constant,
         )
@@ -481,9 +498,11 @@ def _collect_state_hashes(
             continue
         if not path.is_file():
             raise ValueError(f"mutation state is not a regular file: {relative!r}")
-        content = path.read_bytes()
+        content = _read_bounded_bytes(
+            path, MAX_META_BYTES, "mutation state exceeds the size limits"
+        )
         total_bytes += len(content)
-        if len(content) > MAX_META_BYTES or total_bytes > MAX_STATE_BYTES:
+        if total_bytes > MAX_STATE_BYTES:
             raise ValueError("mutation state exceeds the size limits")
         state_hashes[relative] = _sha256(content)
     return state_hashes
@@ -497,7 +516,11 @@ def _sanitize_restored_state(mutation_root: Path, state_hashes: dict[str, str]) 
         _assert_safe_cache_path(mutation_root, path)
         if not path.is_file():
             raise ValueError(f"restored mutation state is missing {relative!r}")
-        content = path.read_bytes()
+        content = _read_bounded_bytes(
+            path,
+            MAX_META_BYTES,
+            f"restored mutation state failed integrity for {relative!r}",
+        )
         total_bytes += len(content)
         if (
             len(content) > MAX_META_BYTES
@@ -556,8 +579,11 @@ def _load_meta(path: Path) -> dict[str, Any]:
     if _is_link_or_reparse(path) or path.stat().st_size > MAX_META_BYTES:
         raise ValueError("mutation metadata is unsafe or oversized")
     try:
+        raw = _read_bounded_bytes(
+            path, MAX_META_BYTES, "mutation metadata is unsafe or oversized"
+        )
         document = json.loads(
-            path.read_text(encoding="utf-8"),
+            raw.decode("utf-8"),
             object_pairs_hook=unique_json_object,
             parse_constant=reject_json_constant,
         )

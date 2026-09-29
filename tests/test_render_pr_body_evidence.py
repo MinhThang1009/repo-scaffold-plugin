@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -94,7 +94,10 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertIn("The confirmed cause was not documented", rendered)
         self.assertNotIn("Evidence; and current subject", rendered)
         self.assertIn("## Purpose\n\n", rendered)
-        self.assertIn("## Key changes\n\n- Current subject.", rendered)
+        self.assertIn(
+            f"## Key changes\n\n- Author-reported at <code>{HEAD}</code>: Current subject.",
+            rendered,
+        )
         self.assertIn(
             "Current CI and mutation results are available in the GitHub Checks tab",
             rendered,
@@ -103,6 +106,12 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertNotIn("Old purpose", rendered)
         self.assertIn("- [x] Existing evidence", rendered)
         self.assertIn("- [ ] Optional evidence", rendered)
+
+    def test_purpose_fallback_handles_merge_only_commit_evidence(self) -> None:
+        lines = renderer._purpose_lines(
+            [{"sha": HEAD, "message": "Merge pull request #42 from branch"}], HEAD
+        )
+        self.assertIn("available commit and diff evidence", lines[0])
 
     def test_render_uses_structured_commit_summary_fields(self) -> None:
         structured = [
@@ -127,6 +136,17 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertIn("Indeterminate evidence was treated as actionable", rendered)
         self.assertIn("Add a fail-closed guard", rendered)
         self.assertIn("Run the focused regression suite", rendered)
+        for section, content in (
+            ("Purpose", "Protect the mutation boundary"),
+            ("Root cause", "Indeterminate evidence was treated as actionable"),
+            ("Key changes", "Add a fail-closed guard"),
+        ):
+            with self.subTest(section=section):
+                text = rendered.split(f"## {section}\n\n", 1)[1]
+                if section != "Key changes":
+                    text = text.split("\n\n## ", 1)[0]
+                self.assertIn(f"Author-reported at <code>{HEAD}</code>", text)
+                self.assertIn(content, text)
 
     def test_cumulative_summary_covers_prior_work_and_retains_later_changes(
         self,
@@ -158,7 +178,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertIn("Fix mutation worker environment", key_changes)
         self.assertIn("Retain newly added edge case", key_changes)
         self.assertNotIn("Original issue write", key_changes)
-        self.assertIn(f"Author-reported at <code>{summary_sha[:12]}</code>", rendered)
+        self.assertIn(f"Author-reported at <code>{summary_sha}</code>", rendered)
 
     def test_cumulative_summary_rejects_changed_base_and_missing_sections(self) -> None:
         summary = (
@@ -279,12 +299,26 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             BODY.replace("## Purpose", "## Mục đích")
             .replace("## Root cause", "## Nguyên nhân gốc")
             .replace("## Verification", "## Cách kiểm thử")
+            .replace("## Related issue", "## Liên quan")
         )
+        localized_commits = [
+            [
+                {
+                    "sha": HEAD,
+                    "commit": {"message": "fix: localized\n\nCloses #42"},
+                }
+            ]
+        ]
         rendered = renderer.render_dynamic_body(
-            body, {**PR, "body": body}, COMMITS, FILES, None
+            body, {**PR, "body": body}, localized_commits, FILES, None
         )
         self.assertIn("## Cách kiểm thử\n\n- Xem kết quả CI", rendered)
         self.assertIn("chưa ghi nguyên nhân đã xác nhận", rendered)
+        self.assertIn("Issue được commit tham chiếu: <code>#42</code>", rendered)
+
+    def test_vietnamese_localization_rejects_unmapped_system_text(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no Vietnamese translation"):
+            renderer._localize_system_text(["unmapped generated text"], "vi")
 
     def test_excess_verification_notes_are_not_silently_discarded(self) -> None:
         commits = [
@@ -514,8 +548,17 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertEqual(renderer._summary_text(["one", "two"]), "One. Two.")
         with self.assertRaisesRegex(ValueError, "dropping context"):
             renderer._summary_text(["one", "two", "three", "four"])
+        with self.assertRaisesRegex(ValueError, "dropping context"):
+            renderer._author_reported_lines(
+                [(HEAD, "one"), (BASE, "two"), ("c" * 40, "three"), ("d" * 40, "four")],
+                limit=3,
+            )
         duplicate_issue = {"sha": HEAD, "message": "subject\nCloses #1 and #1"}
         self.assertEqual(len(renderer._issue_lines([duplicate_issue])), 1)
+        self.assertEqual(
+            renderer._issue_lines([duplicate_issue]),
+            [f"Commit-referenced issues: <code>#1</code> (<code>{HEAD}</code>)."],
+        )
         with self.assertRaisesRegex(ValueError, "unterminated"):
             renderer._remove_protocol_lines([renderer.HEAD_START_MARKER])
         self.assertEqual(
@@ -533,6 +576,23 @@ class RenderPullRequestBodyTests(unittest.TestCase):
                 )
         with self.assertRaisesRegex(ValueError, "could not write"):
             renderer.write_body(Path(tempfile.gettempdir()), "body")
+
+    def test_bounded_reader_stops_at_limit_plus_one(self) -> None:
+        class TrackingReader(BytesIO):
+            def __init__(self) -> None:
+                super().__init__(b"x" * 100)
+                self.read_sizes: list[int] = []
+
+            def read(self, size: int | None = None) -> bytes:
+                self.read_sizes.append(-1 if size is None else size)
+                return super().read(-1 if size is None else size)
+
+        source = TrackingReader()
+        with mock.patch.object(Path, "open", return_value=source) as open_file:
+            with self.assertRaisesRegex(ValueError, "safety cap"):
+                renderer._read_bytes(Path("large-evidence.json"), "evidence", 10)
+        open_file.assert_called_once_with("rb")
+        self.assertEqual(source.read_sizes, [11])
 
     def test_cli_renders_and_rejects_invalid_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -47,6 +47,18 @@ class UpdatePullRequestBodyTests(unittest.TestCase):
         )
         self.assertNotIn("{{HEAD_", rendered)
         self.assertEqual(rendered.count("## Purpose"), 1)
+
+    def test_checked_in_manual_source_binds_head_and_states_its_scope(self) -> None:
+        source = update_pr_body.read_body(
+            REPOSITORY_ROOT / ".github" / "pr-body-template.md"
+        )
+        rendered = update_pr_body.render_body(source, HEAD_SHA, HEAD_REPOSITORY)
+
+        self.assertIn("legacy template-based body-sync", rendered)
+        self.assertIn("API-evidence body-sync does not read it", rendered)
+        self.assertIn(HEAD_SHA.lower(), rendered)
+        self.assertIn(HEAD_REPOSITORY, rendered)
+        self.assertNotIn("{{HEAD_", rendered)
 
     def test_render_body_rejects_unknown_or_missing_placeholders_and_markers(
         self,
@@ -212,6 +224,26 @@ class UpdatePullRequestBodyTests(unittest.TestCase):
             invalid.write_bytes(b"\xff")
             with self.assertRaisesRegex(ValueError, "valid UTF-8"):
                 update_pr_body.read_body(invalid)
+
+    def test_bounded_body_reader_stops_at_limit_plus_one(self) -> None:
+        class TrackingReader(BytesIO):
+            def __init__(self) -> None:
+                super().__init__(b"x" * 100)
+                self.read_sizes: list[int] = []
+
+            def read(self, size: int | None = None) -> bytes:
+                self.read_sizes.append(-1 if size is None else size)
+                return super().read(-1 if size is None else size)
+
+        source = TrackingReader()
+        with (
+            mock.patch.object(update_pr_body, "MAX_BODY_BYTES", 10),
+            mock.patch.object(Path, "open", return_value=source) as open_file,
+            self.assertRaisesRegex(ValueError, "10-byte safety cap"),
+        ):
+            update_pr_body.read_body(Path("large-body.md"))
+        open_file.assert_called_once_with("rb")
+        self.assertEqual(source.read_sizes, [11])
 
     def test_write_body_rejects_oversized_and_unwritable_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

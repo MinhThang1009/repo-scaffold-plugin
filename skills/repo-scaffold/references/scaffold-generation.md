@@ -53,10 +53,13 @@ finished project.
 The `pr-body-sync.yml` asset is the opt-in PR metadata workflow. Install it
 with `scripts/render_pr_body_evidence.py`, `scripts/markdown_body_preflight.py`,
 and `scripts/pr_template_preflight.py`. It renders the body from the exact PR
-commits, structured commit fields, and diff themes at the current head SHA. It
-keeps live check status in GitHub's Checks tab instead of embedding a stale
-snapshot in the body. It does not consume a checked-in narrative body source or
-execute pull-request code.
+commits and structured commit fields at the current head SHA. Purpose, cause,
+and key-change text is labeled author-reported with its source commit SHA. The
+complete changed-file inventory is used to verify pagination and reconcile API
+counts; the workflow does not inspect patches or infer change themes. It keeps
+live check status in GitHub's Checks tab instead of embedding a stale snapshot
+in the body. It does not consume a checked-in narrative body source or execute
+pull-request code.
 Copy the complete template catalog in the selected language and retain its
 scope/verification guidance. Read `pull-request-contract.md` before preparing
 structured commit fields or a cumulative `PR-summary-base:` description. The

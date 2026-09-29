@@ -30,7 +30,8 @@ HEAD_END_PATTERN = re.compile(rf"(?m)^{re.escape(HEAD_END_MARKER)}[ \t]*(?=\r?$)
 def read_body(path: Path) -> str:
     """Read a bounded UTF-8 body without silently accepting malformed input."""
     try:
-        payload = path.read_bytes()
+        with path.open("rb") as source:
+            payload = source.read(MAX_BODY_BYTES + 1)
     except OSError as error:
         raise ValueError(f"could not read pull-request body: {error}") from error
     if len(payload) > MAX_BODY_BYTES:
