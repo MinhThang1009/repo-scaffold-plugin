@@ -6921,7 +6921,7 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         self.assertIn('status = payload.get("status")', run)
         self.assertIn('if status == "identical":', run)
         self.assertIn("expected_head_sha != expected_base_sha or commits or files", run)
-        self.assertIn('status != "ahead"', run)
+        self.assertIn('status not in {"ahead", "diverged"}', run)
         self.assertIn('original = original_body_path.read_bytes().decode("utf-8")', run)
         self.assertIn(
             'expected_body = expected_body_path.read_bytes().decode("utf-8")', run
@@ -7100,6 +7100,34 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
                     str(payload_path),
                     "a" * 40,
                     "a" * 40,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.stdout.strip(), "unchanged")
+
+        with tempfile.TemporaryDirectory() as directory:
+            payload_path = Path(directory) / "diverged-compare.json"
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "base_commit": {"sha": "a" * 40},
+                        "status": "diverged",
+                        "commits": [{"sha": "b" * 40}],
+                        "files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = run_test_subprocess(
+                [
+                    sys.executable,
+                    "-c",
+                    compare_script,
+                    str(payload_path),
+                    "a" * 40,
+                    "b" * 40,
                 ],
                 check=True,
                 capture_output=True,

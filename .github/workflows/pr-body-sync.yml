@@ -104,7 +104,7 @@ jobs:
               print("unchanged")
               raise SystemExit(0)
           if (
-              status != "ahead"
+              status not in {"ahead", "diverged"}
               or not commits
               or not isinstance(commits[-1], dict)
               or commits[-1].get("sha") != expected_head_sha

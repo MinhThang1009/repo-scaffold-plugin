@@ -7683,7 +7683,7 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         'if status == "identical":',
         "expected_head_sha != expected_base_sha or commits or files",
         "Pull-request identical comparison evidence is inconsistent.",
-        'status != "ahead"',
+        'status not in {"ahead", "diverged"}',
         'commits[-1].get("sha") != expected_head_sha',
         "Pull-request comparison is truncated; cannot prove template opt-in.",
         "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
