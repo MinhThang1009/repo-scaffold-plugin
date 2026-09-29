@@ -266,12 +266,13 @@ def _plain(value: str) -> str:
 
 
 def _purpose_lines(commits: list[dict[str, str]], head_sha: str) -> list[str]:
+    source_commits = _core_commits(commits)
     subjects = [
         _clean_subject(commit["message"].splitlines()[0].strip())
-        for commit in commits
+        for commit in source_commits
         if not commit["message"].lstrip().casefold().startswith(("merge ", "revert "))
     ]
-    structured = _structured_values(commits, "purpose")
+    structured = _structured_values(source_commits, "purpose")
     summary = _summary_text((subjects[:1] + structured), limit=2)
     return [_sentence(summary)]
 
@@ -288,21 +289,32 @@ def _commit_details(commits: list[dict[str, str]]) -> list[str]:
 
 
 def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
-    structured = _structured_values(commits, "root")
+    source_commits = _core_commits(commits)
+    structured = _structured_values(source_commits, "root")
     if structured:
         subjects = [
             _clean_subject(commit["message"].splitlines()[0].strip())
-            for commit in commits
+            for commit in source_commits
             if not commit["message"]
             .lstrip()
             .casefold()
             .startswith(("merge ", "revert "))
         ]
         return [_sentence(_summary_text(structured + subjects[:1], limit=2))]
-    details = _commit_details(commits)
+    details = _commit_details(source_commits)
     if details == ["- No structured detail was supplied in the commit metadata."]:
+        subjects = [
+            _clean_subject(commit["message"].splitlines()[0].strip())
+            for commit in source_commits
+            if not commit["message"]
+            .lstrip()
+            .casefold()
+            .startswith(("merge ", "revert "))
+        ]
+        primary = subjects[0] if subjects else "the available commit evidence"
         return [
-            "No structured root-cause evidence was provided in the commit metadata."
+            "No structured root-cause evidence was provided; the primary change was "
+            + _sentence(primary)
         ]
     return [
         "The core rationale from the commit metadata is "
@@ -346,6 +358,24 @@ def _summary_text(values: list[str], limit: int = 3) -> str:
 def _clean_subject(subject: str) -> str:
     cleaned = COMMIT_PREFIX_PATTERN.sub("", subject).strip()
     return cleaned or "an unlabelled change"
+
+
+def _core_commits(commits: list[dict[str, str]]) -> list[dict[str, str]]:
+    metadata_markers = (
+        "structured summary",
+        "summary contract",
+        "body layout",
+        "body renderer",
+    )
+    core = [
+        commit
+        for commit in commits
+        if not any(
+            marker in commit["message"].splitlines()[0].casefold()
+            for marker in metadata_markers
+        )
+    ]
+    return core or commits
 
 
 def _sentence(value: str) -> str:

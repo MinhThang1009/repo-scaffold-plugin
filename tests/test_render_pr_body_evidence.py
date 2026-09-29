@@ -307,6 +307,20 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         )
         self.assertEqual(
             len(
+                renderer._core_commits(
+                    [
+                        {
+                            "sha": HEAD,
+                            "message": "docs(pr): clarify structured summary contract",
+                        },
+                        {"sha": HEAD, "message": "fix: primary change"},
+                    ]
+                )
+            ),
+            1,
+        )
+        self.assertEqual(
+            len(
                 renderer._changes_summary(
                     [
                         {"sha": HEAD, "message": "fix: current subject"},
