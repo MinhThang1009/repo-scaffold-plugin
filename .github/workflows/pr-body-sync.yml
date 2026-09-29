@@ -105,6 +105,15 @@ jobs:
               or payload.get("state") != "open"
           ):
               raise SystemExit("Pull-request ref, title, or state advanced; retry the workflow.")
+          for field, limit in (("commits", 250), ("changed_files", 3000)):
+              value = payload.get(field)
+              if (
+                  not isinstance(value, int)
+                  or isinstance(value, bool)
+                  or value < 0
+                  or value > limit
+              ):
+                  raise SystemExit(f"Pull-request {field} inventory is invalid or exceeds the API limit.")
           body = payload.get("body")
           if body is None:
               body = ""
@@ -190,7 +199,7 @@ jobs:
 
           gh api --hostname github.com \
             "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$latest_payload"
-          python - "$latest_payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" <<'PY'
+          python - "$latest_payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" "$payload" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -201,6 +210,7 @@ jobs:
           expected_repository = sys.argv[4]
           expected_title = sys.argv[5]
           expected_base_sha = sys.argv[6]
+          expected_payload_path = Path(sys.argv[7])
           raw = payload_path.read_bytes()
           if len(raw) > 2 * 1024 * 1024:
               raise SystemExit("Pull-request API payload exceeds the safety cap.")
@@ -208,6 +218,11 @@ jobs:
               payload = json.loads(raw.decode("utf-8"))
           except (UnicodeDecodeError, json.JSONDecodeError) as error:
               raise SystemExit(f"Pull-request API payload is invalid: {error}") from error
+          expected_raw = expected_payload_path.read_bytes()
+          try:
+              expected_payload = json.loads(expected_raw.decode("utf-8"))
+          except (UnicodeDecodeError, json.JSONDecodeError) as error:
+              raise SystemExit(f"Initial pull-request API payload is invalid: {error}") from error
           head = payload.get("head") if isinstance(payload, dict) else None
           base = payload.get("base") if isinstance(payload, dict) else None
           actual_repository = (
@@ -225,6 +240,9 @@ jobs:
               or payload.get("state") != "open"
           ):
               raise SystemExit("Pull-request ref, title, or state changed during body preparation.")
+          for field in ("commits", "changed_files"):
+              if payload.get(field) != expected_payload.get(field):
+                  raise SystemExit("Pull-request inventory changed during body preparation; retry the workflow.")
           body = payload.get("body")
           if body is None:
               body = ""
@@ -241,7 +259,7 @@ jobs:
 
           gh api --hostname github.com \
             "repos/$REPOSITORY/pulls/$PR_NUMBER" > "$verified_payload"
-          python - "$verified_payload" "$updated" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" <<'PY'
+          python - "$verified_payload" "$updated" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" "$payload" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -252,6 +270,7 @@ jobs:
           expected_repository = sys.argv[4]
           expected_title = sys.argv[5]
           expected_base_sha = sys.argv[6]
+          expected_payload_path = Path(sys.argv[7])
           raw = payload_path.read_bytes()
           if len(raw) > 2 * 1024 * 1024:
               raise SystemExit("Pull-request API payload exceeds the safety cap.")
@@ -259,6 +278,11 @@ jobs:
               payload = json.loads(raw.decode("utf-8"))
           except (UnicodeDecodeError, json.JSONDecodeError) as error:
               raise SystemExit(f"Pull-request API payload is invalid: {error}") from error
+          expected_raw = expected_payload_path.read_bytes()
+          try:
+              expected_payload = json.loads(expected_raw.decode("utf-8"))
+          except (UnicodeDecodeError, json.JSONDecodeError) as error:
+              raise SystemExit(f"Initial pull-request API payload is invalid: {error}") from error
           head = payload.get("head") if isinstance(payload, dict) else None
           base = payload.get("base") if isinstance(payload, dict) else None
           actual_repository = (
@@ -276,6 +300,9 @@ jobs:
               or payload.get("state") != "open"
           ):
               raise SystemExit("Pull-request ref, title, or state changed during the body update.")
+          for field in ("commits", "changed_files"):
+              if payload.get(field) != expected_payload.get(field):
+                  raise SystemExit("Pull-request inventory changed during the body update; retry the workflow.")
           actual_body = payload.get("body")
           expected_body = expected_body_path.read_bytes().decode("utf-8")
           if actual_body != expected_body:

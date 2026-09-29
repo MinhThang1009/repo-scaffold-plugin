@@ -194,6 +194,18 @@ Changes: the main implementation or policy changes
 Verification: the focused tests or checks run
 ```
 
+Fields require a colon and may contain paragraphs or bullet lists on following
+lines. Record every material behavior change, including later fixes and reverts.
+Commit subjects are not evidence of a root cause, and validation reported in a
+commit is evidence for that revision rather than a guarantee for later commits.
+
+For a long PR, a commit may provide a reviewed summary of the complete diff by
+adding `PR-summary-base: <full-current-base-SHA>` before all four fields. That
+summary covers the PR through its containing commit. The renderer includes
+every later change, rejects a changed base, and fails if the description would
+need to drop a topic to fit the paragraph or five-bullet budget. Review the
+complete diff and update the cumulative summary when that happens.
+
 This repository's `pr-body-sync` workflow renders the complete pull-request
 body from the exact pull-request API evidence whenever a pull request is
 opened, reopened, or receives a new commit. It derives commit subjects and
@@ -205,7 +217,13 @@ generated sections are replaced from the current evidence. The workflow runs
 the Markdown and PR-template preflights before editing, rechecks the head,
 base, title, repository, and current body immediately before the mutation, then
 verifies the complete body after GitHub accepts it. Missing, malformed, stale,
-or over-limit evidence fails closed.
+or over-limit evidence fails closed. Compare the fetched commit and file counts
+with the PR inventory; missing pages cannot produce a complete summary. The
+GitHub PR commit endpoint supports at most 250 commits and the files endpoint
+supports at most 3,000 files. Template preflight validates structure and prose
+layout; review the resulting description against the full diff to establish
+content completeness. Human-authored acceptance criteria, risk notes, and
+rollout or rollback plans remain part of that review.
 
 Use the default PR template for ordinary changes. Choose a specialized template
 only when its review workflow applies:

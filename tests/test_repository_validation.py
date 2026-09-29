@@ -6767,6 +6767,28 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             validate_repository.validate_pr_body_sync_asset_contract(PLUGIN_ROOT), []
         )
 
+    def test_body_sync_rejects_renderer_asset_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                validate_repository.PR_BODY_SYNC_WORKFLOW_PATH,
+                Path("skills/repo-scaffold/assets/workflows/pr-body-sync.yml"),
+                Path("scripts/render_pr_body_evidence.py"),
+                Path("skills/repo-scaffold/scripts/render_pr_body_evidence.py"),
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            asset = root / "skills/repo-scaffold/scripts/render_pr_body_evidence.py"
+            asset.write_bytes(asset.read_bytes() + b"\n# drift\n")
+            problems = validate_repository.validate_pr_body_sync_asset_contract(root)
+        self.assertEqual(
+            problems,
+            [
+                "skills/repo-scaffold/scripts/render_pr_body_evidence.py: body-sync asset must match scripts/render_pr_body_evidence.py"
+            ],
+        )
+
     def test_body_sync_reports_unreadable_and_non_mapping_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -6860,6 +6882,8 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
         self.assertEqual(run.count('base.get("sha") != expected_base_sha'), 3)
         self.assertEqual(run.count('payload.get("title") != expected_title'), 3)
         self.assertEqual(run.count('payload.get("state") != "open"'), 3)
+        self.assertEqual(run.count("expected_payload_path = Path(sys.argv[7])"), 2)
+        self.assertEqual(run.count('for field in ("commits", "changed_files")'), 2)
         self.assertEqual(run.count("if body != original:"), 1)
         self.assertEqual(run.count("if actual_body != expected_body:"), 1)
 
@@ -6906,6 +6930,21 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             asset.write_text("asset\n", encoding="utf-8")
             problems = validate_repository.validate_pr_body_sync_asset_contract(root)
         self.assertTrue(any("must match" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
+            run = workflow["jobs"]["update"]["steps"][1]["run"]
+            workflow["jobs"]["update"]["steps"][1]["run"] = run.replace(
+                'for field in ("commits", "changed_files")',
+                'for field in ("commits",)',
+                1,
+            )
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+        self.assertTrue(any("commit and file inventory" in item for item in problems))
 
     def test_body_sync_rejects_permission_checkout_and_body_postcondition_drift(
         self,
@@ -7732,7 +7771,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
                 env={
                     **os.environ,
                     "PR_BODY": feature_body.replace(
-                        "<!-- repo-scaffold:pr-template=feature -->\n\n", ""
+                        "<!-- repo-scaffold:pr-template=feature -->\n", "", 1
                     ),
                 },
                 capture_output=True,
@@ -7745,7 +7784,7 @@ class PullRequestTemplateContractTests(unittest.TestCase):
             )
 
             feature_payload = feature_body.replace(
-                "<!-- repo-scaffold:pr-template=feature -->\n\n", "", 1
+                "<!-- repo-scaffold:pr-template=feature -->\n", "", 1
             )
             required_checklist = re.search(
                 r"<!-- repo-scaffold:required-checklist:start -->.*?"

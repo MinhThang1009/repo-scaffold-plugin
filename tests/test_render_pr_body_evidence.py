@@ -47,6 +47,8 @@ PR = {
     "head": {"sha": HEAD, "repo": {"full_name": REPOSITORY}},
     "base": {"sha": BASE},
     "body": BODY,
+    "commits": 1,
+    "changed_files": 1,
 }
 COMMITS = [
     [
@@ -89,11 +91,12 @@ class RenderPullRequestBodyTests(unittest.TestCase):
 
         self.assertNotIn(renderer.MANAGED_BODY_MARKER, rendered)
         self.assertIn("Current subject.", rendered)
-        self.assertIn("Evidence; and current subject.", rendered)
+        self.assertIn("The confirmed cause was not documented", rendered)
+        self.assertNotIn("Evidence; and current subject", rendered)
         self.assertIn("## Purpose\n\n", rendered)
         self.assertIn("## Key changes\n\n- Current subject.", rendered)
         self.assertIn(
-            "## Verification\n\n- Verification is tracked in the GitHub Checks tab",
+            "Current CI and mutation results are available in the GitHub Checks tab",
             rendered,
         )
         self.assertIn("#42", rendered)
@@ -124,6 +127,181 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertIn("Indeterminate evidence was treated as actionable", rendered)
         self.assertIn("Add a fail-closed guard", rendered)
         self.assertIn("Run the focused regression suite", rendered)
+
+    def test_cumulative_summary_covers_prior_work_and_retains_later_changes(
+        self,
+    ) -> None:
+        summary_sha = "c" * 40
+        summary = (
+            "fix: preserve reviewer context\n\n"
+            f"PR-summary-base: {BASE}\n"
+            "Why: Prevent indeterminate evidence from changing Issues.\n"
+            "Root cause: Checker exit 2 reached the write path.\n"
+            "Changes:\n"
+            "- Guard Issue writes before reconciliation.\n"
+            "- Fix mutation worker environment restoration.\n"
+            "Verification: Full suite passed on this revision.\n"
+        )
+        commits = [
+            {"sha": "d" * 40, "commit": {"message": "fix: original issue write"}},
+            {"sha": summary_sha, "commit": {"message": summary}},
+            {"sha": HEAD, "commit": {"message": "fix: retain newly added edge case"}},
+        ]
+        rendered = renderer.render_dynamic_body(
+            BODY, {**PR, "commits": 3}, commits, FILES, None
+        )
+        key_changes = rendered.split("## Key changes", 1)[1].split(
+            "## Verification", 1
+        )[0]
+
+        self.assertIn("Guard Issue writes", key_changes)
+        self.assertIn("Fix mutation worker environment", key_changes)
+        self.assertIn("Retain newly added edge case", key_changes)
+        self.assertNotIn("Original issue write", key_changes)
+        self.assertIn(f"Author-reported at <code>{summary_sha[:12]}</code>", rendered)
+
+    def test_cumulative_summary_rejects_changed_base_and_missing_sections(self) -> None:
+        summary = (
+            f"fix: reviewed summary\n\nPR-summary-base: {BASE}\n"
+            "Why: Correct the write boundary.\nRoot cause: Evidence was incomplete.\n"
+            "Changes: Reject writes.\nVerification: Regression passed.\n"
+        )
+        with self.assertRaisesRegex(ValueError, "current pull-request base"):
+            renderer._summary_commits([{"sha": HEAD, "message": summary}], "e" * 40)
+        with self.assertRaisesRegex(ValueError, "must provide"):
+            renderer._summary_commits(
+                [
+                    {
+                        "sha": HEAD,
+                        "message": summary.replace("Changes: Reject writes.\n", ""),
+                    }
+                ],
+                BASE,
+            )
+
+    def test_later_reviewed_summary_can_replace_one_for_an_old_base(self) -> None:
+        fields = (
+            "Why: Outcome.\nRoot cause: Cause.\nChanges: Fix.\nVerification: Checked.\n"
+        )
+        old = {
+            "sha": "c" * 40,
+            "message": "fix: old\nPR-summary-base: " + "e" * 40 + "\n" + fields,
+        }
+        current = {
+            "sha": HEAD,
+            "message": f"fix: current\nPR-summary-base: {BASE}\n" + fields,
+        }
+        self.assertEqual(renderer._summary_commits([old, current], BASE), [current])
+
+    def test_structured_fields_parse_multiline_bullets_without_reclassifying_prose(
+        self,
+    ) -> None:
+        message = (
+            "fix: parser\n\nCause evidence is ordinary prose.\n"
+            "Why:\nKeep the review outcome\nclear to contributors.\n\n"
+            "Root cause:\nThe parser accepted an unlabeled sentence.\n"
+            "Changes:\n- Require an explicit field boundary.\n"
+            "  Retain wrapped continuation text.\n- Preserve all concerns.\n"
+            "## Unrelated notes\nUnstructured text.\n"
+        )
+        commit = {"sha": HEAD, "message": message}
+        self.assertEqual(
+            renderer._structured_values([commit], "purpose"),
+            ["Keep the review outcome clear to contributors."],
+        )
+        self.assertEqual(
+            renderer._structured_values([commit], "root"),
+            ["The parser accepted an unlabeled sentence."],
+        )
+        self.assertEqual(
+            renderer._structured_values([commit], "changes"),
+            [
+                "Require an explicit field boundary. Retain wrapped continuation text.",
+                "Preserve all concerns.",
+            ],
+        )
+
+    def test_summary_overflow_fails_instead_of_discarding_a_material_change(
+        self,
+    ) -> None:
+        commits = [
+            {"sha": HEAD, "message": f"fix: important topic {number}"}
+            for number in range(6)
+        ]
+        with self.assertRaisesRegex(ValueError, "omitting changes"):
+            renderer._changes_summary(commits, FILES[0])
+        self.assertEqual(len(renderer._changes_summary(commits[:5], FILES[0])), 5)
+
+    def test_merge_filter_keeps_reverts_and_renderer_changes(self) -> None:
+        commits = [
+            {"sha": HEAD, "message": "Merge branch main"},
+            {"sha": HEAD, "message": "Revert regression in body renderer"},
+            {"sha": HEAD, "message": "fix(pr): fix structured summary contract"},
+        ]
+        self.assertEqual(renderer._core_commits(commits), commits[1:])
+
+    def test_inventory_counts_reject_incomplete_api_evidence(self) -> None:
+        for field in ("commits", "changed_files"):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "evidence is incomplete"):
+                    renderer.render_dynamic_body(
+                        BODY, {**PR, field: 2}, COMMITS, FILES, None
+                    )
+        with self.assertRaisesRegex(ValueError, "supported API limit"):
+            renderer.render_dynamic_body(
+                BODY, {**PR, "commits": 251}, COMMITS, FILES, None
+            )
+
+    def test_manual_acceptance_and_rollout_sections_are_preserved(self) -> None:
+        manual = "## Acceptance criteria\n\n- Keyboard access remains available.\n\n## Rollout plan\n\nDeploy to staging first.\n\n"
+        body = BODY.replace("## Verification", manual + "## Verification")
+        rendered = renderer.render_dynamic_body(
+            body, {**PR, "body": body}, COMMITS, FILES, None
+        )
+        self.assertIn(manual, rendered)
+
+    def test_untrusted_summary_text_is_escaped_once(self) -> None:
+        message = "fix: safe summary\n\nWhy: Keep A & B <safe> [link](https://example.com).\nRoot cause: A & B.\nChanges: Guard *writes*.\n"
+        commits = [{"sha": HEAD, "commit": {"message": message}}]
+        rendered = renderer.render_dynamic_body(BODY, PR, commits, FILES, None)
+        self.assertIn("A &amp; B &lt;safe&gt; \\[link\\]", rendered)
+        self.assertNotIn("&amp;amp;", rendered)
+
+    def test_template_test_sections_receive_verification_and_vietnamese_messages(
+        self,
+    ) -> None:
+        body = BODY.replace("## Verification", "## How to test")
+        rendered = renderer.render_dynamic_body(
+            body, {**PR, "body": body}, COMMITS, FILES, None
+        )
+        self.assertIn("## How to test\n\n- Current CI", rendered)
+        body = (
+            BODY.replace("## Purpose", "## Mục đích")
+            .replace("## Root cause", "## Nguyên nhân gốc")
+            .replace("## Verification", "## Cách kiểm thử")
+        )
+        rendered = renderer.render_dynamic_body(
+            body, {**PR, "body": body}, COMMITS, FILES, None
+        )
+        self.assertIn("## Cách kiểm thử\n\n- Xem kết quả CI", rendered)
+        self.assertIn("chưa ghi nguyên nhân đã xác nhận", rendered)
+
+    def test_excess_verification_notes_are_not_silently_discarded(self) -> None:
+        commits = [
+            {
+                "sha": HEAD,
+                "message": f"fix: change {number}\nVerification: Check {number} passed.",
+            }
+            for number in range(5)
+        ]
+        with self.assertRaisesRegex(ValueError, "verification notes"):
+            renderer._verification_summary(commits)
+
+    def test_blank_summary_sentence_is_explicit(self) -> None:
+        self.assertEqual(
+            renderer._sentence("  \n"),
+            "The change is described by the available commit evidence.",
+        )
 
     def test_render_is_deterministic_and_preserves_crlf(self) -> None:
         crlf_body = BODY.replace("\n", "\r\n")
@@ -159,7 +337,9 @@ class RenderPullRequestBodyTests(unittest.TestCase):
 
     def test_render_accepts_direct_check_run_pages_and_empty_files(self) -> None:
         checks = [{"id": 1, "name": "pending", "status": "queued", "conclusion": None}]
-        rendered = renderer.render_dynamic_body(BODY, PR, COMMITS[0], [], checks)
+        rendered = renderer.render_dynamic_body(
+            BODY, {**PR, "changed_files": 0}, COMMITS[0], [], checks
+        )
 
         self.assertNotIn("pending", rendered)
         self.assertIn("Checks tab", rendered)
@@ -219,9 +399,8 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             renderer._flatten_pages([[1]], "items")
         with self.assertRaisesRegex(ValueError, "must be text"):
             renderer._bounded_text(None, "value")
-        self.assertTrue(
-            len(renderer._bounded_text("x" * 3000, "value")) <= renderer.MAX_TEXT + 1
-        )
+        with self.assertRaisesRegex(ValueError, "safety cap"):
+            renderer._bounded_text("x" * 3000, "value")
         with self.assertRaisesRegex(ValueError, "must not be empty"):
             renderer._bounded_text("", "value", allow_empty=False)
         with self.assertRaisesRegex(ValueError, "40 hexadecimal"):
@@ -268,32 +447,12 @@ class RenderPullRequestBodyTests(unittest.TestCase):
                     ]
                 ]
             )
-        with self.assertRaisesRegex(ValueError, "check_runs array"):
-            renderer._validate_checks([{"check_runs": None}])
-        with self.assertRaisesRegex(ValueError, "non-object item"):
-            renderer._validate_checks([{"check_runs": [1]}])
-        with self.assertRaisesRegex(ValueError, "exceed"):
-            renderer._validate_checks(
-                [{"name": "x", "status": "queued", "conclusion": None}]
-                * (renderer.MAX_CHECK_RUNS + 1)
-            )
-        with self.assertRaisesRegex(ValueError, "identifier"):
-            renderer._validate_checks(
-                [[{"id": [], "name": "x", "status": "queued", "conclusion": None}]]
-            )
-        duplicate_check = {"id": 1, "name": "x", "status": "queued", "conclusion": None}
-        with self.assertRaisesRegex(ValueError, "duplicate run"):
-            renderer._validate_checks([[duplicate_check, duplicate_check]])
-        self.assertEqual(
-            renderer._commit_details([{"sha": HEAD, "message": "subject"}]),
-            ["- No structured detail was supplied in the commit metadata."],
-        )
         self.assertIn(
-            "No structured root-cause evidence",
+            "confirmed cause was not documented",
             renderer._root_cause_lines([{"sha": HEAD, "message": "subject"}])[0],
         )
         self.assertIn(
-            "core rationale from the commit metadata",
+            "confirmed cause was not documented",
             renderer._root_cause_lines(
                 [{"sha": HEAD, "message": "subject\n\nUnstructured detail"}]
             )[0],
@@ -317,7 +476,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
                     ]
                 )
             ),
-            1,
+            2,
         )
         self.assertEqual(
             len(
@@ -329,7 +488,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
                     FILES[0],
                 )
             ),
-            2,
+            1,
         )
         self.assertGreaterEqual(
             len(
@@ -345,28 +504,16 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             ),
             4,
         )
-        self.assertIn(
-            "Synchronize",
-            renderer._diff_theme(
-                [
-                    {"filename": ".github/workflows/ci.yml"},
-                    {"filename": "tests/test_render.py"},
-                ]
-            ),
-        )
-        self.assertEqual(renderer._diff_theme([{"filename": "src/app.py"}]), "")
         self.assertEqual(
             renderer._verification_summary([]),
             [
-                "- Verification is tracked in the GitHub Checks tab for this pull-request head."
+                "- Current CI and mutation results are available in the GitHub Checks tab; commit notes do not certify a later head."
             ],
         )
-        self.assertEqual(renderer._summary_text([]), "the available commit evidence")
-        self.assertIn("; and", renderer._summary_text(["one", "two"]))
-        self.assertIn(
-            "additional context item(s)",
-            renderer._summary_text(["one", "two", "three", "four"]),
-        )
+        self.assertIn("available commit and diff evidence", renderer._summary_text([]))
+        self.assertEqual(renderer._summary_text(["one", "two"]), "One. Two.")
+        with self.assertRaisesRegex(ValueError, "dropping context"):
+            renderer._summary_text(["one", "two", "three", "four"])
         duplicate_issue = {"sha": HEAD, "message": "subject\nCloses #1 and #1"}
         self.assertEqual(len(renderer._issue_lines([duplicate_issue])), 1)
         with self.assertRaisesRegex(ValueError, "unterminated"):

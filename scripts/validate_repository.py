@@ -7692,8 +7692,12 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         "python scripts/render_pr_body_evidence.py",
         'python scripts/markdown_body_preflight.py --body-file "$updated"',
         "python scripts/pr_template_preflight.py",
+        "expected_payload_path = Path(sys.argv[7])",
+        'for field in ("commits", "changed_files")',
         'gh pr edit "$PR_NUMBER"',
         "Pull-request body changed during preparation; retry the workflow.",
+        "Pull-request inventory changed during body preparation; retry the workflow.",
+        "Pull-request inventory changed during the body update; retry the workflow.",
         "GitHub did not retain the generated pull-request body.",
     )
     for fragment in required:
@@ -7721,6 +7725,13 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
             f"{relative}: body-sync must revalidate head, repository, base, title, and open state at every API boundary"
         )
     if (
+        run.count("expected_payload_path = Path(sys.argv[7])") != 2
+        or run.count('for field in ("commits", "changed_files")') != 2
+    ):
+        problems.append(
+            f"{relative}: body-sync must revalidate the commit and file inventory before and after the mutation"
+        )
+    if (
         run.count("if body != original:") != 1
         or run.count("if actual_body != expected_body:") != 1
     ):
@@ -7746,19 +7757,33 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
 
 
 def validate_pr_body_sync_asset_contract(repository_root: Path) -> list[str]:
-    """Keep the shipped body-sync asset byte-identical to the repository workflow."""
-    root = repository_root / PR_BODY_SYNC_WORKFLOW_PATH
-    asset = repository_root / "skills/repo-scaffold/assets/workflows/pr-body-sync.yml"
-    try:
-        root_bytes = root.read_bytes()
-        asset_bytes = asset.read_bytes()
-    except OSError as error:
-        return [f"{asset.as_posix()}: body-sync asset is unreadable: {error}"]
-    return (
-        []
-        if root_bytes == asset_bytes
-        else [f"{asset.as_posix()}: body-sync asset must match the repository workflow"]
-    )
+    """Keep the workflow and its bundled renderer byte-identical to the sources."""
+    problems: list[str] = []
+    for source_relative, asset_relative in (
+        (
+            PR_BODY_SYNC_WORKFLOW_PATH,
+            Path("skills/repo-scaffold/assets/workflows/pr-body-sync.yml"),
+        ),
+        (
+            Path("scripts/render_pr_body_evidence.py"),
+            Path("skills/repo-scaffold/scripts/render_pr_body_evidence.py"),
+        ),
+    ):
+        source = repository_root / source_relative
+        asset = repository_root / asset_relative
+        try:
+            source_bytes = source.read_bytes()
+            asset_bytes = asset.read_bytes()
+        except OSError as error:
+            problems.append(
+                f"{asset_relative.as_posix()}: body-sync asset is unreadable: {error}"
+            )
+            continue
+        if source_bytes != asset_bytes:
+            problems.append(
+                f"{asset_relative.as_posix()}: body-sync asset must match {source_relative.as_posix()}"
+            )
+    return problems
 
 
 def read_front_matter(path: Path) -> tuple[Any, str]:

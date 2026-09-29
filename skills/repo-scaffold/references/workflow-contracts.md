@@ -110,6 +110,13 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   Generated summaries should state the review outcome and confirmed cause in
   prose, keep key changes to a few themes, and leave detailed file and check
   listings to GitHub's Commits, Files changed, and Checks views.
+  Parse explicit field boundaries and multiline values; ordinary prose is not
+  structured evidence. Keep reverts and later fixes in scope. A reviewed
+  `PR-summary-base:` commit may consolidate earlier work at the exact base SHA,
+  but subsequent commits must remain represented. Reject truncated inventories
+  and over-budget summaries before updating GitHub. Attribute verification to
+  its source revision, and preserve human-authored risk, acceptance, and rollout
+  sections. A template/Markdown pass is not a content-completeness verdict.
 
 Reminder reconciliation treats an upstream checker exit status of `2` as
 indeterminate evidence. It must fail before Issue mutation and preserve the

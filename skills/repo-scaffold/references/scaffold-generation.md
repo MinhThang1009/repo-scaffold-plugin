@@ -57,6 +57,11 @@ commits, structured commit fields, and diff themes at the current head SHA. It
 keeps live check status in GitHub's Checks tab instead of embedding a stale
 snapshot in the body. It does not consume a checked-in narrative body source or
 execute pull-request code.
+Copy the complete template catalog in the selected language and retain its
+scope/verification guidance. Read `pull-request-contract.md` before preparing
+structured commit fields or a cumulative `PR-summary-base:` description. The
+renderer verifies commit/file inventory counts and fails instead of silently
+dropping material topics; review content against the full diff after rendering.
 
 When installing the CodeQL or code-scanning gate asset, also copy
 `assets/code-scanning-allowlist.json` to

@@ -14,10 +14,14 @@ from typing import Any
 
 MAX_BODY_BYTES = 1 * 1024 * 1024
 MAX_JSON_BYTES = 10 * 1024 * 1024
-MAX_COMMITS = 1000
+MAX_COMMITS = 250
 MAX_FILES = 3000
-MAX_CHECK_RUNS = 2000
 MAX_TEXT = 2048
+MAX_COMMIT_TEXT = 16_384
+MAX_KEY_CHANGES = 5
+SUMMARY_BASE_PATTERN = re.compile(
+    r"(?m)^PR-summary-base:[ \t]*([0-9a-fA-F]{40})[ \t]*$"
+)
 HEAD_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 TEMPLATE_MARKER_PATTERN = re.compile(
@@ -39,8 +43,8 @@ COMMIT_PREFIX_PATTERN = re.compile(
     re.IGNORECASE,
 )
 STRUCTURED_COMMIT_FIELD_PATTERN = re.compile(
-    r"^\s*(?:#+\s*)?(Why|Purpose|Root cause|Cause|Changes|Key changes|"
-    r"Verification|Tests?)\s*:?\s*(.+?)\s*$",
+    r"^[ \t]*(?:#{1,6}[ \t]+)?(Why|Purpose|Root cause|Cause|Changes|Key changes|"
+    r"Verification|Tests?)(?:[ \t]*:[ \t]*(.*)|[ \t]*)$",
     re.IGNORECASE,
 )
 
@@ -111,11 +115,13 @@ def _flatten_pages(document: Any, label: str) -> list[dict[str, Any]]:
     return flattened
 
 
-def _bounded_text(value: Any, label: str, *, allow_empty: bool = True) -> str:
+def _bounded_text(
+    value: Any, label: str, *, allow_empty: bool = True, limit: int = MAX_TEXT
+) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be text")
-    if len(value) > MAX_TEXT:
-        value = value[:MAX_TEXT] + "…"
+    if len(value) > limit:
+        raise ValueError(f"{label} exceeds the {limit}-character safety cap")
     if not allow_empty and not value.strip():
         raise ValueError(f"{label} must not be empty")
     return value
@@ -166,7 +172,12 @@ def _validate_commits(document: Any, head_sha: str) -> list[dict[str, str]]:
         commit = row.get("commit")
         if not isinstance(commit, dict):
             raise ValueError("pull-request commit metadata is incomplete")
-        message = _bounded_text(commit.get("message"), "commit message")
+        message = _bounded_text(
+            commit.get("message"),
+            "commit message",
+            allow_empty=False,
+            limit=MAX_COMMIT_TEXT,
+        )
         commits.append({"sha": sha, "message": message})
     if commits[-1]["sha"] != head_sha:
         raise ValueError("latest commit evidence is not bound to the pull-request head")
@@ -206,54 +217,6 @@ def _validate_files(document: Any) -> list[dict[str, Any]]:
     return sorted(files, key=lambda item: str(item["filename"]))
 
 
-def _validate_checks(document: Any) -> list[dict[str, Any]]:
-    pages = _flatten_pages(document, "check-runs")
-    runs: list[dict[str, Any]] = []
-    if pages and all("check_runs" in page for page in pages):
-        for page in pages:
-            check_runs = page.get("check_runs")
-            if not isinstance(check_runs, list):
-                raise ValueError("check-runs page has an invalid check_runs array")
-            for run in check_runs:
-                if not isinstance(run, dict):
-                    raise ValueError("check-runs contains a non-object item")
-                runs.append(run)
-    else:
-        runs = pages
-    if len(runs) > MAX_CHECK_RUNS:
-        raise ValueError("check-runs exceed the safety cap")
-    normalized: list[dict[str, Any]] = []
-    seen: set[tuple[str, int | str]] = set()
-    for run in runs:
-        name = _bounded_text(run.get("name"), "check-run name", allow_empty=False)
-        status = run.get("status")
-        if status not in {"queued", "in_progress", "completed"}:
-            raise ValueError("check-runs contain an unknown status")
-        conclusion = run.get("conclusion")
-        if conclusion is not None:
-            conclusion = _bounded_text(
-                conclusion, "check-run conclusion", allow_empty=False
-            )
-        identifier = run.get("id", name)
-        if not isinstance(identifier, (int, str)) or isinstance(identifier, bool):
-            raise ValueError("check-run identifier is invalid")
-        key = (name, identifier)
-        if key in seen:
-            raise ValueError("check-runs contain a duplicate run")
-        seen.add(key)
-        normalized.append(
-            {
-                "name": name,
-                "status": status,
-                "conclusion": conclusion,
-                "id": identifier,
-            }
-        )
-    return sorted(
-        normalized, key=lambda item: (item["name"].casefold(), str(item["id"]))
-    )
-
-
 def _code(value: str) -> str:
     """Render untrusted text in an HTML code element."""
     compact = " ".join(value.replace("\r", " ").replace("\n", " ").split())
@@ -262,64 +225,28 @@ def _code(value: str) -> str:
 
 def _plain(value: str) -> str:
     compact = " ".join(value.replace("\r", " ").replace("\n", " ").split())
-    return html.escape(compact, quote=False)
+    escaped = html.escape(compact, quote=False)
+    return re.sub(r"([\\`*_\[\]])", r"\\\1", escaped)
 
 
 def _purpose_lines(commits: list[dict[str, str]], head_sha: str) -> list[str]:
     source_commits = _core_commits(commits)
-    subjects = [
-        _clean_subject(commit["message"].splitlines()[0].strip())
-        for commit in source_commits
-        if not commit["message"].lstrip().casefold().startswith(("merge ", "revert "))
-    ]
     structured = _structured_values(source_commits, "purpose")
-    summary = _summary_text((subjects[:1] + structured), limit=2)
-    return [_sentence(summary)]
-
-
-def _commit_details(commits: list[dict[str, str]]) -> list[str]:
-    details: list[str] = []
-    for commit in commits:
-        lines = [
-            line.strip() for line in commit["message"].splitlines()[1:] if line.strip()
-        ]
-        if lines:
-            details.append(f"- {_code(commit['sha'][:12])} {_plain(lines[0])}")
-    return details or ["- No structured detail was supplied in the commit metadata."]
+    if structured:
+        return [_summary_text(structured)]
+    subjects = [
+        _clean_subject(commit["message"].splitlines()[0]) for commit in source_commits
+    ]
+    return [_summary_text(subjects)]
 
 
 def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
     source_commits = _core_commits(commits)
     structured = _structured_values(source_commits, "root")
     if structured:
-        subjects = [
-            _clean_subject(commit["message"].splitlines()[0].strip())
-            for commit in source_commits
-            if not commit["message"]
-            .lstrip()
-            .casefold()
-            .startswith(("merge ", "revert "))
-        ]
-        return [_sentence(_summary_text(structured + subjects[:1], limit=2))]
-    details = _commit_details(source_commits)
-    if details == ["- No structured detail was supplied in the commit metadata."]:
-        subjects = [
-            _clean_subject(commit["message"].splitlines()[0].strip())
-            for commit in source_commits
-            if not commit["message"]
-            .lstrip()
-            .casefold()
-            .startswith(("merge ", "revert "))
-        ]
-        primary = subjects[0] if subjects else "the available commit evidence"
-        return [
-            "No structured root-cause evidence was provided; the primary change was "
-            + _sentence(primary)
-        ]
+        return [_summary_text(structured)]
     return [
-        "The core rationale from the commit metadata is "
-        + "; ".join(item[2:] for item in details)
-        + "."
+        "The confirmed cause was not documented in commit metadata; review the diff before completing this section."
     ]
 
 
@@ -333,29 +260,53 @@ def _structured_values(commits: list[dict[str, str]], field: str) -> list[str]:
     values: list[str] = []
     seen: set[str] = set()
     for commit in commits:
+        active: str | None = None
+        paragraph: list[str] = []
+
+        def flush() -> None:
+            value = " ".join(paragraph).strip()
+            key = value.casefold().rstrip(".")
+            if active in aliases and value and key not in seen:
+                seen.add(key)
+                values.append(value)
+            paragraph.clear()
+
         for line in commit["message"].splitlines()[1:]:
             match = STRUCTURED_COMMIT_FIELD_PATTERN.match(line)
-            if match is None or match.group(1).casefold() not in aliases:
+            if match is not None:
+                flush()
+                active = match.group(1).casefold()
+                if match.group(2):
+                    paragraph.append(match.group(2).strip())
                 continue
-            value = _plain(match.group(2).strip())
-            if value and value.casefold() not in seen:
-                seen.add(value.casefold())
-                values.append(value)
+            if re.match(
+                r"^(?:#{1,6}\s|[A-Za-z][A-Za-z -]*:|(?:Closes|Fixes|Resolves)\s+#)",
+                line,
+            ):
+                flush()
+                active = None
+            elif not line.strip():
+                flush()
+            elif active is not None:
+                bullet = re.match(r"^[ \t]*[-*+][ \t]+(.*)$", line)
+                if bullet:
+                    flush()
+                    paragraph.append(bullet.group(1).strip())
+                else:
+                    paragraph.append(line.strip())
+        flush()
     return values
 
 
 def _summary_text(values: list[str], limit: int = 3) -> str:
-    compact = [_plain(value).rstrip(".") for value in values if value.strip()]
+    compact = list(dict.fromkeys(value.strip() for value in values if value.strip()))
     if not compact:
-        return "the available commit evidence"
-    if len(compact) <= limit:
-        if len(compact) == 1:
-            return compact[0] + "."
-        return "; ".join(compact[:-1]) + "; and " + compact[-1] + "."
-    return (
-        "; ".join(compact[:limit])
-        + f"; plus {len(compact) - limit} additional context item(s)."
-    )
+        return "Review the available commit and diff evidence to describe the purpose."
+    if len(compact) > limit:
+        raise ValueError(
+            "Too many narrative topics; provide a reviewed PR-summary-base commit instead of dropping context"
+        )
+    return " ".join(_sentence(value) for value in compact)
 
 
 def _clean_subject(subject: str) -> str:
@@ -364,21 +315,36 @@ def _clean_subject(subject: str) -> str:
 
 
 def _core_commits(commits: list[dict[str, str]]) -> list[dict[str, str]]:
-    metadata_markers = (
-        "structured summary",
-        "summary contract",
-        "body layout",
-        "body renderer",
-    )
-    core = [
+    return [
         commit
         for commit in commits
-        if not any(
-            marker in commit["message"].splitlines()[0].casefold()
-            for marker in metadata_markers
-        )
+        if not commit["message"].lstrip().casefold().startswith("merge ")
     ]
-    return core or commits
+
+
+def _summary_commits(
+    commits: list[dict[str, str]], base_sha: str
+) -> list[dict[str, str]]:
+    """Use an explicit cumulative summary, including every later change."""
+    for index in range(len(commits) - 1, -1, -1):
+        commit = commits[index]
+        message = commit["message"]
+        if "PR-summary-base:" not in message:
+            continue
+        markers = SUMMARY_BASE_PATTERN.findall(message)
+        if len(markers) != 1 or markers[0].lower() != base_sha:
+            raise ValueError(
+                "PR-summary-base does not match the current pull-request base"
+            )
+        if not all(
+            _structured_values([commit], field)
+            for field in ("purpose", "root", "changes", "verification")
+        ):
+            raise ValueError(
+                "A cumulative PR summary must provide Why, Root cause, Changes, and Verification"
+            )
+        return _core_commits(commits[index:])
+    return _core_commits(commits)
 
 
 def _sentence(value: str) -> str:
@@ -386,7 +352,7 @@ def _sentence(value: str) -> str:
     if not compact:
         return "The change is described by the available commit evidence."
     compact = compact[0].upper() + compact[1:]
-    return compact if compact.endswith((".", "!", "?")) else compact + "."
+    return _plain(compact if compact.endswith((".", "!", "?")) else compact + ".")
 
 
 def _changes_summary(
@@ -394,69 +360,41 @@ def _changes_summary(
 ) -> list[str]:
     if not files:
         return ["No changed files were returned by the pull-request API."]
-    structured = _structured_values(commits, "changes")
-    subjects: list[str] = []
-    seen: set[str] = set()
-    for commit in commits:
-        subject = _clean_subject(commit["message"].splitlines()[0].strip())
-        if subject.casefold().startswith(("merge ", "revert ")):
-            continue
-        if subject.casefold() not in seen:
-            seen.add(subject.casefold())
-            subjects.append(subject)
-    if not subjects:
-        additions = sum(int(item["additions"]) for item in files)
-        deletions = sum(int(item["deletions"]) for item in files)
-        return [
-            f"Update {len(files)} changed file(s), adding {additions} and removing {deletions} lines."
-        ]
     selected: list[str] = []
-    seen_selected: set[str] = set()
-    for value in [*structured, *subjects]:
-        key = value.casefold()
-        if key not in seen_selected:
-            seen_selected.add(key)
-            selected.append(value)
-        if len(selected) >= 3:
-            break
-    lines = [f"- {_sentence(subject)}" for subject in selected]
-    theme = _diff_theme(files)
-    if theme:
-        lines.append(f"- {theme}")
-    return lines
-
-
-def _diff_theme(files: list[dict[str, Any]]) -> str:
-    areas = {str(item["filename"]).split("/", 1)[0] for item in files}
-    themes: list[str] = []
-    if ".github" in areas:
-        themes.append("workflow policy")
-    if "scripts" in areas:
-        themes.append("validation tooling")
-    if "skills" in areas:
-        themes.append("scaffold assets and contracts")
-    if "tests" in areas:
-        themes.append("regression coverage")
-    if any(
-        str(item["filename"]).lower().endswith((".md", ".markdown")) for item in files
-    ):
-        themes.append("documentation")
-    if not themes:
-        return ""
-    if len(themes) == 1:
-        return f"Update {themes[0]}."
-    return "Synchronize " + ", ".join(themes[:-1]) + ", and " + themes[-1] + "."
+    seen: set[str] = set()
+    for commit in _core_commits(commits):
+        facts = _structured_values([commit], "changes") or [
+            _clean_subject(commit["message"].splitlines()[0])
+        ]
+        for value in facts:
+            key = value.casefold().rstrip(".")
+            if key not in seen:
+                seen.add(key)
+                selected.append(value)
+    if len(selected) > MAX_KEY_CHANGES:
+        raise ValueError(
+            "More than five key changes; provide a reviewed PR-summary-base commit instead of omitting changes"
+        )
+    return [f"- {_sentence(value)}" for value in selected] or [
+        "- No non-merge change description was provided."
+    ]
 
 
 def _verification_summary(commits: list[dict[str, str]]) -> list[str]:
-    structured = _structured_values(commits, "verification")
-    if structured:
-        return [
-            *[f"- {_sentence(value)}" for value in structured[:3]],
-            "- Live status is tracked in the GitHub Checks tab for this pull-request head.",
-        ]
+    evidence: dict[str, tuple[str, str]] = {}
+    for commit in commits:
+        for value in _structured_values([commit], "verification"):
+            evidence[value.casefold().rstrip(".")] = (commit["sha"], value)
+    if len(evidence) > 4:
+        raise ValueError(
+            "Too many verification notes; provide a reviewed cumulative PR summary"
+        )
     return [
-        "- Verification is tracked in the GitHub Checks tab for this pull-request head."
+        *[
+            f"- Author-reported at {_code(sha[:12])}: {_sentence(value)}"
+            for sha, value in evidence.values()
+        ],
+        "- Current CI and mutation results are available in the GitHub Checks tab; commit notes do not certify a later head.",
     ]
 
 
@@ -477,25 +415,77 @@ def _issue_lines(commits: list[dict[str, str]]) -> list[str]:
     ]
 
 
-def _section_kind(heading: str) -> str:
+def _section_kind(heading: str) -> str | None:
     normalized = heading.casefold()
     if any(
         token in normalized for token in ("purpose", "summary", "mục đích", "tóm tắt")
     ):
         return "purpose"
-    if any(
-        token in normalized
-        for token in ("root cause", "cause", "scope", "risk", "nguyên nhân")
-    ):
+    if any(token in normalized for token in ("root cause", "nguyên nhân")):
         return "root_cause"
     if any(
         token in normalized
-        for token in ("verification", "monitor", "xác minh", "kiểm tra")
+        for token in (
+            "verification",
+            "how to test",
+            "monitor",
+            "xác minh",
+            "kiểm tra",
+            "kiểm thử",
+        )
     ):
         return "verification"
     if any(token in normalized for token in ("related", "issue", "liên quan")):
         return "related"
-    return "changes"
+    if normalized in {
+        "key changes",
+        "dependency changes",
+        "thay đổi chính",
+        "thay đổi phụ thuộc",
+    }:
+        return "changes"
+    return None
+
+
+def _validate_inventory(pr: dict[str, Any], field: str, actual: int, cap: int) -> None:
+    expected = pr.get(field)
+    if (
+        not isinstance(expected, int)
+        or isinstance(expected, bool)
+        or expected < 0
+        or expected > cap
+    ):
+        raise ValueError(
+            f"Pull-request {field} count is missing, invalid, or exceeds the supported API limit"
+        )
+    if actual != expected:
+        raise ValueError(
+            f"Pull-request {field} evidence is incomplete: expected {expected}, received {actual}"
+        )
+
+
+def _localize_system_text(lines: list[str], language: str) -> list[str]:
+    """Localize fixed messages; authored commit prose stays in its source language."""
+    if language != "vi":
+        return lines
+    translations = {
+        "The confirmed cause was not documented in commit metadata; review the diff before completing this section.": "Commit metadata chưa ghi nguyên nhân đã xác nhận; hãy review diff trước khi hoàn tất mục này.",
+        "Review the available commit and diff evidence to describe the purpose.": "Hãy review commit và diff để mô tả mục đích.",
+        "No changed files were returned by the pull-request API.": "Pull-request API không trả về file đã thay đổi.",
+        "- No non-merge change description was provided.": "- Chưa có mô tả thay đổi ngoài merge commit.",
+        "- Current CI and mutation results are available in the GitHub Checks tab; commit notes do not certify a later head.": "- Xem kết quả CI và mutation hiện tại tại tab GitHub Checks; ghi chú của commit không chứng nhận head mới hơn.",
+        "- Author-reported at ": "- Theo tác giả tại revision ",
+        "Referenced issues: ": "Issue được tham chiếu: ",
+        "Not applicable.": "Không áp dụng.",
+    }
+    result: list[str] = []
+    for line in lines:
+        for source, translation in translations.items():
+            if line.startswith(source):
+                line = translation + line[len(source) :]
+                break
+        result.append(line)
+    return result
 
 
 def _remove_protocol_lines(lines: list[str]) -> list[str]:
@@ -532,12 +522,15 @@ def render_dynamic_body(
         raise ValueError(
             "pull-request body must begin with exactly one trusted template marker"
         )
-    head_sha, _base_sha, _repository, _title = _head_and_base(pr)
+    head_sha, base_sha, _repository, _title = _head_and_base(pr)
     current_body = pr.get("body") or ""
     if not isinstance(current_body, str) or current_body != body:
         raise ValueError("pull-request body changed before rendering")
     commits = _validate_commits(commits_document, head_sha)
     files = _validate_files(files_document)
+    _validate_inventory(pr, "commits", len(commits), MAX_COMMITS)
+    _validate_inventory(pr, "changed_files", len(files), MAX_FILES)
+    summary_commits = _summary_commits(commits, base_sha)
     lines = normalized.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -551,11 +544,20 @@ def render_dynamic_body(
         if (match := HEADING_PATTERN.match(line)) is not None
     ]
     generated = {
-        "purpose": _purpose_lines(commits, head_sha),
-        "root_cause": _root_cause_lines(commits),
-        "changes": _changes_summary(commits, files),
-        "verification": _verification_summary(commits),
+        "purpose": _purpose_lines(summary_commits, head_sha),
+        "root_cause": _root_cause_lines(summary_commits),
+        "changes": _changes_summary(summary_commits, files),
+        "verification": _verification_summary(summary_commits),
         "related": _issue_lines(commits),
+    }
+    language = (
+        "vi"
+        if any(heading.casefold() == "mục đích" for _, heading in headings)
+        else "en"
+    )
+    generated = {
+        kind: _localize_system_text(content, language)
+        for kind, content in generated.items()
     }
     for heading_index in range(len(headings) - 1, -1, -1):
         line_index, heading = headings[heading_index]
@@ -565,11 +567,12 @@ def render_dynamic_body(
             else len(lines)
         )
         section = lines[line_index + 1 : section_end]
-        if REQUIRED_START in section or OPTIONAL_START in section:
+        kind = _section_kind(heading)
+        if REQUIRED_START in section or OPTIONAL_START in section or kind is None:
             continue
         lines[line_index + 1 : section_end] = [
             "",
-            *generated[_section_kind(heading)],
+            *generated[kind],
             "",
         ]
     while lines and not lines[-1].strip():

@@ -17,6 +17,14 @@ hoặc `--template dependency-update`.
 
 Sau khi chuẩn bị tệp body UTF-8, chạy lại preflight với `--body-file <path>` để chặn prose bị hard-wrap trước khi thay đổi GitHub.
 
+Khi đã cài PR-body sync, ghi các field có nhãn rõ ràng `Why:`, `Root cause:`,
+`Changes:` và `Verification:` trong commit body. Viết giá trị bằng ngôn ngữ dự
+án, dưới dạng đoạn văn hoặc bullet. Mô tả mọi thay đổi quan trọng, kể cả fix mới
+và revert. Với PR dài, commit `PR-summary-base:` đã review có thể tổng hợp toàn
+bộ diff tại base SHA hiện tại; các commit sau đó vẫn thuộc phạm vi review. Gắn
+verification với revision nguồn và đối chiếu body đã sinh với toàn bộ diff trước
+khi yêu cầu review. Renderer phải dừng khi không thể rút gọn mà vẫn giữ đủ ý.
+
 ## Kỳ vọng về mã nguồn
 
 - Tuân theo các quy ước hiện có của codebase.

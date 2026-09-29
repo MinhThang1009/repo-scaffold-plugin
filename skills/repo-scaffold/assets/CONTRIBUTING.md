@@ -17,6 +17,15 @@ mapping, add `--template security`, `--template deployment`, or
 After preparing the UTF-8 body file, rerun the preflight with `--body-file <path>`
 to reject hard-wrapped prose before the GitHub mutation.
 
+When PR-body sync is installed, include explicit `Why:`, `Root cause:`,
+`Changes:`, and `Verification:` fields in commit bodies. Values may be
+paragraphs or bullet lists. Describe all material changes, including later
+fixes and reverts. For a long PR, a reviewed `PR-summary-base:` commit can
+consolidate the complete diff at the current base SHA; later commits stay in
+scope. Keep validation notes tied to their source revision, and review the
+generated prose against the full diff before requesting review. The renderer
+fails instead of silently dropping topics to shorten the body.
+
 ## Code expectations
 
 - Follow the existing conventions of the codebase.
