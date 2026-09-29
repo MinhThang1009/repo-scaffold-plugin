@@ -341,13 +341,34 @@ def _changes_summary(
         return [
             f"Update {len(files)} changed file(s), adding {additions} and removing {deletions} lines."
         ]
-    selected = subjects[:4]
+    selected = subjects[:3]
     lines = [f"- {_sentence(subject)}" for subject in selected]
-    if len(subjects) > len(selected):
-        lines.append(
-            f"- Consolidate {len(subjects) - len(selected)} additional related change(s)."
-        )
+    theme = _diff_theme(files)
+    if theme:
+        lines.append(f"- {theme}")
     return lines
+
+
+def _diff_theme(files: list[dict[str, Any]]) -> str:
+    areas = {str(item["filename"]).split("/", 1)[0] for item in files}
+    themes: list[str] = []
+    if ".github" in areas:
+        themes.append("workflow policy")
+    if "scripts" in areas:
+        themes.append("validation tooling")
+    if "skills" in areas:
+        themes.append("scaffold assets and contracts")
+    if "tests" in areas:
+        themes.append("regression coverage")
+    if any(
+        str(item["filename"]).lower().endswith((".md", ".markdown")) for item in files
+    ):
+        themes.append("documentation")
+    if not themes:
+        return ""
+    if len(themes) == 1:
+        return f"Update {themes[0]}."
+    return "Synchronize " + ", ".join(themes[:-1]) + ", and " + themes[-1] + "."
 
 
 def _verification_summary(checks: list[dict[str, Any]]) -> list[str]:

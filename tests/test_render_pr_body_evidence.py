@@ -278,11 +278,21 @@ class RenderPullRequestBodyTests(unittest.TestCase):
                         {"sha": HEAD, "message": "fix: current subject"},
                         {"sha": HEAD, "message": "fix: current subject"},
                     ],
-                    FILES,
+                    FILES[0],
                 )
             ),
-            1,
+            2,
         )
+        self.assertIn(
+            "Synchronize",
+            renderer._diff_theme(
+                [
+                    {"filename": ".github/workflows/ci.yml"},
+                    {"filename": "tests/test_render.py"},
+                ]
+            ),
+        )
+        self.assertEqual(renderer._diff_theme([{"filename": "src/app.py"}]), "")
         self.assertEqual(
             renderer._verification_summary([]),
             ["- No check runs were returned for this head."],
