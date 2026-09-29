@@ -465,6 +465,80 @@ class ReminderWorkflowTests(unittest.TestCase):
         self.assertNotIn("MUTATION:", result.stdout)
 
     @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
+    def test_indeterminate_checker_status_fails_before_issue_mutation(self) -> None:
+        cases = (
+            (
+                ".github/workflows/community-health.yml",
+                "community-health.md",
+                "repo-scaffold-community-health-drift",
+            ),
+            (
+                ".github/workflows/freshness.yml",
+                "freshness.md",
+                "repo-scaffold-freshness-audit",
+            ),
+            (
+                ".github/workflows/official-docs.yml",
+                "official-docs.md",
+                "repo-scaffold-official-docs-audit",
+            ),
+            (
+                "skills/repo-scaffold/assets/workflows/community-health.yml",
+                "community-health.md",
+                "repo-scaffold-community-health-drift",
+            ),
+            (
+                "skills/repo-scaffold/assets/workflows/freshness.yml",
+                "freshness.md",
+                "repo-scaffold-freshness-audit",
+            ),
+        )
+        stub = """gh() {
+  if [[ "$1" == api ]]; then printf '\\n'; return 0; fi
+  printf 'MUTATION:%s\\n' "$2"
+}
+"""
+        for relative, report_name, marker in cases:
+            document = yaml.load(
+                (ROOT / relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+            )
+            script = next(
+                step["run"]
+                for job in document["jobs"].values()
+                for step in job["steps"]
+                if "Reconcile" in step.get("name", "") and "issue" in step["name"]
+            )
+            with self.subTest(workflow=relative):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.install_body_preflight(root)
+                    (root / report_name).write_text(
+                        f"<!-- {marker} -->\n", encoding="utf-8"
+                    )
+                    environment = child_cli_environment(
+                        {
+                            "REPOSITORY": "synthetic/example",
+                            "GITHUB_REPOSITORY": "synthetic/example",
+                            "RUNNER_TEMP": ".",
+                            "CHECKER_EXIT": "2",
+                        }
+                    )
+                    result = subprocess.run(
+                        [str(BASH), "--noprofile", "--norc", "-s"],
+                        input=stub + script,
+                        cwd=root,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=15,
+                        check=False,
+                    )
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn("indeterminate", result.stderr)
+                self.assertNotIn("MUTATION:", result.stdout)
+
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
     def test_freshness_rejects_unexpected_checker_status(self) -> None:
         for relative in (
             ".github/workflows/freshness.yml",

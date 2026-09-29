@@ -85,6 +85,10 @@ jobs:
             printf 'Freshness checker returned an unexpected exit status: %s\n' "$CHECKER_EXIT" >&2
             exit 1
           fi
+          if [[ "$CHECKER_EXIT" == '2' ]]; then
+            printf 'Freshness checker was indeterminate; no reminder issue was changed.\n' >&2
+            exit 1
+          fi
           if [[ "$CHECKER_EXIT" == '0' ]]; then
             if (( ${#issue_numbers[@]} == 1 )); then
               gh issue close "${issue_numbers[0]}" \

@@ -1026,6 +1026,10 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "            printf 'Freshness checker returned an unexpected exit status: %s\\n' \"$CHECKER_EXIT\" >&2\n"
                 "            exit 1\n"
                 "          fi\n"
+                "          if [[ \"$CHECKER_EXIT\" == '2' ]]; then\n"
+                "            printf 'Freshness checker was indeterminate; no reminder issue was changed.\\n' >&2\n"
+                "            exit 1\n"
+                "          fi\n"
                 "          if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n"
                 "            if (( ${#issue_numbers[@]} == 1 )); then\n"
                 '              gh issue close "${issue_numbers[0]}" --repo "github.com/$GITHUB_REPOSITORY" --comment clean\n'
@@ -1244,7 +1248,18 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "            exit 1\n"
             "          fi\n"
         )
-        valid += repository_lookup_command + status_guard + body_command
+        indeterminate_guard = (
+            "          if [[ \"$CHECKER_EXIT\" == '2' ]]; then\n"
+            "            printf 'Freshness checker was indeterminate; no reminder issue was changed.\\n' >&2\n"
+            "            exit 1\n"
+            "          fi\n"
+        )
+        valid += (
+            repository_lookup_command
+            + status_guard
+            + indeterminate_guard
+            + body_command
+        )
         cases = {
             "valid": valid,
             "summary before audit": valid.replace(
@@ -5067,6 +5082,12 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                         "printf",
                         "Freshness checker returned an unexpected exit status: %s\\n",
                         "$CHECKER_EXIT",
+                        ">&",
+                        "2",
+                    ],
+                    [
+                        "printf",
+                        "Freshness checker was indeterminate; no reminder issue was changed.\\n",
                         ">&",
                         "2",
                     ],

@@ -303,6 +303,10 @@ FRESHNESS_CHECKER_STATUS_GUARD = (
     "if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' "
     "&& \"$CHECKER_EXIT\" != '2' ]]; then"
 )
+FRESHNESS_INDETERMINATE_GUARD = "if [[ \"$CHECKER_EXIT\" == '2' ]]; then"
+FRESHNESS_INDETERMINATE_PRINTF = (
+    "Freshness checker was indeterminate; no reminder issue was changed.\\n"
+)
 FRESHNESS_DUPLICATE_ISSUE_PRINTF = (
     "printf",
     "Found multiple open freshness reminder issues.\\n",
@@ -336,6 +340,12 @@ FRESHNESS_ALLOWED_PRINTF_COMMANDS = frozenset(
             ">&",
             "2",
         ),
+        (
+            "printf",
+            FRESHNESS_INDETERMINATE_PRINTF,
+            ">&",
+            "2",
+        ),
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
     }
 )
@@ -345,6 +355,7 @@ FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
         'if [[ -n "$issue_numbers_output" ]]; then',
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
+        FRESHNESS_INDETERMINATE_GUARD,
         "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
         "if (( ${#issue_numbers[@]} == 1 )); then",
         "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
@@ -1635,6 +1646,7 @@ def freshness_shell_control_flow_is_safe(command: str) -> bool:
     required_if_lines = (
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
+        FRESHNESS_INDETERMINATE_GUARD,
         "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
         "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
     )
@@ -1651,7 +1663,10 @@ def freshness_shell_control_flow_is_safe(command: str) -> bool:
     stale_index = if_lines.index("if [[ \"$CHECKER_EXIT\" != '0' ]]; then")
     duplicate_index = if_lines.index(FRESHNESS_DUPLICATE_ISSUE_GUARD[0])
     status_index = if_lines.index(FRESHNESS_CHECKER_STATUS_GUARD)
-    if not duplicate_index < status_index < clean_index < stale_index:
+    indeterminate_index = if_lines.index(FRESHNESS_INDETERMINATE_GUARD)
+    if not (
+        duplicate_index < status_index < indeterminate_index < clean_index < stale_index
+    ):
         return False
     nonempty_indices = [
         index
@@ -1843,6 +1858,12 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
             ">&",
             "2",
         ),
+        (
+            "printf",
+            FRESHNESS_INDETERMINATE_PRINTF,
+            ">&",
+            "2",
+        ),
     ]:
         return False
     if_ranges = freshness_shell_if_block_ranges(segments)
@@ -1888,6 +1909,7 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
     if issue_numbers_reassignments != [[FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]]:
         return False
     clean_tests: list[int] = []
+    indeterminate_tests: list[int] = []
     failure_tests: list[int] = []
     clean_exits: list[int] = []
     failure_exits: list[int] = []
@@ -1898,6 +1920,8 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         command_tokens = shell_command_prefix(segment)
         if command_tokens == ["if", "[[", "$CHECKER_EXIT", "==", "0", "]]"]:
             clean_tests.append(index)
+        if command_tokens == ["if", "[[", "$CHECKER_EXIT", "==", "2", "]]"]:
+            indeterminate_tests.append(index)
         if command_tokens == ["if", "[[", "$CHECKER_EXIT", "!=", "0", "]]"]:
             failure_tests.append(index)
         if command_tokens == ["exit", "0"]:
@@ -1929,8 +1953,10 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         and len(edit_mutations) == 1
         and len(create_mutations) == 1
         # One failure exit guards duplicate issues, one rejects an unexpected
-        # checker status, and one propagates stale status.
-        and len(failure_exits) == 3
+        # checker status, one rejects indeterminate status, and one propagates
+        # stale status.
+        and len(indeterminate_tests) == 1
+        and len(failure_exits) == 4
     ):
         return False
     issue_numbers_initialization_indices = [
@@ -1950,10 +1976,12 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
     ):
         return False
     clean_test = clean_tests[0]
+    indeterminate_test = indeterminate_tests[0]
     clean_exit = clean_exits[0]
     failure_test = failure_tests[0]
     clean_block_end = if_ranges[clean_test]
     failure_block_end = if_ranges[failure_test]
+    indeterminate_block_end = if_ranges[indeterminate_test]
     stale_mutations = [*edit_mutations, *create_mutations]
     if title_assignments and title_assignment_indices[0] >= min(
         [*close_mutations, *edit_mutations, *create_mutations]
@@ -1962,13 +1990,20 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
     failure_exit_after = [
         exit_index for exit_index in failure_exits if exit_index > failure_test
     ]
+    indeterminate_exit = [
+        exit_index
+        for exit_index in failure_exits
+        if indeterminate_test < exit_index < indeterminate_block_end
+    ]
     return (
-        clean_test
+        indeterminate_test
+        < clean_test
         < close_mutations[0]
         < clean_exit
         < clean_block_end
         < min(stale_mutations)
         and max(stale_mutations) < failure_test
+        and len(indeterminate_exit) == 1
         and bool(failure_exit_after)
         and failure_test < min(failure_exit_after) < failure_block_end
     )

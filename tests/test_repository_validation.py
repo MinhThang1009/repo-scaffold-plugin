@@ -10978,11 +10978,6 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
             installed = root / ".github/workflows/community-health.yml"
             workflow_text = installed.read_text(encoding="utf-8")
             workflow_text = workflow_text.replace(guard_block, "", 1)
-            workflow_text = workflow_text.replace(
-                "          if [[ \"$CHECKER_EXIT\" == '2' ]]; then\n",
-                guard_block + "          if [[ \"$CHECKER_EXIT\" == '2' ]]; then\n",
-                1,
-            )
             installed.write_text(workflow_text, encoding="utf-8")
             problems = validate_repository.validate_community_health_tracking_contract(
                 root
@@ -14313,6 +14308,12 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                         "printf",
                         "Freshness checker returned an unexpected exit status: %s\\n",
                         "$CHECKER_EXIT",
+                        ">&",
+                        "2",
+                    ],
+                    [
+                        "printf",
+                        "Freshness checker was indeterminate; no reminder issue was changed.\\n",
                         ">&",
                         "2",
                     ],

@@ -106,6 +106,12 @@ COMMUNITY_HEALTH_CHECKER_STATUS_GUARD = (
     "if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' "
     "&& \"$CHECKER_EXIT\" != '2' ]]; then"
 )
+COMMUNITY_HEALTH_INDETERMINATE_GUARD = "if [[ \"$CHECKER_EXIT\" == '2' ]]; then"
+COMMUNITY_HEALTH_INDETERMINATE_PRINTF = "printf 'Community-health checker was indeterminate; no reminder issue was changed.\\n' >&2"
+FRESHNESS_INDETERMINATE_GUARD = "if [[ \"$CHECKER_EXIT\" == '2' ]]; then"
+FRESHNESS_INDETERMINATE_PRINTF = (
+    "Freshness checker was indeterminate; no reminder issue was changed.\\n"
+)
 COMMUNITY_HEALTH_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-community-health-${{ github.repository }}"
 )
@@ -285,6 +291,12 @@ FRESHNESS_ALLOWED_PRINTF_COMMANDS = frozenset(
             ">&",
             "2",
         ),
+        (
+            "printf",
+            FRESHNESS_INDETERMINATE_PRINTF,
+            ">&",
+            "2",
+        ),
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
     }
 )
@@ -294,6 +306,7 @@ FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
         'if [[ -n "$issue_numbers_output" ]]; then',
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
+        FRESHNESS_INDETERMINATE_GUARD,
         "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
         "if (( ${#issue_numbers[@]} == 1 )); then",
         "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
@@ -1661,6 +1674,7 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     required_if_lines = (
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
+        FRESHNESS_INDETERMINATE_GUARD,
         "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
         "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
     )
@@ -1677,7 +1691,10 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     stale_index = if_lines.index("if [[ \"$CHECKER_EXIT\" != '0' ]]; then")
     duplicate_index = if_lines.index(FRESHNESS_DUPLICATE_ISSUE_GUARD[0])
     status_index = if_lines.index(FRESHNESS_CHECKER_STATUS_GUARD)
-    if not duplicate_index < status_index < clean_index < stale_index:
+    indeterminate_index = if_lines.index(FRESHNESS_INDETERMINATE_GUARD)
+    if not (
+        duplicate_index < status_index < indeterminate_index < clean_index < stale_index
+    ):
         return False
     nonempty_indices = [
         index
@@ -1886,18 +1903,72 @@ def community_health_exit_status_guard_is_safe(text: str) -> bool:
         for index, line in enumerate(lines)
         if line == COMMUNITY_HEALTH_CHECKER_STATUS_GUARD
     ]
+    indeterminate_guard_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line == COMMUNITY_HEALTH_INDETERMINATE_GUARD
+    ]
     marker_indices = [index for index, line in enumerate(lines) if line == marker_check]
     clean_indices = [index for index, line in enumerate(lines) if line == clean_branch]
     mutation_indices = [
         index for index, line in enumerate(lines) if line.startswith(mutation_commands)
     ]
+    indeterminate_block = (
+        COMMUNITY_HEALTH_INDETERMINATE_GUARD,
+        COMMUNITY_HEALTH_INDETERMINATE_PRINTF,
+        "exit 1",
+        "fi",
+    )
+    indeterminate_block_count = sum(
+        tuple(lines[index : index + len(indeterminate_block)]) == indeterminate_block
+        for index in range(len(lines) - len(indeterminate_block) + 1)
+    )
     return (
         len(guard_indices) == 1
+        and len(indeterminate_guard_indices) == 1
         and len(marker_indices) == 1
         and len(clean_indices) == 1
         and bool(mutation_indices)
-        and marker_indices[0] < guard_indices[0] < clean_indices[0]
-        and all(index > guard_indices[0] for index in mutation_indices)
+        and indeterminate_block_count == 1
+        and marker_indices[0] < guard_indices[0] < indeterminate_guard_indices[0]
+        and indeterminate_guard_indices[0] < clean_indices[0]
+        and all(index > indeterminate_guard_indices[0] for index in mutation_indices)
+    )
+
+
+def official_docs_exit_status_guard_is_safe(text: str) -> bool:
+    """Require official-docs indeterminate results to fail before Issue mutation."""
+    lines = [line.strip() for line in text.splitlines()]
+    guard = "if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then"
+    indeterminate_guard = "if [[ \"$CHECKER_EXIT\" == '2' ]]; then"
+    indeterminate_printf = "printf 'Official-docs checker was indeterminate; no reminder issue was changed.\\n' >&2"
+    guard_indices = [index for index, line in enumerate(lines) if line == guard]
+    indeterminate_indices = [
+        index for index, line in enumerate(lines) if line == indeterminate_guard
+    ]
+    marker_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line == 'grep -Fq "$marker" "$RUNNER_TEMP/official-docs.md"'
+    ]
+    mutation_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith(("gh issue close ", "gh issue edit ", "gh issue create "))
+    ]
+    block = (indeterminate_guard, indeterminate_printf, "exit 1", "fi")
+    block_count = sum(
+        tuple(lines[index : index + len(block)]) == block
+        for index in range(len(lines) - len(block) + 1)
+    )
+    return (
+        len(guard_indices) == 1
+        and len(indeterminate_indices) == 1
+        and len(marker_indices) == 1
+        and bool(mutation_indices)
+        and block_count == 1
+        and marker_indices[0] < guard_indices[0] < indeterminate_indices[0]
+        and all(index > indeterminate_indices[0] for index in mutation_indices)
     )
 
 
@@ -1984,6 +2055,12 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
             ">&",
             "2",
         ),
+        (
+            "printf",
+            FRESHNESS_INDETERMINATE_PRINTF,
+            ">&",
+            "2",
+        ),
     ]:
         return False
     if_ranges = freshness_shell_if_block_ranges(segments)
@@ -2029,6 +2106,7 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
     if issue_numbers_reassignments != [[FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]]:
         return False
     clean_tests: list[int] = []
+    indeterminate_tests: list[int] = []
     failure_tests: list[int] = []
     clean_exits: list[int] = []
     failure_exits: list[int] = []
@@ -2039,6 +2117,8 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         command = shell_command_prefix(segment)
         if command == ["if", "[[", "$CHECKER_EXIT", "==", "0", "]]"]:
             clean_tests.append(index)
+        if command == ["if", "[[", "$CHECKER_EXIT", "==", "2", "]]"]:
+            indeterminate_tests.append(index)
         if command == ["if", "[[", "$CHECKER_EXIT", "!=", "0", "]]"]:
             failure_tests.append(index)
         if command == ["exit", "0"]:
@@ -2070,8 +2150,10 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         and len(edit_mutations) == 1
         and len(create_mutations) == 1
         # One failure exit guards duplicate issues, one rejects an unexpected
-        # checker status, and one propagates stale status.
-        and len(failure_exits) == 3
+        # checker status, one rejects indeterminate status, and one propagates
+        # stale status.
+        and len(indeterminate_tests) == 1
+        and len(failure_exits) == 4
     ):
         return False
     issue_numbers_initialization_indices = [
@@ -2091,10 +2173,12 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
     ):
         return False
     clean_test = clean_tests[0]
+    indeterminate_test = indeterminate_tests[0]
     clean_exit = clean_exits[0]
     failure_test = failure_tests[0]
     clean_block_end = if_ranges[clean_test]
     failure_block_end = if_ranges[failure_test]
+    indeterminate_block_end = if_ranges[indeterminate_test]
     stale_mutations = [*edit_mutations, *create_mutations]
     if title_assignments and title_assignment_indices[0] >= min(
         [*close_mutations, *edit_mutations, *create_mutations]
@@ -2103,13 +2187,20 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
     failure_exit_after = [
         exit_index for exit_index in failure_exits if exit_index > failure_test
     ]
+    indeterminate_exit = [
+        exit_index
+        for exit_index in failure_exits
+        if indeterminate_test < exit_index < indeterminate_block_end
+    ]
     return (
-        clean_test
+        indeterminate_test
+        < clean_test
         < close_mutations[0]
         < clean_exit
         < clean_block_end
         < min(stale_mutations)
         and max(stale_mutations) < failure_test
+        and len(indeterminate_exit) == 1
         and bool(failure_exit_after)
         and failure_test < min(failure_exit_after) < failure_block_end
     )
@@ -9330,6 +9421,10 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
     ):
         problems.append(
             ".github/workflows/official-docs.yml: reminder must verify its report marker before clean reconciliation"
+        )
+    if not official_docs_exit_status_guard_is_safe(workflow_text):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder must reject unexpected and indeterminate checker statuses before Issue mutation"
         )
     if not has_repo_bound_issue_reconciliation(workflow_text):
         problems.append(
