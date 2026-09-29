@@ -110,6 +110,11 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   Generated summaries should state the review outcome and confirmed cause in
   prose, keep key changes to a few themes, and leave detailed file and check
   listings to GitHub's Commits, Files changed, and Checks views.
+
+Reminder reconciliation treats an upstream checker exit status of `2` as
+indeterminate evidence. It must fail before Issue mutation and preserve the
+failure for review instead of treating the result as stale state.
+
 - Branch protection: required-check producers must be unique, executable, and
   event-compatible and backed by regular workflow files; Check Run evidence
   must resolve to one Actions workflow run with the producer's exact path,
