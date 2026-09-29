@@ -104,6 +104,9 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   revalidate the PR immediately before `gh pr edit`, and verify the exact
   post-mutation body. Do not use a checked-in narrative body source or execute
   pull-request head code.
+  Commits that need richer generated prose may provide `Why:`, `Root cause:`,
+  `Changes:`, and `Verification:` fields in their commit body; missing fields
+  must use an explicit evidence fallback rather than inferred claims.
 - Branch protection: required-check producers must be unique, executable, and
   event-compatible and backed by regular workflow files; Check Run evidence
   must resolve to one Actions workflow run with the producer's exact path,
