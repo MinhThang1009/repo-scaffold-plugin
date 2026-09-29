@@ -51,7 +51,9 @@ long PR, a reviewed commit containing `PR-summary-base: <full-current-base-SHA>`
 and all four fields records a cumulative summary through that commit. All later
 changes remain in scope. Reconcile API commit/file counts, retain reverts, and
 reject excess topics rather than silently omitting them. Missing cause evidence
-must be stated explicitly. Commit verification notes are author-reported at the
+must be stated explicitly. The cumulative summary must cover the PR's primary
+behavior and safety-boundary changes, not only PR-body tooling or documentation.
+Commit verification notes are author-reported at the
 source SHA; use GitHub Checks for the current revision. Review the complete
 body again after rendering and after GitHub accepts the update.
 

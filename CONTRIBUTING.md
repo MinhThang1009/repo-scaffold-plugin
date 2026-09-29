@@ -204,7 +204,9 @@ adding `PR-summary-base: <full-current-base-SHA>` before all four fields. That
 summary covers the PR through its containing commit. The renderer includes
 every later change, rejects a changed base, and fails if the description would
 need to drop a topic to fit the paragraph or five-bullet budget. Review the
-complete diff and update the cumulative summary when that happens.
+complete diff and update the cumulative summary when that happens. The summary
+must cover the PR's primary behavior and safety-boundary changes, not only the
+PR-body tooling or documentation that makes them reviewable.
 
 This repository's `pr-body-sync` workflow renders the complete pull-request
 body from the exact pull-request API evidence whenever a pull request is

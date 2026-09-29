@@ -23,8 +23,10 @@ paragraphs or bullet lists. Describe all material changes, including later
 fixes and reverts. For a long PR, a reviewed `PR-summary-base:` commit can
 consolidate the complete diff at the current base SHA; later commits stay in
 scope. Keep validation notes tied to their source revision, and review the
-generated prose against the full diff before requesting review. The renderer
-fails instead of silently dropping topics to shorten the body.
+generated prose against the full diff before requesting review. The cumulative
+summary must cover primary behavior and safety-boundary changes, not only
+PR-body tooling or documentation. The renderer fails instead of silently
+dropping topics to shorten the body.
 
 ## Code expectations
 

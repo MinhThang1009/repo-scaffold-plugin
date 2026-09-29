@@ -24,6 +24,8 @@ và revert. Với PR dài, commit `PR-summary-base:` đã review có thể tổn
 bộ diff tại base SHA hiện tại; các commit sau đó vẫn thuộc phạm vi review. Gắn
 verification với revision nguồn và đối chiếu body đã sinh với toàn bộ diff trước
 khi yêu cầu review. Renderer phải dừng khi không thể rút gọn mà vẫn giữ đủ ý.
+Summary phải bao quát thay đổi hành vi chính và các ranh giới an toàn của PR,
+không chỉ có tooling hoặc documentation cho PR-body.
 
 ## Kỳ vọng về mã nguồn
 
