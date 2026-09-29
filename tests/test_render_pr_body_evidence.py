@@ -91,6 +91,11 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertIn(f"<!-- base: {BASE} -->", rendered)
         self.assertIn(f"<!-- head: {HEAD} -->", rendered)
         self.assertIn("current subject", rendered)
+        self.assertIn("This pull request was generated from 1 commit", rendered)
+        self.assertIn(
+            "The commit metadata provides the following root-cause detail:", rendered
+        )
+        self.assertIn("Checks observed for this head:", rendered)
         self.assertIn("scripts/example.py", rendered)
         self.assertIn("quality", rendered)
         self.assertIn("#42", rendered)
@@ -266,6 +271,10 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertEqual(
             renderer._commit_details([{"sha": HEAD, "message": "subject"}]),
             ["- No structured detail was supplied in the commit metadata."],
+        )
+        self.assertIn(
+            "No structured root-cause detail",
+            renderer._root_cause_lines([{"sha": HEAD, "message": "subject"}])[0],
         )
         self.assertEqual(
             renderer._check_lines([]), ["- No check runs were returned for this head."]

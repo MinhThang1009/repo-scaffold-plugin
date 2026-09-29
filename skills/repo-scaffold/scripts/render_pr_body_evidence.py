@@ -255,10 +255,13 @@ def _plain(value: str) -> str:
     return html.escape(compact, quote=False)
 
 
-def _commit_subjects(commits: list[dict[str, str]]) -> list[str]:
+def _purpose_lines(commits: list[dict[str, str]], head_sha: str) -> list[str]:
+    latest = commits[-1]
+    subject = latest["message"].splitlines()[0].strip() or "(no commit subject)"
+    noun = "commit" if len(commits) == 1 else "commits"
     return [
-        f"- {_code(commit['sha'][:12])} {_plain(commit['message'].splitlines()[0].strip() or '(no commit subject)')}"
-        for commit in commits
+        f"This pull request was generated from {len(commits)} {noun} at head "
+        f"{_code(head_sha[:12])}. Latest commit: {_plain(subject)}."
     ]
 
 
@@ -271,6 +274,16 @@ def _commit_details(commits: list[dict[str, str]]) -> list[str]:
         if lines:
             details.append(f"- {_code(commit['sha'][:12])} {_plain(lines[0])}")
     return details or ["- No structured detail was supplied in the commit metadata."]
+
+
+def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
+    details = _commit_details(commits)
+    if details == ["- No structured detail was supplied in the commit metadata."]:
+        return ["No structured root-cause detail was provided in the commit metadata."]
+    return [
+        "The commit metadata provides the following root-cause detail:",
+        *details,
+    ]
 
 
 def _file_lines(files: list[dict[str, Any]]) -> list[str]:
@@ -311,20 +324,20 @@ def _section_kind(heading: str) -> str:
     if any(
         token in normalized for token in ("purpose", "summary", "mục đích", "tóm tắt")
     ):
-        return "commits"
+        return "purpose"
     if any(
         token in normalized
         for token in ("root cause", "cause", "scope", "risk", "nguyên nhân")
     ):
-        return "details"
+        return "root_cause"
     if any(
         token in normalized
         for token in ("verification", "monitor", "xác minh", "kiểm tra")
     ):
-        return "checks"
+        return "verification"
     if any(token in normalized for token in ("related", "issue", "liên quan")):
-        return "issues"
-    return "files"
+        return "related"
+    return "changes"
 
 
 def _remove_protocol_lines(lines: list[str]) -> list[str]:
@@ -381,11 +394,14 @@ def render_dynamic_body(
         if (match := HEADING_PATTERN.match(line)) is not None
     ]
     generated = {
-        "commits": _commit_subjects(commits),
-        "details": _commit_details(commits),
-        "files": _file_lines(files),
-        "checks": _check_lines(checks),
-        "issues": _issue_lines(commits),
+        "purpose": _purpose_lines(commits, head_sha),
+        "root_cause": _root_cause_lines(commits),
+        "changes": _file_lines(files),
+        "verification": [
+            "Checks observed for this head:",
+            *_check_lines(checks),
+        ],
+        "related": _issue_lines(commits),
     }
     for heading_index in range(len(headings) - 1, -1, -1):
         line_index, heading = headings[heading_index]
