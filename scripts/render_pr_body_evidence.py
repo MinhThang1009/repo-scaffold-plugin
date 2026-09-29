@@ -33,6 +33,11 @@ OPTIONAL_START = "<!-- repo-scaffold:optional-checklist:start -->"
 ISSUE_REFERENCE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])(?:#[0-9]+|https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+)"
 )
+COMMIT_PREFIX_PATTERN = re.compile(
+    r"^(?:feat|fix|docs|test|chore|perf|refactor|style|build|ci)"
+    r"(?:\([^()\r\n]+\))?!?:\s*",
+    re.IGNORECASE,
+)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -257,14 +262,10 @@ def _plain(value: str) -> str:
 
 def _purpose_lines(commits: list[dict[str, str]], head_sha: str) -> list[str]:
     subjects = [
-        commit["message"].splitlines()[0].strip() or "(no commit subject)"
-        for commit in commits
+        _clean_subject(commit["message"].splitlines()[0].strip()) for commit in commits
     ]
-    summary = _summary_text(subjects)
-    return [
-        f"This change is summarized by {summary} It is bound to head "
-        f"{_code(head_sha[:12])}."
-    ]
+    summary = subjects[0] if subjects else "the available commit evidence"
+    return [_sentence(summary)]
 
 
 def _commit_details(commits: list[dict[str, str]]) -> list[str]:
@@ -281,7 +282,14 @@ def _commit_details(commits: list[dict[str, str]]) -> list[str]:
 def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
     details = _commit_details(commits)
     if details == ["- No structured detail was supplied in the commit metadata."]:
-        return ["No structured root-cause detail was provided in the commit metadata."]
+        subjects = [
+            _clean_subject(commit["message"].splitlines()[0].strip())
+            for commit in commits
+        ]
+        return [
+            "The core issue addressed by this change was "
+            + _sentence(_summary_text(subjects))
+        ]
     return [
         "The core rationale from the commit metadata is "
         + "; ".join(item[2:] for item in details)
@@ -300,28 +308,51 @@ def _summary_text(values: list[str], limit: int = 3) -> str:
     return "; ".join(compact[:limit]) + f"; and {len(compact) - limit} more commit(s)."
 
 
-def _changes_summary(files: list[dict[str, Any]]) -> list[str]:
+def _clean_subject(subject: str) -> str:
+    cleaned = COMMIT_PREFIX_PATTERN.sub("", subject).strip()
+    return cleaned or "an unlabelled change"
+
+
+def _sentence(value: str) -> str:
+    compact = " ".join(value.replace("\r", " ").replace("\n", " ").split()).strip()
+    if not compact:
+        return "The change is described by the available commit evidence."
+    compact = compact[0].upper() + compact[1:]
+    return compact if compact.endswith((".", "!", "?")) else compact + "."
+
+
+def _changes_summary(
+    commits: list[dict[str, str]], files: list[dict[str, Any]]
+) -> list[str]:
     if not files:
         return ["No changed files were returned by the pull-request API."]
-    additions = sum(int(item["additions"]) for item in files)
-    deletions = sum(int(item["deletions"]) for item in files)
-    areas: dict[str, int] = {}
-    for item in files:
-        filename = str(item["filename"])
-        area = filename.split("/", 1)[0] if "/" in filename else "repository root"
-        areas[area] = areas.get(area, 0) + 1
-    area_text = _summary_text(
-        [f"{area} ({count} file(s))" for area, count in sorted(areas.items())],
-        limit=3,
-    )
-    return [
-        f"Updated {len(files)} file(s), with +{additions}/-{deletions} lines, mainly across {area_text}"
-    ]
+    subjects: list[str] = []
+    seen: set[str] = set()
+    for commit in commits:
+        subject = _clean_subject(commit["message"].splitlines()[0].strip())
+        if subject.casefold().startswith(("merge ", "revert ")):
+            continue
+        if subject.casefold() not in seen:
+            seen.add(subject.casefold())
+            subjects.append(subject)
+    if not subjects:
+        additions = sum(int(item["additions"]) for item in files)
+        deletions = sum(int(item["deletions"]) for item in files)
+        return [
+            f"Update {len(files)} changed file(s), adding {additions} and removing {deletions} lines."
+        ]
+    selected = subjects[:4]
+    lines = [f"- {_sentence(subject)}" for subject in selected]
+    if len(subjects) > len(selected):
+        lines.append(
+            f"- Consolidate {len(subjects) - len(selected)} additional related change(s)."
+        )
+    return lines
 
 
 def _verification_summary(checks: list[dict[str, Any]]) -> list[str]:
     if not checks:
-        return ["No check runs were returned for this head."]
+        return ["- No check runs were returned for this head."]
     successful = sum(check["conclusion"] == "success" for check in checks)
     pending = sum(check["status"] != "completed" for check in checks)
     failed = sum(
@@ -331,7 +362,7 @@ def _verification_summary(checks: list[dict[str, Any]]) -> list[str]:
     )
     skipped = sum(check["conclusion"] == "skipped" for check in checks)
     return [
-        f"Observed {len(checks)} check run(s): {successful} passed, {failed} failed, "
+        f"- Automated checks for this head: {successful} passed, {failed} failed, "
         f"{skipped} skipped, and {pending} pending."
     ]
 
@@ -430,7 +461,7 @@ def render_dynamic_body(
     generated = {
         "purpose": _purpose_lines(commits, head_sha),
         "root_cause": _root_cause_lines(commits),
-        "changes": _changes_summary(files),
+        "changes": _changes_summary(commits, files),
         "verification": _verification_summary(checks),
         "related": _issue_lines(commits),
     }

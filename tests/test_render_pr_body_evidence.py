@@ -88,13 +88,11 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         rendered = renderer.render_dynamic_body(BODY, PR, COMMITS, FILES, CHECKS)
 
         self.assertNotIn(renderer.MANAGED_BODY_MARKER, rendered)
-        self.assertIn("current subject", rendered)
-        self.assertIn("This change is summarized by", rendered)
+        self.assertIn("Current subject.", rendered)
         self.assertIn("The core rationale from the commit metadata is", rendered)
         self.assertIn("## Purpose\n\n", rendered)
-        self.assertIn("## Key changes\n\nUpdated 1 file(s)", rendered)
-        self.assertIn("## Verification\n\nObserved 1 check run(s)", rendered)
-        self.assertIn("1 passed", rendered)
+        self.assertIn("## Key changes\n\n- Current subject.", rendered)
+        self.assertIn("## Verification\n\n- Automated checks for this head", rendered)
         self.assertIn("#42", rendered)
         self.assertNotIn("Old purpose", rendered)
         self.assertIn("- [x] Existing evidence", rendered)
@@ -270,12 +268,24 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             ["- No structured detail was supplied in the commit metadata."],
         )
         self.assertIn(
-            "No structured root-cause detail",
+            "The core issue addressed",
             renderer._root_cause_lines([{"sha": HEAD, "message": "subject"}])[0],
         )
         self.assertEqual(
+            len(
+                renderer._changes_summary(
+                    [
+                        {"sha": HEAD, "message": "fix: current subject"},
+                        {"sha": HEAD, "message": "fix: current subject"},
+                    ],
+                    FILES,
+                )
+            ),
+            1,
+        )
+        self.assertEqual(
             renderer._verification_summary([]),
-            ["No check runs were returned for this head."],
+            ["- No check runs were returned for this head."],
         )
         self.assertEqual(renderer._summary_text([]), "the available commit evidence")
         self.assertIn("; and", renderer._summary_text(["one", "two"]))
@@ -336,9 +346,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
                 )
             self.assertEqual(result, 0)
             self.assertIn("current PR evidence", stdout.getvalue())
-            self.assertIn(
-                "This change is summarized by", output.read_text(encoding="utf-8")
-            )
+            self.assertIn("Current subject.", output.read_text(encoding="utf-8"))
 
             pr.write_text("{", encoding="utf-8")
             stderr = StringIO()
