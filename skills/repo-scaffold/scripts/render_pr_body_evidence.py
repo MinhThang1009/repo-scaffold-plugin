@@ -266,15 +266,13 @@ def _plain(value: str) -> str:
 
 
 def _purpose_lines(commits: list[dict[str, str]], head_sha: str) -> list[str]:
+    subjects = [
+        _clean_subject(commit["message"].splitlines()[0].strip())
+        for commit in commits
+        if not commit["message"].lstrip().casefold().startswith(("merge ", "revert "))
+    ]
     structured = _structured_values(commits, "purpose")
-    if structured:
-        summary = _summary_text(structured, limit=2)
-    else:
-        subjects = [
-            _clean_subject(commit["message"].splitlines()[0].strip())
-            for commit in commits
-        ]
-        summary = subjects[0] if subjects else "the available commit evidence"
+    summary = _summary_text((subjects[:1] + structured), limit=2)
     return [_sentence(summary)]
 
 
@@ -292,7 +290,15 @@ def _commit_details(commits: list[dict[str, str]]) -> list[str]:
 def _root_cause_lines(commits: list[dict[str, str]]) -> list[str]:
     structured = _structured_values(commits, "root")
     if structured:
-        return [_sentence(_summary_text(structured, limit=2))]
+        subjects = [
+            _clean_subject(commit["message"].splitlines()[0].strip())
+            for commit in commits
+            if not commit["message"]
+            .lstrip()
+            .casefold()
+            .startswith(("merge ", "revert "))
+        ]
+        return [_sentence(_summary_text(structured + subjects[:1], limit=2))]
     details = _commit_details(commits)
     if details == ["- No structured detail was supplied in the commit metadata."]:
         return [
@@ -356,8 +362,6 @@ def _changes_summary(
     if not files:
         return ["No changed files were returned by the pull-request API."]
     structured = _structured_values(commits, "changes")
-    if structured:
-        return [f"- {_sentence(value)}" for value in structured[:4]]
     subjects: list[str] = []
     seen: set[str] = set()
     for commit in commits:
@@ -373,7 +377,15 @@ def _changes_summary(
         return [
             f"Update {len(files)} changed file(s), adding {additions} and removing {deletions} lines."
         ]
-    selected = subjects[:3]
+    selected: list[str] = []
+    seen_selected: set[str] = set()
+    for value in [*structured, *subjects]:
+        key = value.casefold()
+        if key not in seen_selected:
+            seen_selected.add(key)
+            selected.append(value)
+        if len(selected) >= 3:
+            break
     lines = [f"- {_sentence(subject)}" for subject in selected]
     theme = _diff_theme(files)
     if theme:
@@ -406,7 +418,10 @@ def _diff_theme(files: list[dict[str, Any]]) -> str:
 def _verification_summary(commits: list[dict[str, str]]) -> list[str]:
     structured = _structured_values(commits, "verification")
     if structured:
-        return [f"- {_sentence(value)}" for value in structured[:3]]
+        return [
+            *[f"- {_sentence(value)}" for value in structured[:3]],
+            "- Live status is tracked in the GitHub Checks tab for this pull-request head.",
+        ]
     return [
         "- Verification is tracked in the GitHub Checks tab for this pull-request head."
     ]

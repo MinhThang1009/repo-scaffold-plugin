@@ -89,7 +89,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
 
         self.assertNotIn(renderer.MANAGED_BODY_MARKER, rendered)
         self.assertIn("Current subject.", rendered)
-        self.assertIn("Evidence.", rendered)
+        self.assertIn("Evidence; and current subject.", rendered)
         self.assertIn("## Purpose\n\n", rendered)
         self.assertIn("## Key changes\n\n- Current subject.", rendered)
         self.assertIn(
@@ -316,6 +316,20 @@ class RenderPullRequestBodyTests(unittest.TestCase):
                 )
             ),
             2,
+        )
+        self.assertGreaterEqual(
+            len(
+                renderer._changes_summary(
+                    [
+                        {"sha": HEAD, "message": "fix: one"},
+                        {"sha": HEAD, "message": "fix: two"},
+                        {"sha": HEAD, "message": "fix: three"},
+                        {"sha": HEAD, "message": "fix: four"},
+                    ],
+                    FILES[0],
+                )
+            ),
+            4,
         )
         self.assertIn(
             "Synchronize",
