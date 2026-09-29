@@ -430,11 +430,14 @@ class MutationRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             implementation = ModernPlanningMutmut()
+            previous_mutant_under_test = os.environ.get("MUTANT_UNDER_TEST")
             path = run_mutation_testing.prepare_mutation_shards(
                 root, max_children=4, shard_count=2, mutmut_main=implementation
             )
             self.assertTrue(path.is_file())
-            self.assertNotIn("MUTANT_UNDER_TEST", os.environ)
+            self.assertEqual(
+                os.environ.get("MUTANT_UNDER_TEST"), previous_mutant_under_test
+            )
 
     def test_planning_rejects_invalid_or_linked_repository_roots(self) -> None:
         with self.assertRaisesRegex(ValueError, "repository root"):
