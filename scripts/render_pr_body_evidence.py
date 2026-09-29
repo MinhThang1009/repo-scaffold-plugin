@@ -352,7 +352,10 @@ def _summary_text(values: list[str], limit: int = 3) -> str:
         if len(compact) == 1:
             return compact[0] + "."
         return "; ".join(compact[:-1]) + "; and " + compact[-1] + "."
-    return "; ".join(compact[:limit]) + f"; and {len(compact) - limit} more commit(s)."
+    return (
+        "; ".join(compact[:limit])
+        + f"; plus {len(compact) - limit} additional context item(s)."
+    )
 
 
 def _clean_subject(subject: str) -> str:

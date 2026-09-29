@@ -364,7 +364,8 @@ class RenderPullRequestBodyTests(unittest.TestCase):
         self.assertEqual(renderer._summary_text([]), "the available commit evidence")
         self.assertIn("; and", renderer._summary_text(["one", "two"]))
         self.assertIn(
-            "more commit(s)", renderer._summary_text(["one", "two", "three", "four"])
+            "additional context item(s)",
+            renderer._summary_text(["one", "two", "three", "four"]),
         )
         duplicate_issue = {"sha": HEAD, "message": "subject\nCloses #1 and #1"}
         self.assertEqual(len(renderer._issue_lines([duplicate_issue])), 1)
