@@ -2128,7 +2128,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
 
             self.assertIn(
                 ".coveragerc: require branch coverage for both script trees, only "
-                "the verified freshness-script copies omitted, and a fail-under "
+                "verified byte-for-byte script copies omitted, and a fail-under "
                 "floor of at least 100",
                 problems,
             )
@@ -4267,8 +4267,8 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             "validate_scorecard_manual_dispatch",
             "validate_action_pin_sync_contract",
             "validate_required_check_concurrency",
-            "validate_pr_body_sync_template_contract",
             "validate_pr_body_sync_workflow_contract",
+            "validate_pr_body_sync_asset_contract",
             "validate_issue_templates",
             "validate_release_notes_config",
             "validate_dependabot",
@@ -6762,7 +6762,12 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             [],
         )
 
-    def test_body_sync_workflow_reports_unreadable_and_non_mapping_files(self) -> None:
+    def test_body_sync_asset_matches_repository_workflow(self) -> None:
+        self.assertEqual(
+            validate_repository.validate_pr_body_sync_asset_contract(PLUGIN_ROOT), []
+        )
+
+    def test_body_sync_reports_unreadable_and_non_mapping_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             unreadable = validate_repository.validate_pr_body_sync_workflow_contract(
@@ -6774,7 +6779,6 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             non_mapping = validate_repository.validate_pr_body_sync_workflow_contract(
                 root
             )
-
         self.assertTrue(any("workflow is unreadable" in item for item in unreadable))
         self.assertEqual(
             non_mapping,
@@ -6783,7 +6787,7 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             ],
         )
 
-    def test_body_sync_workflow_rejects_trigger_concurrency_and_job_drift(self) -> None:
+    def test_body_sync_rejects_trigger_concurrency_and_job_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workflow_path, workflow = self._copy_workflow(root)
@@ -6794,23 +6798,22 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
                 yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
             )
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
         self.assertTrue(any("opened and synchronized" in item for item in problems))
         self.assertTrue(any("without cancellation" in item for item in problems))
         self.assertTrue(any("isolate pull-requests" in item for item in problems))
 
-    def test_body_sync_workflow_rejects_step_shape_and_unsafe_order(self) -> None:
+    def test_body_sync_rejects_step_shape_and_unsafe_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workflow_path, workflow = self._copy_workflow(root)
-            update_step = workflow["jobs"]["update"]["steps"][1]
-            update_step["env"] = {}
-            update_step["run"] = "github.event.pull_request.head.ref\n"
+            workflow["jobs"]["update"]["steps"][1]["env"] = {}
+            workflow["jobs"]["update"]["steps"][1]["run"] = (
+                "github.event.pull_request.head.ref\n"
+            )
             workflow_path.write_text(
                 yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
             )
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
         self.assertTrue(any("pass only repository" in item for item in problems))
 
         with tempfile.TemporaryDirectory() as directory:
@@ -6823,8 +6826,7 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
                 yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
             )
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
-        self.assertTrue(any("must not execute" in item for item in problems))
+        self.assertTrue(any("must not execute head code" in item for item in problems))
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -6838,526 +6840,115 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
                 yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
             )
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+        self.assertTrue(any("fetch, render, preflight" in item for item in problems))
 
-        self.assertTrue(any("fetch, preflight" in item for item in problems))
-        self.assertTrue(any("before the GitHub mutation" in item for item in problems))
+    def test_body_sync_requires_dynamic_evidence_and_postconditions(self) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        )
+        run = workflow["jobs"]["update"]["steps"][1]["run"]
+        self.assertIn("python scripts/render_pr_body_evidence.py", run)
+        self.assertIn("collect_pages() {", run)
+        self.assertIn(
+            'collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/files" files files 30',
+            run,
+        )
+        self.assertNotIn(".github/pr-body-template.md", run)
+        self.assertNotIn("scripts/update_pr_body.py", run)
+        self.assertEqual(run.count('head.get("sha") != expected_head_sha'), 3)
+        self.assertEqual(run.count("actual_repository != expected_repository"), 3)
+        self.assertEqual(run.count('base.get("sha") != expected_base_sha'), 3)
+        self.assertEqual(run.count('payload.get("title") != expected_title'), 3)
+        self.assertEqual(run.count('payload.get("state") != "open"'), 3)
+        self.assertEqual(run.count("if body != original:"), 1)
+        self.assertEqual(run.count("if actual_body != expected_body:"), 1)
 
-    def test_body_sync_workflow_rejects_head_checkout_and_broad_permissions(
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = run.replace(
+            "python scripts/render_pr_body_evidence.py", "", 1
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+        self.assertTrue(any("fetch, render, preflight" in item for item in problems))
+
+    def test_body_sync_revalidates_base_and_asset_postconditions(self) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        )
+        run = workflow["jobs"]["update"]["steps"][1]["run"]
+        candidate = copy.deepcopy(workflow)
+        candidate["jobs"]["update"]["steps"][1]["run"] = run.replace(
+            'base.get("sha") != expected_base_sha', "True", 1
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+        self.assertTrue(any("head, repository, base" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            asset = root / "skills/repo-scaffold/assets/workflows/pr-body-sync.yml"
+            root_workflow = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+            root_workflow.parent.mkdir(parents=True, exist_ok=True)
+            asset.parent.mkdir(parents=True, exist_ok=True)
+            root_workflow.write_text("root\n", encoding="utf-8")
+            asset.write_text("asset\n", encoding="utf-8")
+            problems = validate_repository.validate_pr_body_sync_asset_contract(root)
+        self.assertTrue(any("must match" in item for item in problems))
+
+    def test_body_sync_rejects_permission_checkout_and_body_postcondition_drift(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            workflow_path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-            workflow_path.parent.mkdir(parents=True)
-            workflow = yaml.safe_load(
-                (
-                    PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-                ).read_text(encoding="utf-8")
-            )
+            workflow_path, workflow = self._copy_workflow(root)
             workflow["permissions"] = {"contents": "read", "pull-requests": "write"}
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+            )
+            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+        self.assertTrue(any("top-level permissions" in item for item in problems))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow_path, workflow = self._copy_workflow(root)
             workflow["jobs"]["update"]["steps"][0]["with"]["ref"] = (
                 "${{ github.event.pull_request.head.sha }}"
             )
             workflow_path.write_text(
                 yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
             )
-
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
+        self.assertTrue(any("pinned checkout" in item for item in problems))
 
-        self.assertTrue(
-            any("top-level permissions read-only" in item for item in problems)
-        )
-        self.assertTrue(
-            any("pinned checkout of the PR base SHA" in item for item in problems)
-        )
-
-    def test_body_sync_renders_full_managed_body_without_template_diffs(
-        self,
-    ) -> None:
-        workflow = validate_repository.load_yaml(
-            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-        )
-        run = workflow["jobs"]["update"]["steps"][1]["run"]
-        self.assertIn('if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then', run)
-        self.assertIn('if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then', run)
-        self.assertIn(
-            "Pull-request ref, title, or state advanced; retry the workflow.", run
-        )
-        self.assertIn(
-            "Pull-request ref, title, or state changed during the body update.", run
-        )
-        self.assertEqual(run.count("actual_sha != expected_sha"), 1)
-        self.assertEqual(run.count('head.get("sha") != expected_sha'), 2)
-        self.assertEqual(run.count("actual_repository != expected_repository"), 3)
-        self.assertEqual(run.count('payload.get("title") != expected_title'), 3)
-        self.assertEqual(run.count('payload.get("state") != "open"'), 3)
-        self.assertEqual(run.count("if not isinstance(body, str):"), 2)
-        self.assertEqual(run.count("if body != original:"), 1)
-        self.assertEqual(run.count("if actual_body != expected_body:"), 1)
-        self.assertIn('managed_state=$(python - "$body"', run)
-        self.assertIn("import re", run)
-        self.assertIn('base_commit = payload.get("base_commit")', run)
-        self.assertIn("not isinstance(base_commit, dict)", run)
-        self.assertIn('base_commit.get("sha") != expected_base_sha', run)
-        self.assertIn('commits = payload.get("commits")', run)
-        self.assertIn("not isinstance(commits, list)", run)
-        self.assertIn('files = payload.get("files")', run)
-        self.assertIn("not isinstance(files, list)", run)
-        self.assertIn("template_pattern = re.compile(", run)
-        self.assertIn("managed_marker_pattern = re.compile(", run)
-        self.assertIn("managed_pattern = re.compile(", run)
-        self.assertIn('body = Path(sys.argv[1]).read_bytes().decode("utf-8")', run)
-        self.assertIn("template_markers = list(template_pattern.finditer(body))", run)
-        self.assertIn(
-            "managed_markers = list(managed_marker_pattern.finditer(body))", run
-        )
-        self.assertIn('without_crlf = body.replace("\\r\\n", "")', run)
-        self.assertIn("line_endings_are_consistent = (", run)
-        self.assertIn("len(template_markers) == 1", run)
-        self.assertIn("len(managed_markers) == 1", run)
-        self.assertIn('r"(?m)\\A\\ufeff?<!-- repo-scaffold:pr-template=', run)
-        self.assertIn("line_endings_are_consistent", run)
-        self.assertIn("managed_pattern.match(body) is not None", run)
-        self.assertIn('status = payload.get("status")', run)
-        self.assertIn('if status == "identical":', run)
-        self.assertIn("expected_head_sha != expected_base_sha or commits or files", run)
-        self.assertIn('status not in {"ahead", "diverged"}', run)
-        self.assertIn('original = original_body_path.read_bytes().decode("utf-8")', run)
-        self.assertIn(
-            'expected_body = expected_body_path.read_bytes().decode("utf-8")', run
-        )
-        self.assertNotIn(
-            'original = original_body_path.read_text(encoding="utf-8")', run
-        )
-        self.assertNotIn(
-            'expected_body = expected_body_path.read_text(encoding="utf-8")', run
-        )
-        self.assertNotIn("from scripts.update_pr_body import", run)
-        self.assertNotIn("body.count(marker)", run)
-        self.assertIn('--template-file "$template"', run)
-        self.assertNotIn('--body-file "$body"', run)
-
-        without_managed_check = run.replace(
-            'managed_state=$(python - "$body"',
-            "",
-            1,
-        )
-        candidate = copy.deepcopy(workflow)
-        candidate["jobs"]["update"]["steps"][1]["run"] = without_managed_check
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+            workflow_path, workflow = self._copy_workflow(root)
+            workflow["jobs"]["update"]["steps"][1]["run"] = workflow["jobs"]["update"][
+                "steps"
+            ][1]["run"].replace("if actual_body != expected_body:", "if False:", 1)
+            workflow_path.write_text(
+                yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
             )
             problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
-        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
-
-        without_head_sha_guard = run.replace(
-            'if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
-            "if true; then",
-            1,
-        )
-        candidate = copy.deepcopy(workflow)
-        candidate["jobs"]["update"]["steps"][1]["run"] = without_head_sha_guard
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
-            )
-            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
-        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
-
-        without_final_head_guard = run.replace(
-            'or head.get("sha") != expected_sha',
-            "or False",
-            1,
-        )
-        candidate = copy.deepcopy(workflow)
-        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_head_guard
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
-            )
-            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
-        self.assertTrue(
-            any("head, repository, title, and open state" in item for item in problems)
-        )
-
-        without_final_state_guard = run.replace(
-            'or payload.get("state") != "open"',
-            "or False",
-            1,
-        )
-        candidate = copy.deepcopy(workflow)
-        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_state_guard
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
-            )
-            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
-        self.assertTrue(
-            any("head, repository, title, and open state" in item for item in problems)
-        )
-
-        body_fetch_start = run.index(
-            'python - "$payload" "$body" "$PR_HEAD_SHA" "$PR_HEAD_REPOSITORY" "$PR_TITLE" "$PR_BASE_SHA" <<\'PY\'\n'
-        )
-        body_fetch_start = run.index("\n", body_fetch_start) + 1
-        body_fetch_script = run[body_fetch_start : run.index("\nPY", body_fetch_start)]
-        with tempfile.TemporaryDirectory() as directory:
-            payload_path = Path(directory) / "pull-request.json"
-            body_path = Path(directory) / "body.md"
-            payload_path.write_text(
-                json.dumps(
-                    {
-                        "head": {
-                            "sha": "a" * 40,
-                            "repo": {"full_name": "owner/repo"},
-                        },
-                        "base": {"sha": "b" * 40},
-                        "title": "title",
-                        "state": "closed",
-                        "body": "body",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            body_path.write_text("", encoding="utf-8")
-            result = run_test_subprocess(
-                [
-                    sys.executable,
-                    "-c",
-                    body_fetch_script,
-                    str(payload_path),
-                    str(body_path),
-                    "a" * 40,
-                    "owner/repo",
-                    "title",
-                    "b" * 40,
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ref, title, or state advanced", result.stderr)
-
-        without_final_body_guard = run.replace(
-            "if actual_body != expected_body:\n",
-            "if False:\n",
-            1,
-        )
-        candidate = copy.deepcopy(workflow)
-        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_body_guard
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
-            )
-            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
-        self.assertTrue(any("exact body postconditions" in item for item in problems))
-
-        compare_start = run.index(
-            'source_state=$(python - "$compare_payload" "$PR_BASE_SHA" "$PR_HEAD_SHA" <<\'PY\'\n'
-        )
-        compare_start = run.index("\n", compare_start) + 1
-        compare_script = run[compare_start : run.index("\nPY", compare_start)]
-        with tempfile.TemporaryDirectory() as directory:
-            payload_path = Path(directory) / "compare.json"
-            payload_path.write_text(
-                json.dumps(
-                    {
-                        "base_commit": {"sha": "a" * 40},
-                        "status": "identical",
-                        "commits": [],
-                        "files": [],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            result = run_test_subprocess(
-                [
-                    sys.executable,
-                    "-c",
-                    compare_script,
-                    str(payload_path),
-                    "a" * 40,
-                    "a" * 40,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        self.assertEqual(result.stdout.strip(), "unchanged")
+        self.assertTrue(any("exact body precondition" in item for item in problems))
 
         with tempfile.TemporaryDirectory() as directory:
-            payload_path = Path(directory) / "diverged-compare.json"
-            payload_path.write_text(
-                json.dumps(
-                    {
-                        "base_commit": {"sha": "a" * 40},
-                        "status": "diverged",
-                        "commits": [{"sha": "b" * 40}],
-                        "files": [],
-                    }
-                ),
-                encoding="utf-8",
+            problems = validate_repository.validate_pr_body_sync_asset_contract(
+                Path(directory)
             )
-            result = run_test_subprocess(
-                [
-                    sys.executable,
-                    "-c",
-                    compare_script,
-                    str(payload_path),
-                    "a" * 40,
-                    "b" * 40,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        self.assertEqual(result.stdout.strip(), "unchanged")
-
-        without_files_guard = run.replace(
-            "or not isinstance(files, list)\n",
-            "",
-            1,
-        )
-        candidate = copy.deepcopy(workflow)
-        candidate["jobs"]["update"]["steps"][1]["run"] = without_files_guard
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
-            )
-            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
-        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
-
-        without_marker_uniqueness = run.replace(
-            "len(managed_markers) == 1\n",
-            "",
-            1,
-        )
-        candidate = copy.deepcopy(workflow)
-        candidate["jobs"]["update"]["steps"][1]["run"] = without_marker_uniqueness
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
-            )
-            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
-        self.assertTrue(any("fetch, preflight, update" in item for item in problems))
-
-    def test_body_sync_detector_requires_multiline_suffix_and_unique_markers(
-        self,
-    ) -> None:
-        workflow = validate_repository.load_yaml(
-            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-        )
-        run = workflow["jobs"]["update"]["steps"][1]["run"]
-        start = run.index("managed_state=$(python - \"$body\" <<'PY'")
-        start = run.index("\n", start) + 1
-        detector = run[start : run.index("\nPY", start)]
-
-        with tempfile.TemporaryDirectory() as directory:
-            body_path = Path(directory) / "body.md"
-            cases = (
-                (
-                    "<!-- repo-scaffold:pr-template=bugfix -->\n"
-                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
-                    "## Purpose\nKeep this body.\n",
-                    "managed",
-                ),
-                (
-                    "<!-- repo-scaffold:pr-template=bugfix -->\n"
-                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
-                    "body\n<!-- repo-scaffold:pr-body-managed -->\n",
-                    "unmanaged",
-                ),
-                (
-                    "<!-- repo-scaffold:pr-template=bugfix -->\n"
-                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
-                    "body\n<!-- repo-scaffold:pr-template=bugfix -->\n",
-                    "unmanaged",
-                ),
-                (
-                    "<!-- repo-scaffold:pr-template=bugfix -->\r\n"
-                    "<!-- repo-scaffold:pr-body-managed -->\n\n"
-                    "body\n",
-                    "unmanaged",
-                ),
-            )
-            for body, expected in cases:
-                body_path.write_bytes(body.encode("utf-8"))
-                result = run_test_subprocess(
-                    [sys.executable, "-c", detector, str(body_path)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(result.stdout.strip(), expected)
-
-    def test_body_sync_revalidates_the_base_sha_at_each_mutation_boundary(
-        self,
-    ) -> None:
-        workflow = validate_repository.load_yaml(
-            PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-        )
-        run = workflow["jobs"]["update"]["steps"][1]["run"]
-        self.assertEqual(run.count("expected_base_sha = sys.argv[6]"), 3)
-        self.assertEqual(run.count("or actual_base_sha != expected_base_sha"), 3)
-
-        without_final_base_check = run.replace(
-            "or actual_base_sha != expected_base_sha", "", 1
-        )
-        candidate = copy.deepcopy(workflow)
-        candidate["jobs"]["update"]["steps"][1]["run"] = without_final_base_check
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
-            )
-            problems = validate_repository.validate_pr_body_sync_workflow_contract(root)
-
-        self.assertTrue(
-            any("revalidate the pull-request base SHA" in item for item in problems)
-        )
-
-    def test_body_template_contract_is_current(self) -> None:
-        self.assertEqual(
-            validate_repository.validate_pr_body_sync_template_contract(PLUGIN_ROOT),
-            [],
-        )
-
-    def test_body_template_contract_rejects_missing_or_unknown_bindings(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
-            template_path.parent.mkdir(parents=True)
-            template_path.write_text(
-                "<!-- repo-scaffold:pr-template=bugfix -->\n{{UNKNOWN}}\n",
-                encoding="utf-8",
-            )
-            problems = validate_repository.validate_pr_body_sync_template_contract(root)
-
-        self.assertTrue(any("unsupported" in item for item in problems))
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
-            template_path.parent.mkdir(parents=True)
-            template_path.write_text("body\n", encoding="utf-8")
-            problems = validate_repository.validate_pr_body_sync_template_contract(root)
-
-        self.assertTrue(any("trusted template marker" in item for item in problems))
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
-            template_path.parent.mkdir(parents=True)
-            template_path.write_text(
-                "<!-- repo-scaffold:pr-template=bugfix -->\n"
-                "<!-- repo-scaffold:pr-head:start -->\n"
-                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
-                encoding="utf-8",
-            )
-            problems = validate_repository.validate_pr_body_sync_template_contract(root)
-
-        self.assertTrue(any("legacy partial" in item for item in problems))
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
-            template_path.parent.mkdir(parents=True)
-            template_path.write_text(
-                "<!-- repo-scaffold:pr-template=bugfix -->\n{{HEAD_SHA}}\n",
-                encoding="utf-8",
-            )
-            problems = validate_repository.validate_pr_body_sync_template_contract(root)
-
-        self.assertTrue(any("must bind HEAD_REPOSITORY" in item for item in problems))
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
-            template_path.parent.mkdir(parents=True)
-            template_path.write_text(
-                "<!-- repo-scaffold:pr-template=bugfix -->\n"
-                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
-                encoding="utf-8",
-            )
-            problems = validate_repository.validate_pr_body_sync_template_contract(root)
-
-        self.assertTrue(any("managed-body marker" in item for item in problems))
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
-            template_path.parent.mkdir(parents=True)
-            template_path.write_text(
-                "<!-- repo-scaffold:pr-template=bugfix -->\n\n"
-                "<!-- repo-scaffold:pr-body-managed -->\n"
-                "{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n",
-                encoding="utf-8",
-            )
-            problems = validate_repository.validate_pr_body_sync_template_contract(root)
-
-        self.assertTrue(any("immediately follow" in item for item in problems))
-
-    def test_body_template_contract_reports_io_encoding_and_size_failures(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            missing = validate_repository.validate_pr_body_sync_template_contract(root)
-            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
-            template_path.parent.mkdir(parents=True)
-            template_path.write_bytes(b"\xff")
-            invalid = validate_repository.validate_pr_body_sync_template_contract(root)
-            template_path.write_bytes(b"x" * (1024 * 1024 + 1))
-            oversized = validate_repository.validate_pr_body_sync_template_contract(
-                root
-            )
-
-        self.assertTrue(any("unreadable" in item for item in missing))
-        self.assertTrue(any("valid UTF-8" in item for item in invalid))
-        self.assertTrue(any("1 MiB" in item for item in oversized))
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            template_path = root / validate_repository.PR_BODY_SYNC_TEMPLATE_PATH
-            template_path.parent.mkdir(parents=True)
-            template_path.write_bytes(
-                b"<!-- repo-scaffold:pr-template=bugfix -->\r\n"
-                b"<!-- repo-scaffold:pr-body-managed -->\n"
-                b"{{HEAD_SHA}} {{HEAD_REPOSITORY}}\n"
-            )
-            mixed = validate_repository.validate_pr_body_sync_template_contract(root)
-
-        self.assertTrue(any("consistent line ending" in item for item in mixed))
+        self.assertTrue(any("asset is unreadable" in item for item in problems))
 
 
 class PullRequestTemplateContractTests(unittest.TestCase):

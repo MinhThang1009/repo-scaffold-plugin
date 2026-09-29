@@ -149,7 +149,6 @@ VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND = (
     VERSION_SYNC_PR_BODY_PATH.as_posix(),
 )
 PR_BODY_SYNC_WORKFLOW_PATH = Path(".github/workflows/pr-body-sync.yml")
-PR_BODY_SYNC_TEMPLATE_PATH = Path(".github/pr-body-template.md")
 PR_BODY_SYNC_CONCURRENCY_GROUP = (
     "${{ github.workflow }}-pr-body-${{ github.event.pull_request.number }}"
 )
@@ -780,6 +779,27 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
         "../scripts/sync_action_pins.py",
         Path("scripts/sync_action_pins.py"),
         False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/pr-body-sync.yml"),
+        Path("skills/repo-scaffold/scripts/render_pr_body_evidence.py"),
+        "../scripts/render_pr_body_evidence.py",
+        Path("scripts/render_pr_body_evidence.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/pr-body-sync.yml"),
+        Path("skills/repo-scaffold/scripts/markdown_body_preflight.py"),
+        "../scripts/markdown_body_preflight.py",
+        Path("scripts/markdown_body_preflight.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/pr-body-sync.yml"),
+        Path("skills/repo-scaffold/scripts/pr_template_preflight.py"),
+        "../scripts/pr_template_preflight.py",
+        Path("scripts/pr_template_preflight.py"),
+        True,
     ),
     (
         Path("skills/repo-scaffold/assets/workflows/labeler.yml"),
@@ -4710,6 +4730,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         expected_sources = {"scripts", "skills/repo-scaffold/scripts"}
         expected_omitted = {
             "skills/repo-scaffold/scripts/audit_freshness.py",
+            "skills/repo-scaffold/scripts/render_pr_body_evidence.py",
             "skills/repo-scaffold/scripts/sync_action_pins.py",
         }
         if (
@@ -4720,7 +4741,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         ):
             problems.append(
                 ".coveragerc: require branch coverage for both script trees, only "
-                "the verified freshness-script copies omitted, and a fail-under "
+                "verified byte-for-byte script copies omitted, and a fail-under "
                 f"floor of at least {COVERAGE_FAIL_UNDER}"
             )
 
@@ -7576,7 +7597,7 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
 
 
 def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
-    """Keep the PR-body writer least-privileged and bound to trusted inputs."""
+    """Keep the PR-body writer bound to current API evidence."""
     path = repository_root / PR_BODY_SYNC_WORKFLOW_PATH
     relative = PR_BODY_SYNC_WORKFLOW_PATH.as_posix()
     try:
@@ -7585,7 +7606,6 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         return [f"{relative}: body-sync workflow is unreadable: {error}"]
     if not isinstance(workflow, dict):
         return [f"{relative}: body-sync workflow must be a mapping"]
-
     problems: list[str] = []
     if workflow.get("on") != {
         "pull_request_target": {"types": ["opened", "reopened", "synchronize"]}
@@ -7604,7 +7624,6 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         problems.append(
             f"{relative}: body-sync workflow must serialize each pull request without cancellation"
         )
-
     jobs = workflow.get("jobs")
     job = jobs.get("update") if isinstance(jobs, dict) else None
     if (
@@ -7621,7 +7640,6 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
             f"{relative}: body-sync job must isolate pull-requests: write with a five-minute trusted runner"
         )
         return problems
-
     steps = job.get("steps")
     checkout = steps[0] if isinstance(steps, list) and len(steps) >= 1 else None
     update = steps[1] if isinstance(steps, list) and len(steps) >= 2 else None
@@ -7658,190 +7676,90 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
             f"{relative}: body-sync must pass only repository, PR title, head, and token data through env"
         )
         return problems
-
     run = update["run"]
-    required_fragments = (
+    required = (
         "set -euo pipefail",
-        'if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then',
-        'if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
-        'if [[ ! "$PR_HEAD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
-        'if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
-        'if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
         "gh api --hostname github.com",
-        '"repos/$REPOSITORY/compare/$PR_BASE_SHA...$PR_HEAD_SHA" > "$compare_payload"',
-        'source_state=$(python - "$compare_payload" "$PR_BASE_SHA" "$PR_HEAD_SHA" <<\'PY\'',
-        '".github/pr-body-template.md"',
-        'base_commit = payload.get("base_commit")',
-        "not isinstance(base_commit, dict)",
-        'base_commit.get("sha") != expected_base_sha',
-        'commits = payload.get("commits")',
-        "not isinstance(commits, list)",
-        'files = payload.get("files")',
-        "not isinstance(files, list)",
-        "expected_head_sha = sys.argv[3]",
-        'status = payload.get("status")',
-        'if status == "identical":',
-        "expected_head_sha != expected_base_sha or commits or files",
-        "Pull-request identical comparison evidence is inconsistent.",
-        'status not in {"ahead", "diverged"}',
-        'commits[-1].get("sha") != expected_head_sha',
-        "Pull-request comparison is truncated; cannot prove template opt-in.",
-        "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
-        '"repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"',
-        "Pull-request ref, title, or state advanced; retry the workflow.",
-        "managed_state=$(python - \"$body\" <<'PY'",
-        "import re",
-        "template_pattern = re.compile(",
-        "managed_marker_pattern = re.compile(",
-        "managed_pattern = re.compile(",
-        'body = Path(sys.argv[1]).read_bytes().decode("utf-8")',
-        "template_markers = list(template_pattern.finditer(body))",
-        "managed_markers = list(managed_marker_pattern.finditer(body))",
-        'without_crlf = body.replace("\\r\\n", "")',
-        "line_endings_are_consistent = (",
-        "len(template_markers) == 1",
-        "len(managed_markers) == 1",
-        "template_markers[0].start() == 0",
-        "line_endings_are_consistent",
-        'r"(?m)\\A\\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \\t]*\\r?\\n"',
-        'r"<!-- repo-scaffold:pr-body-managed -->[ \\t]*(?=\\r?$)"',
-        "managed_pattern.match(body) is not None",
-        "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
-        "Pull-request body is not managed and its source template was not changed; leaving it unchanged.",
-        "expected_base_sha = sys.argv[6]",
-        'actual_base_sha = base.get("sha") if isinstance(base, dict) else None',
-        "or actual_base_sha != expected_base_sha",
-        '"repos/$PR_HEAD_REPOSITORY/contents/.github/pr-body-template.md?ref=$PR_HEAD_SHA"',
-        'template_payload="$RUNNER_TEMP/pr-body-template.json"',
-        'template="$RUNNER_TEMP/pr-body-template.md"',
-        "python scripts/update_pr_body.py",
-        '--template-file "$template"',
-        '--head-repository "$PR_HEAD_REPOSITORY"',
+        "repos/$REPOSITORY/pulls/$PR_NUMBER",
+        "collect_pages() {",
+        '"$endpoint?per_page=100&page=$page"',
+        '"Paginated API response exceeds the safety cap."',
+        '"Paginated API response is invalid:',
+        "if (( count < 100 )); then",
+        "Paginated API response exceeded the bounded page limit.",
+        'collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/commits" commits commits 10',
+        'collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/files" files files 30',
+        'collect_pages "repos/$REPOSITORY/commits/$PR_HEAD_SHA/check-runs" checks checks 20',
+        "python scripts/render_pr_body_evidence.py",
         'python scripts/markdown_body_preflight.py --body-file "$updated"',
         "python scripts/pr_template_preflight.py",
-        '--title "$PR_TITLE"',
         'gh pr edit "$PR_NUMBER"',
-        '--repo "github.com/$REPOSITORY"',
-        '--body-file "$updated"',
-        'original = original_body_path.read_bytes().decode("utf-8")',
-        'verified_payload="$RUNNER_TEMP/pr-body-verified.json"',
-        'expected_body = expected_body_path.read_bytes().decode("utf-8")',
-        "Pull-request ref, title, or state changed during the body update.",
+        "Pull-request body changed during preparation; retry the workflow.",
         "GitHub did not retain the generated pull-request body.",
     )
-    for fragment in required_fragments:
+    for fragment in required:
         if fragment not in run:
             problems.append(
-                f"{relative}: body-sync must fetch, preflight, update, and verify the bounded body section"
+                f"{relative}: body-sync must fetch, render, preflight, update, and verify bounded PR evidence"
             )
             break
     if (
-        run.count("expected_base_sha = sys.argv[6]") != 3
-        or run.count("or actual_base_sha != expected_base_sha") != 3
+        "github.event.pull_request.head.ref" in run
+        or ".github/pr-body-template.md" in run
+        or "scripts/update_pr_body.py" in run
     ):
         problems.append(
-            f"{relative}: body-sync must revalidate the pull-request base SHA before and after editing"
+            f"{relative}: body-sync must not execute head code or depend on a hard-coded body template"
         )
     if (
-        run.count("actual_sha != expected_sha") != 1
-        or run.count('head.get("sha") != expected_sha') != 2
+        run.count('head.get("sha") != expected_head_sha') != 3
         or run.count("actual_repository != expected_repository") != 3
+        or run.count('base.get("sha") != expected_base_sha') != 3
         or run.count('payload.get("title") != expected_title') != 3
         or run.count('payload.get("state") != "open"') != 3
     ):
         problems.append(
-            f"{relative}: body-sync must revalidate the pull-request head, repository, title, and open state at every API boundary"
+            f"{relative}: body-sync must revalidate head, repository, base, title, and open state at every API boundary"
         )
     if (
-        run.count("if not isinstance(body, str):") != 2
-        or run.count("if body != original:") != 1
+        run.count("if body != original:") != 1
         or run.count("if actual_body != expected_body:") != 1
     ):
         problems.append(
-            f"{relative}: body-sync must enforce text input and exact body postconditions"
-        )
-    if "github.event.pull_request.head.ref" in run:
-        problems.append(
-            f"{relative}: body-sync must not execute or check out pull-request head code"
+            f"{relative}: body-sync must enforce exact body precondition and postcondition"
         )
     preflight_index = run.find(
         'python scripts/markdown_body_preflight.py --body-file "$updated"'
     )
-    template_preflight_index = run.find("python scripts/pr_template_preflight.py")
+    template_index = run.find("python scripts/pr_template_preflight.py")
     mutation_index = run.find('gh pr edit "$PR_NUMBER"')
     if (
         preflight_index < 0
-        or template_preflight_index < 0
+        or template_index < 0
         or mutation_index < 0
         or preflight_index > mutation_index
-        or template_preflight_index > mutation_index
+        or template_index > mutation_index
     ):
         problems.append(
-            f"{relative}: body-sync must complete body preflight before the GitHub mutation"
+            f"{relative}: body-sync must complete both body preflights before GitHub mutation"
         )
     return problems
 
 
-def validate_pr_body_sync_template_contract(repository_root: Path) -> list[str]:
-    """Validate the checked-in source used to render the complete PR body."""
-    path = repository_root / PR_BODY_SYNC_TEMPLATE_PATH
-    relative = PR_BODY_SYNC_TEMPLATE_PATH.as_posix()
+def validate_pr_body_sync_asset_contract(repository_root: Path) -> list[str]:
+    """Keep the shipped body-sync asset byte-identical to the repository workflow."""
+    root = repository_root / PR_BODY_SYNC_WORKFLOW_PATH
+    asset = repository_root / "skills/repo-scaffold/assets/workflows/pr-body-sync.yml"
     try:
-        payload = path.read_bytes()
+        root_bytes = root.read_bytes()
+        asset_bytes = asset.read_bytes()
     except OSError as error:
-        return [f"{relative}: pull-request body template is unreadable: {error}"]
-    if len(payload) > 1 * 1024 * 1024:
-        return [f"{relative}: pull-request body template exceeds the 1 MiB safety cap"]
-    try:
-        text = payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        return [f"{relative}: pull-request body template is not valid UTF-8: {error}"]
-    without_crlf = text.replace("\r\n", "")
-    if "\r" in without_crlf or ("\r\n" in text and "\n" in without_crlf):
-        return [
-            f"{relative}: pull-request body template must use one consistent line ending"
-        ]
-    marker_pattern = re.compile(
-        r"(?m)^\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*(?=\r?$)"
+        return [f"{asset.as_posix()}: body-sync asset is unreadable: {error}"]
+    return (
+        []
+        if root_bytes == asset_bytes
+        else [f"{asset.as_posix()}: body-sync asset must match the repository workflow"]
     )
-    markers = list(marker_pattern.finditer(text))
-    if len(markers) != 1 or markers[0].start() != 0:
-        return [
-            f"{relative}: pull-request body template must begin with exactly one trusted template marker"
-        ]
-    if (
-        "<!-- repo-scaffold:pr-head:start -->" in text
-        or "<!-- repo-scaffold:pr-head:end -->" in text
-    ):
-        return [
-            f"{relative}: pull-request body template must not contain legacy partial head markers"
-        ]
-    placeholders = re.findall(r"\{\{([A-Za-z][A-Za-z0-9_]*)\}\}", text)
-    unsupported = sorted(set(placeholders) - {"HEAD_SHA", "HEAD_REPOSITORY"})
-    if unsupported:
-        return [
-            f"{relative}: unsupported pull-request body placeholders: {', '.join(unsupported)}"
-        ]
-    missing = sorted({"HEAD_SHA", "HEAD_REPOSITORY"} - set(placeholders))
-    if missing:
-        return [
-            f"{relative}: pull-request body template must bind {', '.join(missing)}"
-        ]
-    managed_markers = re.findall(
-        r"(?m)^<!-- repo-scaffold:pr-body-managed -->[ \t]*(?=\r?$)", text
-    )
-    if len(managed_markers) != 1:
-        return [
-            f"{relative}: pull-request body template must contain exactly one managed-body marker"
-        ]
-    template_marker_end = markers[0].end()
-    line_ending = "\r\n" if "\r\n" in text else "\n"
-    managed_start = text.find(managed_markers[0])
-    if managed_start != template_marker_end + len(line_ending):
-        return [
-            f"{relative}: managed-body marker must immediately follow the template marker"
-        ]
-    return []
 
 
 def read_front_matter(path: Path) -> tuple[Any, str]:
@@ -10164,8 +10082,8 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_scorecard_manual_dispatch,
         validate_action_pin_sync_contract,
         validate_required_check_concurrency,
-        validate_pr_body_sync_template_contract,
         validate_pr_body_sync_workflow_contract,
+        validate_pr_body_sync_asset_contract,
         validate_issue_templates,
         validate_release_notes_config,
         validate_dependabot,

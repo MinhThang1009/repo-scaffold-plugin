@@ -152,6 +152,7 @@ jobs:
           skills/repo-scaffold/scripts/sync_action_pins.py
           skills/repo-scaffold/scripts/validate_scaffold.py
           skills/repo-scaffold/scripts/markdown_body_preflight.py
+          skills/repo-scaffold/scripts/render_pr_body_evidence.py
           scripts/audit_freshness.py
           scripts/audit_official_docs.py
           scripts/check_code_scanning_alerts.py
@@ -164,6 +165,7 @@ jobs:
           scripts/sync_action_pins.py
           scripts/sync_versioned_inputs.py
           scripts/update_pr_body.py
+          scripts/render_pr_body_evidence.py
           scripts/validate_mutation_results.py
           scripts/validate_repository.py
           scripts/validate_workflows.py

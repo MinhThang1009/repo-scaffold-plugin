@@ -129,7 +129,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -185,18 +185,16 @@ After preparing the UTF-8 body file, rerun the preflight with `--body-file <path
 it rejects hard-wrapped prose before the GitHub mutation.
 
 This repository's `pr-body-sync` workflow renders the complete pull-request
-body from `.github/pr-body-template.md` when a pull request is opened, reopened,
-or receives a new commit. The source template is read at the exact head SHA and
-may use only `{{HEAD_SHA}}` and `{{HEAD_REPOSITORY}}` placeholders. A template
-must contain the `repo-scaffold:pr-body-managed` marker to opt a body into
-continuous full-body rendering. The first render is allowed when the template
-changes in the pull request's base-to-head diff; later commits render the full
-body whenever the current body carries that managed marker. Unmanaged bodies
-are left unchanged. The workflow preflights any body it will write, rechecks the
-head, base, title, repository, and current body immediately before editing, then
-verifies the complete body after the GitHub mutation. Edit the source template
-when any PR section needs to change; do not edit a managed generated body as a
-separate source.
+body from the exact pull-request API evidence whenever a pull request is
+opened, reopened, or receives a new commit. It derives commit subjects and
+details, changed files, issue references, check-run statuses, and the immutable
+base/head binding; it does not read a hard-coded PR-body narrative. The selected
+trusted PR template supplies the headings and checklist contract, while the
+generated sections are replaced from the current evidence. The workflow runs
+the Markdown and PR-template preflights before editing, rechecks the head,
+base, title, repository, and current body immediately before the mutation, then
+verifies the complete body after GitHub accepts it. Missing, malformed, stale,
+or over-limit evidence fails closed.
 
 Use the default PR template for ordinary changes. Choose a specialized template
 only when its review workflow applies:

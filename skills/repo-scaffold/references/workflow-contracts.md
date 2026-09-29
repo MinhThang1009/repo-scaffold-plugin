@@ -98,6 +98,11 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   configured Release Please token can open PRs as that owner. Both exemptions
   must run Markdown body preflight first; a branch name alone is never an
   exemption.
+- PR body sync: trust only base-branch tooling, collect bounded commits, changed
+  files, issue references, and check runs for the exact head SHA, render the
+  full body from that evidence, run both body preflights, revalidate the PR
+  immediately before `gh pr edit`, and verify the exact post-mutation body. Do
+  not use a checked-in narrative body source or execute pull-request head code.
 - Branch protection: required-check producers must be unique, executable, and
   event-compatible and backed by regular workflow files; Check Run evidence
   must resolve to one Actions workflow run with the producer's exact path,
