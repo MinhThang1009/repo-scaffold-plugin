@@ -394,7 +394,7 @@ Mutation testing extends that toolchain through the separate, hash-verified
 against the direct pin, and a compatible Dependabot bump passes the runner integration tests,
 while an incompatible internal API change fails those behavioral checks. Its
 daily and manually dispatched workflow plans every mutant on Linux, executes
-each exact assignment in a 64-way matrix, and reuses only hash-validated mutation
+each exact assignment in a 128-way matrix, and reuses only hash-validated mutation
 state for matching source, test, mutation-workflow, and dependency inputs on the
 same branch, runtime, and platform. It rejects missing,
 duplicate, or incomplete shard results before enforcing the evidence-backed

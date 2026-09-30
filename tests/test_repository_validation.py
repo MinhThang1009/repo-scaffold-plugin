@@ -2500,7 +2500,7 @@ class MutationTestingContractTests(unittest.TestCase):
                                 "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
                             },
                             "if": "${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}",
-                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64",
+                            "run": "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 128",
                         },
                         {"run": "python scripts/prepare_mutation_cache.py record"},
                         {
@@ -2524,7 +2524,7 @@ class MutationTestingContractTests(unittest.TestCase):
                 },
                 "mutation-shards": {
                     "strategy": {
-                        "matrix": {"shard": [str(index) for index in range(64)]}
+                        "matrix": {"shard": [str(index) for index in range(128)]}
                     },
                     "steps": [
                         {
@@ -2590,7 +2590,7 @@ class MutationTestingContractTests(unittest.TestCase):
                         },
                     }
                 },
-                "run all 64 exact mutation shards",
+                "run all 128 exact mutation shards",
             ),
             (
                 {
@@ -2615,7 +2615,7 @@ class MutationTestingContractTests(unittest.TestCase):
                                 if step.get("run")
                                 == (
                                     "python scripts/run_mutation_testing.py "
-                                    "--max-children 4 --plan-shards 64"
+                                    "--max-children 4 --plan-shards 128"
                                 )
                                 else step
                                 for step in valid["jobs"]["mutation-plan"]["steps"]

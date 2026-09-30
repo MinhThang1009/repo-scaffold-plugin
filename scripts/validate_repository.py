@@ -4877,7 +4877,7 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         raw_plan_steps if isinstance(raw_plan_steps, list) else []
     )
     expected_plan_run = (
-        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64"
+        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 128"
     )
     expected_plan_condition = (
         "${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}"
@@ -4907,9 +4907,9 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         ]
     matrix = shards.get("strategy", {}).get("matrix", {})
     assigned = matrix.get("shard") if isinstance(matrix, dict) else None
-    if assigned != [str(index) for index in range(64)]:
+    if assigned != [str(index) for index in range(128)]:
         return [
-            ".github/workflows/mutation-testing.yml: run all 64 exact mutation shards"
+            ".github/workflows/mutation-testing.yml: run all 128 exact mutation shards"
         ]
     expected_shard_run = (
         "python scripts/run_mutation_testing.py --max-children 4 --shard-index "
