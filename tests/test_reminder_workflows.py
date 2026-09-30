@@ -671,7 +671,9 @@ class PullRequestBodyPaginationTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            pages = json.loads((root / "files.json").read_text(encoding="utf-8"))
+            pages = json.loads(
+                (root / "pr-body-files.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(len(pages), 30)
             self.assertEqual(sum(len(page) for page in pages), 3000)
 
@@ -717,4 +719,4 @@ class PullRequestBodyPaginationTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0, result.stderr)
             self.assertIn("Combined paginated API evidence exceeds", result.stderr)
-            self.assertFalse((root / "files.json").exists())
+            self.assertFalse((root / "pr-body-files.json").exists())

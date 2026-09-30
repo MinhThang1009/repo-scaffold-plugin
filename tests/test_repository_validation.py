@@ -6875,6 +6875,11 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             'collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/files" files files 30',
             run,
         )
+        self.assertIn(
+            '"$RUNNER_TEMP/pr-body-$prefix.json"',
+            run,
+        )
+        self.assertNotIn('"$RUNNER_TEMP/$prefix.json"', run)
         self.assertNotIn(".github/pr-body-template.md", run)
         self.assertNotIn("scripts/update_pr_body.py", run)
         self.assertEqual(run.count('head.get("sha") != expected_head_sha'), 3)

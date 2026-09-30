@@ -183,7 +183,7 @@ jobs:
               printf 'Paginated API response exceeded the bounded page limit.\n' >&2
               exit 1
             fi
-            python - "$page_dir" "$RUNNER_TEMP/$prefix.json" 10485760 <<'PY'
+            python - "$page_dir" "$RUNNER_TEMP/pr-body-$prefix.json" 10485760 <<'PY'
           import json
           import sys
           from pathlib import Path
