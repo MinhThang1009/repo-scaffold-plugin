@@ -53,6 +53,9 @@ IGNORED_DIRECTORIES = {
     "build",
     "dist",
     "mutants",
+    "node_modules",
+    "target",
+    "vendor",
     "venv",
 }
 IGNORED_FILE_NAMES = {".coverage"}
@@ -316,8 +319,15 @@ def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
     _assert_safe_project_path(repository_root, repository_root)
     files: list[tuple[str, Path]] = []
     total_bytes = 0
+
+    def fail_on_walk_error(error: OSError) -> None:
+        raise error
+
     for directory, child_directories, filenames in os.walk(
-        repository_root, topdown=True, followlinks=False
+        repository_root,
+        topdown=True,
+        followlinks=False,
+        onerror=fail_on_walk_error,
     ):
         current = Path(directory)
         _assert_safe_project_path(repository_root, current)

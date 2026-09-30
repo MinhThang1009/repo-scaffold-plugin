@@ -10,6 +10,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from io import BytesIO, StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -261,6 +262,56 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
                 official_docs.load_trackers(root)
             registry.write_bytes(b" " * (official_docs.MAX_REGISTRY_BYTES + 1))
             with self.assertRaisesRegex(official_docs.AuditError, "unsafe"):
+                official_docs.load_trackers(root)
+
+    def test_load_trackers_limits_a_file_that_grows_after_stat(self) -> None:
+        class TrackingReader(BytesIO):
+            def __init__(self) -> None:
+                super().__init__(b"x" * 100)
+                self.read_sizes: list[int] = []
+
+            def read(self, size: int | None = None) -> bytes:
+                self.read_sizes.append(-1 if size is None else size)
+                return super().read(-1 if size is None else size)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            path = root / official_docs.DEFAULT_TRACKER_REGISTRY
+            original_stat = Path.stat
+
+            def small_stat(candidate: Path, *, follow_symlinks: bool = True) -> object:
+                metadata = original_stat(candidate, follow_symlinks=follow_symlinks)
+                if candidate == path:
+                    return SimpleNamespace(
+                        st_mode=metadata.st_mode,
+                        st_file_attributes=getattr(metadata, "st_file_attributes", 0),
+                        st_size=0,
+                    )
+                return metadata
+
+            source = TrackingReader()
+            with (
+                mock.patch.object(official_docs, "MAX_REGISTRY_BYTES", 10),
+                mock.patch.object(Path, "stat", small_stat),
+                mock.patch.object(Path, "open", return_value=source),
+                self.assertRaisesRegex(official_docs.AuditError, "unsafe"),
+            ):
+                official_docs.load_trackers(root)
+            self.assertEqual(source.read_sizes, [11])
+
+    def test_load_trackers_rechecks_registry_path_before_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            with (
+                mock.patch.object(
+                    official_docs,
+                    "path_has_link_or_reparse",
+                    side_effect=[False, True],
+                ),
+                self.assertRaisesRegex(official_docs.AuditError, "unsafe"),
+            ):
                 official_docs.load_trackers(root)
 
     def test_read_document_validates_network_size_and_encoding(self) -> None:
@@ -516,6 +567,15 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
             with (
                 mock.patch.object(
                     official_docs, "path_has_link_or_reparse", return_value=True
+                ),
+                self.assertRaisesRegex(official_docs.AuditError, "unsafe"),
+            ):
+                official_docs.claim_findings(root, claim, date(2026, 8, 27))
+            with (
+                mock.patch.object(
+                    official_docs,
+                    "path_has_link_or_reparse",
+                    side_effect=[False, True],
                 ),
                 self.assertRaisesRegex(official_docs.AuditError, "unsafe"),
             ):

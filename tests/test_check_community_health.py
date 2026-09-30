@@ -10,6 +10,7 @@ import unittest
 from email.message import Message
 from io import BytesIO, StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 from urllib.error import HTTPError, URLError
@@ -207,6 +208,55 @@ class RegistryTests(unittest.TestCase):
                 ),
             ):
                 community_health.load_registry(linked)
+
+    def test_load_registry_limits_a_file_that_grows_after_stat(self) -> None:
+        class TrackingReader(BytesIO):
+            def __init__(self) -> None:
+                super().__init__(b"x" * 100)
+                self.read_sizes: list[int] = []
+
+            def read(self, size: int | None = None) -> bytes:
+                self.read_sizes.append(-1 if size is None else size)
+                return super().read(-1 if size is None else size)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.json"
+            path.write_text(json.dumps(registry_document()), encoding="utf-8")
+            original_stat = Path.stat
+
+            def small_stat(candidate: Path, *, follow_symlinks: bool = True) -> object:
+                metadata = original_stat(candidate, follow_symlinks=follow_symlinks)
+                if candidate == path:
+                    return SimpleNamespace(
+                        st_mode=metadata.st_mode,
+                        st_file_attributes=getattr(metadata, "st_file_attributes", 0),
+                        st_size=0,
+                    )
+                return metadata
+
+            source = TrackingReader()
+            with (
+                mock.patch.object(community_health, "MAX_REGISTRY_BYTES", 10),
+                mock.patch.object(Path, "stat", small_stat),
+                mock.patch.object(Path, "open", return_value=source),
+                self.assertRaisesRegex(community_health.AuditError, "size limit"),
+            ):
+                community_health.load_registry(path)
+            self.assertEqual(source.read_sizes, [11])
+
+    def test_load_registry_rechecks_path_before_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.json"
+            path.write_text(json.dumps(registry_document()), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    community_health,
+                    "is_link_or_reparse",
+                    side_effect=[False, True],
+                ),
+                self.assertRaisesRegex(community_health.AuditError, "linked"),
+            ):
+                community_health.load_registry(path)
 
 
 class GitHubClientTests(unittest.TestCase):
@@ -486,11 +536,68 @@ class CovenantTests(unittest.TestCase):
     def test_local_policy_rejects_large_and_unreadable_files(self) -> None:
         path = mock.Mock()
         path.stat.return_value.st_size = community_health.MAX_POLICY_BYTES + 1
-        with self.assertRaisesRegex(community_health.AuditError, "too large"):
+        with mock.patch.object(
+            community_health, "is_link_or_reparse", return_value=False
+        ):
+            with self.assertRaisesRegex(community_health.AuditError, "too large"):
+                community_health.local_contributor_covenant_version(path)
+            path.stat.side_effect = OSError("denied")
+            with self.assertRaisesRegex(community_health.AuditError, "could not read"):
+                community_health.local_contributor_covenant_version(path)
+
+    def test_local_policy_rejects_link_like_files(self) -> None:
+        path = mock.Mock()
+        with (
+            mock.patch.object(
+                community_health, "is_link_or_reparse", return_value=True
+            ),
+            self.assertRaisesRegex(community_health.AuditError, "linked or a reparse"),
+        ):
             community_health.local_contributor_covenant_version(path)
-        path.stat.side_effect = OSError("denied")
-        with self.assertRaisesRegex(community_health.AuditError, "could not read"):
-            community_health.local_contributor_covenant_version(path)
+
+    def test_local_policy_rechecks_path_before_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "CODE_OF_CONDUCT.md"
+            path.write_text(covenant_text("3.0"), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    community_health,
+                    "is_link_or_reparse",
+                    side_effect=[False, True],
+                ),
+                self.assertRaisesRegex(community_health.AuditError, "linked"),
+            ):
+                community_health.local_contributor_covenant_version(path)
+
+    def test_local_policy_limits_a_file_that_grows_after_stat(self) -> None:
+        class TrackingReader(BytesIO):
+            def read(self, size: int | None = None) -> bytes:
+                return super().read(-1 if size is None else size)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "CODE_OF_CONDUCT.md"
+            path.write_text(covenant_text("3.0"), encoding="utf-8")
+            original_stat = Path.stat
+
+            def small_stat(candidate: Path, *, follow_symlinks: bool = True) -> object:
+                metadata = original_stat(candidate, follow_symlinks=follow_symlinks)
+                if candidate == path:
+                    return SimpleNamespace(
+                        st_mode=metadata.st_mode,
+                        st_file_attributes=getattr(metadata, "st_file_attributes", 0),
+                        st_size=0,
+                    )
+                return metadata
+
+            with (
+                mock.patch.object(community_health, "MAX_POLICY_BYTES", 10),
+                mock.patch.object(Path, "stat", small_stat),
+                mock.patch.object(
+                    Path, "open", return_value=TrackingReader(b"x" * 100)
+                ),
+                self.assertRaisesRegex(community_health.AuditError, "too large"),
+            ):
+                community_health.local_contributor_covenant_version(path)
 
     def test_latest_contributor_covenant_selects_numeric_latest(self) -> None:
         upstream = community_health.latest_contributor_covenant(

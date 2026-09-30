@@ -191,8 +191,18 @@ def load_trackers(
             raise AuditError(
                 f"official-docs tracker registry is missing or unsafe: {relative}"
             )
+        if path_has_link_or_reparse(registry_path, root):
+            raise AuditError(
+                f"official-docs tracker registry is missing or unsafe: {relative}"
+            )
+        with registry_path.open("rb") as source:
+            payload = source.read(MAX_REGISTRY_BYTES + 1)
+        if len(payload) > MAX_REGISTRY_BYTES:
+            raise AuditError(
+                f"official-docs tracker registry is missing or unsafe: {relative}"
+            )
         document = json.loads(
-            registry_path.read_text(encoding="utf-8"),
+            payload.decode("utf-8"),
             object_pairs_hook=unique_json_object,
         )
     except (
@@ -362,6 +372,8 @@ def claim_findings(
                 raise AuditError(f"claim source path is missing or unsafe: {relative}")
             resolved = path.resolve(strict=True)
             resolved.relative_to(root.resolve())
+            if path_has_link_or_reparse(path, root):
+                raise AuditError(f"claim source path is missing or unsafe: {relative}")
             read_local_source(path)
         except (OSError, UnicodeError, ValueError) as error:
             raise AuditError(

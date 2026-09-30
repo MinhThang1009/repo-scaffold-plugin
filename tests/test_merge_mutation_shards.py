@@ -445,6 +445,78 @@ class MergeMutationShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "could not read"):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
 
+    def test_metadata_inventory_cannot_exceed_the_shard_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            mutants = root / "mutants"
+            for name in ("extra-one.meta", "extra-two.meta"):
+                (mutants / name).write_text(
+                    json.dumps(self.document({"alpha": None, "beta": None})),
+                    encoding="utf-8",
+                )
+            with self.assertRaisesRegex(ValueError, "exceeds the shard-plan inventory"):
+                merge_mutation_shards.merge(root, root / "mutation-shards")
+
+    def test_metadata_inventory_scan_is_bounded_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            with mock.patch.object(
+                merge_mutation_shards, "MAX_METADATA_SCAN_ENTRIES", 1
+            ):
+                with self.assertRaisesRegex(ValueError, "inventory exceeds"):
+                    merge_mutation_shards.merge(root, root / "mutation-shards")
+
+    def test_metadata_inventory_rejects_enumeration_and_entry_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            with (
+                mock.patch.object(
+                    merge_mutation_shards.os,
+                    "scandir",
+                    side_effect=OSError("denied"),
+                ),
+                self.assertRaisesRegex(ValueError, "could not enumerate"),
+            ):
+                merge_mutation_shards.metadata_paths(root / "mutants", 2)
+
+            class FailingEntry:
+                name = "entry"
+                path = str(root / "mutants" / "entry")
+
+                @staticmethod
+                def is_dir(*, follow_symlinks: bool) -> bool:
+                    raise OSError("denied")
+
+            class ScandirResult:
+                def __enter__(self) -> list[FailingEntry]:
+                    return [FailingEntry()]
+
+                def __exit__(self, *_args: object) -> None:
+                    return None
+
+            with (
+                mock.patch.object(
+                    merge_mutation_shards.os,
+                    "scandir",
+                    return_value=ScandirResult(),
+                ),
+                self.assertRaisesRegex(ValueError, "could not inspect"),
+            ):
+                merge_mutation_shards.metadata_paths(root / "mutants", 2)
+
+            with (
+                mock.patch.object(
+                    merge_mutation_shards,
+                    "_is_link_or_reparse",
+                    return_value=True,
+                ),
+                self.assertRaisesRegex(ValueError, "link or reparse point"),
+            ):
+                merge_mutation_shards.metadata_paths(root / "mutants", 2)
+
     def test_main_and_entrypoint_return_expected_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

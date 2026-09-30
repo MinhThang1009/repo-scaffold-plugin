@@ -116,6 +116,64 @@ class SerializedFileValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "nesting exceeds"):
                     validate_repository.load_json(json_path)
 
+    def test_shared_document_readers_reject_one_byte_over_the_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            yaml_path = root / "large.yml"
+            json_path = root / "large.json"
+            yaml_path.write_bytes(b"12345")
+            json_path.write_bytes(b"12345")
+
+            with mock.patch.object(validate_repository, "MAX_VALIDATION_FILE_BYTES", 4):
+                with self.assertRaisesRegex(OSError, "safety cap"):
+                    validate_repository.load_yaml(yaml_path)
+                with self.assertRaisesRegex(OSError, "safety cap"):
+                    validate_repository.load_json(json_path)
+
+            self.assertEqual(
+                validate_repository.read_bounded_bytes(json_path, limit=5),
+                b"12345",
+            )
+
+    def test_link_contracts_report_project_inventory_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(
+                validate_repository,
+                "project_files",
+                side_effect=ValueError("scan cap"),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_markdown_links(root),
+                    ["project inventory: scan cap"],
+                )
+
+        with mock.patch.object(
+            validate_repository,
+            "project_files",
+            side_effect=ValueError("scan cap"),
+        ):
+            problems = validate_repository.validate_official_docs_tracking_contract(
+                PLUGIN_ROOT
+            )
+        self.assertIn("project inventory: scan cap", problems)
+
+    def test_project_inventory_fails_closed_at_the_entry_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "one.json").write_text("{}", encoding="utf-8")
+            (root / "two.json").write_text("{}", encoding="utf-8")
+
+            with mock.patch.object(
+                validate_repository, "MAX_VALIDATION_PROJECT_ENTRIES", 1
+            ):
+                problems = validate_repository.validate_serialized_files(root)
+
+            self.assertEqual(
+                problems,
+                ["project inventory: project inventory exceeds the 1-entry safety cap"],
+            )
+
     def test_helpers_identify_project_files_and_basic_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -153,6 +211,32 @@ class SerializedFileValidationTests(unittest.TestCase):
                 files = validate_repository.project_files(root, ("*.json",))
 
             self.assertEqual(files, [source])
+
+    def test_project_files_fail_closed_when_walk_reports_an_error(self) -> None:
+        def failing_walk(*_args: Any, **kwargs: Any) -> Any:
+            kwargs["onerror"](OSError("denied"))
+            return iter(())
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(
+                validate_repository.os, "walk", side_effect=failing_walk
+            ):
+                with self.assertRaisesRegex(OSError, "denied"):
+                    validate_repository.project_files(Path(directory), ("*.json",))
+
+    def test_project_files_skip_dependency_and_build_trees(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.json"
+            source.write_text("{}", encoding="utf-8")
+            for name in ("node_modules", "target", "vendor", ".tox", ".nox"):
+                path = root / name / "nested.json"
+                path.parent.mkdir(parents=True)
+                path.write_text("{}", encoding="utf-8")
+
+            self.assertEqual(
+                validate_repository.project_files(root, ("*.json",)), [source]
+            )
 
     def test_project_file_link_helpers_fail_closed(self) -> None:
         missing = Path("missing-project-entry")
@@ -1261,16 +1345,15 @@ class ActionPinSyncContractTests(unittest.TestCase):
             body_source = PLUGIN_ROOT / ".github" / "action-pin-sync-pr-body.md"
             shutil.copy2(body_source, body_file)
 
-            original_read_text = Path.read_text
+            original_open = Path.open
 
-            def deny_body_read(*args: Any, **kwargs: Any) -> str:
-                path = args[0]
+            def deny_body_read(path: Path, *args: Any, **kwargs: Any) -> Any:
                 if path == body_file:
                     raise OSError("denied")
-                return original_read_text(*args, **kwargs)
+                return original_open(path, *args, **kwargs)
 
             with mock.patch.object(
-                Path, "read_text", autospec=True, side_effect=deny_body_read
+                Path, "open", autospec=True, side_effect=deny_body_read
             ):
                 invalid_unreadable_body = (
                     validate_repository.validate_action_pin_sync_contract(root)
@@ -2712,6 +2795,21 @@ class MutationTestingContractTests(unittest.TestCase):
         self.assertEqual(
             validate_repository.validate_mutation_testing_contract(PLUGIN_ROOT),
             [],
+        )
+
+    def test_mutation_contract_fails_closed_on_source_inventory_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            with mock.patch.object(
+                validate_repository, "project_files", side_effect=OSError("denied")
+            ):
+                problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertTrue(
+            any(
+                "Python source inventory is unsafe: denied" in item for item in problems
+            )
         )
 
     def test_mutation_cache_documentation_matches_input_binding(self) -> None:
@@ -4247,6 +4345,133 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             )
         )
 
+    def test_release_archive_enforces_member_and_uncompressed_size_caps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def write_archive(command: list[str], **_kwargs: object) -> mock.Mock:
+                if command[1] != "archive":
+                    return mock.Mock(returncode=0, stderr="", stdout="README.md\0")
+                archive = Path(command[command.index("--output") + 1])
+                with validate_repository.zipfile.ZipFile(archive, "w") as bundle:
+                    bundle.writestr("repo-scaffold/README.md", "README")
+                return mock.Mock(returncode=0, stderr="", stdout="README.md\0")
+
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess, "run", side_effect=write_archive
+                ),
+                mock.patch.object(validate_repository, "MAX_ARCHIVE_MEMBERS", 0),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_release_archive(root),
+                    [
+                        "release archive: member inventory exceeds the "
+                        "0-entry safety cap"
+                    ],
+                )
+
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess, "run", side_effect=write_archive
+                ),
+                mock.patch.object(validate_repository, "MAX_ARCHIVE_TOTAL_BYTES", 0),
+            ):
+                self.assertEqual(
+                    validate_repository.validate_release_archive(root),
+                    [
+                        "release archive: uncompressed members exceed the "
+                        "0-byte safety cap"
+                    ],
+                )
+
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess, "run", side_effect=write_archive
+                ),
+                mock.patch.object(validate_repository, "MAX_ARCHIVE_MEMBER_BYTES", 0),
+            ):
+                problems = validate_repository.validate_release_archive(root)
+            self.assertTrue(
+                any(
+                    "Markdown member exceeds the 0-byte safety cap" in item
+                    for item in problems
+                )
+            )
+
+    def test_release_archive_bounds_a_growing_markdown_member(self) -> None:
+        class FakeInfo:
+            filename = "repo-scaffold/README.md"
+            file_size = 1
+            external_attr = 0
+
+            @staticmethod
+            def is_dir() -> bool:
+                return False
+
+        class GrowingStream:
+            def __enter__(self) -> GrowingStream:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            @staticmethod
+            def read(_size: int) -> bytes:
+                return b"xx"
+
+        class FakeBundle:
+            @staticmethod
+            def __enter__() -> FakeBundle:
+                return FakeBundle()
+
+            @staticmethod
+            def __exit__(*args: object) -> None:
+                return None
+
+            @staticmethod
+            def infolist() -> list[FakeInfo]:
+                return [FakeInfo()]
+
+            @staticmethod
+            def open(_item: FakeInfo) -> GrowingStream:
+                return GrowingStream()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def run(command: list[str], **_kwargs: object) -> mock.Mock:
+                return mock.Mock(
+                    returncode=0,
+                    stderr="",
+                    stdout="README.md\0" if command[1] == "ls-tree" else "",
+                )
+
+            with (
+                mock.patch.object(
+                    validate_repository, "resolve_path_executable", return_value="git"
+                ),
+                mock.patch.object(
+                    validate_repository.subprocess, "run", side_effect=run
+                ),
+                mock.patch.object(validate_repository, "MAX_ARCHIVE_MEMBER_BYTES", 1),
+                mock.patch.object(
+                    validate_repository.zipfile, "ZipFile", return_value=FakeBundle()
+                ),
+            ):
+                problems = validate_repository.validate_release_archive(root)
+
+        self.assertTrue(any("could not read Markdown" in item for item in problems))
+
     def test_repository_aggregator_and_main_report_all_results(self) -> None:
         validator_names = (
             "validate_serialized_files",
@@ -4675,6 +4900,23 @@ class PluginManifestValidationTests(unittest.TestCase):
             )
         )
 
+    def test_manifest_fails_closed_when_skill_inventory_is_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_manifest(root, self.valid_manifest())
+            (root / "skills").mkdir()
+            with mock.patch.object(
+                validate_repository,
+                "project_files",
+                side_effect=OSError("denied"),
+            ):
+                problems = validate_repository.validate_plugin_manifest(root)
+
+        self.assertIn(
+            ".codex-plugin/plugin.json: cannot inventory skills safely: denied",
+            problems,
+        )
+
 
 class SkillReferenceValidationTests(unittest.TestCase):
     def test_reparse_points_are_rejected_without_dereferencing_them(self) -> None:
@@ -4689,10 +4931,15 @@ class SkillReferenceValidationTests(unittest.TestCase):
             skill.parent.mkdir(parents=True)
             skill.write_text("Read `references/example.md`.\n", encoding="utf-8")
 
-            with mock.patch.object(
-                validate_repository,
-                "is_link_or_reparse",
-                side_effect=lambda path: path.name == "SKILL.md",
+            with (
+                mock.patch.object(
+                    validate_repository, "project_files", return_value=[skill]
+                ),
+                mock.patch.object(
+                    validate_repository,
+                    "is_link_or_reparse",
+                    side_effect=lambda path: path.name == "SKILL.md",
+                ),
             ):
                 problems = validate_repository.validate_skill_reference_paths(root)
 
@@ -4720,7 +4967,11 @@ class SkillReferenceValidationTests(unittest.TestCase):
                     ["skills: linked or reparse-point directory is not traversed"],
                 )
 
-            with mock.patch.object(Path, "rglob", side_effect=OSError("denied")):
+            with mock.patch.object(
+                validate_repository,
+                "project_files",
+                side_effect=OSError("denied"),
+            ):
                 self.assertEqual(
                     validate_repository.validate_skill_reference_paths(root),
                     ["skills: cannot enumerate skill entry points: denied"],
@@ -6875,6 +7126,11 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             'collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/files" files files 30',
             run,
         )
+        self.assertIn(
+            '"$RUNNER_TEMP/pr-body-$prefix.json"',
+            run,
+        )
+        self.assertNotIn('"$RUNNER_TEMP/$prefix.json"', run)
         self.assertNotIn(".github/pr-body-template.md", run)
         self.assertNotIn("scripts/update_pr_body.py", run)
         self.assertEqual(run.count('head.get("sha") != expected_head_sha'), 3)
@@ -14660,19 +14916,19 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             unreadable = root / "unreadable.md"
-            original_read_text = Path.read_text
+            original_open = Path.open
 
-            def read_text_or_raise(path: Path, *args: Any, **kwargs: Any) -> str:
+            def open_or_raise(path: Path, *args: Any, **kwargs: Any) -> Any:
                 if path == unreadable:
                     raise OSError("denied")
-                return original_read_text(path, *args, **kwargs)
+                return original_open(path, *args, **kwargs)
 
             with (
                 mock.patch.object(
                     validate_repository, "project_files", return_value=[unreadable]
                 ),
                 mock.patch.object(
-                    Path, "read_text", autospec=True, side_effect=read_text_or_raise
+                    Path, "open", autospec=True, side_effect=open_or_raise
                 ),
             ):
                 problems = validate_repository.validate_official_docs_tracking_contract(
@@ -15065,7 +15321,7 @@ class PullRequestTemplatePreflightDistributionTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("preflight\n", encoding="utf-8")
 
-            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+            with mock.patch.object(Path, "open", side_effect=OSError("denied")):
                 problems = validate_repository.validate_pr_template_preflight_contract(
                     root
                 )
@@ -15122,7 +15378,7 @@ class MarkdownBodyPreflightDistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
-            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+            with mock.patch.object(Path, "open", side_effect=OSError("denied")):
                 problems = (
                     validate_repository.validate_markdown_body_preflight_contract(root)
                 )

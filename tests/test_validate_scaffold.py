@@ -362,6 +362,57 @@ class MarkdownSourceContractTests(unittest.TestCase):
             "unreadable.md: unreadable UTF-8 Markdown: denied",
         )
 
+    def test_bounded_asset_reader_accepts_the_limit_and_rejects_one_over(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "asset.yml"
+            path.write_bytes(b"1234")
+            with mock.patch.object(validate_scaffold, "MAX_MARKDOWN_FILE_BYTES", 4):
+                self.assertEqual(
+                    validate_scaffold.read_bounded_utf8(path, label="asset.yml"),
+                    "1234",
+                )
+                path.write_bytes(b"12345")
+                with self.assertRaisesRegex(ValueError, "4-byte limit"):
+                    validate_scaffold.read_bounded_utf8(path, label="asset.yml")
+
+    def test_inventory_and_bounded_reader_fail_closed_on_read_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(
+                validate_scaffold.os, "scandir", side_effect=OSError("denied")
+            ):
+                with self.assertRaisesRegex(ValueError, "could not enumerate"):
+                    validate_scaffold.markdown_inventory(root)
+
+            path = root / "README.md"
+            path.write_text("README\n", encoding="utf-8")
+            with mock.patch.object(Path, "is_dir", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(ValueError, "could not inspect"):
+                    validate_scaffold.markdown_inventory(root)
+
+            path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(UnicodeError, "unreadable UTF-8"):
+                validate_scaffold.read_bounded_utf8(path, label="README.md")
+
+    def test_markdown_inventory_rejects_an_incomplete_entry_partition(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text("README\n", encoding="utf-8")
+            (root / "notes.txt").write_text("notes\n", encoding="utf-8")
+
+            with mock.patch.object(
+                validate_scaffold, "MAX_MARKDOWN_INVENTORY_ENTRIES", 1
+            ):
+                problems = validate_scaffold.validate_markdown_sources(root)
+
+            self.assertEqual(
+                problems,
+                [
+                    "Markdown inventory is unsafe or incomplete: Markdown inventory "
+                    "exceeds the 1-entry safety cap"
+                ],
+            )
+
     def test_reports_unresolved_namespaced_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -606,6 +657,27 @@ class MarkdownSourceContractTests(unittest.TestCase):
             )
             self.assertTrue(validate_scaffold.path_is_below(assets, root))
             self.assertFalse(validate_scaffold.path_is_below(root, assets))
+
+    def test_template_root_does_not_exclude_rendered_repository_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text(
+                readme(section_count=1) + "\n{{REPO_SCAFFOLD_UNRESOLVED}}\n",
+                encoding="utf-8",
+            )
+            template_root = root / "template-assets"
+            template_root.mkdir()
+
+            problems = validate_scaffold.validate_scaffold(
+                root, template_root=template_root
+            )
+
+        self.assertTrue(
+            any(
+                "README.md: contains an unresolved scaffold marker" in item
+                for item in problems
+            )
+        )
 
     def test_markdown_links_process_every_file_and_destination_kind(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1175,6 +1247,57 @@ body:
                 )
             )
 
+    def test_issue_form_yaml_read_is_bounded_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            path = template_root / "form.yml"
+            content = (
+                "name: Valid name\n"
+                "description: Valid description\n"
+                "body:\n"
+                "  - type: input\n"
+                "    id: name\n"
+                "    attributes:\n"
+                "      label: Name\n"
+            )
+            path.write_text(content, encoding="utf-8")
+
+            with mock.patch.object(
+                validate_scaffold,
+                "MAX_MARKDOWN_FILE_BYTES",
+                len(content.encode("utf-8")) - 1,
+            ):
+                problems = validate_scaffold.validate_issue_forms(root)
+
+            self.assertTrue(
+                any(
+                    "form.yml: invalid issue form YAML" in problem
+                    for problem in problems
+                )
+            )
+            self.assertTrue(any("exceeds" in problem for problem in problems))
+
+    def test_issue_template_directory_scan_errors_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_root = root / ".github" / "ISSUE_TEMPLATE"
+            template_root.mkdir(parents=True)
+            with mock.patch.object(
+                validate_scaffold,
+                "bounded_template_directory_entries",
+                side_effect=ValueError("scan cap"),
+            ):
+                self.assertEqual(
+                    validate_scaffold.validate_markdown_issue_templates(root),
+                    ["scan cap"],
+                )
+                self.assertEqual(
+                    validate_scaffold.validate_issue_forms(root),
+                    ["scan cap"],
+                )
+
     def test_pull_request_template_requires_checklist(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1501,7 +1624,7 @@ body:
                     validate_scaffold.validate_release_please_locale_asset(root)
                 )
 
-            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+            with mock.patch.object(Path, "open", side_effect=OSError("denied")):
                 self.assertTrue(validate_scaffold.validate_citation_assets(root))
                 self.assertTrue(
                     validate_scaffold.validate_release_please_locale_asset(root)
@@ -1530,6 +1653,46 @@ body:
             self.assertTrue(
                 validate_scaffold.validate_release_please_locale_asset(root)
             )
+
+    def test_citation_render_errors_and_empty_authors_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            citation = root / "CITATION.cff"
+            citation.write_text(
+                "cff-version: 1.2.0\n"
+                "authors:\n"
+                "  - {{REPO_SCAFFOLD_CITATION_AUTHORS_YAML}}\n"
+                "  broken: @\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                validate_scaffold,
+                "load_yaml_text",
+                side_effect=yaml.YAMLError("bad"),
+            ):
+                problems = validate_scaffold.validate_citation_assets(root)
+            self.assertTrue(
+                any("rendered citation YAML is invalid" in item for item in problems)
+            )
+
+            citation.write_text(
+                "cff-version: 1.2.0\n"
+                "authors: []\n"
+                "metadata:\n"
+                "  - {{REPO_SCAFFOLD_CITATION_AUTHORS_YAML}}\n",
+                encoding="utf-8",
+            )
+            problems = validate_scaffold.validate_citation_assets(root)
+            self.assertTrue(
+                any(
+                    "rendered authors must be a non-empty array" in item
+                    for item in problems
+                )
+            )
+
+            citation.write_bytes(b"x" * (validate_scaffold.MAX_MARKDOWN_FILE_BYTES + 1))
+            problems = validate_scaffold.validate_citation_assets(root)
+            self.assertTrue(any("exceeds" in item for item in problems))
 
     def test_template_assets_report_missing_header_and_invalid_pull_template(
         self,
@@ -1862,6 +2025,8 @@ body:
             (root / "README.md").write_text(readme(section_count=1), encoding="utf-8")
             template_root = root / "assets"
             template_root.mkdir()
+            (root / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+            (root / "references").mkdir()
 
             with (
                 mock.patch.object(
@@ -1907,7 +2072,12 @@ body:
                 ["source", "conduct", "readme", "issue", "form", "pull", "asset"],
             )
             sources.assert_called_once_with(
-                root, marker_exclusions=(template_root.parent,)
+                root,
+                marker_exclusions=[
+                    template_root,
+                    root / "SKILL.md",
+                    root / "references",
+                ],
             )
             assets.assert_called_once_with(template_root)
 
