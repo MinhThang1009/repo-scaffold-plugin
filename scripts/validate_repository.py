@@ -6155,7 +6155,10 @@ def validate_plugin_manifest(repository_root: Path) -> list[str]:
 
 def validate_skill_reference_paths(repository_root: Path) -> list[str]:
     """Require every local reference named by a skill entry point to be usable."""
-    repository_root = repository_root.resolve()
+    # Match project_files(), which normalizes absolute spelling without resolving
+    # parent-directory links. This keeps containment checks stable on platforms
+    # whose temporary roots are themselves symlinked or have alternate spellings.
+    repository_root = Path(os.path.abspath(repository_root))
     skill_root = repository_root / "skills"
     problems: list[str] = []
     if is_link_or_reparse(skill_root):
