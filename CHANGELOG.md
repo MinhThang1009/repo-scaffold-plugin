@@ -4,6 +4,14 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.15](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.14...v1.10.15) (2026-09-30)
+
+
+### Bug Fixes
+
+* **pr-body-sync:** align paginated evidence paths ([#134](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/134)) ([f630dc6](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/f630dc65076d03a16d264e71024d6c5b11cbc7bd))
+* **preflight:** fail closed on indeterminate reminders ([#132](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/132)) ([fda0b10](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/fda0b1079a299259bc4f7a1d658f11b28c932109))
+
 ## [1.10.14](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.13...v1.10.14) (2026-09-28)
 
 
