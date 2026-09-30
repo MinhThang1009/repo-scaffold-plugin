@@ -37,6 +37,38 @@ work is complete. Write UTF-8 PR text to a file and use `gh pr create --body-fil
 or `gh pr edit --body-file`; do not bypass the template with `--fill` or a
 free-form body.
 
+Review every generated section against the complete PR diff. State the affected
+behavior and outcome in Purpose, the confirmed defect in Root cause, and all
+material final changes in a few Key changes bullets. Explain tests and known
+limits in Verification. Keep acceptance criteria, security/risk notes, and
+rollout or rollback plans when the selected template requires them; automation
+must not substitute a file-count summary for those decisions.
+
+The optional `pr-body-sync.yml` workflow uses explicit `Why:`, `Root cause:`,
+`Changes:`, and `Verification:` commit fields, with multiline paragraphs and
+bullets supported. Use the selected project language for their values. For a
+long PR, use a maintainer-reviewed commit containing
+`PR-summary-base: <full-current-base-SHA>` and all four fields to record a
+cumulative summary through that commit. The workflow validates the base SHA and
+required fields, but cannot verify that a person reviewed the summary or that
+its claims match the diff. All later changes remain in scope. Reconcile API
+commit/file counts, retain reverts, and reject excess topics rather than
+silently omitting them. Missing cause evidence must be stated explicitly. The
+cumulative summary must cover the PR's primary behavior and safety-boundary
+changes, not only PR-body tooling or documentation.
+Commit-derived purpose, cause, key changes, and verification notes are labeled
+author-reported at the full source SHA; the Checks-tab reminder is generated
+separately. The changed-file inventory proves the returned file count, but it
+does not verify narrative claims against patch contents. Use GitHub Checks for
+the current revision. Review the complete
+body against the diff after rendering and after GitHub accepts the update.
+GitHub's pull-request update endpoint has no conditional body-write parameter.
+A concurrent human body edit after the workflow's final read but before its
+update can be overwritten; the workflow minimizes that window and verifies the
+result afterward.
+The renderer adds the current Checks-tab status line automatically; do not
+repeat that live-status statement in a structured `Verification:` value.
+
 In the body file, keep each prose paragraph on one physical line and each list
 item on a single line; separate paragraphs with blank lines and let GitHub wrap
 text to the viewer's width. GitHub renders line breaks in issue and PR bodies as

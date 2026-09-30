@@ -7,8 +7,9 @@ import runpy
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -379,6 +380,53 @@ class MutationRunnerTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "invalid reusable"):
                         run_mutation_testing.load_reusable_sources(root)
 
+    def test_marker_and_shard_plan_loaders_bound_reads_after_stat(self) -> None:
+        class TrackingReader(BytesIO):
+            def __init__(self) -> None:
+                super().__init__(b"x" * 100)
+                self.read_sizes: list[int] = []
+
+            def read(self, size: int | None = None) -> bytes:
+                self.read_sizes.append(-1 if size is None else size)
+                return super().read(-1 if size is None else size)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = self.write_marker(root, [])
+            marker.write_text("{}", encoding="utf-8")
+            marker_source = TrackingReader()
+            with (
+                mock.patch.object(
+                    run_mutation_testing, "MAX_REUSABLE_SOURCES_BYTES", 4
+                ),
+                mock.patch.object(Path, "open", return_value=marker_source),
+                self.assertRaisesRegex(ValueError, "could not read incremental"),
+            ):
+                run_mutation_testing.load_reusable_sources(root)
+            self.assertEqual(marker_source.read_sizes, [5])
+
+            plan = root / "mutants" / run_mutation_testing.SHARD_PLAN_NAME
+            plan.write_text("{}", encoding="utf-8")
+            plan_source = TrackingReader()
+            with (
+                mock.patch.object(run_mutation_testing, "MAX_SHARD_PLAN_BYTES", 4),
+                mock.patch.object(Path, "open", return_value=plan_source),
+                self.assertRaisesRegex(
+                    ValueError, "could not read mutation shard plan"
+                ),
+            ):
+                run_mutation_testing.load_shard_names(root, 0)
+            self.assertEqual(plan_source.read_sizes, [5])
+
+            plan.write_bytes(b"x" * 5)
+            with (
+                mock.patch.object(run_mutation_testing, "MAX_SHARD_PLAN_BYTES", 4),
+                self.assertRaisesRegex(
+                    ValueError, "could not read mutation shard plan"
+                ),
+            ):
+                run_mutation_testing.load_shard_names(root, 0)
+
     def test_shard_plan_is_deterministic_and_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -408,6 +456,53 @@ class MutationRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "more than once"):
                 run_mutation_testing.load_shard_names(root, 0)
 
+            path.write_text("valid plan", encoding="utf-8")
+            original = path.read_bytes()
+            with (
+                mock.patch.object(run_mutation_testing, "MAX_MUTANTS_PER_SHARD", 1),
+                self.assertRaisesRegex(ValueError, "configured mutant limit"),
+            ):
+                run_mutation_testing.write_shard_plan(root, ["one", "two", "three"], 2)
+            self.assertEqual(path.read_bytes(), original)
+
+            with (
+                mock.patch.object(run_mutation_testing, "MAX_SHARD_PLAN_BYTES", 4),
+                self.assertRaisesRegex(ValueError, "byte safety cap"),
+            ):
+                run_mutation_testing.write_shard_plan(
+                    root, ["scripts.alpha__mutmut_1"], 1
+                )
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse(list(path.parent.glob(f".{path.name}.*.tmp")))
+
+    def test_concurrent_shard_plan_writes_leave_a_complete_atomic_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plans = [
+                [f"scripts/source-{writer}__mutmut_{index}" for index in range(32)]
+                for writer in range(8)
+            ]
+            with ThreadPoolExecutor(max_workers=len(plans)) as executor:
+                futures = [
+                    executor.submit(
+                        run_mutation_testing.write_shard_plan,
+                        root,
+                        names,
+                        4,
+                    )
+                    for names in plans
+                ]
+                for future in futures:
+                    self.assertEqual(
+                        future.result(), root / "mutants" / "mutation-shards.json"
+                    )
+
+            output = root / "mutants" / "mutation-shards.json"
+            document = json.loads(output.read_text(encoding="utf-8"))
+            written_names = [name for shard in document["shards"] for name in shard]
+            self.assertIn(sorted(written_names), [sorted(plan) for plan in plans])
+            self.assertFalse(list(output.parent.glob(f".{output.name}.*.tmp")))
+
     def test_planning_generates_an_exact_shard_assignment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -430,11 +525,14 @@ class MutationRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             implementation = ModernPlanningMutmut()
+            previous_mutant_under_test = os.environ.get("MUTANT_UNDER_TEST")
             path = run_mutation_testing.prepare_mutation_shards(
                 root, max_children=4, shard_count=2, mutmut_main=implementation
             )
             self.assertTrue(path.is_file())
-            self.assertNotIn("MUTANT_UNDER_TEST", os.environ)
+            self.assertEqual(
+                os.environ.get("MUTANT_UNDER_TEST"), previous_mutant_under_test
+            )
 
     def test_planning_rejects_invalid_or_linked_repository_roots(self) -> None:
         with self.assertRaisesRegex(ValueError, "repository root"):

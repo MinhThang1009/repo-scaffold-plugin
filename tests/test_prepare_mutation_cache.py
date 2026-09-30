@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -26,6 +26,24 @@ SPEC.loader.exec_module(prepare_mutation_cache)
 
 
 class MutationCacheTests(unittest.TestCase):
+    def test_cache_reader_stops_at_limit_plus_one(self) -> None:
+        class TrackingReader(BytesIO):
+            def __init__(self) -> None:
+                super().__init__(b"x" * 100)
+                self.read_sizes: list[int] = []
+
+            def read(self, size: int | None = None) -> bytes:
+                self.read_sizes.append(-1 if size is None else size)
+                return super().read(-1 if size is None else size)
+
+        source = TrackingReader()
+        with mock.patch.object(Path, "open", return_value=source):
+            with self.assertRaisesRegex(ValueError, "cache entry is oversized"):
+                prepare_mutation_cache._read_bounded_bytes(
+                    Path("cache-entry"), 10, "cache entry is oversized"
+                )
+        self.assertEqual(source.read_sizes, [11])
+
     def make_repository(self, root: Path) -> None:
         files = {
             "scripts/alpha.py": "def alpha():\n    return 1\n",
@@ -660,6 +678,12 @@ class MutationCacheTests(unittest.TestCase):
                 path.write_text("state", encoding="utf-8")
             with (
                 mock.patch.object(prepare_mutation_cache, "MAX_META_BYTES", 0),
+                self.assertRaisesRegex(ValueError, "exceeds the size limits"),
+            ):
+                prepare_mutation_cache._collect_state_hashes(mutants, sources)
+
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_STATE_BYTES", 1),
                 self.assertRaisesRegex(ValueError, "exceeds the size limits"),
             ):
                 prepare_mutation_cache._collect_state_hashes(mutants, sources)

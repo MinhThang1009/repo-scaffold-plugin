@@ -33,6 +33,9 @@ destination:
 | `assets/workflows/freshness.yml` | `../scripts/ci_toolchain.py` | `scripts/ci_toolchain.py` |
 | `assets/workflows/freshness.yml` | `assets/ci-toolchain.json` | `.github/ci-toolchain.json` |
 | `assets/workflows/freshness.yml` | `../scripts/sync_action_pins.py` | `scripts/sync_action_pins.py` |
+| `assets/workflows/pr-body-sync.yml` | `../scripts/render_pr_body_evidence.py` | `scripts/render_pr_body_evidence.py` |
+| `assets/workflows/pr-body-sync.yml` | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |
+| `assets/workflows/pr-body-sync.yml` | `../scripts/pr_template_preflight.py` | `scripts/pr_template_preflight.py` |
 | `assets/workflows/labeler.yml` | `assets/labeler.yml` | `.github/labeler.yml` |
 | Pull-request preflight | `../scripts/pr_template_preflight.py` | `scripts/pr_template_preflight.py` |
 | Pull-request preflight dependency | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |
@@ -46,6 +49,22 @@ the companion files in the table, and verify the installed files. Record each
 optional asset as installed, not applicable, or explicitly deferred; never
 silently omit an applicable workflow or leave the generic CI sentinel in the
 finished project.
+
+The `pr-body-sync.yml` asset is the opt-in PR metadata workflow. Install it
+with `scripts/render_pr_body_evidence.py`, `scripts/markdown_body_preflight.py`,
+and `scripts/pr_template_preflight.py`. It renders the body from the exact PR
+commits and structured commit fields at the current head SHA. Purpose, cause,
+and key-change text is labeled author-reported with its source commit SHA. The
+complete changed-file inventory is used to verify pagination and reconcile API
+counts; the workflow does not inspect patches or infer change themes. It keeps
+live check status in GitHub's Checks tab instead of embedding a stale snapshot
+in the body. It does not consume a checked-in narrative body source or execute
+pull-request code.
+Copy the complete template catalog in the selected language and retain its
+scope/verification guidance. Read `pull-request-contract.md` before preparing
+structured commit fields or a cumulative `PR-summary-base:` description. The
+renderer verifies commit/file inventory counts and fails instead of silently
+dropping material topics; review content against the full diff after rendering.
 
 When installing the CodeQL or code-scanning gate asset, also copy
 `assets/code-scanning-allowlist.json` to

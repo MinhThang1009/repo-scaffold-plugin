@@ -106,6 +106,12 @@ COMMUNITY_HEALTH_CHECKER_STATUS_GUARD = (
     "if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' "
     "&& \"$CHECKER_EXIT\" != '2' ]]; then"
 )
+COMMUNITY_HEALTH_INDETERMINATE_GUARD = "if [[ \"$CHECKER_EXIT\" == '2' ]]; then"
+COMMUNITY_HEALTH_INDETERMINATE_PRINTF = "printf 'Community-health checker was indeterminate; no reminder issue was changed.\\n' >&2"
+FRESHNESS_INDETERMINATE_GUARD = "if [[ \"$CHECKER_EXIT\" == '2' ]]; then"
+FRESHNESS_INDETERMINATE_PRINTF = (
+    "Freshness checker was indeterminate; no reminder issue was changed.\\n"
+)
 COMMUNITY_HEALTH_REMINDER_CONCURRENCY_GROUP = (
     "repo-scaffold-community-health-${{ github.repository }}"
 )
@@ -143,7 +149,6 @@ VERSION_SYNC_PR_BODY_PREFLIGHT_COMMAND = (
     VERSION_SYNC_PR_BODY_PATH.as_posix(),
 )
 PR_BODY_SYNC_WORKFLOW_PATH = Path(".github/workflows/pr-body-sync.yml")
-PR_BODY_SYNC_TEMPLATE_PATH = Path(".github/pr-body-template.md")
 PR_BODY_SYNC_CONCURRENCY_GROUP = (
     "${{ github.workflow }}-pr-body-${{ github.event.pull_request.number }}"
 )
@@ -285,6 +290,12 @@ FRESHNESS_ALLOWED_PRINTF_COMMANDS = frozenset(
             ">&",
             "2",
         ),
+        (
+            "printf",
+            FRESHNESS_INDETERMINATE_PRINTF,
+            ">&",
+            "2",
+        ),
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
     }
 )
@@ -294,6 +305,7 @@ FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
         'if [[ -n "$issue_numbers_output" ]]; then',
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
+        FRESHNESS_INDETERMINATE_GUARD,
         "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
         "if (( ${#issue_numbers[@]} == 1 )); then",
         "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
@@ -767,6 +779,27 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
         "../scripts/sync_action_pins.py",
         Path("scripts/sync_action_pins.py"),
         False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/pr-body-sync.yml"),
+        Path("skills/repo-scaffold/scripts/render_pr_body_evidence.py"),
+        "../scripts/render_pr_body_evidence.py",
+        Path("scripts/render_pr_body_evidence.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/pr-body-sync.yml"),
+        Path("skills/repo-scaffold/scripts/markdown_body_preflight.py"),
+        "../scripts/markdown_body_preflight.py",
+        Path("scripts/markdown_body_preflight.py"),
+        True,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/pr-body-sync.yml"),
+        Path("skills/repo-scaffold/scripts/pr_template_preflight.py"),
+        "../scripts/pr_template_preflight.py",
+        Path("scripts/pr_template_preflight.py"),
+        True,
     ),
     (
         Path("skills/repo-scaffold/assets/workflows/labeler.yml"),
@@ -1661,6 +1694,7 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     required_if_lines = (
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
+        FRESHNESS_INDETERMINATE_GUARD,
         "if [[ \"$CHECKER_EXIT\" == '0' ]]; then",
         "if [[ \"$CHECKER_EXIT\" != '0' ]]; then",
     )
@@ -1677,7 +1711,10 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     stale_index = if_lines.index("if [[ \"$CHECKER_EXIT\" != '0' ]]; then")
     duplicate_index = if_lines.index(FRESHNESS_DUPLICATE_ISSUE_GUARD[0])
     status_index = if_lines.index(FRESHNESS_CHECKER_STATUS_GUARD)
-    if not duplicate_index < status_index < clean_index < stale_index:
+    indeterminate_index = if_lines.index(FRESHNESS_INDETERMINATE_GUARD)
+    if not (
+        duplicate_index < status_index < indeterminate_index < clean_index < stale_index
+    ):
         return False
     nonempty_indices = [
         index
@@ -1886,18 +1923,72 @@ def community_health_exit_status_guard_is_safe(text: str) -> bool:
         for index, line in enumerate(lines)
         if line == COMMUNITY_HEALTH_CHECKER_STATUS_GUARD
     ]
+    indeterminate_guard_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line == COMMUNITY_HEALTH_INDETERMINATE_GUARD
+    ]
     marker_indices = [index for index, line in enumerate(lines) if line == marker_check]
     clean_indices = [index for index, line in enumerate(lines) if line == clean_branch]
     mutation_indices = [
         index for index, line in enumerate(lines) if line.startswith(mutation_commands)
     ]
+    indeterminate_block = (
+        COMMUNITY_HEALTH_INDETERMINATE_GUARD,
+        COMMUNITY_HEALTH_INDETERMINATE_PRINTF,
+        "exit 1",
+        "fi",
+    )
+    indeterminate_block_count = sum(
+        tuple(lines[index : index + len(indeterminate_block)]) == indeterminate_block
+        for index in range(len(lines) - len(indeterminate_block) + 1)
+    )
     return (
         len(guard_indices) == 1
+        and len(indeterminate_guard_indices) == 1
         and len(marker_indices) == 1
         and len(clean_indices) == 1
         and bool(mutation_indices)
-        and marker_indices[0] < guard_indices[0] < clean_indices[0]
-        and all(index > guard_indices[0] for index in mutation_indices)
+        and indeterminate_block_count == 1
+        and marker_indices[0] < guard_indices[0] < indeterminate_guard_indices[0]
+        and indeterminate_guard_indices[0] < clean_indices[0]
+        and all(index > indeterminate_guard_indices[0] for index in mutation_indices)
+    )
+
+
+def official_docs_exit_status_guard_is_safe(text: str) -> bool:
+    """Require official-docs indeterminate results to fail before Issue mutation."""
+    lines = [line.strip() for line in text.splitlines()]
+    guard = "if [[ \"$CHECKER_EXIT\" != '0' && \"$CHECKER_EXIT\" != '1' && \"$CHECKER_EXIT\" != '2' ]]; then"
+    indeterminate_guard = "if [[ \"$CHECKER_EXIT\" == '2' ]]; then"
+    indeterminate_printf = "printf 'Official-docs checker was indeterminate; no reminder issue was changed.\\n' >&2"
+    guard_indices = [index for index, line in enumerate(lines) if line == guard]
+    indeterminate_indices = [
+        index for index, line in enumerate(lines) if line == indeterminate_guard
+    ]
+    marker_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line == 'grep -Fq "$marker" "$RUNNER_TEMP/official-docs.md"'
+    ]
+    mutation_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith(("gh issue close ", "gh issue edit ", "gh issue create "))
+    ]
+    block = (indeterminate_guard, indeterminate_printf, "exit 1", "fi")
+    block_count = sum(
+        tuple(lines[index : index + len(block)]) == block
+        for index in range(len(lines) - len(block) + 1)
+    )
+    return (
+        len(guard_indices) == 1
+        and len(indeterminate_indices) == 1
+        and len(marker_indices) == 1
+        and bool(mutation_indices)
+        and block_count == 1
+        and marker_indices[0] < guard_indices[0] < indeterminate_indices[0]
+        and all(index > indeterminate_indices[0] for index in mutation_indices)
     )
 
 
@@ -1984,6 +2075,12 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
             ">&",
             "2",
         ),
+        (
+            "printf",
+            FRESHNESS_INDETERMINATE_PRINTF,
+            ">&",
+            "2",
+        ),
     ]:
         return False
     if_ranges = freshness_shell_if_block_ranges(segments)
@@ -2029,6 +2126,7 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
     if issue_numbers_reassignments != [[FRESHNESS_ISSUE_NUMBERS_INITIALIZATION]]:
         return False
     clean_tests: list[int] = []
+    indeterminate_tests: list[int] = []
     failure_tests: list[int] = []
     clean_exits: list[int] = []
     failure_exits: list[int] = []
@@ -2039,6 +2137,8 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         command = shell_command_prefix(segment)
         if command == ["if", "[[", "$CHECKER_EXIT", "==", "0", "]]"]:
             clean_tests.append(index)
+        if command == ["if", "[[", "$CHECKER_EXIT", "==", "2", "]]"]:
+            indeterminate_tests.append(index)
         if command == ["if", "[[", "$CHECKER_EXIT", "!=", "0", "]]"]:
             failure_tests.append(index)
         if command == ["exit", "0"]:
@@ -2070,8 +2170,10 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         and len(edit_mutations) == 1
         and len(create_mutations) == 1
         # One failure exit guards duplicate issues, one rejects an unexpected
-        # checker status, and one propagates stale status.
-        and len(failure_exits) == 3
+        # checker status, one rejects indeterminate status, and one propagates
+        # stale status.
+        and len(indeterminate_tests) == 1
+        and len(failure_exits) == 4
     ):
         return False
     issue_numbers_initialization_indices = [
@@ -2091,10 +2193,12 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
     ):
         return False
     clean_test = clean_tests[0]
+    indeterminate_test = indeterminate_tests[0]
     clean_exit = clean_exits[0]
     failure_test = failure_tests[0]
     clean_block_end = if_ranges[clean_test]
     failure_block_end = if_ranges[failure_test]
+    indeterminate_block_end = if_ranges[indeterminate_test]
     stale_mutations = [*edit_mutations, *create_mutations]
     if title_assignments and title_assignment_indices[0] >= min(
         [*close_mutations, *edit_mutations, *create_mutations]
@@ -2103,13 +2207,20 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
     failure_exit_after = [
         exit_index for exit_index in failure_exits if exit_index > failure_test
     ]
+    indeterminate_exit = [
+        exit_index
+        for exit_index in failure_exits
+        if indeterminate_test < exit_index < indeterminate_block_end
+    ]
     return (
-        clean_test
+        indeterminate_test
+        < clean_test
         < close_mutations[0]
         < clean_exit
         < clean_block_end
         < min(stale_mutations)
         and max(stale_mutations) < failure_test
+        and len(indeterminate_exit) == 1
         and bool(failure_exit_after)
         and failure_test < min(failure_exit_after) < failure_block_end
     )
@@ -4619,6 +4730,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         expected_sources = {"scripts", "skills/repo-scaffold/scripts"}
         expected_omitted = {
             "skills/repo-scaffold/scripts/audit_freshness.py",
+            "skills/repo-scaffold/scripts/render_pr_body_evidence.py",
             "skills/repo-scaffold/scripts/sync_action_pins.py",
         }
         if (
@@ -4629,7 +4741,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         ):
             problems.append(
                 ".coveragerc: require branch coverage for both script trees, only "
-                "the verified freshness-script copies omitted, and a fail-under "
+                "verified byte-for-byte script copies omitted, and a fail-under "
                 f"floor of at least {COVERAGE_FAIL_UNDER}"
             )
 
@@ -7485,7 +7597,7 @@ def validate_required_check_concurrency(repository_root: Path) -> list[str]:
 
 
 def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
-    """Keep the PR-body writer least-privileged and bound to trusted inputs."""
+    """Keep the PR-body writer bound to current API evidence."""
     path = repository_root / PR_BODY_SYNC_WORKFLOW_PATH
     relative = PR_BODY_SYNC_WORKFLOW_PATH.as_posix()
     try:
@@ -7494,7 +7606,6 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         return [f"{relative}: body-sync workflow is unreadable: {error}"]
     if not isinstance(workflow, dict):
         return [f"{relative}: body-sync workflow must be a mapping"]
-
     problems: list[str] = []
     if workflow.get("on") != {
         "pull_request_target": {"types": ["opened", "reopened", "synchronize"]}
@@ -7513,7 +7624,6 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
         problems.append(
             f"{relative}: body-sync workflow must serialize each pull request without cancellation"
         )
-
     jobs = workflow.get("jobs")
     job = jobs.get("update") if isinstance(jobs, dict) else None
     if (
@@ -7530,7 +7640,6 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
             f"{relative}: body-sync job must isolate pull-requests: write with a five-minute trusted runner"
         )
         return problems
-
     steps = job.get("steps")
     checkout = steps[0] if isinstance(steps, list) and len(steps) >= 1 else None
     update = steps[1] if isinstance(steps, list) and len(steps) >= 2 else None
@@ -7567,190 +7676,116 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
             f"{relative}: body-sync must pass only repository, PR title, head, and token data through env"
         )
         return problems
-
     run = update["run"]
-    required_fragments = (
+    required = (
         "set -euo pipefail",
-        'if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then',
-        'if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
-        'if [[ ! "$PR_HEAD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
-        'if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
-        'if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then',
         "gh api --hostname github.com",
-        '"repos/$REPOSITORY/compare/$PR_BASE_SHA...$PR_HEAD_SHA" > "$compare_payload"',
-        'source_state=$(python - "$compare_payload" "$PR_BASE_SHA" "$PR_HEAD_SHA" <<\'PY\'',
-        '".github/pr-body-template.md"',
-        'base_commit = payload.get("base_commit")',
-        "not isinstance(base_commit, dict)",
-        'base_commit.get("sha") != expected_base_sha',
-        'commits = payload.get("commits")',
-        "not isinstance(commits, list)",
-        'files = payload.get("files")',
-        "not isinstance(files, list)",
-        "expected_head_sha = sys.argv[3]",
-        'status = payload.get("status")',
-        'if status == "identical":',
-        "expected_head_sha != expected_base_sha or commits or files",
-        "Pull-request identical comparison evidence is inconsistent.",
-        'status != "ahead"',
-        'commits[-1].get("sha") != expected_head_sha',
-        "Pull-request comparison is truncated; cannot prove template opt-in.",
-        "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
-        '"repos/$REPOSITORY/pulls/$PR_NUMBER" > "$payload"',
-        "Pull-request ref, title, or state advanced; retry the workflow.",
-        "managed_state=$(python - \"$body\" <<'PY'",
-        "import re",
-        "template_pattern = re.compile(",
-        "managed_marker_pattern = re.compile(",
-        "managed_pattern = re.compile(",
-        'body = Path(sys.argv[1]).read_bytes().decode("utf-8")',
-        "template_markers = list(template_pattern.finditer(body))",
-        "managed_markers = list(managed_marker_pattern.finditer(body))",
-        'without_crlf = body.replace("\\r\\n", "")',
-        "line_endings_are_consistent = (",
-        "len(template_markers) == 1",
-        "len(managed_markers) == 1",
-        "template_markers[0].start() == 0",
-        "line_endings_are_consistent",
-        'r"(?m)\\A\\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \\t]*\\r?\\n"',
-        'r"<!-- repo-scaffold:pr-body-managed -->[ \\t]*(?=\\r?$)"',
-        "managed_pattern.match(body) is not None",
-        "if [[ \"$source_state\" == 'unchanged' && \"$managed_state\" != 'managed' ]]; then",
-        "Pull-request body is not managed and its source template was not changed; leaving it unchanged.",
-        "expected_base_sha = sys.argv[6]",
-        'actual_base_sha = base.get("sha") if isinstance(base, dict) else None',
-        "or actual_base_sha != expected_base_sha",
-        '"repos/$PR_HEAD_REPOSITORY/contents/.github/pr-body-template.md?ref=$PR_HEAD_SHA"',
-        'template_payload="$RUNNER_TEMP/pr-body-template.json"',
-        'template="$RUNNER_TEMP/pr-body-template.md"',
-        "python scripts/update_pr_body.py",
-        '--template-file "$template"',
-        '--head-repository "$PR_HEAD_REPOSITORY"',
+        "gh_api_to_file() {",
+        "repos/$REPOSITORY/pulls/$PR_NUMBER",
+        "collect_pages() {",
+        '"$endpoint?per_page=100&page=$page"',
+        '"Paginated API response exceeds the safety cap."',
+        '"Paginated API response is invalid:',
+        "if (( count < 100 || page == max_pages )); then",
+        "Paginated API response exceeded the bounded page limit.",
+        'collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/commits" commits commits 3',
+        'collect_pages "repos/$REPOSITORY/pulls/$PR_NUMBER/files" files files 30',
+        "Combined paginated API evidence exceeds the safety cap.",
+        "python scripts/render_pr_body_evidence.py",
         'python scripts/markdown_body_preflight.py --body-file "$updated"',
         "python scripts/pr_template_preflight.py",
-        '--title "$PR_TITLE"',
+        "expected_payload_path = Path(sys.argv[7])",
+        'for field in ("commits", "changed_files")',
         'gh pr edit "$PR_NUMBER"',
-        '--repo "github.com/$REPOSITORY"',
-        '--body-file "$updated"',
-        'original = original_body_path.read_bytes().decode("utf-8")',
-        'verified_payload="$RUNNER_TEMP/pr-body-verified.json"',
-        'expected_body = expected_body_path.read_bytes().decode("utf-8")',
-        "Pull-request ref, title, or state changed during the body update.",
+        "Pull-request body changed during preparation; retry the workflow.",
+        "Pull-request inventory changed during body preparation; retry the workflow.",
+        "Pull-request inventory changed during the body update; retry the workflow.",
         "GitHub did not retain the generated pull-request body.",
     )
-    for fragment in required_fragments:
+    for fragment in required:
         if fragment not in run:
             problems.append(
-                f"{relative}: body-sync must fetch, preflight, update, and verify the bounded body section"
+                f"{relative}: body-sync must fetch, render, preflight, update, and verify bounded PR evidence"
             )
             break
     if (
-        run.count("expected_base_sha = sys.argv[6]") != 3
-        or run.count("or actual_base_sha != expected_base_sha") != 3
+        "github.event.pull_request.head.ref" in run
+        or ".github/pr-body-template.md" in run
+        or "scripts/update_pr_body.py" in run
     ):
         problems.append(
-            f"{relative}: body-sync must revalidate the pull-request base SHA before and after editing"
+            f"{relative}: body-sync must not execute head code or depend on a hard-coded body template"
         )
     if (
-        run.count("actual_sha != expected_sha") != 1
-        or run.count('head.get("sha") != expected_sha') != 2
+        run.count('head.get("sha") != expected_head_sha') != 3
         or run.count("actual_repository != expected_repository") != 3
+        or run.count('base.get("sha") != expected_base_sha') != 3
         or run.count('payload.get("title") != expected_title') != 3
         or run.count('payload.get("state") != "open"') != 3
     ):
         problems.append(
-            f"{relative}: body-sync must revalidate the pull-request head, repository, title, and open state at every API boundary"
+            f"{relative}: body-sync must revalidate head, repository, base, title, and open state at every API boundary"
         )
     if (
-        run.count("if not isinstance(body, str):") != 2
-        or run.count("if body != original:") != 1
+        run.count("expected_payload_path = Path(sys.argv[7])") != 2
+        or run.count('for field in ("commits", "changed_files")') != 2
+    ):
+        problems.append(
+            f"{relative}: body-sync must revalidate the commit and file inventory before and after the mutation"
+        )
+    if (
+        run.count("if body != original:") != 1
         or run.count("if actual_body != expected_body:") != 1
     ):
         problems.append(
-            f"{relative}: body-sync must enforce text input and exact body postconditions"
-        )
-    if "github.event.pull_request.head.ref" in run:
-        problems.append(
-            f"{relative}: body-sync must not execute or check out pull-request head code"
+            f"{relative}: body-sync must enforce exact body precondition and postcondition"
         )
     preflight_index = run.find(
         'python scripts/markdown_body_preflight.py --body-file "$updated"'
     )
-    template_preflight_index = run.find("python scripts/pr_template_preflight.py")
+    template_index = run.find("python scripts/pr_template_preflight.py")
     mutation_index = run.find('gh pr edit "$PR_NUMBER"')
     if (
         preflight_index < 0
-        or template_preflight_index < 0
+        or template_index < 0
         or mutation_index < 0
         or preflight_index > mutation_index
-        or template_preflight_index > mutation_index
+        or template_index > mutation_index
     ):
         problems.append(
-            f"{relative}: body-sync must complete body preflight before the GitHub mutation"
+            f"{relative}: body-sync must complete both body preflights before GitHub mutation"
         )
     return problems
 
 
-def validate_pr_body_sync_template_contract(repository_root: Path) -> list[str]:
-    """Validate the checked-in source used to render the complete PR body."""
-    path = repository_root / PR_BODY_SYNC_TEMPLATE_PATH
-    relative = PR_BODY_SYNC_TEMPLATE_PATH.as_posix()
-    try:
-        payload = path.read_bytes()
-    except OSError as error:
-        return [f"{relative}: pull-request body template is unreadable: {error}"]
-    if len(payload) > 1 * 1024 * 1024:
-        return [f"{relative}: pull-request body template exceeds the 1 MiB safety cap"]
-    try:
-        text = payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        return [f"{relative}: pull-request body template is not valid UTF-8: {error}"]
-    without_crlf = text.replace("\r\n", "")
-    if "\r" in without_crlf or ("\r\n" in text and "\n" in without_crlf):
-        return [
-            f"{relative}: pull-request body template must use one consistent line ending"
-        ]
-    marker_pattern = re.compile(
-        r"(?m)^\ufeff?<!-- repo-scaffold:pr-template=[a-z][a-z0-9-]* -->[ \t]*(?=\r?$)"
-    )
-    markers = list(marker_pattern.finditer(text))
-    if len(markers) != 1 or markers[0].start() != 0:
-        return [
-            f"{relative}: pull-request body template must begin with exactly one trusted template marker"
-        ]
-    if (
-        "<!-- repo-scaffold:pr-head:start -->" in text
-        or "<!-- repo-scaffold:pr-head:end -->" in text
+def validate_pr_body_sync_asset_contract(repository_root: Path) -> list[str]:
+    """Keep the workflow and its bundled renderer byte-identical to the sources."""
+    problems: list[str] = []
+    for source_relative, asset_relative in (
+        (
+            PR_BODY_SYNC_WORKFLOW_PATH,
+            Path("skills/repo-scaffold/assets/workflows/pr-body-sync.yml"),
+        ),
+        (
+            Path("scripts/render_pr_body_evidence.py"),
+            Path("skills/repo-scaffold/scripts/render_pr_body_evidence.py"),
+        ),
     ):
-        return [
-            f"{relative}: pull-request body template must not contain legacy partial head markers"
-        ]
-    placeholders = re.findall(r"\{\{([A-Za-z][A-Za-z0-9_]*)\}\}", text)
-    unsupported = sorted(set(placeholders) - {"HEAD_SHA", "HEAD_REPOSITORY"})
-    if unsupported:
-        return [
-            f"{relative}: unsupported pull-request body placeholders: {', '.join(unsupported)}"
-        ]
-    missing = sorted({"HEAD_SHA", "HEAD_REPOSITORY"} - set(placeholders))
-    if missing:
-        return [
-            f"{relative}: pull-request body template must bind {', '.join(missing)}"
-        ]
-    managed_markers = re.findall(
-        r"(?m)^<!-- repo-scaffold:pr-body-managed -->[ \t]*(?=\r?$)", text
-    )
-    if len(managed_markers) != 1:
-        return [
-            f"{relative}: pull-request body template must contain exactly one managed-body marker"
-        ]
-    template_marker_end = markers[0].end()
-    line_ending = "\r\n" if "\r\n" in text else "\n"
-    managed_start = text.find(managed_markers[0])
-    if managed_start != template_marker_end + len(line_ending):
-        return [
-            f"{relative}: managed-body marker must immediately follow the template marker"
-        ]
-    return []
+        source = repository_root / source_relative
+        asset = repository_root / asset_relative
+        try:
+            source_bytes = source.read_bytes()
+            asset_bytes = asset.read_bytes()
+        except OSError as error:
+            problems.append(
+                f"{asset_relative.as_posix()}: body-sync asset is unreadable: {error}"
+            )
+            continue
+        if source_bytes != asset_bytes:
+            problems.append(
+                f"{asset_relative.as_posix()}: body-sync asset must match {source_relative.as_posix()}"
+            )
+    return problems
 
 
 def read_front_matter(path: Path) -> tuple[Any, str]:
@@ -9331,6 +9366,10 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
         problems.append(
             ".github/workflows/official-docs.yml: reminder must verify its report marker before clean reconciliation"
         )
+    if not official_docs_exit_status_guard_is_safe(workflow_text):
+        problems.append(
+            ".github/workflows/official-docs.yml: reminder must reject unexpected and indeterminate checker statuses before Issue mutation"
+        )
     if not has_repo_bound_issue_reconciliation(workflow_text):
         problems.append(
             ".github/workflows/official-docs.yml: reminder mutations must bind an explicit repository"
@@ -10069,8 +10108,8 @@ def validate_repository(repository_root: Path) -> list[str]:
         validate_scorecard_manual_dispatch,
         validate_action_pin_sync_contract,
         validate_required_check_concurrency,
-        validate_pr_body_sync_template_contract,
         validate_pr_body_sync_workflow_contract,
+        validate_pr_body_sync_asset_contract,
         validate_issue_templates,
         validate_release_notes_config,
         validate_dependabot,

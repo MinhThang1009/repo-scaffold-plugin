@@ -720,16 +720,22 @@
       "url": "https://docs.github.com/en/rest/pulls/pulls",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
+        ".github/workflows/pr-body-sync.yml",
         "scripts/check_code_scanning_alerts.py",
+        "CONTRIBUTING.md",
         "skills/repo-scaffold/scripts/branch_protection_preflight.py",
-        "skills/repo-scaffold/references/github-setup.md"
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/references/pull-request-contract.md",
+        "skills/repo-scaffold/assets/workflows/pr-body-sync.yml"
       ],
       "required-markers": [
         "Get a pull request",
+        "Update a pull request",
+        "Body parameters",
         "merge_commit_sha",
         "Pull requests"
       ],
-      "reviewed-on": "2026-09-08",
+      "reviewed-on": "2026-09-29",
       "review-period-days": 90
     },
     {

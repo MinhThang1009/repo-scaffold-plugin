@@ -1,4 +1,5 @@
 <!-- repo-scaffold:pr-template=bugfix -->
+<!-- repo-scaffold:pr-guidance: Describe the final PR scope, confirmed cause, material changes, and verification with its revision; keep acceptance and rollout details explicit. -->
 
 ## Purpose
 

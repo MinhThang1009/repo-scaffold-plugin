@@ -98,6 +98,30 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   configured Release Please token can open PRs as that owner. Both exemptions
   must run Markdown body preflight first; a branch name alone is never an
   exemption.
+- PR body sync: trust only base-branch tooling, collect bounded commits and
+  changed-file evidence for the exact head SHA, render a concise body summary,
+  keep live check status in GitHub's Checks tab, run both body preflights,
+  revalidate the PR immediately before `gh pr edit`, and verify the exact
+  post-mutation body. Do not use a checked-in narrative body source or execute
+  pull-request head code.
+  Commits that need richer generated prose may provide `Why:`, `Root cause:`,
+  `Changes:`, and `Verification:` fields in their commit body; missing fields
+  must use an explicit evidence fallback rather than inferred claims.
+  Generated summaries should state the review outcome and confirmed cause in
+  prose, keep key changes to a few themes, and leave detailed file and check
+  listings to GitHub's Commits, Files changed, and Checks views.
+  Parse explicit field boundaries and multiline values; ordinary prose is not
+  structured evidence. Keep reverts and later fixes in scope. A reviewed
+  `PR-summary-base:` commit may consolidate earlier work at the exact base SHA,
+  but subsequent commits must remain represented. Reject truncated inventories
+  and over-budget summaries before updating GitHub. Attribute verification to
+  its source revision, and preserve human-authored risk, acceptance, and rollout
+  sections. A template/Markdown pass is not a content-completeness verdict.
+
+Reminder reconciliation treats an upstream checker exit status of `2` as
+indeterminate evidence. It must fail before Issue mutation and preserve the
+failure for review instead of treating the result as stale state.
+
 - Branch protection: required-check producers must be unique, executable, and
   event-compatible and backed by regular workflow files; Check Run evidence
   must resolve to one Actions workflow run with the producer's exact path,

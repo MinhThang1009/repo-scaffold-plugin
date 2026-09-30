@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -161,12 +161,36 @@ class MutationStatisticsTests(unittest.TestCase):
 
         self.assertIn("duplicate JSON member 'killed'", str(raised.exception))
 
-    def test_loader_requests_utf8_explicitly(self) -> None:
+    def test_loader_reads_utf8_through_a_bounded_stream(self) -> None:
+        class TrackingReader(BytesIO):
+            def __init__(self, content: bytes) -> None:
+                super().__init__(content)
+                self.read_sizes: list[int] = []
+
+            def read(self, size: int | None = None) -> bytes:
+                self.read_sizes.append(-1 if size is None else size)
+                return super().read(-1 if size is None else size)
+
         path = mock.Mock(spec=Path)
-        path.read_text.return_value = json.dumps(statistics())
+        source = TrackingReader(json.dumps(statistics()).encode("utf-8"))
+        path.open.return_value = source
 
         self.assertEqual(validate_mutation_results.load_statistics(path), statistics())
-        path.read_text.assert_called_once_with(encoding="utf-8")
+        path.open.assert_called_once_with("rb")
+        self.assertEqual(
+            source.read_sizes,
+            [validate_mutation_results.MAX_STATISTICS_BYTES + 1],
+        )
+
+    def test_loader_rejects_oversized_statistics_before_json_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "statistics.json"
+            path.write_bytes(b"x" * 5)
+            with (
+                mock.patch.object(validate_mutation_results, "MAX_STATISTICS_BYTES", 4),
+                self.assertRaisesRegex(ValueError, "byte safety cap"),
+            ):
+                validate_mutation_results.load_statistics(path)
 
     def test_loader_rejects_invalid_json_schema_counts_and_duplicates(self) -> None:
         invalid_documents = (

@@ -1,30 +1,32 @@
 <!-- repo-scaffold:pr-template=bugfix -->
 <!-- repo-scaffold:pr-body-managed -->
+<!-- This body is read by legacy template-based body-sync; the API-evidence body-sync does not read it. -->
 
 ## Purpose
 
-Keep every mutation-capable preflight bound to current, complete evidence and make the review body reproducible from a checked-in source template.
+Close verified gaps across repository guardrails, mutation caches, development tooling, and end-to-end pull-request evidence while preserving supported host and distribution contracts.
 
 ## Root cause
 
-Mutation planning and cache reuse could spend time on unnecessary execution and could reuse state without binding every material source, test, workflow, dependency, runtime, and platform input. The pull-request body also had no authoritative full-body source, so verification prose became stale after later commits.
+Reminder checks could treat indeterminate results as actionable. Body synchronization rejected the valid 3,000-file limit, omitted full source revision attribution, and read remote evidence before enforcing byte caps. A direct Coverage.py development pin also lagged the current upstream release.
 
 ## Key changes
 
-- Generate the mutation plan without running the clean suite or executing mutations, while supporting the reviewed mutmut planning API.
-- Bind reusable mutation state to source, test, workflow, dependency, branch, runtime, and platform inputs, and save the exact plan before shard execution.
-- Reuse pending mutants by exact shard assignment and retain sparse shard metadata while the merger enforces complete, valid, deterministic verdicts.
-- Keep source, generated workflow assets, validators, tests, and documentation synchronized for the mutation and pull-request contracts.
-- Render the entire pull-request body from this reviewed source template, with the current head SHA and head repository bound to the exact pull request revision.
-- Re-render explicitly managed pull-request bodies in full on every new commit while leaving unmanaged bodies unchanged.
+- Fail closed before reminder Issue mutations and preserve the mutation worker's environment and exact shard assignments.
+- Bind reusable mutation state and verdicts to source, tests, workflow, dependencies, runtime, platform, and complete non-overlapping shard evidence; write shard plans atomically.
+- Bound API pages, combined evidence, cache metadata, and workflow inputs before decoding; accept the 3,000-file ceiling, attribute PR claims to full source SHAs, preserve human sections, verify remote body state, and fail closed on incomplete evidence or untranslated Vietnamese text.
+- Synchronize Codex and Claude package assets, English/Vietnamese templates, documentation, validators, and the legacy manual body source.
+- Update Coverage.py to 7.16.2 and regenerate both hashed lockfiles without changing other resolved package versions.
 
 ## Verification
 
-- `python -m pytest -q`: 1275 passed, 4 skipped, 2840 subtests passed.
-- Coverage-instrumented full suite: 1275 passed, 4 skipped; `coverage report --fail-under=100` reports 100.00% statement and branch coverage.
-- `python scripts/validate_repository.py`, `python skills/repo-scaffold/scripts/validate_scaffold.py --repository-root . --template-root skills/repo-scaffold/assets`, and `python scripts/validate_workflows.py` passed.
-- `python -m ruff format --check skills scripts tests`, `python -m ruff check skills scripts tests`, the reviewed mypy command, compileall, markdownlint, and `claude plugin validate --strict .` passed.
-- The current pull-request body is rendered from this file at head `{{HEAD_SHA}}` in `{{HEAD_REPOSITORY}}`; mutation-quality remains a separate dispatched evidence path and is not claimed by this body.
+- Full test suite: 1308 passed, 4 skipped, 2857 subtests passed.
+- Coverage report: 100.00% statement and branch coverage.
+- Repository, scaffold, workflow, Ruff, mypy, compileall, Markdownlint, pip check, and strict Claude plugin validation passed. `pip-compile 7.6.0` regenerated both lockfiles, and hash-locked development dependencies installed successfully.
+- Freshness and official-documentation audits returned current; versioned maintenance inputs had no drift.
+- English and Vietnamese isolated targets passed scaffold validation, body rendering, and both body preflights. Incomplete inventory failed before output, and existing README content remained unchanged.
+- Codex and Claude installed the isolated package successfully. The published v1.10.14 archive digest and contents matched GitHub's release asset; full mutation-quality remains a separate scheduled/manual result and is not claimed.
+- Manual rendering with `scripts/update_pr_body.py --template-file` binds `{{HEAD_SHA}}` and `{{HEAD_REPOSITORY}}`. The legacy template-based workflow may consume this file; the API-evidence body-sync added by this change will not.
 
 ## Required checklist
 

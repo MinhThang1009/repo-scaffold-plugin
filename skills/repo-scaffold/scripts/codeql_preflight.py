@@ -2750,7 +2750,8 @@ def load_local_workflows(
                     f"Workflow 'local:{key}' exceeds the "
                     f"{MAX_WORKFLOW_BYTES}-byte safety cap."
                 )
-            raw = path.read_bytes()
+            with path.open("rb") as source:
+                raw = source.read(MAX_WORKFLOW_BYTES + 1)
             if len(raw) > MAX_WORKFLOW_BYTES:
                 raise InspectionError(
                     f"Workflow 'local:{key}' exceeds the "

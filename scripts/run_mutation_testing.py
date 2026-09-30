@@ -11,6 +11,8 @@ import multiprocessing
 import os
 import stat
 import sys
+import tempfile
+import threading
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
@@ -23,10 +25,13 @@ SHARD_PLAN_NAME = "mutation-shards.json"
 SHARD_PLAN_SCHEMA_VERSION = 1
 MAX_MUTATION_SHARDS = 64
 MAX_MUTANTS_PER_SHARD = 100_000
+MAX_REUSABLE_SOURCES_BYTES = 1024 * 1024
+MAX_SHARD_PLAN_BYTES = 512 * 1024 * 1024
 
 _MUTMUT_MAIN: Any = None
 _ORIGINAL_CREATE_MUTANTS: Callable[[Path, Path], Any] | None = None
 _REUSABLE_SOURCES: frozenset[str] = frozenset()
+_SHARD_PLAN_WRITE_LOCK = threading.Lock()
 
 
 class DuplicateJsonMember(ValueError):
@@ -105,12 +110,16 @@ def load_reusable_sources(repository_root: Path) -> frozenset[str]:
     _assert_safe_marker_path(repository_root, marker)
     if not marker.exists():
         return frozenset()
-    if marker.stat().st_size > 1024 * 1024:
+    if marker.stat().st_size > MAX_REUSABLE_SOURCES_BYTES:
         raise ValueError("incremental mutation source marker is unsafe or oversized")
     try:
-        document = json.loads(
-            marker.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
-        )
+        with marker.open("rb") as source:
+            raw = source.read(MAX_REUSABLE_SOURCES_BYTES + 1)
+        if len(raw) > MAX_REUSABLE_SOURCES_BYTES:
+            raise ValueError(
+                "incremental mutation source marker is unsafe or oversized"
+            )
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_json_object)
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(
             f"could not read incremental mutation sources: {error}"
@@ -198,10 +207,20 @@ def shard_mutants(mutant_names: list[str], shard_count: int) -> list[list[str]]:
     shards: list[list[str]] = [[] for _ in range(shard_count)]
     for index, name in enumerate(names):
         shards[index % shard_count].append(name)
+    if any(len(shard) > MAX_MUTANTS_PER_SHARD for shard in shards):
+        raise ValueError("mutation shard exceeds the configured mutant limit")
     return shards
 
 
 def write_shard_plan(
+    repository_root: Path, mutant_names: list[str], shard_count: int
+) -> Path:
+    """Write one plan at a time so local callers cannot collide on publication."""
+    with _SHARD_PLAN_WRITE_LOCK:
+        return _write_shard_plan(repository_root, mutant_names, shard_count)
+
+
+def _write_shard_plan(
     repository_root: Path, mutant_names: list[str], shard_count: int
 ) -> Path:
     """Write the exact, bounded mutation assignment used by every worker."""
@@ -209,14 +228,34 @@ def write_shard_plan(
     path = repository_root / "mutants" / SHARD_PLAN_NAME
     _assert_safe_marker_path(repository_root, path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {"schema_version": SHARD_PLAN_SCHEMA_VERSION, "shards": shards},
-            separators=(",", ":"),
-        )
-        + "\n",
-        encoding="utf-8",
+    encoder = json.JSONEncoder(separators=(",", ":"), ensure_ascii=False)
+    document = {"schema_version": SHARD_PLAN_SCHEMA_VERSION, "shards": shards}
+    total_bytes = 0
+    temporary_file = tempfile.NamedTemporaryFile(
+        mode="wb",
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
     )
+    temporary = Path(temporary_file.name)
+    try:
+        with temporary_file as output:
+            _assert_safe_marker_path(repository_root, temporary)
+            for chunk in encoder.iterencode(document):
+                encoded = chunk.encode("utf-8")
+                total_bytes += len(encoded)
+                if total_bytes + 1 > MAX_SHARD_PLAN_BYTES:
+                    raise ValueError("mutation shard plan exceeds the byte safety cap")
+                output.write(encoded)
+            output.write(b"\n")
+        _assert_safe_marker_path(repository_root, path)
+        _assert_safe_marker_path(repository_root, temporary)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            _assert_safe_marker_path(repository_root, temporary)
+            temporary.unlink()
     return path
 
 
@@ -225,9 +264,13 @@ def load_shard_names(repository_root: Path, shard_index: int) -> list[str]:
     path = repository_root / "mutants" / SHARD_PLAN_NAME
     _assert_safe_marker_path(repository_root, path)
     try:
-        document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
-        )
+        if path.stat().st_size > MAX_SHARD_PLAN_BYTES:
+            raise ValueError("mutation shard plan exceeds the byte safety cap")
+        with path.open("rb") as source:
+            raw = source.read(MAX_SHARD_PLAN_BYTES + 1)
+        if len(raw) > MAX_SHARD_PLAN_BYTES:
+            raise ValueError("mutation shard plan exceeds the byte safety cap")
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_json_object)
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation shard plan: {error}") from error
     if (

@@ -1,4 +1,5 @@
 <!-- repo-scaffold:pr-template=documentation -->
+<!-- repo-scaffold:pr-guidance: Mô tả phạm vi PR, nguyên nhân đã xác nhận, thay đổi quan trọng và verification gắn với revision; giữ rõ tiêu chí nghiệm thu và triển khai. -->
 
 ## Mục đích
 
