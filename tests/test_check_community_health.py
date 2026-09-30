@@ -870,6 +870,7 @@ class AuditAndCliTests(unittest.TestCase):
             path = Path(directory) / "nested" / "report.md"
             community_health.write_text(path, "report\n")
             self.assertEqual(path.read_text(encoding="utf-8"), "report\n")
+            self.assertFalse(community_health.output_is_link_or_reparse(path))
             with (
                 mock.patch.object(
                     community_health.os.path, "lexists", return_value=True
@@ -891,6 +892,74 @@ class AuditAndCliTests(unittest.TestCase):
             ]
         )
         self.assertEqual(args.repository, "owner/repository")
+
+    def test_write_text_revalidates_boundaries_and_publishes_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nested = root / "nested"
+            path = nested / "report.md"
+            with (
+                mock.patch.object(
+                    community_health,
+                    "is_link_or_reparse",
+                    return_value=True,
+                ),
+                self.assertRaisesRegex(community_health.AuditError, "output parent"),
+            ):
+                community_health.write_text(path, "report\n")
+
+            nested.mkdir(exist_ok=True)
+            path.write_text("original\n", encoding="utf-8")
+            for checks, message in (
+                ([False, False, True], "output"),
+                ([False, False, False, True], "output"),
+            ):
+                with self.subTest(checks=checks):
+                    with (
+                        mock.patch.object(
+                            community_health,
+                            "is_link_or_reparse",
+                            side_effect=checks,
+                        ),
+                        self.assertRaisesRegex(community_health.AuditError, message),
+                    ):
+                        community_health.write_text(path, "updated\n")
+
+            with (
+                mock.patch.object(
+                    community_health.os,
+                    "replace",
+                    side_effect=OSError("read-only report directory"),
+                ),
+                mock.patch.object(Path, "unlink", side_effect=OSError("locked")),
+                self.assertRaisesRegex(
+                    community_health.AuditError, "could not atomically write report"
+                ),
+            ):
+                community_health.write_text(path, "updated\n")
+
+            with (
+                mock.patch.object(
+                    community_health.tempfile,
+                    "NamedTemporaryFile",
+                    side_effect=OSError("cannot create temporary file"),
+                ),
+                self.assertRaisesRegex(
+                    community_health.AuditError, "could not atomically write report"
+                ),
+            ):
+                community_health.write_text(path, "updated\n")
+
+            with (
+                mock.patch.object(
+                    community_health.os.path, "lexists", return_value=True
+                ),
+                mock.patch.object(
+                    community_health, "is_link_or_reparse", return_value=False
+                ),
+            ):
+                community_health.write_text(path, "final\n")
+            self.assertEqual(path.read_text(encoding="utf-8"), "final\n")
 
     def test_main_returns_each_status_and_writes_reports(self) -> None:
         statuses = (("current", 0), ("attention", 1), ("indeterminate", 2))

@@ -223,6 +223,74 @@ class ActionPinSyncTests(unittest.TestCase):
 
             self.assertEqual(workflow.read_text(encoding="utf-8"), "name: validated\n")
 
+    def test_write_preserves_original_when_atomic_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root, ".github/workflows/ci.yml", "name: validated\n"
+            )
+            expected_content = workflow.read_bytes().decode("utf-8")
+            with (
+                mock.patch.object(
+                    sync_action_pins.os,
+                    "replace",
+                    side_effect=OSError("read-only workflow directory"),
+                ),
+                self.assertRaisesRegex(ValueError, "could not atomically write file"),
+            ):
+                sync_action_pins.write_workflow_bytes(
+                    root, workflow, "name: updated\n", expected_content
+                )
+            self.assertEqual(workflow.read_text(encoding="utf-8"), "name: validated\n")
+            self.assertFalse(list(workflow.parent.glob(f".{workflow.name}.*.tmp")))
+
+    def test_atomic_writer_revalidates_every_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = self.write_workflow(
+                root, ".github/workflows/ci.yml", "name: validated\n"
+            )
+            for checks, message in (
+                ([True], "file is unsafe"),
+                ([False, True], "file parent is unsafe"),
+                ([False, False, True], "temporary file is unsafe"),
+                ([False, False, False, True], "file is unsafe"),
+                ([False, False, False, False, True], "temporary file is unsafe"),
+            ):
+                with self.subTest(checks=checks):
+                    with (
+                        mock.patch.object(
+                            sync_action_pins,
+                            "_path_has_link_or_reparse",
+                            side_effect=checks,
+                        ),
+                        self.assertRaisesRegex(ValueError, message),
+                    ):
+                        sync_action_pins.write_bytes_atomically(
+                            root, workflow, b"updated\n"
+                        )
+
+            with (
+                mock.patch.object(
+                    sync_action_pins.os,
+                    "replace",
+                    side_effect=OSError("read-only workflow directory"),
+                ),
+                mock.patch.object(Path, "unlink", side_effect=OSError("locked")),
+                self.assertRaisesRegex(ValueError, "could not atomically write file"),
+            ):
+                sync_action_pins.write_bytes_atomically(root, workflow, b"updated\n")
+
+            with (
+                mock.patch.object(
+                    sync_action_pins.tempfile,
+                    "NamedTemporaryFile",
+                    side_effect=OSError("cannot create temporary file"),
+                ),
+                self.assertRaisesRegex(ValueError, "could not atomically write file"),
+            ):
+                sync_action_pins.write_bytes_atomically(root, workflow, b"updated\n")
+
     def test_read_workflow_text_bounds_size_and_encoding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ci.yml"

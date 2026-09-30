@@ -427,6 +427,32 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             renderer._line_ending("a\rb")
         with self.assertRaisesRegex(ValueError, "mixes CRLF"):
             renderer._line_ending("a\r\nb\n")
+
+    def test_body_writer_is_atomic_and_cleans_failed_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "body.md"
+            path.write_bytes(b"original")
+            with (
+                mock.patch.object(
+                    renderer.os,
+                    "replace",
+                    side_effect=OSError("read-only output"),
+                ),
+                mock.patch.object(Path, "unlink", side_effect=OSError("locked")),
+                self.assertRaisesRegex(ValueError, "could not write generated"),
+            ):
+                renderer.write_body(path, "updated")
+            self.assertEqual(path.read_bytes(), b"original")
+
+            with (
+                mock.patch.object(
+                    renderer.tempfile,
+                    "NamedTemporaryFile",
+                    side_effect=OSError("cannot create temporary file"),
+                ),
+                self.assertRaisesRegex(ValueError, "could not write generated"),
+            ):
+                renderer.write_body(path, "updated")
         with self.assertRaisesRegex(ValueError, "JSON array"):
             renderer._flatten_pages({}, "items")
         with self.assertRaisesRegex(ValueError, "non-object item"):

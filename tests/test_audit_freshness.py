@@ -9,7 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -1767,6 +1767,56 @@ class FreshnessTests(unittest.TestCase):
             self.assertIn(
                 "freshness-audit", markdown_output.read_text(encoding="utf-8")
             )
+
+    def test_report_writer_is_atomic_and_main_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "nested" / "report.md"
+            freshness.write_report(output, b"report\n")
+            self.assertEqual(output.read_bytes(), b"report\n")
+
+            with (
+                mock.patch.object(
+                    freshness.sync_action_pins,
+                    "write_bytes_atomically",
+                    side_effect=ValueError("read-only output"),
+                ),
+                self.assertRaisesRegex(
+                    freshness.AuditError, "could not write freshness report"
+                ),
+            ):
+                freshness.write_report(output, b"updated\n")
+
+            report = {
+                "checked-at": "now",
+                "status": "current",
+                "findings": [],
+                "errors": [],
+            }
+            stderr = StringIO()
+            with (
+                mock.patch.object(freshness, "audit", return_value=report),
+                mock.patch.object(
+                    freshness,
+                    "write_report",
+                    side_effect=freshness.AuditError("read-only output"),
+                ),
+                redirect_stderr(stderr),
+            ):
+                self.assertEqual(
+                    freshness.main(
+                        [
+                            "--repository-root",
+                            str(root),
+                            "--json-output",
+                            str(root / "report.json"),
+                            "--markdown-output",
+                            str(root / "report.md"),
+                        ]
+                    ),
+                    2,
+                )
+            self.assertIn("read-only output", stderr.getvalue())
 
     def test_action_failure_does_not_skip_independent_reminders(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

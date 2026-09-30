@@ -172,6 +172,7 @@ class MutationCacheTests(unittest.TestCase):
 
             invalid_documents: tuple[object, ...] = (
                 [],
+                {"schema_version": True, "shards": [["one"]]},
                 {"schema_version": 0, "shards": [["one"]]},
                 {"schema_version": 1, "shards": "one"},
                 {"schema_version": 1, "shards": []},

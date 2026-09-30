@@ -1113,6 +1113,15 @@ def markdown_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def write_report(path: Path, payload: bytes) -> None:
+    """Publish a report atomically so reconciliation cannot consume a partial file."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        sync_action_pins.write_bytes_atomically(path.parent, path, payload)
+    except (OSError, ValueError) as error:
+        raise AuditError(f"could not write freshness report {path}: {error}") from error
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse explicit report destinations for scheduled workflow use."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1133,10 +1142,18 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.get("GITHUB_TOKEN", ""),
         arguments.tracker_registry,
     )
-    arguments.json_output.write_text(
-        json.dumps(report, indent=2) + "\n", encoding="utf-8"
-    )
-    arguments.markdown_output.write_text(markdown_report(report), encoding="utf-8")
+    try:
+        write_report(
+            arguments.json_output,
+            (json.dumps(report, indent=2) + "\n").encode("utf-8"),
+        )
+        write_report(
+            arguments.markdown_output,
+            markdown_report(report).encode("utf-8"),
+        )
+    except AuditError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     print(f"Repository freshness status: {report['status']}")
     return {"current": 0, "attention": 1, "indeterminate": 2}[report["status"]]
 

@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,7 @@ def validate_shard_plan(plan: dict[str, Any]) -> list[list[str]]:
     shards = plan.get("shards")
     if (
         set(plan) != {"schema_version", "shards"}
+        or type(plan.get("schema_version")) is not int
         or plan.get("schema_version") != SHARD_PLAN_SCHEMA_VERSION
         or not isinstance(shards, list)
         or len(shards) not in range(1, MAX_MUTATION_SHARDS + 1)
@@ -137,6 +139,46 @@ def validate_shard_plan(plan: dict[str, Any]) -> list[list[str]]:
             validated.append(name)
         validated_shards.append(validated)
     return validated_shards
+
+
+def _write_json_atomically(
+    path: Path, document: dict[str, Any], *, boundary: Path
+) -> None:
+    """Publish one validated mutation document without exposing a partial write."""
+    _assert_safe_path(boundary, path)
+    parent = path.parent
+    _assert_safe_path(boundary, parent)
+    temporary: Path | None = None
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        _assert_safe_path(boundary, parent)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=parent,
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            _assert_safe_path(boundary, temporary)
+            output.write(json.dumps(document, indent=4) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        _assert_safe_path(boundary, path)
+        _assert_safe_path(boundary, temporary)
+        os.replace(temporary, path)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise ValueError(
+            f"could not publish mutation metadata {path}: {error}"
+        ) from error
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def metadata_paths(mutants: Path, expected_count: int) -> list[Path]:
@@ -268,7 +310,7 @@ def merge(repository_root: Path, artifacts_root: Path) -> None:
                         raise ValueError("mutation shard changed an unassigned mutant")
         if any(value is None for value in results.values()):
             raise ValueError("a mutation shard did not finish every assignment")
-        base_path.write_text(json.dumps(base, indent=4) + "\n", encoding="utf-8")
+        _write_json_atomically(base_path, base, boundary=mutants)
     if seen != set(assignments):
         raise ValueError("mutation shard plan does not match generated metadata")
 

@@ -19,6 +19,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import sync_action_pins
+
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_REGISTRY_BYTES = 512 * 1024
@@ -549,6 +551,17 @@ def markdown_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def write_report(path: Path, payload: bytes) -> None:
+    """Publish a report atomically so reconciliation cannot consume a partial file."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        sync_action_pins.write_bytes_atomically(path.parent, path, payload)
+    except (OSError, ValueError) as error:
+        raise AuditError(
+            f"could not write official-docs report {path}: {error}"
+        ) from error
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse explicit report destinations for the trusted scheduled workflow."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -587,10 +600,14 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.json_output is None or arguments.markdown_output is None:
             raise AssertionError("argument parser must require report output paths")
         report = audit(repository_root, arguments.tracker_registry)
-        arguments.json_output.write_text(
-            json.dumps(report, indent=2) + "\n", encoding="utf-8"
+        write_report(
+            arguments.json_output,
+            (json.dumps(report, indent=2) + "\n").encode("utf-8"),
         )
-        arguments.markdown_output.write_text(markdown_report(report), encoding="utf-8")
+        write_report(
+            arguments.markdown_output,
+            markdown_report(report).encode("utf-8"),
+        )
     except AuditError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

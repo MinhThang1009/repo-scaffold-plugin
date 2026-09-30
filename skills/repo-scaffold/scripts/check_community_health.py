@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -618,10 +619,58 @@ def markdown_report(report: dict[str, Any]) -> str:
 
 
 def write_text(path: Path, text: str) -> None:
+    if os.path.lexists(path.parent) and is_link_or_reparse(path.parent):
+        raise AuditError(
+            f"refusing linked or reparse-point output parent: {path.parent}"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
-    if os.path.lexists(path) and is_link_or_reparse(path):
+    if is_link_or_reparse(path.parent):
+        raise AuditError(
+            f"refusing linked or reparse-point output parent: {path.parent}"
+        )
+    reject_linked_output(path)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            if is_link_or_reparse(temporary):
+                raise AuditError(
+                    f"refusing linked or reparse-point output: {temporary}"
+                )
+            output.write(text)
+            output.flush()
+            os.fsync(output.fileno())
+        reject_linked_output(path)
+        os.replace(temporary, path)
+    except OSError as error:
+        raise AuditError(
+            f"could not atomically write report {path}: {error}"
+        ) from error
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def output_is_link_or_reparse(path: Path) -> bool:
+    """Check an optional output path without statting a missing file."""
+    return os.path.lexists(path) and is_link_or_reparse(path)
+
+
+def reject_linked_output(path: Path) -> None:
+    """Reject an output path that became link-like during publication."""
+    if output_is_link_or_reparse(path):
         raise AuditError(f"refusing linked or reparse-point output: {path}")
-    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

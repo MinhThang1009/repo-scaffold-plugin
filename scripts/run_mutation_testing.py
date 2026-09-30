@@ -48,6 +48,11 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return document
 
 
+def reject_json_constant(value: str) -> None:
+    """Reject non-standard JSON constants such as NaN and Infinity."""
+    raise ValueError(f"non-standard JSON constant {value!r}")
+
+
 def _validate_source_path(value: str) -> str:
     path = PurePosixPath(value)
     source_roots = (
@@ -119,7 +124,11 @@ def load_reusable_sources(repository_root: Path) -> frozenset[str]:
             raise ValueError(
                 "incremental mutation source marker is unsafe or oversized"
             )
-        document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_json_object)
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_json_object,
+            parse_constant=reject_json_constant,
+        )
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(
             f"could not read incremental mutation sources: {error}"
@@ -127,6 +136,7 @@ def load_reusable_sources(repository_root: Path) -> frozenset[str]:
     if (
         not isinstance(document, dict)
         or set(document) != {"schema_version", "sources"}
+        or type(document["schema_version"]) is not int
         or document["schema_version"] != SCHEMA_VERSION
         or not isinstance(document["sources"], list)
         or len(document["sources"]) > MAX_REUSABLE_SOURCES
@@ -270,12 +280,17 @@ def load_shard_names(repository_root: Path, shard_index: int) -> list[str]:
             raw = source.read(MAX_SHARD_PLAN_BYTES + 1)
         if len(raw) > MAX_SHARD_PLAN_BYTES:
             raise ValueError("mutation shard plan exceeds the byte safety cap")
-        document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_json_object)
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_json_object,
+            parse_constant=reject_json_constant,
+        )
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ValueError(f"could not read mutation shard plan: {error}") from error
     if (
         not isinstance(document, dict)
         or set(document) != {"schema_version", "shards"}
+        or type(document["schema_version"]) is not int
         or document["schema_version"] != SHARD_PLAN_SCHEMA_VERSION
         or not isinstance(document["shards"], list)
         or len(document["shards"]) not in range(1, MAX_MUTATION_SHARDS + 1)

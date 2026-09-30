@@ -147,6 +147,10 @@ class MergeMutationShardsTests(unittest.TestCase):
                     "invalid shard",
                 ),
                 (
+                    {"schema_version": True, "shards": [["name"]]},
+                    "invalid schema",
+                ),
+                (
                     {"schema_version": 1, "shards": [["bad\nname"]]},
                     "invalid mutant name",
                 ),
@@ -173,6 +177,53 @@ class MergeMutationShardsTests(unittest.TestCase):
             document["exit_code_by_key"]["alpha"] = 1
             overlay.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "unassigned"):
+                merge_mutation_shards.merge(root, root / "mutation-shards")
+
+    def test_merge_publishes_metadata_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            base = root / "mutants" / "source.meta"
+            original = base.read_bytes()
+            with (
+                mock.patch.object(
+                    merge_mutation_shards.os,
+                    "replace",
+                    side_effect=OSError("read-only cache"),
+                ),
+                self.assertRaisesRegex(
+                    ValueError, "could not publish mutation metadata"
+                ),
+            ):
+                merge_mutation_shards.merge(root, root / "mutation-shards")
+            self.assertEqual(base.read_bytes(), original)
+            self.assertFalse(list(base.parent.glob(f".{base.name}.*.tmp")))
+
+            self.fixture(root)
+            with (
+                mock.patch.object(
+                    merge_mutation_shards.os,
+                    "replace",
+                    side_effect=OSError("read-only cache"),
+                ),
+                mock.patch.object(Path, "unlink", side_effect=OSError("locked")),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "could not publish mutation metadata"
+                ):
+                    merge_mutation_shards.merge(root, root / "mutation-shards")
+
+            self.fixture(root)
+            with (
+                mock.patch.object(
+                    merge_mutation_shards.tempfile,
+                    "NamedTemporaryFile",
+                    side_effect=OSError("cannot create temporary file"),
+                ),
+                self.assertRaisesRegex(
+                    ValueError, "could not publish mutation metadata"
+                ),
+            ):
                 merge_mutation_shards.merge(root, root / "mutation-shards")
 
     def test_load_json_rejects_unreadable_and_nonobject_documents(self) -> None:

@@ -153,6 +153,10 @@ class ShardMutmut(FakeMutmut):
 
 
 class MutationRunnerTests(unittest.TestCase):
+    def test_json_constant_rejection_is_fail_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "non-standard JSON constant"):
+            run_mutation_testing.reject_json_constant("NaN")
+
     def write_marker(self, root: Path, sources: object) -> Path:
         marker = root / "mutants" / run_mutation_testing.REUSABLE_SOURCES_NAME
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -302,6 +306,7 @@ class MutationRunnerTests(unittest.TestCase):
         invalid_documents: tuple[object, ...] = (
             [],
             {"schema_version": 1},
+            {"schema_version": True, "sources": []},
             {"schema_version": 2, "sources": []},
             {"schema_version": 1, "sources": "scripts/alpha.py"},
             {"schema_version": 1, "sources": [1]},
@@ -624,6 +629,11 @@ class MutationRunnerTests(unittest.TestCase):
                 run_mutation_testing.load_shard_names(root, 0)
             plan.write_text(
                 '{"schema_version":0,"shards":[["name"]]}', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "invalid schema"):
+                run_mutation_testing.load_shard_names(root, 0)
+            plan.write_text(
+                '{"schema_version":true,"shards":[["name"]]}', encoding="utf-8"
             )
             with self.assertRaisesRegex(ValueError, "invalid schema"):
                 run_mutation_testing.load_shard_names(root, 0)

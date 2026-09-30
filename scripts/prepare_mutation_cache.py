@@ -216,6 +216,7 @@ def _validate_shard_plan(path: Path, mutation_root: Path) -> None:
     if (
         not isinstance(document, dict)
         or set(document) != {"schema_version", "shards"}
+        or type(document["schema_version"]) is not int
         or document["schema_version"] != SHARD_PLAN_SCHEMA_VERSION
         or not isinstance(document["shards"], list)
         or len(document["shards"]) not in range(1, MAX_MUTATION_SHARDS + 1)
@@ -439,7 +440,10 @@ def load_manifest(path: Path) -> ProjectSnapshot:
     }
     if not isinstance(document, dict) or set(document) != expected_fields:
         raise ValueError("mutation cache manifest fields differ from the schema")
-    if document["schema_version"] != MANIFEST_SCHEMA_VERSION:
+    if (
+        type(document["schema_version"]) is not int
+        or document["schema_version"] != MANIFEST_SCHEMA_VERSION
+    ):
         raise ValueError("mutation cache manifest schema version is unsupported")
     source_hashes = _validate_digest_map(
         document["source_hashes"], field="source_hashes"

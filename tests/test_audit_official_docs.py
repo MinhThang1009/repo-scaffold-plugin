@@ -581,6 +581,24 @@ class OfficialDocumentationAuditTests(unittest.TestCase):
             ):
                 official_docs.claim_findings(root, claim, date(2026, 8, 27))
 
+    def test_report_writer_is_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "nested" / "report.md"
+            official_docs.write_report(output, b"report\n")
+            self.assertEqual(output.read_bytes(), b"report\n")
+            with (
+                mock.patch.object(
+                    official_docs.sync_action_pins,
+                    "write_bytes_atomically",
+                    side_effect=ValueError("read-only output"),
+                ),
+                self.assertRaisesRegex(
+                    official_docs.AuditError, "could not write official-docs report"
+                ),
+            ):
+                official_docs.write_report(output, b"updated\n")
+
     def test_current_report_confirms_review_period_only_without_errors(self) -> None:
         report = {
             "checked-at": "2026-09-08T00:00:00+00:00",

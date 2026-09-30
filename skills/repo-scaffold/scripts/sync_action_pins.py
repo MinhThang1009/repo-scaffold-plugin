@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
@@ -325,7 +326,44 @@ def write_workflow_bytes(
         raise ValueError(f"workflow file changed during synchronization: {path}")
     if _path_has_link_or_reparse(path, repository_root):
         raise ValueError(f"workflow file is unsafe: {path}")
-    path.write_bytes(content.encode("utf-8"))
+    write_bytes_atomically(repository_root, path, content.encode("utf-8"))
+
+
+def write_bytes_atomically(repository_root: Path, path: Path, payload: bytes) -> None:
+    """Publish a repository file without exposing a partial replacement."""
+    if _path_has_link_or_reparse(path, repository_root):
+        raise ValueError(f"file is unsafe: {path}")
+    parent = path.parent
+    if _path_has_link_or_reparse(parent, repository_root):
+        raise ValueError(f"file parent is unsafe: {parent}")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=parent,
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            if _path_has_link_or_reparse(temporary, repository_root):
+                raise ValueError(f"temporary file is unsafe: {temporary}")
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        if _path_has_link_or_reparse(path, repository_root):
+            raise ValueError(f"file is unsafe: {path}")
+        if _path_has_link_or_reparse(temporary, repository_root):
+            raise ValueError(f"temporary file is unsafe: {temporary}")
+        os.replace(temporary, path)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"could not atomically write file {path}: {error}") from error
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def read_workflow_text(path: Path, *, byte_count: list[int] | None = None) -> str:
