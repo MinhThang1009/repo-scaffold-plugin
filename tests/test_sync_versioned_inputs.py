@@ -230,6 +230,29 @@ class VersionedInputSyncTests(unittest.TestCase):
 
             self.assertEqual(config.read_text(encoding="utf-8"), original)
 
+    def test_schema_synchronizer_publishes_config_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "release-please-config.json"
+            original = self.release_config()
+            config.write_text(original, encoding="utf-8")
+            with (
+                mock.patch.object(
+                    versioned_inputs.sync_action_pins.os,
+                    "replace",
+                    side_effect=OSError("read-only config directory"),
+                ),
+                self.assertRaisesRegex(ValueError, "could not atomically write file"),
+            ):
+                versioned_inputs.synchronize_release_please_schemas(
+                    root,
+                    (config.relative_to(root),),
+                    "v17.11.2",
+                    write=True,
+                )
+            self.assertEqual(config.read_text(encoding="utf-8"), original)
+            self.assertFalse(list(config.parent.glob(f".{config.name}.*.tmp")))
+
     def test_caches_authoritative_releases_across_preflight_and_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

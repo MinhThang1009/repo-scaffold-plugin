@@ -40,6 +40,7 @@ SKIPPED_DIRECTORIES = {
     "dist",
     "mutants",
     "node_modules",
+    "target",
     "vendor",
     "venv",
 }
@@ -70,6 +71,7 @@ PULL_REQUEST_TEMPLATE_LOCATIONS = (Path("."), Path("docs"), Path(".github"))
 PULL_REQUEST_TEMPLATE_EXTENSIONS = {".md", ".markdown", ".txt"}
 MAX_FOCUSED_PULL_REQUEST_TEMPLATES = 128
 MAX_TEMPLATE_DIRECTORY_SCAN_ENTRIES = 10_000
+MAX_MARKDOWN_INVENTORY_ENTRIES = 10_000
 
 
 class UniqueKeyBaseLoader(yaml.BaseLoader):
@@ -154,28 +156,42 @@ def markdown_inventory(repository_root: Path) -> tuple[list[Path], list[Path]]:
     rejected: list[Path] = []
     if path_has_link_or_reparse(repository_root, repository_root):
         return files, [repository_root]
-    for directory, child_directories, filenames in os.walk(
-        repository_root, topdown=True, followlinks=False
-    ):
-        current = Path(directory)
-        safe_children: list[str] = []
-        for name in sorted(child_directories):
-            child = current / name
-            relative = child.relative_to(repository_root)
+    pending = [repository_root]
+    inventory_entries = 0
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as directory_entries:
+                entries = []
+                for entry in directory_entries:
+                    inventory_entries += 1
+                    if inventory_entries > MAX_MARKDOWN_INVENTORY_ENTRIES:
+                        raise ValueError(
+                            "Markdown inventory exceeds the "
+                            f"{MAX_MARKDOWN_INVENTORY_ENTRIES}-entry safety cap"
+                        )
+                    entries.append(entry)
+        except (OSError, UnicodeError) as error:
+            raise ValueError(f"could not enumerate Markdown paths: {error}") from error
+
+        for entry in sorted(entries, key=lambda item: item.name, reverse=True):
+            path = Path(entry.path)
+            relative = path.relative_to(repository_root)
             if set(relative.parts) & SKIPPED_DIRECTORIES:
                 continue
-            if is_link_or_reparse(child):
-                rejected.append(child)
-            else:
-                safe_children.append(name)
-        child_directories[:] = safe_children
-        for name in sorted(filenames):
-            if not name.lower().endswith(".md"):
-                continue
-            path = current / name
             if is_link_or_reparse(path):
                 rejected.append(path)
-            elif path.is_file():
+                continue
+            try:
+                is_directory = path.is_dir()
+                is_file = path.is_file()
+            except OSError as error:
+                raise ValueError(
+                    f"could not inspect Markdown path: {path}: {error}"
+                ) from error
+            if is_directory:
+                pending.append(path)
+            elif is_file and entry.name.lower().endswith(".md"):
                 files.append(path)
     return sorted(files), sorted(rejected)
 
@@ -216,6 +232,21 @@ def read_markdown(
     except UnicodeError as error:
         return None, f"{label}: unreadable UTF-8 Markdown: {error}"
     return text.replace("\r\n", "\n").replace("\r", "\n"), None
+
+
+def read_bounded_utf8(path: Path, *, label: str) -> str:
+    """Read one bounded UTF-8 asset without accepting an oversized payload."""
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_MARKDOWN_FILE_BYTES + 1)
+    except OSError as error:
+        raise OSError(f"{label}: could not read UTF-8 file: {error}") from error
+    if len(payload) > MAX_MARKDOWN_FILE_BYTES:
+        raise ValueError(f"{label}: exceeds the {MAX_MARKDOWN_FILE_BYTES}-byte limit")
+    try:
+        return strip_utf8_bom(payload.decode("utf-8"))
+    except UnicodeError as error:
+        raise UnicodeError(f"{label}: unreadable UTF-8 file: {error}") from error
 
 
 OPAQUE_HTML_BLOCK = re.compile(
@@ -380,7 +411,10 @@ def validate_markdown_sources(
     exclusions = tuple(Path(os.path.abspath(path)) for path in marker_exclusions)
     problems: list[str] = []
     repository_root = Path(os.path.abspath(repository_root))
-    files, rejected = markdown_inventory(repository_root)
+    try:
+        files, rejected = markdown_inventory(repository_root)
+    except (OSError, UnicodeError, ValueError) as error:
+        return [f"Markdown inventory is unsafe or incomplete: {error}"]
     for path in rejected:
         relative = path.relative_to(repository_root).as_posix() or "."
         if path.is_symlink() and path.suffix.lower() == ".md":
@@ -655,7 +689,19 @@ def validate_markdown_issue_templates(
         return [
             f"{relative}: linked or reparse-point path is not dereferenced or validated"
         ]
-    for path in sorted(template_root.glob("*.md")):
+    if not template_root.exists():
+        return problems
+    try:
+        entries = bounded_template_directory_entries(template_root, repository_root)
+    except (OSError, ValueError) as error:
+        return [str(error)]
+    for path in sorted(
+        (
+            entry
+            for entry in entries
+            if entry.is_file() and entry.suffix.lower() == ".md"
+        )
+    ):
         relative = path.relative_to(repository_root).as_posix()
         text, problem = read_markdown(
             path, label=relative, repository_root=repository_root
@@ -707,10 +753,28 @@ def validate_issue_forms(
         ]
 
     problems: list[str] = []
-    for path in sorted(template_root.glob("*.yaml")):
+    if not template_root.exists():
+        return problems
+    try:
+        entries = bounded_template_directory_entries(template_root, repository_root)
+    except (OSError, ValueError) as error:
+        return [str(error)]
+    for path in sorted(
+        (
+            entry
+            for entry in entries
+            if entry.is_file() and entry.suffix.lower() == ".yaml"
+        )
+    ):
         relative = path.relative_to(repository_root).as_posix()
         problems.append(f"{relative}: issue forms must use the .yml extension")
-    for path in sorted(template_root.glob("*.yml")):
+    for path in sorted(
+        (
+            entry
+            for entry in entries
+            if entry.is_file() and entry.suffix.lower() == ".yml"
+        )
+    ):
         if path.name in {"config.yml", "config.vi.yml"}:
             continue
         relative = path.relative_to(repository_root).as_posix()
@@ -720,8 +784,8 @@ def validate_issue_forms(
             )
             continue
         try:
-            document = load_yaml_text(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            document = load_yaml_text(read_bounded_utf8(path, label=relative))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as error:
             problems.append(f"{relative}: invalid issue form YAML: {error}")
             continue
         if not isinstance(document, dict):
@@ -1165,16 +1229,17 @@ def validate_citation_assets(template_root: Path) -> list[str]:
             )
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
+            text = read_bounded_utf8(path, label=relative)
+        except (OSError, UnicodeError, ValueError) as error:
             problems.append(f"{relative}: could not read citation asset: {error}")
             continue
-        if not re.search(rf"(?m)^  - {re.escape(marker)}$", text):
+        normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not re.search(rf"(?m)^  - {re.escape(marker)}$", normalized_text):
             problems.append(
                 f"{relative}: citation authors marker must occupy a YAML mapping position"
             )
             continue
-        rendered = text.replace(marker, 'name: "Example Project"')
+        rendered = normalized_text.replace(marker, 'name: "Example Project"')
         try:
             document = load_yaml_text(rendered)
         except yaml.YAMLError as error:
@@ -1201,7 +1266,7 @@ def validate_release_please_locale_asset(template_root: Path) -> list[str]:
     if path_has_link_or_reparse(path, template_root):
         return [f"{relative}: linked or reparse-point release config is not validated"]
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(read_bounded_utf8(path, label=relative))
     except (OSError, UnicodeError, ValueError) as error:
         return [f"{relative}: invalid JSON: {error}"]
     expected = "chore${scope}: phát hành${component} ${version}"
@@ -1219,7 +1284,16 @@ def validate_scaffold(
     repository_root: Path, *, template_root: Path | None = None
 ) -> list[str]:
     """Run every deterministic rendered-document validation."""
-    exclusions = (template_root.parent,) if template_root else ()
+    exclusions: list[Path] = []
+    if template_root is not None:
+        exclusions.append(template_root)
+        source_root = template_root.parent
+        if (
+            template_root.name == "assets"
+            and (source_root / "SKILL.md").is_file()
+            and (source_root / "references").is_dir()
+        ):
+            exclusions.extend((source_root / "SKILL.md", source_root / "references"))
     problems = validate_markdown_sources(repository_root, marker_exclusions=exclusions)
     problems.extend(validate_code_of_conduct(repository_root))
     problems.extend(validate_readme(repository_root))

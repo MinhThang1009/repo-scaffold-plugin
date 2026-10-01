@@ -8,6 +8,8 @@ import html
 import json
 import re
 import sys
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -619,12 +621,33 @@ def write_body(path: Path, body: str) -> None:
     payload = body.encode("utf-8")
     if len(payload) > MAX_BODY_BYTES:
         raise ValueError("generated pull-request body exceeds the safety cap")
+    temporary: Path | None = None
     try:
-        path.write_bytes(payload)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
     except OSError as error:
         raise ValueError(
-            f"could not write generated pull-request body: {error}"
+            f"could not write generated pull-request body atomically: {error}"
         ) from error
+    finally:
+        if (
+            temporary is not None
+        ):  # pragma: no branch - defensive cleanup after allocation
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -22,7 +22,7 @@ MANIFEST_NAME = "mutation-cache-manifest.json"
 REUSABLE_SOURCES_NAME = ".incremental-sources.json"
 SHARD_PLAN_NAME = "mutation-shards.json"
 SHARD_PLAN_SCHEMA_VERSION = 1
-MAX_MUTATION_SHARDS = 64
+MAX_MUTATION_SHARDS = 128
 MAX_MUTANTS_PER_SHARD = 100_000
 SOURCE_ROOTS = (PurePosixPath("scripts"), PurePosixPath("skills/repo-scaffold/scripts"))
 CACHE_CONTROL_FILES = frozenset(
@@ -53,6 +53,9 @@ IGNORED_DIRECTORIES = {
     "build",
     "dist",
     "mutants",
+    "node_modules",
+    "target",
+    "vendor",
     "venv",
 }
 IGNORED_FILE_NAMES = {".coverage"}
@@ -213,6 +216,7 @@ def _validate_shard_plan(path: Path, mutation_root: Path) -> None:
     if (
         not isinstance(document, dict)
         or set(document) != {"schema_version", "shards"}
+        or type(document["schema_version"]) is not int
         or document["schema_version"] != SHARD_PLAN_SCHEMA_VERSION
         or not isinstance(document["shards"], list)
         or len(document["shards"]) not in range(1, MAX_MUTATION_SHARDS + 1)
@@ -316,8 +320,15 @@ def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
     _assert_safe_project_path(repository_root, repository_root)
     files: list[tuple[str, Path]] = []
     total_bytes = 0
+
+    def fail_on_walk_error(error: OSError) -> None:
+        raise error
+
     for directory, child_directories, filenames in os.walk(
-        repository_root, topdown=True, followlinks=False
+        repository_root,
+        topdown=True,
+        followlinks=False,
+        onerror=fail_on_walk_error,
     ):
         current = Path(directory)
         _assert_safe_project_path(repository_root, current)
@@ -429,7 +440,10 @@ def load_manifest(path: Path) -> ProjectSnapshot:
     }
     if not isinstance(document, dict) or set(document) != expected_fields:
         raise ValueError("mutation cache manifest fields differ from the schema")
-    if document["schema_version"] != MANIFEST_SCHEMA_VERSION:
+    if (
+        type(document["schema_version"]) is not int
+        or document["schema_version"] != MANIFEST_SCHEMA_VERSION
+    ):
         raise ValueError("mutation cache manifest schema version is unsupported")
     source_hashes = _validate_digest_map(
         document["source_hashes"], field="source_hashes"

@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +21,10 @@ RESULT_FIELDS = (
 PRESERVED_KILLED_EXIT_CODES = frozenset({1, 3})
 MAX_METADATA_BYTES = 512 * 1024 * 1024
 SHARD_PLAN_SCHEMA_VERSION = 1
-MAX_MUTATION_SHARDS = 64
+MAX_MUTATION_SHARDS = 128
 MAX_MUTANTS_PER_SHARD = 100_000
 MAX_MUTANT_NAME_LENGTH = 4_096
+MAX_METADATA_SCAN_ENTRIES = 10_000
 
 
 class DuplicateJsonMember(ValueError):
@@ -111,6 +113,7 @@ def validate_shard_plan(plan: dict[str, Any]) -> list[list[str]]:
     shards = plan.get("shards")
     if (
         set(plan) != {"schema_version", "shards"}
+        or type(plan.get("schema_version")) is not int
         or plan.get("schema_version") != SHARD_PLAN_SCHEMA_VERSION
         or not isinstance(shards, list)
         or len(shards) not in range(1, MAX_MUTATION_SHARDS + 1)
@@ -138,6 +141,92 @@ def validate_shard_plan(plan: dict[str, Any]) -> list[list[str]]:
     return validated_shards
 
 
+def _write_json_atomically(
+    path: Path, document: dict[str, Any], *, boundary: Path
+) -> None:
+    """Publish one validated mutation document without exposing a partial write."""
+    _assert_safe_path(boundary, path)
+    parent = path.parent
+    _assert_safe_path(boundary, parent)
+    temporary: Path | None = None
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        _assert_safe_path(boundary, parent)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=parent,
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            _assert_safe_path(boundary, temporary)
+            output.write(json.dumps(document, indent=4) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        _assert_safe_path(boundary, path)
+        _assert_safe_path(boundary, temporary)
+        os.replace(temporary, path)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise ValueError(
+            f"could not publish mutation metadata {path}: {error}"
+        ) from error
+    finally:
+        if (
+            temporary is not None
+        ):  # pragma: no branch - defensive cleanup after allocation
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def metadata_paths(mutants: Path, expected_count: int) -> list[Path]:
+    """Enumerate mutation metadata with bounded, link-safe traversal."""
+    pending = [mutants]
+    paths: list[Path] = []
+    scanned = 0
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as directory:
+                entries = sorted(directory, key=lambda entry: entry.name)
+        except OSError as error:
+            raise ValueError(
+                f"could not enumerate mutation metadata: {current}"
+            ) from error
+        for entry in entries:
+            scanned += 1
+            if scanned > MAX_METADATA_SCAN_ENTRIES:
+                raise ValueError(
+                    "mutation metadata inventory exceeds the "
+                    f"{MAX_METADATA_SCAN_ENTRIES}-entry safety cap"
+                )
+            path = Path(entry.path)
+            try:
+                if _is_link_or_reparse(path):
+                    raise ValueError(
+                        f"mutation metadata path is a link or reparse point: {path}"
+                    )
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                elif entry.is_file(follow_symlinks=False) and entry.name.endswith(
+                    ".meta"
+                ):
+                    paths.append(path)
+                    if len(paths) > expected_count:
+                        raise ValueError(
+                            "mutation shard metadata exceeds the shard-plan inventory"
+                        )
+            except OSError as error:
+                raise ValueError(
+                    f"could not inspect mutation metadata: {path}"
+                ) from error
+    return sorted(paths)
+
+
 def merge(repository_root: Path, artifacts_root: Path) -> None:
     """Merge only results assigned to each shard and reject incomplete state."""
     mutants = repository_root / "mutants"
@@ -151,7 +240,8 @@ def merge(repository_root: Path, artifacts_root: Path) -> None:
     }
     if len(assignments) != sum(len(names) for names in shards):
         raise ValueError("mutation shard plan has duplicate or invalid names")
-    base_paths = sorted(mutants.rglob("*.meta"))
+    expected_metadata_files = sum(len(names) for names in shards)
+    base_paths = metadata_paths(mutants, expected_metadata_files)
     if not base_paths:
         raise ValueError("mutation shard metadata is missing")
     seen: set[str] = set()
@@ -222,7 +312,7 @@ def merge(repository_root: Path, artifacts_root: Path) -> None:
                         raise ValueError("mutation shard changed an unassigned mutant")
         if any(value is None for value in results.values()):
             raise ValueError("a mutation shard did not finish every assignment")
-        base_path.write_text(json.dumps(base, indent=4) + "\n", encoding="utf-8")
+        _write_json_atomically(base_path, base, boundary=mutants)
     if seen != set(assignments):
         raise ValueError("mutation shard plan does not match generated metadata")
 

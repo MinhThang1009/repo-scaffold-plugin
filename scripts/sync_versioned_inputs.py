@@ -107,7 +107,9 @@ def synchronize_release_please_schemas(
             audit_freshness.tracked_path(
                 repository_root, relative, kind="Release Please config"
             )
-            path.write_bytes(updated.encode("utf-8"))
+            sync_action_pins.write_bytes_atomically(
+                repository_root, path, updated.encode("utf-8")
+            )
         changed.append(path)
     return changed
 

@@ -172,6 +172,7 @@ class MutationCacheTests(unittest.TestCase):
 
             invalid_documents: tuple[object, ...] = (
                 [],
+                {"schema_version": True, "shards": [["one"]]},
                 {"schema_version": 0, "shards": [["one"]]},
                 {"schema_version": 1, "shards": "one"},
                 {"schema_version": 1, "shards": []},
@@ -548,6 +549,33 @@ class MutationCacheTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "symlink or reparse point"),
             ):
                 prepare_mutation_cache._project_files(root)
+
+    def test_project_inventory_propagates_walk_errors(self) -> None:
+        def failing_walk(*_args: object, **kwargs: object) -> object:
+            callback = kwargs["onerror"]
+            assert callable(callback)
+            callback(OSError("denied"))
+            return iter(())
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(
+                prepare_mutation_cache.os, "walk", side_effect=failing_walk
+            ):
+                with self.assertRaisesRegex(OSError, "denied"):
+                    prepare_mutation_cache._project_files(Path(directory))
+
+    def test_project_inventory_skips_dependency_and_build_trees(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.py"
+            source.write_text("print('source')\n", encoding="utf-8")
+            for name in ("node_modules", "target", "vendor"):
+                path = root / name / "nested.py"
+                path.parent.mkdir(parents=True)
+                path.write_text("print('ignored')\n", encoding="utf-8")
+
+            files = prepare_mutation_cache._project_files(root)
+            self.assertEqual(files, [("source.py", source)])
 
     def test_mutation_root_rejects_a_linked_repository_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -227,8 +228,14 @@ def load_registry(path: Path) -> list[RegistryEntry]:
             raise AuditError(f"tracker registry is linked or a reparse point: {path}")
         if path.stat().st_size > MAX_REGISTRY_BYTES:
             raise AuditError(f"tracker registry exceeds the size limit: {path}")
+        if is_link_or_reparse(path):
+            raise AuditError(f"tracker registry is linked or a reparse point: {path}")
+        with path.open("rb") as source:
+            payload = source.read(MAX_REGISTRY_BYTES + 1)
+        if len(payload) > MAX_REGISTRY_BYTES:
+            raise AuditError(f"tracker registry exceeds the size limit: {path}")
         document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object
+            payload.decode("utf-8"), object_pairs_hook=unique_json_object
         )
     except (
         OSError,
@@ -360,9 +367,17 @@ def version_tuple(value: str) -> tuple[int, int, int]:
 
 def local_contributor_covenant_version(path: Path) -> str | None:
     try:
+        if is_link_or_reparse(path):
+            raise AuditError(f"Code of Conduct is linked or a reparse point: {path}")
         if path.stat().st_size > MAX_POLICY_BYTES:
             raise AuditError(f"Code of Conduct is too large: {path}")
-        text = path.read_text(encoding="utf-8")
+        if is_link_or_reparse(path):
+            raise AuditError(f"Code of Conduct is linked or a reparse point: {path}")
+        with path.open("rb") as source:
+            payload = source.read(MAX_POLICY_BYTES + 1)
+        if len(payload) > MAX_POLICY_BYTES:
+            raise AuditError(f"Code of Conduct is too large: {path}")
+        text = payload.decode("utf-8")
     except (OSError, UnicodeError) as error:
         raise AuditError(f"could not read Code of Conduct {path}: {error}") from error
     match = CONTRIBUTOR_COVENANT_ATTRIBUTION.search(text)
@@ -415,7 +430,8 @@ def _check_contributor_covenant(
     paths = result["paths"]
     if result["status"] != "present" or not isinstance(paths, list) or len(paths) != 1:
         return
-    current = local_contributor_covenant_version(root / paths[0])
+    current_path = checked_repository_path(root, paths[0])
+    current = local_contributor_covenant_version(current_path)
     if current is None:
         result["status"] = "unversioned"
         result["details"] = (
@@ -603,10 +619,60 @@ def markdown_report(report: dict[str, Any]) -> str:
 
 
 def write_text(path: Path, text: str) -> None:
+    if os.path.lexists(path.parent) and is_link_or_reparse(path.parent):
+        raise AuditError(
+            f"refusing linked or reparse-point output parent: {path.parent}"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
-    if os.path.lexists(path) and is_link_or_reparse(path):
+    if is_link_or_reparse(path.parent):
+        raise AuditError(
+            f"refusing linked or reparse-point output parent: {path.parent}"
+        )
+    reject_linked_output(path)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            if is_link_or_reparse(temporary):
+                raise AuditError(
+                    f"refusing linked or reparse-point output: {temporary}"
+                )
+            output.write(text)
+            output.flush()
+            os.fsync(output.fileno())
+        reject_linked_output(path)
+        os.replace(temporary, path)
+    except OSError as error:
+        raise AuditError(
+            f"could not atomically write report {path}: {error}"
+        ) from error
+    finally:
+        if (
+            temporary is not None
+        ):  # pragma: no branch - defensive cleanup after allocation
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def output_is_link_or_reparse(path: Path) -> bool:
+    """Check an optional output path without statting a missing file."""
+    return os.path.lexists(path) and is_link_or_reparse(path)
+
+
+def reject_linked_output(path: Path) -> None:
+    """Reject an output path that became link-like during publication."""
+    if output_is_link_or_reparse(path):
         raise AuditError(f"refusing linked or reparse-point output: {path}")
-    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

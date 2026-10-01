@@ -37,10 +37,15 @@ CACHE_DIRECTORIES = {
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
+    ".tox",
+    ".nox",
     "__pycache__",
     "build",
     "dist",
     "mutants",
+    "node_modules",
+    "target",
+    "vendor",
     "venv",
     ".venv",
 }
@@ -48,6 +53,11 @@ COVERAGE_FAIL_UNDER = 100
 MUTATION_PLAN_TIMEOUT_MINUTES = "360"
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
+MAX_VALIDATION_FILE_BYTES = 8 * 1024 * 1024
+MAX_VALIDATION_PROJECT_ENTRIES = 10_000
+MAX_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 10_000
 CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
 RELEASE_ARCHIVE_PATHS = (
     ".agents",
@@ -936,10 +946,24 @@ def project_files(repository_root: Path, patterns: Iterable[str]) -> list[Path]:
     repository_root = Path(os.path.abspath(repository_root))
     requested_patterns = tuple(patterns)
     files: set[Path] = set()
+    entry_count = 0
+
+    def fail_on_walk_error(error: OSError) -> None:
+        raise error
+
     for directory, child_directories, filenames in os.walk(
-        repository_root, topdown=True, followlinks=False
+        repository_root,
+        topdown=True,
+        followlinks=False,
+        onerror=fail_on_walk_error,
     ):
         current = Path(directory)
+        entry_count += len(child_directories) + len(filenames)
+        if entry_count > MAX_VALIDATION_PROJECT_ENTRIES:
+            raise ValueError(
+                "project inventory exceeds the "
+                f"{MAX_VALIDATION_PROJECT_ENTRIES}-entry safety cap"
+            )
         child_directories[:] = sorted(
             name
             for name in child_directories
@@ -962,9 +986,30 @@ def load_yaml_text(text: str) -> Any:
         raise yaml.YAMLError("YAML nesting exceeds parser limit") from error
 
 
+def read_bounded_bytes(path: Path, *, limit: int | None = None) -> bytes:
+    """Read one repository file without allowing a size-check race to grow it."""
+    if limit is None:
+        limit = MAX_VALIDATION_FILE_BYTES
+    with path.open("rb") as source:
+        payload = source.read(limit + 1)
+    if len(payload) > limit:
+        raise OSError(f"file exceeds the {limit}-byte safety cap: {path}")
+    return payload
+
+
+def read_bounded_text(path: Path, *, limit: int | None = None) -> str:
+    """Read one bounded UTF-8 repository file."""
+    return (
+        read_bounded_bytes(path, limit=limit)
+        .decode("utf-8")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+
 def load_yaml(path: Path) -> Any:
     """Load a YAML document without YAML 1.1 scalar coercion."""
-    return load_yaml_text(path.read_text(encoding="utf-8"))
+    return load_yaml_text(read_bounded_text(path))
 
 
 def permissions_grant_issue_write(scope: object) -> bool:
@@ -3350,7 +3395,7 @@ def load_json(path: Path) -> Any:
     """Load a JSON document and reject duplicate member names."""
     try:
         return json.loads(
-            path.read_text(encoding="utf-8"),
+            read_bounded_text(path),
             object_pairs_hook=reject_duplicate_json_pairs,
         )
     except RecursionError as error:
@@ -3385,14 +3430,19 @@ def child_process_environment() -> dict[str, str]:
 def validate_serialized_files(repository_root: Path) -> list[str]:
     """Validate every first-party JSON and YAML document."""
     problems: list[str] = []
-    for path in project_files(repository_root, ("*.json",)):
+    try:
+        json_files = project_files(repository_root, ("*.json",))
+        yaml_files = project_files(repository_root, ("*.yml", "*.yaml"))
+    except (OSError, ValueError) as error:
+        return [f"project inventory: {error}"]
+    for path in json_files:
         try:
             load_json(path)
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
             problems.append(
                 f"{path.relative_to(repository_root)}: invalid JSON: {error}"
             )
-    for path in project_files(repository_root, ("*.yml", "*.yaml")):
+    for path in yaml_files:
         try:
             load_yaml(path)
         except (OSError, UnicodeError, yaml.YAMLError) as error:
@@ -3441,7 +3491,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
     for relative in ("README.md", "CONTRIBUTING.md", "requirements-dev.in"):
         path = repository_root / relative
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_bounded_text(path)
         except (OSError, UnicodeError) as error:
             problems.append(f"{relative}: could not verify Python policy link: {error}")
             continue
@@ -3463,7 +3513,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         repository_root / "skills" / "repo-scaffold" / "assets" / "workflows" / "ci.yml"
     )
     try:
-        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow_text = read_bounded_text(workflow_path)
         workflow = load_yaml(workflow_path)
     except (OSError, UnicodeError, yaml.YAMLError) as error:
         problems.append(f".github/workflows/ci.yml: could not verify contract: {error}")
@@ -3655,7 +3705,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             )
 
     try:
-        asset_text = asset_path.read_text(encoding="utf-8")
+        asset_text = read_bounded_text(asset_path)
     except (OSError, UnicodeError) as error:
         problems.append(f"{asset_path.relative_to(repository_root)}: {error}")
     else:
@@ -3679,7 +3729,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         / "workflow-contracts.md"
     )
     try:
-        skill_text = workflow_reference_path.read_text(encoding="utf-8")
+        skill_text = read_bounded_text(workflow_reference_path)
     except (OSError, UnicodeError) as error:
         problems.append(
             f"{workflow_reference_path.relative_to(repository_root)}: {error}"
@@ -3699,7 +3749,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
     ruff_path = repository_root / "ruff.toml"
     try:
         policy = load_json(policy_path)
-        ruff_text = ruff_path.read_text(encoding="utf-8")
+        ruff_text = read_bounded_text(ruff_path)
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
         problems.append(f"ruff.toml: could not verify Python target: {error}")
     else:
@@ -4000,7 +4050,7 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
     for document_name in ("README.md", "CONTRIBUTING.md"):
         path = repository_root / document_name
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_bounded_text(path)
         except (OSError, UnicodeError) as error:
             problems.append(
                 f"{document_name}: could not verify CI toolchain link: {error}"
@@ -4019,7 +4069,7 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
 
     workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
     try:
-        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow_text = read_bounded_text(workflow_path)
         workflow = load_yaml(workflow_path)
     except (OSError, UnicodeError, yaml.YAMLError) as error:
         problems.append(
@@ -4201,7 +4251,7 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         / "documentation.yml"
     )
     try:
-        documentation_text = documentation_path.read_text(encoding="utf-8")
+        documentation_text = read_bounded_text(documentation_path)
         documentation = load_yaml(documentation_path)
     except (OSError, UnicodeError, yaml.YAMLError) as error:
         problems.append(
@@ -4273,7 +4323,7 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         / "workflow-contracts.md"
     )
     try:
-        skill_text = workflow_reference_path.read_text(encoding="utf-8")
+        skill_text = read_bounded_text(workflow_reference_path)
     except (OSError, UnicodeError) as error:
         problems.append(
             f"skills/repo-scaffold/references/workflow-contracts.md: {error}"
@@ -4294,7 +4344,7 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         repository_root / "skills" / "repo-scaffold" / "references" / "github-setup.md"
     )
     try:
-        setup_text = setup_path.read_text(encoding="utf-8")
+        setup_text = read_bounded_text(setup_path)
     except (OSError, UnicodeError) as error:
         problems.append(f"skills/repo-scaffold/references/github-setup.md: {error}")
     else:
@@ -4316,7 +4366,7 @@ def validate_policy_drift_reminder_contract(repository_root: Path) -> list[str]:
     workflow_path = repository_root / ".github" / "workflows" / "ci.yml"
     try:
         workflow = load_yaml(workflow_path)
-        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow_text = read_bounded_text(workflow_path)
     except (OSError, UnicodeError, yaml.YAMLError) as error:
         return [f".github/workflows/ci.yml: could not verify policy reminder: {error}"]
 
@@ -4429,7 +4479,7 @@ def validate_mirrored_dependency_metadata(repository_root: Path) -> list[str]:
             try:
                 matches = re.findall(
                     rf"(?im)^{re.escape(package)}==([^\s#]+)\s*$",
-                    path.read_text(encoding="utf-8"),
+                    read_bounded_text(path),
                 )
             except (OSError, UnicodeError) as error:
                 problems.append(f"{relative}: could not verify {package} pin: {error}")
@@ -4488,15 +4538,15 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     lock_path = repository_root / "requirements-dev.txt"
     mutation_lock_path = repository_root / "requirements-mutation.txt"
     try:
-        direct_text = direct_path.read_text(encoding="utf-8")
+        direct_text = read_bounded_text(direct_path)
     except (OSError, UnicodeError) as error:
         return [f"requirements-dev.in: could not verify direct pins: {error}"]
     try:
-        lock_text = lock_path.read_text(encoding="utf-8")
+        lock_text = read_bounded_text(lock_path)
     except (OSError, UnicodeError) as error:
         return [f"requirements-dev.txt: could not verify hashed lock: {error}"]
     try:
-        mutation_lock_text = mutation_lock_path.read_text(encoding="utf-8")
+        mutation_lock_text = read_bounded_text(mutation_lock_path)
     except (OSError, UnicodeError) as error:
         return [
             f"requirements-mutation.txt: could not verify inherited development pins: {error}"
@@ -4697,7 +4747,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         for relative in ("README.md", "CONTRIBUTING.md"):
             path = repository_root / relative
             try:
-                document_text = " ".join(path.read_text(encoding="utf-8").split())
+                document_text = " ".join(read_bounded_text(path).split())
             except (OSError, UnicodeError) as error:
                 problems.append(
                     f"{relative}: could not verify Mypy development guidance: {error}"
@@ -4711,7 +4761,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     coverage_path = repository_root / ".coveragerc"
     coverage_config = configparser.ConfigParser()
     try:
-        coverage_config.read_string(coverage_path.read_text(encoding="utf-8"))
+        coverage_config.read_string(read_bounded_text(coverage_path))
         branch = coverage_config.getboolean("run", "branch")
         sources = {
             line.strip().replace("\\", "/")
@@ -4748,7 +4798,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     for relative in ("README.md", "CONTRIBUTING.md"):
         path = repository_root / relative
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_bounded_text(path)
         except (OSError, UnicodeError) as error:
             problems.append(
                 f"{relative}: could not verify dependency guidance: {error}"
@@ -4766,7 +4816,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
 
     attributes_path = repository_root / ".gitattributes"
     try:
-        attributes = attributes_path.read_text(encoding="utf-8")
+        attributes = read_bounded_text(attributes_path)
     except (OSError, UnicodeError) as error:
         problems.append(f".gitattributes: could not verify export exclusions: {error}")
     else:
@@ -4780,7 +4830,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     try:
         ignore_lines = {
             line.strip()
-            for line in ignore_path.read_text(encoding="utf-8").splitlines()
+            for line in read_bounded_text(ignore_path).splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         }
     except (OSError, UnicodeError) as error:
@@ -4827,7 +4877,7 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         raw_plan_steps if isinstance(raw_plan_steps, list) else []
     )
     expected_plan_run = (
-        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 64"
+        "python scripts/run_mutation_testing.py --max-children 4 --plan-shards 128"
     )
     expected_plan_condition = (
         "${{ steps.mutation-prepare.outputs.plan-reuse != 'true' }}"
@@ -4857,9 +4907,9 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         ]
     matrix = shards.get("strategy", {}).get("matrix", {})
     assigned = matrix.get("shard") if isinstance(matrix, dict) else None
-    if assigned != [str(index) for index in range(64)]:
+    if assigned != [str(index) for index in range(128)]:
         return [
-            ".github/workflows/mutation-testing.yml: run all 64 exact mutation shards"
+            ".github/workflows/mutation-testing.yml: run all 128 exact mutation shards"
         ]
     expected_shard_run = (
         "python scripts/run_mutation_testing.py --max-children 4 --shard-index "
@@ -5102,7 +5152,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     problems: list[str] = []
     for relative in relative_paths:
         try:
-            texts[relative] = (repository_root / relative).read_text(encoding="utf-8")
+            texts[relative] = read_bounded_text(repository_root / relative)
         except (OSError, UnicodeError) as error:
             problems.append(f"{relative}: could not verify mutation contract: {error}")
     if len(texts) != len(relative_paths):
@@ -5773,24 +5823,34 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 "pyproject.toml: pytest must collect only first-party tests from tests/"
             )
 
-    production_python_files = {
-        path.relative_to(repository_root).as_posix()
-        for path in repository_root.rglob("*.py")
-        if not set(path.relative_to(repository_root).parts) & CACHE_DIRECTORIES
-        and path.relative_to(repository_root).parts[0] != "tests"
-    }
-    scoped_python_files = {
-        path.relative_to(repository_root).as_posix()
-        for source_path in expected_source_paths
-        for path in (repository_root / source_path).rglob("*.py")
-        if not set(path.relative_to(repository_root).parts) & CACHE_DIRECTORIES
-    }
-    unscoped_python_files = sorted(production_python_files - scoped_python_files)
-    if unscoped_python_files:
-        problems.append(
-            "pyproject.toml: mutation source_paths omit production Python files: "
-            f"{unscoped_python_files!r}"
-        )
+    try:
+        project_python_paths = project_files(repository_root, ("*.py",))
+    except (OSError, ValueError) as error:
+        problems.append(f"pyproject.toml: Python source inventory is unsafe: {error}")
+    else:
+        relative_python_paths = {
+            path.relative_to(repository_root).as_posix()
+            for path in project_python_paths
+        }
+        production_python_files = {
+            relative
+            for relative in relative_python_paths
+            if PurePosixPath(relative).parts[0] != "tests"
+        }
+        scoped_python_files = {
+            relative
+            for relative in relative_python_paths
+            if any(
+                relative == source_path or relative.startswith(f"{source_path}/")
+                for source_path in expected_source_paths
+            )
+        }
+        unscoped_python_files = sorted(production_python_files - scoped_python_files)
+        if unscoped_python_files:
+            problems.append(
+                "pyproject.toml: mutation source_paths omit production Python files: "
+                f"{unscoped_python_files!r}"
+            )
 
     loader_contract = {
         "tests/test_audit_freshness.py": (
@@ -6039,50 +6099,77 @@ def validate_plugin_manifest(repository_root: Path) -> list[str]:
                 problems.append(
                     ".codex-plugin/plugin.json: skills must reference a directory"
                 )
-            elif not any(skills_path.rglob("SKILL.md")):
-                problems.append(
-                    ".codex-plugin/plugin.json: skills contains no SKILL.md"
-                )
             else:
-                for skill_path in sorted(skills_path.rglob("SKILL.md")):
-                    relative = skill_path.relative_to(repository_root).as_posix()
-                    try:
-                        metadata, _body = read_front_matter(skill_path)
-                    except (OSError, UnicodeError, ValueError, yaml.YAMLError) as error:
-                        problems.append(f"{relative}: invalid skill metadata: {error}")
-                        continue
-                    description = (
-                        metadata.get("description")
-                        if isinstance(metadata, dict)
-                        else None
+                try:
+                    skill_paths = [
+                        path
+                        for path in project_files(repository_root, ("SKILL.md",))
+                        if path.is_relative_to(skills_path)
+                    ]
+                except (OSError, ValueError) as error:
+                    problems.append(
+                        ".codex-plugin/plugin.json: cannot inventory skills safely: "
+                        f"{error}"
                     )
-                    if (
-                        not isinstance(metadata, dict)
-                        or not nonempty_string(metadata.get("name"))
-                        or not nonempty_string(description)
-                    ):
-                        problems.append(
-                            f"{relative}: skill metadata must include nonempty name "
-                            "and description"
+                    skill_paths = []
+                if not skill_paths:
+                    problems.append(
+                        ".codex-plugin/plugin.json: skills contains no SKILL.md"
+                    )
+                else:
+                    for skill_path in sorted(skill_paths):
+                        relative = skill_path.relative_to(repository_root).as_posix()
+                        try:
+                            metadata, _body = read_front_matter(skill_path)
+                        except (
+                            OSError,
+                            UnicodeError,
+                            ValueError,
+                            yaml.YAMLError,
+                        ) as error:
+                            problems.append(
+                                f"{relative}: invalid skill metadata: {error}"
+                            )
+                            continue
+                        description = (
+                            metadata.get("description")
+                            if isinstance(metadata, dict)
+                            else None
                         )
-                    elif isinstance(description, str) and len(description) > 400:
-                        problems.append(
-                            f"{relative}: skill description must stay concise "
-                            "(400 characters or fewer)"
-                        )
+                        if (
+                            not isinstance(metadata, dict)
+                            or not nonempty_string(metadata.get("name"))
+                            or not nonempty_string(description)
+                        ):
+                            problems.append(
+                                f"{relative}: skill metadata must include nonempty name "
+                                "and description"
+                            )
+                        elif isinstance(description, str) and len(description) > 400:
+                            problems.append(
+                                f"{relative}: skill description must stay concise "
+                                "(400 characters or fewer)"
+                            )
     return problems
 
 
 def validate_skill_reference_paths(repository_root: Path) -> list[str]:
     """Require every local reference named by a skill entry point to be usable."""
-    repository_root = repository_root.resolve()
+    # Match project_files(), which normalizes absolute spelling without resolving
+    # parent-directory links. This keeps containment checks stable on platforms
+    # whose temporary roots are themselves symlinked or have alternate spellings.
+    repository_root = Path(os.path.abspath(repository_root))
     skill_root = repository_root / "skills"
     problems: list[str] = []
     if is_link_or_reparse(skill_root):
         return ["skills: linked or reparse-point directory is not traversed"]
     try:
-        skill_paths = sorted(skill_root.rglob("SKILL.md"))
-    except OSError as error:
+        skill_paths = sorted(
+            path
+            for path in project_files(repository_root, ("SKILL.md",))
+            if path.is_relative_to(skill_root)
+        )
+    except (OSError, ValueError) as error:
         return [f"skills: cannot enumerate skill entry points: {error}"]
 
     for skill_path in skill_paths:
@@ -6093,7 +6180,7 @@ def validate_skill_reference_paths(repository_root: Path) -> list[str]:
             )
             continue
         try:
-            skill_text = skill_path.read_text(encoding="utf-8")
+            skill_text = read_bounded_text(skill_path)
         except (OSError, UnicodeError) as error:
             problems.append(f"{relative_skill}: unreadable: {error}")
             continue
@@ -6156,7 +6243,7 @@ def validate_skill_reference_paths(repository_root: Path) -> list[str]:
                 )
                 continue
             try:
-                resolved.read_text(encoding="utf-8")
+                read_bounded_text(resolved)
             except (OSError, UnicodeError) as error:
                 problems.append(
                     f"{relative_skill}: unreadable referenced file {reference}: {error}"
@@ -6289,7 +6376,7 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
 
     skill_path = repository_root / "skills" / "repo-scaffold" / "SKILL.md"
     try:
-        skill_text = skill_path.read_text(encoding="utf-8")
+        skill_text = read_bounded_text(skill_path)
     except (OSError, UnicodeError) as error:
         problems.append(f"skills/repo-scaffold/SKILL.md: unreadable: {error}")
     else:
@@ -6313,7 +6400,7 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
             / "scaffold-generation.md"
         )
         try:
-            generation_text = generation_reference.read_text(encoding="utf-8")
+            generation_text = read_bounded_text(generation_reference)
         except (OSError, UnicodeError) as error:
             problems.append(
                 f"{generation_reference.relative_to(repository_root)}: {error}"
@@ -6337,7 +6424,7 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
     asset_root = repository_root / "skills" / "repo-scaffold" / "assets"
     claude_instructions_path = asset_root / "CLAUDE.md"
     try:
-        claude_instructions = claude_instructions_path.read_text(encoding="utf-8")
+        claude_instructions = read_bounded_text(claude_instructions_path)
     except (OSError, UnicodeError) as error:
         problems.append(f"skills/repo-scaffold/assets/CLAUDE.md: unreadable: {error}")
     else:
@@ -6356,7 +6443,7 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
         english_path = asset_root / english_source
         vietnamese_path = asset_root / vietnamese_source
         try:
-            english_text = english_path.read_text(encoding="utf-8")
+            english_text = read_bounded_text(english_path)
         except (OSError, UnicodeError) as error:
             problems.append(
                 f"skills/repo-scaffold/assets/{english_source.as_posix()}: "
@@ -6364,7 +6451,7 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
             )
             continue
         try:
-            vietnamese_text = vietnamese_path.read_text(encoding="utf-8")
+            vietnamese_text = read_bounded_text(vietnamese_path)
         except (OSError, UnicodeError) as error:
             problems.append(
                 f"skills/repo-scaffold/assets/{vietnamese_source.as_posix()}: "
@@ -6409,7 +6496,7 @@ def validate_multi_agent_plugin_contract(repository_root: Path) -> list[str]:
         path = repository_root / relative_path
         relative = relative_path.as_posix()
         try:
-            reference_text = path.read_text(encoding="utf-8")
+            reference_text = read_bounded_text(path)
         except (OSError, UnicodeError) as error:
             problems.append(f"{relative}: unreadable: {error}")
             continue
@@ -6429,7 +6516,7 @@ def validate_maintainer_agent_instructions(repository_root: Path) -> list[str]:
         repository_root / relative for relative in MAINTAINER_AGENT_INSTRUCTION_PATHS
     )
     try:
-        agents_text = agents_path.read_text(encoding="utf-8")
+        agents_text = read_bounded_text(agents_path)
     except (OSError, UnicodeError) as error:
         problems.append(f"AGENTS.md: unreadable: {error}")
     else:
@@ -6440,7 +6527,7 @@ def validate_maintainer_agent_instructions(repository_root: Path) -> list[str]:
                 )
 
     try:
-        claude_text = claude_path.read_text(encoding="utf-8")
+        claude_text = read_bounded_text(claude_path)
     except (OSError, UnicodeError) as error:
         problems.append(f".claude/CLAUDE.md: unreadable: {error}")
     else:
@@ -6541,7 +6628,7 @@ def validate_release_please(repository_root: Path) -> list[str]:
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
             problems.append(f"{relative}: invalid JSON: {error}")
     try:
-        versions["version.txt"] = version_path.read_text(encoding="utf-8").strip()
+        versions["version.txt"] = read_bounded_text(version_path).strip()
     except (OSError, UnicodeError) as error:
         problems.append(f"version.txt: unreadable: {error}")
 
@@ -6932,7 +7019,7 @@ def validate_pr_template_catalog_documentation(repository_root: Path) -> list[st
     readme_path = repository_root / "README.md"
     template_directory = repository_root / ".github" / "PULL_REQUEST_TEMPLATE"
     try:
-        readme = readme_path.read_text(encoding="utf-8")
+        readme = read_bounded_text(readme_path)
         template_names = sorted(
             path.stem for path in template_directory.glob("*.md") if path.is_file()
         )
@@ -6955,7 +7042,7 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
     relative = workflow_path.relative_to(repository_root).as_posix()
     problems: list[str] = []
     try:
-        script_text = script.read_text(encoding="utf-8")
+        script_text = read_bounded_text(script)
     except (OSError, UnicodeError) as error:
         problems.append(f"action-pin sync: script is unreadable: {error}")
         script_text = ""
@@ -6973,7 +7060,7 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
             "allowlisted GitHub API"
         )
     try:
-        versioned_inputs_text = versioned_inputs_script.read_text(encoding="utf-8")
+        versioned_inputs_text = read_bounded_text(versioned_inputs_script)
     except (OSError, UnicodeError) as error:
         problems.append(f"versioned-input sync: script is unreadable: {error}")
         versioned_inputs_text = ""
@@ -7157,7 +7244,7 @@ def validate_action_pin_sync_contract(repository_root: Path) -> list[str]:
         )
     else:
         try:
-            body = body_file.read_text(encoding="utf-8")
+            body = read_bounded_text(body_file)
         except (OSError, UnicodeError) as error:
             problems.append(
                 f"{VERSION_SYNC_PR_BODY_PATH.as_posix()}: pull-request body is "
@@ -7774,8 +7861,8 @@ def validate_pr_body_sync_asset_contract(repository_root: Path) -> list[str]:
         source = repository_root / source_relative
         asset = repository_root / asset_relative
         try:
-            source_bytes = source.read_bytes()
-            asset_bytes = asset.read_bytes()
+            source_bytes = read_bounded_bytes(source)
+            asset_bytes = read_bounded_bytes(asset)
         except OSError as error:
             problems.append(
                 f"{asset_relative.as_posix()}: body-sync asset is unreadable: {error}"
@@ -7790,7 +7877,7 @@ def validate_pr_body_sync_asset_contract(repository_root: Path) -> list[str]:
 
 def read_front_matter(path: Path) -> tuple[Any, str]:
     """Return parsed YAML front matter and the remaining Markdown body."""
-    text = path.read_text(encoding="utf-8")
+    text = read_bounded_text(path)
     lines = text.splitlines()
     if not lines or lines[0] != "---":
         raise ValueError("missing opening YAML front matter delimiter")
@@ -8115,7 +8202,7 @@ def validate_dependabot(repository_root: Path) -> list[str]:
     for path in paths:
         relative = path.relative_to(repository_root)
         try:
-            source = path.read_text(encoding="utf-8")
+            source = read_bounded_text(path)
             document = load_yaml(path)
         except (OSError, UnicodeError, yaml.YAMLError) as error:
             problems.append(f"{relative}: invalid Dependabot YAML: {error}")
@@ -8416,10 +8503,14 @@ def validate_markdown_links(repository_root: Path) -> list[str]:
     """Validate that first-party relative Markdown links stay inside and exist."""
     problems: list[str] = []
     resolved_root = repository_root.resolve()
-    for path in project_files(repository_root, ("*.md",)):
+    try:
+        markdown_files = project_files(repository_root, ("*.md",))
+    except (OSError, ValueError) as error:
+        return [f"project inventory: {error}"]
+    for path in markdown_files:
         relative = path.relative_to(repository_root)
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_bounded_text(path)
         except (OSError, UnicodeError) as error:
             problems.append(f"{relative}: could not read Markdown: {error}")
             continue
@@ -8557,7 +8648,7 @@ def validate_community_health_tracking_contract(repository_root: Path) -> list[s
     for path in (installed_workflow, asset_workflow):
         try:
             workflow = load_yaml(path)
-            text = path.read_text(encoding="utf-8")
+            text = read_bounded_text(path)
         except (OSError, UnicodeError, yaml.YAMLError) as error:
             problems.append(
                 f"{path.relative_to(repository_root).as_posix()}: "
@@ -8709,8 +8800,8 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             )
             continue
         try:
-            current_text = current.read_text(encoding="utf-8")
-            scaffolded_text = scaffolded.read_text(encoding="utf-8")
+            current_text = read_bounded_text(current)
+            scaffolded_text = read_bounded_text(scaffolded)
         except (OSError, UnicodeError) as error:
             problems.append(f"freshness tracking: {label} is unreadable: {error}")
             continue
@@ -8831,7 +8922,7 @@ def validate_freshness_tracking_contract(repository_root: Path) -> list[str]:
             continue
         try:
             workflow = load_yaml(path)
-            text = path.read_text(encoding="utf-8")
+            text = read_bounded_text(path)
         except (OSError, UnicodeError, yaml.YAMLError) as error:
             problems.append(f"{relative}: could not verify freshness workflow: {error}")
             continue
@@ -8957,10 +9048,15 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                         host = None
                     if host:
                         tracked_hosts.add(host.casefold())
-            for path in project_files(repository_root, ("*.md",)):
+            try:
+                markdown_files = project_files(repository_root, ("*.md",))
+            except (OSError, ValueError) as error:
+                problems.append(f"project inventory: {error}")
+                markdown_files = []
+            for path in markdown_files:
                 relative = path.relative_to(repository_root)
                 try:
-                    text = path.read_text(encoding="utf-8")
+                    text = read_bounded_text(path)
                 except (OSError, UnicodeError) as error:
                     problems.append(
                         f"{relative}: could not read Markdown for official-documentation tracking: {error}"
@@ -9268,7 +9364,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                         f"{identifier} claim must track every affected path"
                     )
     try:
-        script_text = script_path.read_text(encoding="utf-8")
+        script_text = read_bounded_text(script_path)
     except (OSError, UnicodeError) as error:
         problems.append(f"scripts/audit_official_docs.py: unreadable: {error}")
     else:
@@ -9286,7 +9382,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                 break
     try:
         workflow = load_yaml(workflow_path)
-        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow_text = read_bounded_text(workflow_path)
     except (OSError, UnicodeError, yaml.YAMLError) as error:
         problems.append(f".github/workflows/official-docs.yml: unreadable: {error}")
         return problems
@@ -9375,7 +9471,7 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
             ".github/workflows/official-docs.yml: reminder mutations must bind an explicit repository"
         )
     try:
-        ci_text = ci_path.read_text(encoding="utf-8")
+        ci_text = read_bounded_text(ci_path)
     except (OSError, UnicodeError) as error:
         problems.append(f".github/workflows/ci.yml: unreadable: {error}")
     else:
@@ -9683,8 +9779,22 @@ def validate_release_archive(repository_root: Path) -> list[str]:
         problems: list[str] = []
         try:
             with zipfile.ZipFile(archive) as bundle:
-                names = set(bundle.namelist())
-                for item in bundle.infolist():
+                members = bundle.infolist()
+                if len(members) > MAX_ARCHIVE_MEMBERS:
+                    return [
+                        "release archive: member inventory exceeds the "
+                        f"{MAX_ARCHIVE_MEMBERS}-entry safety cap"
+                    ]
+                total_uncompressed_bytes = sum(
+                    item.file_size for item in members if not item.is_dir()
+                )
+                if total_uncompressed_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+                    return [
+                        "release archive: uncompressed members exceed the "
+                        f"{MAX_ARCHIVE_TOTAL_BYTES}-byte safety cap"
+                    ]
+                names = {item.filename for item in members}
+                for item in members:
                     path = PurePosixPath(item.filename)
                     if (
                         not path.parts
@@ -9700,11 +9810,23 @@ def validate_release_archive(repository_root: Path) -> list[str]:
                         problems.append(
                             f"release archive: symbolic link {item.filename!r}"
                         )
-                for item in bundle.infolist():
+                for item in members:
                     if item.is_dir() or not item.filename.casefold().endswith(".md"):
                         continue
+                    if item.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+                        problems.append(
+                            f"release archive: {item.filename}: Markdown member exceeds the "
+                            f"{MAX_ARCHIVE_MEMBER_BYTES}-byte safety cap"
+                        )
+                        continue
                     try:
-                        text = bundle.read(item).decode("utf-8")
+                        with bundle.open(item) as source:
+                            payload = source.read(MAX_ARCHIVE_MEMBER_BYTES + 1)
+                        if len(payload) > MAX_ARCHIVE_MEMBER_BYTES:
+                            raise OSError(
+                                f"member exceeds the {MAX_ARCHIVE_MEMBER_BYTES}-byte safety cap"
+                            )
+                        text = payload.decode("utf-8")
                     except (UnicodeDecodeError, OSError) as error:
                         problems.append(
                             f"release archive: {item.filename}: could not read Markdown: {error}"
@@ -9814,7 +9936,7 @@ def validate_workflow_script_copy_contract(repository_root: Path) -> list[str]:
     """Require documented generated copies for workflow dependencies."""
     reference = repository_root / SCAFFOLD_GENERATION_REFERENCE
     try:
-        reference_text = reference.read_text(encoding="utf-8")
+        reference_text = read_bounded_text(reference)
     except (OSError, UnicodeError) as error:
         return [
             f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: could not read workflow "
@@ -9851,7 +9973,7 @@ def validate_workflow_script_copy_contract(repository_root: Path) -> list[str]:
             )
         if invoked:
             try:
-                workflow_text = workflow.read_text(encoding="utf-8")
+                workflow_text = read_bounded_text(workflow)
             except (OSError, UnicodeError) as error:
                 problems.append(
                     f"{workflow_relative.as_posix()}: could not read workflow script "
@@ -9885,7 +10007,7 @@ def validate_pr_template_preflight_contract(repository_root: Path) -> list[str]:
         )
     else:
         try:
-            entrypoint_text = entrypoint.read_text(encoding="utf-8")
+            entrypoint_text = read_bounded_text(entrypoint)
         except (OSError, UnicodeError) as error:
             problems.append(
                 f"{PR_TEMPLATE_PREFLIGHT_ROOT_SCRIPT.as_posix()}: unreadable: {error}"
@@ -9901,7 +10023,7 @@ def validate_pr_template_preflight_contract(repository_root: Path) -> list[str]:
                 )
 
     try:
-        reference_text = reference.read_text(encoding="utf-8")
+        reference_text = read_bounded_text(reference)
     except (OSError, UnicodeError) as error:
         problems.append(
             f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: could not read preflight "
@@ -9932,7 +10054,7 @@ def validate_pr_template_preflight_contract(repository_root: Path) -> list[str]:
     )
     for asset in guidance_paths:
         try:
-            asset_text = asset.read_text(encoding="utf-8")
+            asset_text = read_bounded_text(asset)
         except (OSError, UnicodeError) as error:
             problems.append(
                 f"{asset.relative_to(repository_root).as_posix()}: unreadable: {error}"
@@ -9973,7 +10095,7 @@ def validate_markdown_body_preflight_contract(repository_root: Path) -> list[str
         )
     else:
         try:
-            entrypoint_text = entrypoint.read_text(encoding="utf-8")
+            entrypoint_text = read_bounded_text(entrypoint)
         except (OSError, UnicodeError) as error:
             problems.append(
                 f"{MARKDOWN_BODY_PREFLIGHT_ROOT_SCRIPT.as_posix()}: unreadable: {error}"
@@ -9998,7 +10120,7 @@ def validate_markdown_body_preflight_contract(repository_root: Path) -> list[str
     ):
         path = repository_root / relative
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_bounded_text(path)
         except (OSError, UnicodeError) as error:
             problems.append(f"{relative.as_posix()}: unreadable: {error}")
             continue
@@ -10009,7 +10131,7 @@ def validate_markdown_body_preflight_contract(repository_root: Path) -> list[str
 
     reference = repository_root / SCAFFOLD_GENERATION_REFERENCE
     try:
-        reference_text = reference.read_text(encoding="utf-8")
+        reference_text = read_bounded_text(reference)
     except (OSError, UnicodeError) as error:
         problems.append(
             f"{SCAFFOLD_GENERATION_REFERENCE.as_posix()}: could not read body "
@@ -10048,7 +10170,7 @@ def validate_test_quality_contract(repository_root: Path) -> list[str]:
     for path in paths:
         relative = path.relative_to(repository_root).as_posix()
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+            tree = ast.parse(read_bounded_text(path), filename=relative)
         except (OSError, UnicodeError, SyntaxError) as error:
             problems.append(f"{relative}: could not inspect test quality: {error}")
             continue
