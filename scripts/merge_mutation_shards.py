@@ -174,7 +174,9 @@ def _write_json_atomically(
             f"could not publish mutation metadata {path}: {error}"
         ) from error
     finally:
-        if temporary is not None:
+        if (
+            temporary is not None
+        ):  # pragma: no branch - defensive cleanup after allocation
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:

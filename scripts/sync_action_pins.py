@@ -359,7 +359,9 @@ def write_bytes_atomically(repository_root: Path, path: Path, payload: bytes) ->
     except (OSError, ValueError) as error:
         raise ValueError(f"could not atomically write file {path}: {error}") from error
     finally:
-        if temporary is not None:
+        if (
+            temporary is not None
+        ):  # pragma: no branch - defensive cleanup after allocation
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:

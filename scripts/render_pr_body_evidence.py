@@ -641,7 +641,9 @@ def write_body(path: Path, body: str) -> None:
             f"could not write generated pull-request body atomically: {error}"
         ) from error
     finally:
-        if temporary is not None:
+        if (
+            temporary is not None
+        ):  # pragma: no branch - defensive cleanup after allocation
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:

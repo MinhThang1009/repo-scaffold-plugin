@@ -655,7 +655,9 @@ def write_text(path: Path, text: str) -> None:
             f"could not atomically write report {path}: {error}"
         ) from error
     finally:
-        if temporary is not None:
+        if (
+            temporary is not None
+        ):  # pragma: no branch - defensive cleanup after allocation
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:
