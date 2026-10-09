@@ -28,6 +28,15 @@ working tree may include ignored caches, `.git` metadata, or private local files
 Use the release package or an archive built from the canonical release path set.
 See the [official Codex plugin documentation](https://developers.openai.com/plugins/build/plugins).
 
+For updates, distinguish Git-backed marketplace snapshots from local-directory
+packages: `codex plugin marketplace upgrade` applies only to Git sources.
+Update a local clean package at its registered path, then reinstall only an
+already-enabled plugin or one explicitly approved for re-enablement. `plugin
+add` can enable a disabled plugin, so preserve the disabled setting and defer
+reinstallation rather than treating update approval as enablement approval.
+Verify the current cached package and start a new thread; an existing session
+may retain the skill version it already loaded. See [Update](../../../README.md#7-update).
+
 For an OpenAI public listing, submit the release ZIP through the [Skills-only
 plugin flow](https://developers.openai.com/plugins/guides/submit-claude-plugin).
 Its single `repo-scaffold/` directory includes a nonempty Claude manifest and

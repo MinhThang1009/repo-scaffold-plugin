@@ -13,6 +13,8 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from io import TextIOWrapper
+from http.client import HTTPException, HTTPResponse
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Hashable, TypeVar
 from urllib.error import HTTPError, URLError
@@ -41,7 +43,8 @@ MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 FRESHNESS_CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist"})
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PINNED_REQUIREMENT = re.compile(
-    r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\#]+)"
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\#;]+)"
+    r"""(?:[ \t]*;[ \t]*python_version[ \t]*==[ \t]*(?P<quote>['"])[0-9]+\.[0-9]+(?P=quote))?"""
     r"(?:\s+\\)?(?:[ \t]+#[^\r\n]*)?\Z"
 )
 RELEASE_PLEASE_SCHEMA = re.compile(
@@ -84,7 +87,19 @@ class RejectRedirectHandler(HTTPRedirectHandler):
         headers: Any,
         new_url: str,
     ) -> Request | None:
+        if response is not None:
+            try:
+                response.close()
+            except OSError as error:
+                raise AuditError("Redirect response could not be closed") from error
         raise AuditError("upstream redirects are not allowed")
+
+    def http_error_302(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any
+    ) -> Request | None:
+        return self.redirect_request(req, fp, code, msg, headers, req.full_url)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
 PYPI_OPENER = build_opener(RejectRedirectHandler())
@@ -358,6 +373,43 @@ def normalized_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).casefold()
 
 
+def read_http_payload(response: Any, limit: int) -> bytes:
+    """Read bounded bytes without accepting ambiguous native length framing."""
+    expected: int | None = None
+    if isinstance(response, HTTPResponse):
+        values = response.headers.get_all("Content-Length", [])
+        if len(values) > 100 or sum(len(value) for value in values) > 8192:
+            raise ValueError("HTTP Content-Length exceeds the header safety bound")
+        canonical: str | None = None
+        members = 0
+        for value in values:
+            for item in value.split(","):
+                members += 1
+                item = item.strip(" \t")
+                if members > 100 or re.fullmatch(r"[0-9]+", item) is None:
+                    raise ValueError("HTTP Content-Length is invalid")
+                normalized = item.lstrip("0") or "0"
+                if canonical is not None and normalized != canonical:
+                    raise ValueError("HTTP Content-Length values conflict")
+                canonical = normalized
+        if canonical is not None:
+            if len(canonical) > len(str(limit)) or (
+                len(canonical) == len(str(limit)) and canonical > str(limit)
+            ):
+                raise ValueError(
+                    "HTTP Content-Length exceeds the response safety bound"
+                )
+            if not response.chunked:
+                expected = int(canonical)
+    payload: bytes = response.read(limit + 1)
+    if isinstance(response, HTTPResponse) and (
+        response.length not in {None, 0}
+        or (expected is not None and len(payload) != expected)
+    ):
+        raise ValueError("HTTP response is incomplete")
+    return payload
+
+
 def read_json(url: str) -> dict[str, Any]:
     """Read one bounded JSON document from a fixed HTTPS upstream."""
     request = Request(
@@ -369,8 +421,15 @@ def read_json(url: str) -> dict[str, Any]:
     )
     try:
         with PYPI_OPENER.open(request, timeout=30) as response:
-            payload = response.read(MAX_RESPONSE_BYTES + 1)
-    except (HTTPError, URLError, OSError) as error:
+            payload = read_http_payload(response, MAX_RESPONSE_BYTES)
+    except (HTTPError, URLError, OSError, HTTPException, ValueError) as error:
+        if isinstance(error, HTTPError):
+            try:
+                error.close()
+            except OSError as cleanup_error:
+                raise AuditError(
+                    "Upstream error response could not be closed"
+                ) from cleanup_error
         raise AuditError(f"upstream request failed for {url}: {error}") from error
     if len(payload) > MAX_RESPONSE_BYTES:
         raise AuditError(f"upstream response is too large for {url}")
@@ -402,7 +461,7 @@ def latest_pypi_release(package: str) -> str:
 
 
 def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
-    """Read exact direct pins, ignoring comments and include directives."""
+    """Inventory all exact pins, including simple Python-version equality markers."""
     lines = read_bounded_utf8(
         path, MAX_REQUIREMENTS_BYTES, kind="requirements file"
     ).splitlines()
@@ -554,9 +613,12 @@ def action_findings(
                     seen_repositories.add(repository)
                 action_matches.append((path, action, current_sha, repository))
 
+    def validated_release_lookup(repository: str) -> sync_action_pins.ActionRelease:
+        return sync_action_pins.validated_action_release(release_lookup(repository))
+
     releases, failed_releases = bounded_parallel_lookup(
         tuple(repositories),
-        release_lookup,
+        validated_release_lookup,
         error_types=(OSError, ValueError, AuditError),
         errors=errors,
     )
@@ -988,9 +1050,11 @@ def audit(
             )
             if release_please_configs:
                 try:
-                    latest_release_please_tag = client.latest_release(
-                        "googleapis/release-please"
-                    ).tag
+                    latest_release_please_tag = (
+                        sync_action_pins.validated_action_release(
+                            client.latest_release("googleapis/release-please")
+                        ).tag
+                    )
                     findings.extend(
                         release_please_findings(
                             root,
@@ -1063,21 +1127,41 @@ def markdown_code_span(value: object) -> str:
     return f"`{text}`"
 
 
-def markdown_report(report: dict[str, Any]) -> str:
+def markdown_report(report: dict[str, Any], *, language: str = "en") -> str:
     """Render a concise, issue-safe Markdown representation of an audit report."""
+    if language not in ("en", "vi"):
+        raise ValueError("freshness report language must be en or vi")
+    labels = {
+        "en": {
+            "title": "Repository freshness report",
+            "checked": "Checked",
+            "status": "Overall status",
+            "columns": "| Check | Path | Subject | Current | Latest | Details |",
+            "clean": "No stale versioned inputs were found.",
+            "indeterminate": "Indeterminate checks",
+        },
+        "vi": {
+            "title": "Báo cáo freshness của repository",
+            "checked": "Thời điểm kiểm tra",
+            "status": "Trạng thái tổng thể",
+            "columns": "| Kiểm tra | Đường dẫn | Đối tượng | Hiện tại | Mới nhất | Chi tiết |",
+            "clean": "Không phát hiện đầu vào phiên bản đã lỗi thời.",
+            "indeterminate": "Các kiểm tra chưa xác định được kết quả",
+        },
+    }[language]
     lines = [
         "<!-- repo-scaffold-freshness-audit -->",
-        "# Repository freshness report",
+        f"# {labels['title']}",
         "",
-        f"- Checked: {markdown_code_span(report['checked-at'])}",
-        f"- Overall status: **{markdown_code_span(report['status'])}**",
+        f"- {labels['checked']}: {markdown_code_span(report['checked-at'])}",
+        f"- {labels['status']}: **{markdown_code_span(report['status'])}**",
         "",
     ]
     findings = report["findings"]
     if findings:
         lines.extend(
             [
-                "| Check | Path | Subject | Current | Latest | Details |",
+                labels["columns"],
                 "| --- | --- | --- | --- | --- | --- |",
                 *[
                     "| {kind} | {path} | {subject} | {current} | {latest} | {details} |".format(
@@ -1099,12 +1183,12 @@ def markdown_report(report: dict[str, Any]) -> str:
             ]
         )
     elif not report["errors"]:
-        lines.extend(["No stale versioned inputs were found.", ""])
+        lines.extend([labels["clean"], ""])
     errors = report["errors"]
     if errors:
         lines.extend(
             [
-                "## Indeterminate checks",
+                f"## {labels['indeterminate']}",
                 "",
                 *[f"- {markdown_code_span(error)}" for error in errors],
                 "",
@@ -1131,6 +1215,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--json-output", type=Path, required=True)
     parser.add_argument("--markdown-output", type=Path, required=True)
+    parser.add_argument(
+        "--language",
+        choices=("en", "vi"),
+        default="en",
+        help="Confirmed project language for human-facing report text",
+    )
     return parser.parse_args(argv)
 
 
@@ -1149,14 +1239,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         write_report(
             arguments.markdown_output,
-            markdown_report(report).encode("utf-8"),
+            markdown_report(report, language=arguments.language).encode("utf-8"),
         )
     except AuditError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    print(f"Repository freshness status: {report['status']}")
+    status_label = (
+        "Trạng thái freshness của repository"
+        if arguments.language == "vi"
+        else "Repository freshness status"
+    )
+    print(f"{status_label}: {report['status']}")
     return {"current": 0, "attention": 1, "indeterminate": 2}[report["status"]]
 
 
 if __name__ == "__main__":
+    if isinstance(sys.stdout, TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8")
     raise SystemExit(main())

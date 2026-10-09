@@ -1242,6 +1242,7 @@ def hard_wrapped_prose_lines(
     *,
     html_block_line_indexes: set[int] | None = None,
     non_prose_line_numbers: set[int] | None = None,
+    heading_line_numbers: set[int] | None = None,
 ) -> tuple[int, ...]:
     """Return wrapped-prose lines and optionally collect opaque Markdown lines."""
     wrapped: list[int] = []
@@ -1517,6 +1518,12 @@ def hard_wrapped_prose_lines(
             previous_paragraph_open = False
             continue
         is_table_line = line_index in table_lines
+        if (
+            heading_line_numbers is not None
+            and quote_depth == 0
+            and re.match(r"^##[ \t]+", line) is not None
+        ):
+            heading_line_numbers.add(line_number)
         is_structural = (
             is_table_line
             or is_list_item
@@ -1562,6 +1569,13 @@ def hard_wrapped_prose_lines(
             non_prose_line_numbers.update(html_block_line_indexes)
 
     return tuple(wrapped)
+
+
+def visible_body_heading_lines(markdown: str) -> set[int]:
+    """Return visible level-two heading lines outside opaque Markdown blocks."""
+    headings: set[int] = set()
+    hard_wrapped_prose_lines(markdown, heading_line_numbers=headings)
+    return headings
 
 
 def read_body_file(path: Path) -> str:

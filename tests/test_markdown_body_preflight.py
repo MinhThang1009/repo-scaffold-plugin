@@ -1292,7 +1292,7 @@ def _bundled_module():
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "markdown_body_preflight", SKILL_PREFLIGHT
+        "skills.repo-scaffold.scripts.markdown_body_preflight", SKILL_PREFLIGHT
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

@@ -6,8 +6,9 @@ import runpy
 import sys
 import tempfile
 import unittest
+from contextvars import Context
 from email.message import Message
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError, URLError
@@ -44,6 +45,287 @@ def alert(number: int, *, path: str | None = "scripts/example.py") -> dict[str, 
 
 
 class CodeScanningGateTests(unittest.TestCase):
+    def test_error_response_cleanup_failure_is_controlled_and_not_retryable(
+        self,
+    ) -> None:
+        stream = BytesIO(b"Synthetic error")
+        error = HTTPError(
+            "https://api.github.com/example", 503, "synthetic", Message(), stream
+        )
+        try:
+            with (
+                mock.patch.object(gate.GITHUB_API_OPENER, "open", side_effect=error),
+                mock.patch.object(
+                    error, "close", side_effect=OSError("synthetic close failure")
+                ),
+                self.assertRaisesRegex(gate.GateError, "could not be closed") as raised,
+            ):
+                gate.api_json(error.url, "synthetic")
+            self.assertNotIsInstance(raised.exception, gate.TransientGateError)
+            self.assertIsNone(gate.GATE_BUDGET.get())
+        finally:
+            stream.close()
+
+    def test_http_error_streams_are_closed_without_changing_retry_classification(
+        self,
+    ) -> None:
+        for status in (403, 429, 503):
+            stream = BytesIO(b"Synthetic response")
+            error = HTTPError(
+                "https://api.github.com/example", status, "synthetic", Message(), stream
+            )
+            expected = gate.GateError if status == 403 else gate.TransientGateError
+            with (
+                self.subTest(status=status),
+                mock.patch.object(gate.GITHUB_API_OPENER, "open", side_effect=error),
+                self.assertRaises(expected),
+            ):
+                gate.api_json(error.url, "synthetic")
+            self.assertTrue(stream.closed)
+
+    def test_retry_delay_cannot_outlive_inspection_or_start_without_a_budget(
+        self,
+    ) -> None:
+        with mock.patch.object(gate.time, "sleep") as sleep:
+            with self.assertRaisesRegex(gate.GateError, "no inspection budget"):
+                gate._sleep_before_retry(0)
+            with (
+                mock.patch.object(gate, "monotonic", return_value=0),
+                gate.inspection_budget() as budget,
+            ):
+                budget.deadline = 1
+                with self.assertRaisesRegex(
+                    gate.GateError, "exhaust the elapsed budget"
+                ):
+                    gate._sleep_before_retry(1)
+                sleep.assert_not_called()
+                gate._sleep_before_retry(0)
+                sleep.assert_called_once_with(0)
+
+    def test_nested_budgets_reuse_but_independent_contexts_and_failures_do_not(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            gate.GITHUB_API_OPENER,
+            "open",
+            side_effect=lambda *args, **kwargs: FakeResponse(b"[]"),
+        ):
+            with gate.inspection_budget() as original:
+                gate.api_json("https://api.github.com/example", "synthetic")
+                with gate.inspection_budget() as nested:
+                    self.assertIs(original, nested)
+                Context().run(
+                    gate.api_json, "https://api.github.com/example", "synthetic"
+                )
+                self.assertEqual(original.requests, 1)
+            self.assertIsNone(gate.GATE_BUDGET.get())
+            with (
+                self.assertRaisesRegex(gate.GateError, "synthetic failure"),
+                gate.inspection_budget(),
+            ):
+                raise gate.GateError("synthetic failure")
+            self.assertIsNone(gate.GATE_BUDGET.get())
+            with gate.inspection_budget() as fresh:
+                self.assertIsNot(original, fresh)
+                self.assertEqual(fresh.requests, 0)
+            with self.assertRaisesRegex(gate.GateError, "no inspection budget"):
+                gate.api_json.__wrapped__("https://api.github.com/example", "synthetic")
+
+    def test_expired_or_empty_budget_fails_before_open_and_late_response_is_closed(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(gate, "monotonic", return_value=0) as clock,
+            gate.inspection_budget() as budget,
+            mock.patch.object(gate.GITHUB_API_OPENER, "open") as opener,
+        ):
+            budget.deadline = 0
+            with self.assertRaisesRegex(gate.GateError, "elapsed budget"):
+                gate.api_json("https://api.github.com/example", "synthetic")
+            opener.assert_not_called()
+            budget.deadline = 5
+            budget.response_bytes = gate.MAX_GATE_RESPONSE_BYTES
+            with self.assertRaisesRegex(gate.GateError, "response byte budget"):
+                gate.api_json("https://api.github.com/example", "synthetic")
+            opener.assert_not_called()
+            budget.response_bytes = 0
+
+            class LateResponse(FakeResponse):
+                def read(self, size: int | None = -1) -> bytes:
+                    data = super().read(size)
+                    clock.return_value = 6
+                    return data
+
+            response = LateResponse(b"[]")
+            opener.return_value = response
+            with self.assertRaisesRegex(gate.GateError, "elapsed budget"):
+                gate.api_json("https://api.github.com/example", "synthetic")
+            self.assertTrue(response.closed)
+            self.assertEqual(opener.call_args.kwargs["timeout"], 5)
+            clock.return_value = 0
+
+    def test_total_byte_cap_is_applied_to_read_before_allocation(self) -> None:
+        with (
+            gate.inspection_budget() as budget,
+            mock.patch.object(gate.GITHUB_API_OPENER, "open") as opener,
+        ):
+            budget.response_bytes = gate.MAX_GATE_RESPONSE_BYTES - 2
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = b"[]"
+            opener.return_value = response
+            self.assertEqual(
+                gate.api_json("https://api.github.com/example", "synthetic"), []
+            )
+            response.read.assert_called_once_with(3)
+
+    def test_cli_never_emits_success_when_final_elapsed_check_rejects_result(
+        self,
+    ) -> None:
+        stdout = StringIO()
+        with (
+            mock.patch.object(gate, "_run_gate", return_value=0),
+            mock.patch.object(
+                gate.GateBudget,
+                "remaining_seconds",
+                side_effect=gate.GateError("expired"),
+            ),
+            mock.patch.object(gate.sys, "stdout", stdout),
+        ):
+            self.assertEqual(gate.main([]), 2)
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_api_calls_in_one_poll_cannot_reset_the_aggregate_request_budget(
+        self,
+    ) -> None:
+        def response(*args: object, **kwargs: object) -> FakeResponse:
+            del args, kwargs
+            return FakeResponse(b"[]")
+
+        with (
+            mock.patch.object(gate, "MAX_GATE_API_REQUESTS", 1, create=True),
+            mock.patch.object(
+                gate.GITHUB_API_OPENER, "open", side_effect=response
+            ) as opener,
+            mock.patch.object(gate.time, "sleep"),
+            self.assertRaisesRegex(gate.GateError, "request budget"),
+        ):
+            gate.wait_for_analyses(
+                "owner/repo",
+                "refs/heads/main",
+                "a" * 40,
+                "synthetic",
+                2,
+                0,
+                frozenset({"/language:python"}),
+            )
+        self.assertEqual(opener.call_count, 1)
+
+    def test_api_payloads_in_one_poll_cannot_reset_the_aggregate_byte_budget(
+        self,
+    ) -> None:
+        def response(*args: object, **kwargs: object) -> FakeResponse:
+            del args, kwargs
+            return FakeResponse(b"[]")
+
+        with (
+            mock.patch.object(gate, "MAX_GATE_RESPONSE_BYTES", 3, create=True),
+            mock.patch.object(gate.GITHUB_API_OPENER, "open", side_effect=response),
+            mock.patch.object(gate.time, "sleep"),
+            self.assertRaisesRegex(gate.GateError, "response.*budget"),
+        ):
+            gate.wait_for_analyses(
+                "owner/repo",
+                "refs/heads/main",
+                "a" * 40,
+                "synthetic",
+                2,
+                0,
+                frozenset({"/language:python"}),
+            )
+
+    def test_library_polling_boundaries_reject_bad_controls_without_reads_or_sleep(
+        self,
+    ) -> None:
+        for attempts, delay in (
+            (0, 0),
+            (121, 0),
+            (True, 0),
+            (1, float("nan")),
+            (1, float("inf")),
+            (1, -1),
+            (1, 61),
+            (1, True),
+        ):
+            with (
+                self.subTest(attempts=attempts, delay=delay),
+                mock.patch.object(gate, "api_json") as api,
+                mock.patch.object(gate.time, "sleep") as sleep,
+            ):
+                for wait in (
+                    lambda: gate.wait_for_analyses(
+                        "owner/repo",
+                        "refs/heads/main",
+                        "a" * 40,
+                        "synthetic",
+                        attempts,
+                        delay,
+                        frozenset({"/language:python"}),
+                    ),
+                    lambda: gate.wait_for_pull_request_analyses(
+                        "owner/repo",
+                        "1",
+                        "synthetic",
+                        attempts,
+                        delay,
+                        frozenset({"/language:python"}),
+                        ("b" * 40, "c" * 40),
+                    ),
+                    lambda: gate.wait_for_open_alerts(
+                        "owner/repo", "refs/heads/main", "synthetic", attempts, delay
+                    ),
+                ):
+                    with self.assertRaises(gate.GateError):
+                        wait()
+                api.assert_not_called()
+                sleep.assert_not_called()
+        gate.validate_polling_controls(120, 10)
+        gate.validate_polling_controls(1, 0)
+        gate.validate_polling_controls(120, 60)
+
+    def test_cli_rejects_nonfinite_or_excessive_polling_before_io(self) -> None:
+        base = [
+            "--repository",
+            "owner/repo",
+            "--token",
+            "synthetic-not-a-credential",
+            "--ref",
+            "refs/heads/main",
+            "--sha",
+            "a" * 40,
+            "--expected-codeql-category",
+            "/language:python",
+        ]
+        for options in (
+            ["--delay-seconds", "nan"],
+            ["--delay-seconds", "inf"],
+            ["--delay-seconds", "1e309"],
+            ["--delay-seconds", "3600"],
+            ["--attempts", "1000000"],
+        ):
+            with (
+                self.subTest(options=options),
+                mock.patch.object(gate, "load_allowlist", return_value=()) as read,
+                mock.patch.object(gate, "wait_for_analyses") as analyses,
+                mock.patch.object(
+                    gate, "wait_for_open_alerts", return_value=()
+                ) as alerts,
+            ):
+                self.assertEqual(gate.main([*base, *options]), 2)
+                read.assert_not_called()
+                analyses.assert_not_called()
+                alerts.assert_not_called()
+
     def write_allowlist(self, root: Path, entries: object) -> Path:
         path = root / "allowlist.json"
         path.write_text(

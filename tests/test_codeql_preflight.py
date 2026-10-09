@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import argparse
+import hashlib
 import json
 import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,6 +43,10 @@ sys.modules[VALIDATOR_SPEC.name] = validate_workflows
 VALIDATOR_SPEC.loader.exec_module(validate_workflows)
 
 
+class ByteOutputSinkProtocol(Protocol):
+    def write(self, payload: bytes, /) -> int: ...
+
+
 class GitHubClientProtocol(Protocol):
     request_count: int
     response_bytes: int
@@ -50,10 +56,110 @@ class GitHubClientProtocol(Protocol):
 
     def json(self, endpoint: str) -> object: ...
 
+    def json_at_status(self, endpoint: str, expected_status: int) -> object: ...
+
     def raw(self, endpoint: str) -> str: ...
+
+    def require_empty_response(self, endpoint: str, expected_status: int) -> None: ...
+
+    def _execute_bounded(
+        self,
+        command: list[str],
+        *,
+        stdout: ByteOutputSinkProtocol,
+        stderr: ByteOutputSinkProtocol,
+        env: dict[str, str],
+        timeout: int,
+        check: bool = False,
+    ) -> object: ...
+
+
+def git_blob_id(text: str) -> str:
+    payload = text.encode("utf-8")
+    return hashlib.sha1(
+        b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload,
+        usedforsecurity=False,
+    ).hexdigest()
 
 
 class ExecutableResolutionTests(unittest.TestCase):
+    def test_multi_request_state_revalidation_is_typed_and_target_bound(self) -> None:
+        original = {
+            "id": 42,
+            "full_name": "synthetic/target",
+            "archived": False,
+            "owner": {"type": "Organization", "id": 77},
+        }
+        client = mock.Mock()
+        final: object
+        for final in (
+            {**original, "full_name": "SYNTHETIC/TARGET"},
+            {
+                **original,
+                "owner": {
+                    "type": "Organization",
+                    "id": 77,
+                    "avatar_url": "https://example.invalid/avatar",
+                },
+            },
+        ):
+            client.json.return_value = final
+            codeql_preflight.revalidate_repository_state(
+                client,
+                "synthetic/target",
+                original,
+                ("archived", "owner.type", "owner.id"),
+            )
+        for final in (
+            None,
+            {},
+            {**original, "id": 43},
+            {**original, "full_name": "other/target"},
+            {**original, "archived": 0},
+            {**original, "owner": False},
+            {**original, "owner": {"type": "User", "id": 77}},
+        ):
+            with self.subTest(final=final):
+                client.json.return_value = final
+                with self.assertRaises(codeql_preflight.InspectionError):
+                    codeql_preflight.revalidate_repository_state(
+                        client,
+                        "synthetic/target",
+                        original,
+                        ("archived", "owner.type", "owner.id"),
+                    )
+
+    def test_numeric_repository_identity_rejects_missing_coerced_or_changed_ids(
+        self,
+    ) -> None:
+        self.assertEqual(codeql_preflight.verified_repository_id({"id": 42}), 42)
+        self.assertEqual(codeql_preflight.verified_repository_id({"id": 42}, 42), 42)
+        for document in (
+            {},
+            {"id": None},
+            {"id": True},
+            {"id": "42"},
+            {"id": 0},
+            {"id": -1},
+            {"id": 42.5},
+        ):
+            with (
+                self.subTest(response=document),
+                self.assertRaises(codeql_preflight.InspectionError),
+            ):
+                codeql_preflight.verified_repository_id(document)
+        expected_values: tuple[object, ...] = (True, "42", 0, -1, 42.5, [])
+        for expected in expected_values:
+            with (
+                self.subTest(expected=expected),
+                self.assertRaises(codeql_preflight.InspectionError),
+            ):
+                codeql_preflight.verified_repository_id({"id": 42}, expected)
+        with self.assertRaisesRegex(
+            codeql_preflight.InspectionError, "changed since discovery"
+        ):
+            codeql_preflight.verified_repository_id({"id": 43}, 42)
+
     def test_module_reports_missing_pyyaml_without_a_coverage_exclusion(self) -> None:
         output = StringIO()
         with (
@@ -2972,14 +3078,371 @@ class WorkflowDiscoveryTests(unittest.TestCase):
                 codeql_preflight.load_local_workflows(root)
 
 
+class WorkflowBlobIdentityTests(unittest.TestCase):
+    def test_blob_identity_matches_native_git_bytes_without_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(
+                ["git", "init", "--quiet", "--object-format=sha1", directory],
+                check=True,
+                capture_output=True,
+                timeout=20,
+            )
+            for text in (
+                "",
+                "jobs: {}\n",
+                "jobs: {}\r\n",
+                "# caf\u00e9\njobs: {}\n",
+                "\ufeffjobs: {}\n",
+            ):
+                result = subprocess.run(
+                    ["git", "hash-object", "--stdin"],
+                    cwd=directory,
+                    input=text.encode(),
+                    check=True,
+                    capture_output=True,
+                    timeout=20,
+                )
+                blob = result.stdout.decode().strip()
+                client = mock.Mock()
+                client.raw.return_value = text
+                with self.subTest(text=text):
+                    self.assertEqual(
+                        codeql_preflight.read_verified_workflow_blob(
+                            client, "owner", "repo", blob.upper(), "synthetic.yml"
+                        ),
+                        text,
+                    )
+
+    def test_invalid_blob_identifiers_reject_before_transport(self) -> None:
+        values: tuple[object, ...] = (
+            None,
+            True,
+            7,
+            [],
+            {},
+            "short",
+            "g" * 40,
+            "a" * 64,
+        )
+        for value in values:
+            client = mock.Mock()
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "invalid GitHub blob"
+                ),
+            ):
+                codeql_preflight.read_verified_workflow_blob(
+                    client, "owner", "repo", value, "synthetic.yml"
+                )
+            client.raw.assert_not_called()
+
+    def test_blob_bounds_types_and_encoding_reject_before_identity_use(self) -> None:
+        for text, message in (
+            (None, "UTF-8 text"),
+            (b"text", "UTF-8 text"),
+            ("a" * 9, "byte safety"),
+            ("\u00e9" * 5, "byte safety"),
+            ("\ud800", "valid UTF-8"),
+        ):
+            client = mock.Mock()
+            client.raw.return_value = text
+            with (
+                self.subTest(text=text),
+                mock.patch.object(codeql_preflight, "MAX_WORKFLOW_BYTES", 8),
+                self.assertRaisesRegex(codeql_preflight.InspectionError, message),
+            ):
+                codeql_preflight.read_verified_workflow_blob(
+                    client, "owner", "repo", "a" * 40, "synthetic.yml"
+                )
+
+
 class WorkflowResolverTests(unittest.TestCase):
     WORKFLOW = "jobs: {test: {runs-on: ubuntu-latest, steps: []}}"
+
+    def test_literal_commit_pin_refuses_foreign_resolution_before_tree_or_cache(
+        self,
+    ) -> None:
+        for requested, returned in (("a" * 40, "b" * 40), ("a" * 64, "b" * 64)):
+            client = mock.Mock()
+            client.json.return_value = {"sha": returned}
+            resolver = codeql_preflight.WorkflowResolver(client, {})
+            with (
+                self.subTest(requested=requested),
+                mock.patch.object(resolver, "_load_exact_workflow") as load,
+                self.assertRaisesRegex(
+                    codeql_preflight.InspectionError, "literal commit pin"
+                ),
+            ):
+                resolver.resolve(
+                    "owner/repo/.github/workflows/reusable.yml@" + requested,
+                    codeql_preflight.WorkflowContext("local"),
+                )
+            load.assert_not_called()
+            self.assertEqual(resolver.ref_cache, {})
+            self.assertEqual(resolver.exact_workflows, {})
+
+    def test_cached_foreign_literal_resolution_cannot_bypass_pin_binding(self) -> None:
+        client = mock.Mock()
+        resolver = codeql_preflight.WorkflowResolver(client, {})
+        resolver.ref_cache[("owner", "repo", "a" * 40)] = "b" * 40
+        with (
+            mock.patch.object(resolver, "_load_exact_workflow") as load,
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "literal commit pin"
+            ),
+        ):
+            resolver.resolve(
+                "owner/repo/.github/workflows/reusable.yml@" + "a" * 40,
+                codeql_preflight.WorkflowContext("local"),
+            )
+        load.assert_not_called()
+        client.json.assert_not_called()
+
+    def test_exact_pin_case_and_symbolic_ref_resolution_remain_applicable(self) -> None:
+        for reference, returned in (
+            ("A" * 40, "a" * 40),
+            ("a" * 64, "a" * 64),
+            ("main", "b" * 40),
+            ("v1.2.3", "b" * 40),
+        ):
+            client = mock.Mock()
+            client.json.return_value = {"sha": returned}
+            resolver = codeql_preflight.WorkflowResolver(client, {})
+            signals = codeql_preflight.WorkflowSignals(False, ())
+            with (
+                self.subTest(reference=reference),
+                mock.patch.object(
+                    resolver, "_load_exact_workflow", return_value=signals
+                ),
+            ):
+                first = resolver.resolve(
+                    "owner/repo/.github/workflows/reusable.yml@" + reference,
+                    codeql_preflight.WorkflowContext("local"),
+                )
+                repeated = resolver.resolve(
+                    "owner/repo/.github/workflows/reusable.yml@" + reference,
+                    codeql_preflight.WorkflowContext("local"),
+                )
+            self.assertEqual(first.context.commit, returned)
+            self.assertEqual(first.identity, repeated.identity)
+            client.json.assert_called_once()
+
+    def test_root_inventory_refuses_unknown_paths_before_blob_reads(self) -> None:
+        valid = {
+            "path": ".github/workflows/ci.yml",
+            "type": "blob",
+            "mode": "100644",
+            "sha": git_blob_id(self.WORKFLOW),
+        }
+        unknowns: tuple[object, ...] = (
+            None,
+            {},
+            {"path": None},
+            {"path": 7},
+            {"path": ""},
+        )
+        for unknown in unknowns:
+            for first in (True, False):
+                client = mock.Mock()
+                client.raw.return_value = self.WORKFLOW
+                client.json.side_effect = [
+                    {"sha": "a" * 40},
+                    {
+                        "truncated": False,
+                        "tree": [unknown, valid] if first else [valid, unknown],
+                    },
+                ]
+                with (
+                    self.subTest(entry=unknown, first=first),
+                    self.assertRaisesRegex(
+                        codeql_preflight.InspectionError, "unclassifiable"
+                    ),
+                ):
+                    codeql_preflight.load_remote_default_branch(
+                        client, "owner", "repo", "main"
+                    )
+                client.raw.assert_not_called()
+
+    def test_root_inventory_bounds_all_entries_before_classification(self) -> None:
+        client = mock.Mock()
+        client.json.side_effect = [
+            {"sha": "a" * 40},
+            {"truncated": False, "tree": [{"path": "README.md"}, {"path": "other.md"}]},
+        ]
+        with (
+            mock.patch.object(codeql_preflight, "MAX_REMOTE_TREE_ENTRIES", 1),
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "entry safety cap"
+            ),
+        ):
+            codeql_preflight.load_remote_default_branch(client, "owner", "repo", "main")
+        client.raw.assert_not_called()
+
+    def test_remote_default_refuses_wrong_blob_before_parsing(self) -> None:
+        expected = self.WORKFLOW.encode()
+        blob = hashlib.sha1(
+            b"blob " + str(len(expected)).encode() + b"\0" + expected,
+            usedforsecurity=False,
+        ).hexdigest()
+        client = mock.Mock()
+        client.json.side_effect = [
+            {"sha": "a" * 40},
+            {
+                "truncated": False,
+                "tree": [
+                    {
+                        "path": ".github/workflows/ci.yml",
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": blob,
+                    }
+                ],
+            },
+        ]
+        client.raw.return_value = "jobs: {}"
+        budget = mock.Mock()
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "blob identity"):
+            codeql_preflight.load_remote_default_branch(
+                client, "owner", "repo", "main", budget
+            )
+        budget.parse.assert_not_called()
+
+    def test_reusable_lookup_refuses_symlink_and_wrong_bytes_without_caching(
+        self,
+    ) -> None:
+        payload = self.WORKFLOW.encode()
+        blob = hashlib.sha1(
+            b"blob " + str(len(payload)).encode() + b"\0" + payload,
+            usedforsecurity=False,
+        ).hexdigest()
+        for mode, body, error in (
+            ("120000", self.WORKFLOW, "not a regular file"),
+            ("100644", "jobs: {}", "blob identity"),
+        ):
+            client = mock.Mock()
+            client.json.side_effect = [
+                {"sha": "a" * 40},
+                {
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": ".github/workflows/reusable.yml",
+                            "type": "blob",
+                            "mode": mode,
+                            "sha": blob,
+                        }
+                    ],
+                },
+            ]
+            client.raw.return_value = body
+            resolver = codeql_preflight.WorkflowResolver(client, {})
+            with (
+                self.subTest(mode=mode),
+                self.assertRaisesRegex(codeql_preflight.InspectionError, error),
+            ):
+                resolver.resolve(
+                    "owner/repo/.github/workflows/reusable.yml@main",
+                    codeql_preflight.WorkflowContext("local"),
+                )
+            self.assertEqual(resolver.exact_workflows, {})
+
+    def test_reusable_tree_rejects_partial_ambiguous_and_nonregular_receipts(
+        self,
+    ) -> None:
+        path = ".github/workflows/reusable.yml"
+        good = {
+            "path": path,
+            "type": "blob",
+            "mode": "100644",
+            "sha": git_blob_id(self.WORKFLOW),
+        }
+        cases = (
+            None,
+            {"truncated": True, "tree": [good]},
+            {"truncated": False, "tree": {}},
+            {"truncated": False, "tree": [None]},
+            {"truncated": False, "tree": [{"path": 7}]},
+            {"truncated": False, "tree": [{"path": ""}]},
+            {"truncated": False, "tree": [good, good]},
+            {"truncated": False, "tree": []},
+            {"truncated": False, "tree": [{**good, "type": "tree"}]},
+        )
+        for tree in cases:
+            client = mock.Mock()
+            client.json.side_effect = [{"sha": "a" * 40}, tree]
+            resolver = codeql_preflight.WorkflowResolver(client, {})
+            with (
+                self.subTest(tree=tree),
+                self.assertRaises(codeql_preflight.InspectionError),
+            ):
+                resolver.resolve(
+                    "owner/repo/" + path + "@main",
+                    codeql_preflight.WorkflowContext("local"),
+                )
+            client.raw.assert_not_called()
+        client = mock.Mock()
+        client.json.side_effect = [
+            {"sha": "a" * 40},
+            {"truncated": False, "tree": [good, {"path": "README.md"}]},
+        ]
+        resolver = codeql_preflight.WorkflowResolver(client, {})
+        with (
+            mock.patch.object(codeql_preflight, "MAX_REMOTE_TREE_ENTRIES", 1),
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "entry safety cap"
+            ),
+        ):
+            resolver.resolve(
+                "owner/repo/" + path + "@main",
+                codeql_preflight.WorkflowContext("local"),
+            )
+        client.raw.assert_not_called()
+
+    def test_failed_blob_is_not_cached_and_valid_retry_uses_exact_tree(self) -> None:
+        path = ".github/workflows/reusable.yml"
+        client = mock.Mock()
+        client.json.side_effect = [
+            {"sha": "a" * 40},
+            {
+                "truncated": False,
+                "tree": [
+                    {
+                        "path": path,
+                        "type": "blob",
+                        "mode": "100755",
+                        "sha": git_blob_id(self.WORKFLOW),
+                    }
+                ],
+            },
+        ]
+        client.raw.side_effect = ["jobs: {}", self.WORKFLOW]
+        resolver = codeql_preflight.WorkflowResolver(client, {})
+        call = "owner/repo/" + path + "@main"
+        context = codeql_preflight.WorkflowContext("local")
+        with self.assertRaisesRegex(codeql_preflight.InspectionError, "blob identity"):
+            resolver.resolve(call, context)
+        self.assertEqual(resolver.exact_workflows, {})
+        self.assertFalse(resolver.resolve(call, context).signals.has_advanced_setup)
+        self.assertEqual(client.json.call_count, 2)
+        self.assertEqual(client.raw.call_count, 2)
 
     def test_local_and_exact_local_calls_validate_paths_and_cache_content(self) -> None:
         path = ".github/workflows/reusable.yml"
         signals = codeql_preflight.WorkflowSignals(False, ())
         client = mock.Mock()
         client.raw.return_value = self.WORKFLOW
+        client.json.return_value = {
+            "truncated": False,
+            "tree": [
+                {
+                    "path": path,
+                    "type": "blob",
+                    "mode": "100644",
+                    "sha": git_blob_id(self.WORKFLOW),
+                }
+            ],
+        }
         resolver = codeql_preflight.WorkflowResolver(client, {path: signals})
 
         local = resolver.resolve(f"./{path}", codeql_preflight.WorkflowContext("local"))
@@ -3017,7 +3480,20 @@ class WorkflowResolverTests(unittest.TestCase):
         self,
     ) -> None:
         client = mock.Mock()
-        client.json.return_value = {"sha": "a" * 40}
+        client.json.side_effect = [
+            {"sha": "a" * 40},
+            {
+                "truncated": False,
+                "tree": [
+                    {
+                        "path": ".github/workflows/reusable.yml",
+                        "type": "blob",
+                        "mode": "100644",
+                        "sha": git_blob_id(self.WORKFLOW),
+                    }
+                ],
+            },
+        ]
         client.raw.return_value = self.WORKFLOW
         resolver = codeql_preflight.WorkflowResolver(client, {})
         call = "Owner/Repo/.github/workflows/reusable.yml@main"
@@ -3027,7 +3503,7 @@ class WorkflowResolverTests(unittest.TestCase):
 
         self.assertEqual(first.identity, second.identity)
         self.assertEqual(first.context.kind, "exact")
-        client.json.assert_called_once()
+        self.assertEqual(client.json.call_count, 2)
         client.raw.assert_called_once()
 
         invalid_client = mock.Mock()
@@ -3052,14 +3528,13 @@ class WorkflowResolverTests(unittest.TestCase):
         self,
     ) -> None:
         commit = "a" * 40
-        blob = "b" * 40
+        blob = git_blob_id(self.WORKFLOW)
         client = mock.Mock()
         client.json.side_effect = [
             {"sha": commit},
             {
                 "truncated": False,
                 "tree": [
-                    None,
                     {"type": "tree", "path": ".github/workflows"},
                     {"type": "blob", "path": "README.md", "sha": "c" * 40},
                     {
@@ -3214,6 +3689,128 @@ class WorkflowResolverTests(unittest.TestCase):
 
 
 class GitHubClientTests(unittest.TestCase):
+    def test_request_metrics_do_not_claim_measured_http_request_count(self) -> None:
+        for count in (0, 1, 2000):
+            with self.subTest(count=count):
+                result = codeql_preflight.request_metrics(count)
+                self.assertEqual(result["github_client_requests"], count)
+                self.assertEqual(result["github_api_requests"], count)
+                self.assertEqual(
+                    result["github_api_requests_unit"], "client-request-attempts"
+                )
+                self.assertIsNone(result["github_http_requests"])
+                self.assertEqual(result["github_http_requests_state"], "not-measured")
+        for invalid in (True, False, "1", 1.0, None, -1):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(codeql_preflight.InspectionError):
+                    codeql_preflight.request_metrics(invalid)
+
+    def test_json_receipt_binds_exact_typed_status_before_parsing(self) -> None:
+        client = cast(GitHubClientProtocol, self.client())
+        endpoint = "repos/octo/repo/dependency-graph/sbom"
+        cases: tuple[tuple[str, object, bool], ...] = (
+            ('HTTP/2.0 200 OK\n\n{"value":1}', 200, True),
+            ('HTTP/1.1 200 OK\r\nX-Test: value\r\n\r\n{"value":1}', 200, True),
+            ('HTTP/2.0 201 Created\n\n{"value":1}', 200, False),
+            ('HTTP/2.0 202 Accepted\n\n{"value":1}', 200, False),
+            ('HTTP/2.0 204 No Content\n\n{"value":1}', 200, False),
+            ('HTTP/2.0 206 Partial Content\n\n{"value":1}', 200, False),
+            ('HTTP/2.0 302 Found\n\n{"value":1}', 200, False),
+            ('HTTP/2.0 200 OK\n\n{"value":1}', True, False),
+            ('HTTP/2.0 200 OK\n\n{"value":1}', "200", False),
+            ('HTTP/2.0 200 OK\n\n{"value":1}', 200.0, False),
+            ('HTTP/2.0 200 OK\n\n{"value":1}', 0, False),
+            ('HTTP/2.0 200 OK\n\n{"value":1}', 600, False),
+            ('{"value":1}', 200, False),
+            ('HTTP/2.0 200 OK\nHTTP/2.0 200 OK\n\n{"value":1}', 200, False),
+            ('HTTP/2.0 200 OK\n\n{"value":1,"value":2}', 200, False),
+            ('HTTP/2.0 200 OK\n\nHTTP/2.0 200 OK\n\n{"value":1}', 200, False),
+            ("HTTP/2.0 200 OK\n\n" + "[" * 20_000 + "]" * 20_000, 200, False),
+            (
+                "HTTP/2.0 200 OK\n" + "X-Test: value\n" * 101 + '\n{"value":1}',
+                200,
+                False,
+            ),
+            ("HTTP/2.0 200 OK\nX-Test: " + "x" * 8193 + '\n\n{"value":1}', 200, False),
+        )
+        for payload, expected, accepted in cases:
+            with (
+                self.subTest(payload=payload[:60], expected=expected),
+                mock.patch.object(client, "_run", return_value=payload) as request,
+            ):
+                if accepted:
+                    self.assertEqual(
+                        client.json_at_status(endpoint, cast(int, expected)),
+                        {"value": 1},
+                    )
+                else:
+                    with self.assertRaises(codeql_preflight.InspectionError):
+                        client.json_at_status(endpoint, cast(int, expected))
+                if type(expected) is int and 100 <= expected <= 599:
+                    request.assert_called_once_with(endpoint, include=True)
+                else:
+                    request.assert_not_called()
+
+        def respond(*args: object, **kwargs: object) -> mock.Mock:
+            self.assertIn("--include", cast(list[str], args[0]))
+            payload = b'HTTP/2.0 200 OK\n\n{"value":1}'
+            cast(BinaryIO, kwargs["stdout"]).write(payload)
+            client.response_bytes += len(payload)
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(
+            codeql_preflight.GitHubClient, "_execute_bounded", side_effect=respond
+        ):
+            self.assertEqual(client.json_at_status(endpoint, 200), {"value": 1})
+        self.assertEqual(client.request_count, 1)
+        self.assertGreater(client.response_bytes, 0)
+
+    def test_no_content_status_retains_transport_limits_and_rejects_ambiguous_receipts(
+        self,
+    ) -> None:
+        client = cast(GitHubClientProtocol, self.client())
+        payloads = (
+            ("HTTP/2.0 204 No Content\n\n", 204, True),
+            ("HTTP/1.1 204 No Content\r\nX-Test: synthetic\r\n\r\n", 204, True),
+            ("HTTP/2.0 200 OK\n\n", 204, False),
+            ("HTTP/2.0 204 No Content\n\n{}", 204, False),
+            ("HTTP/2.0 204 No Content\n\nHTTP/2.0 204 No Content\n\n", 204, False),
+            ("incomplete", 204, False),
+            ("HTTP/2.0 204 No Content\nHTTP/2.0 200 OK\n\n", 204, False),
+            ("HTTP/2.0 204 No Content\n\n", True, False),
+        )
+        for payload, expected, accepted in payloads:
+            with (
+                self.subTest(payload=payload, expected=expected),
+                mock.patch.object(client, "_run", return_value=payload) as request,
+            ):
+                if accepted:
+                    client.require_empty_response(
+                        "repos/octo/repo/vulnerability-alerts", expected
+                    )
+                else:
+                    with self.assertRaises(codeql_preflight.InspectionError):
+                        client.require_empty_response(
+                            "repos/octo/repo/vulnerability-alerts", expected
+                        )
+                request.assert_called_once_with(
+                    "repos/octo/repo/vulnerability-alerts", include=True
+                )
+
+        def respond(*args: object, **kwargs: object) -> mock.Mock:
+            self.assertIn("--include", cast(list[str], args[0]))
+            payload = b"HTTP/2.0 204 No Content\n\n"
+            cast(BinaryIO, kwargs["stdout"]).write(payload)
+            client.response_bytes += len(payload)
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(
+            codeql_preflight.GitHubClient, "_execute_bounded", side_effect=respond
+        ):
+            client.require_empty_response("repos/octo/repo/vulnerability-alerts", 204)
+        self.assertEqual(client.request_count, 1)
+        self.assertGreater(client.response_bytes, 0)
+
     def client(self) -> object:
         with mock.patch.object(
             codeql_preflight, "resolve_path_executable", return_value="/tools/gh"
@@ -3273,7 +3870,7 @@ class GitHubClientTests(unittest.TestCase):
         client.deadline = 1.0
         with (
             mock.patch.object(codeql_preflight.time, "monotonic", return_value=2.0),
-            mock.patch.object(codeql_preflight.subprocess, "run") as run,
+            mock.patch.object(codeql_preflight.GitHubClient, "_execute_bounded") as run,
             self.assertRaisesRegex(
                 codeql_preflight.InspectionError, "second safety cap"
             ),
@@ -3285,7 +3882,9 @@ class GitHubClientTests(unittest.TestCase):
         client = cast(GitHubClientProtocol, self.client())
         with (
             mock.patch.object(
-                codeql_preflight.subprocess, "run", side_effect=FileNotFoundError()
+                codeql_preflight.GitHubClient,
+                "_execute_bounded",
+                side_effect=FileNotFoundError(),
             ),
             self.assertRaisesRegex(codeql_preflight.InspectionError, "not installed"),
         ):
@@ -3293,8 +3892,8 @@ class GitHubClientTests(unittest.TestCase):
 
         with (
             mock.patch.object(
-                codeql_preflight.subprocess,
-                "run",
+                codeql_preflight.GitHubClient,
+                "_execute_bounded",
                 side_effect=PermissionError("blocked"),
             ),
             self.assertRaisesRegex(
@@ -3309,7 +3908,9 @@ class GitHubClientTests(unittest.TestCase):
 
         with (
             mock.patch.object(
-                codeql_preflight.subprocess, "run", side_effect=fail_request
+                codeql_preflight.GitHubClient,
+                "_execute_bounded",
+                side_effect=fail_request,
             ),
             self.assertRaisesRegex(codeql_preflight.InspectionError, "denied"),
         ):
@@ -3322,7 +3923,9 @@ class GitHubClientTests(unittest.TestCase):
             return mock.Mock(returncode=0)
 
         with mock.patch.object(
-            codeql_preflight.subprocess, "run", side_effect=successful_raw
+            codeql_preflight.GitHubClient,
+            "_execute_bounded",
+            side_effect=successful_raw,
         ):
             self.assertEqual(client.raw("repos/octo/repo"), "workflow")
 
@@ -3331,12 +3934,15 @@ class GitHubClientTests(unittest.TestCase):
         def bounded_response(*_args: object, **kwargs: object) -> mock.Mock:
             cast(BinaryIO, kwargs["stdout"]).write(b"12345")
             cast(BinaryIO, kwargs["stderr"]).write(b"67890")
+            client.response_bytes += 10
             return mock.Mock(returncode=0)
 
         with (
             mock.patch.object(codeql_preflight, "MAX_TOTAL_GH_RESPONSE_BYTES", 9),
             mock.patch.object(
-                codeql_preflight.subprocess, "run", side_effect=bounded_response
+                codeql_preflight.GitHubClient,
+                "_execute_bounded",
+                side_effect=bounded_response,
             ),
             self.assertRaisesRegex(codeql_preflight.InspectionError, "total response"),
         ):
@@ -3345,8 +3951,8 @@ class GitHubClientTests(unittest.TestCase):
     def test_api_timeout_fails_closed(self) -> None:
         client = codeql_preflight.GitHubClient("github.com")
         with mock.patch.object(
-            codeql_preflight.subprocess,
-            "run",
+            codeql_preflight.GitHubClient,
+            "_execute_bounded",
             side_effect=codeql_preflight.subprocess.TimeoutExpired("gh", 60),
         ) as run_mock:
             with self.assertRaisesRegex(codeql_preflight.InspectionError, "timed out"):
@@ -3370,8 +3976,8 @@ class GitHubClientTests(unittest.TestCase):
         with (
             mock.patch.object(codeql_preflight, "MAX_GH_RESPONSE_BYTES", 64),
             mock.patch.object(
-                codeql_preflight.subprocess,
-                "run",
+                codeql_preflight.GitHubClient,
+                "_execute_bounded",
                 side_effect=write_oversized_output,
             ),
         ):
@@ -3388,13 +3994,228 @@ class GitHubClientTests(unittest.TestCase):
         client = cast(GitHubClientProtocol, self.client())
         with (
             mock.patch.object(
-                codeql_preflight.subprocess,
-                "run",
+                codeql_preflight.GitHubClient,
+                "_execute_bounded",
                 side_effect=write_invalid_utf8,
             ),
             self.assertRaisesRegex(codeql_preflight.InspectionError, "valid UTF-8"),
         ):
             client.raw("repos/octo/repo")
+
+
+class GitHubCaptureTests(unittest.TestCase):
+    def client(self) -> GitHubClientProtocol:
+        with mock.patch.object(
+            codeql_preflight, "resolve_path_executable", return_value="/tools/gh"
+        ):
+            return cast(
+                GitHubClientProtocol, codeql_preflight.GitHubClient("github.com")
+            )
+
+    def capture(
+        self, client: GitHubClientProtocol, script: str, *, check: bool = False
+    ) -> tuple[bytes, bytes]:
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+            client._execute_bounded(
+                [sys.executable, "-I", "-c", script],
+                stdout=output,
+                stderr=errors,
+                env=os.environ.copy(),
+                timeout=2,
+                check=check,
+            )
+            output.seek(0)
+            errors.seek(0)
+            return output.read(), errors.read()
+
+    def test_native_capture_preserves_both_streams_and_counts_once(self) -> None:
+        client = self.client()
+        output, errors = self.capture(
+            client,
+            "import sys;sys.stdout.buffer.write(b'hello');sys.stderr.buffer.write(b'world')",
+        )
+        self.assertEqual((output, errors), (b"hello", b"world"))
+        self.assertEqual(client.response_bytes, 10)
+
+    def test_native_capture_rejects_each_stream_before_oversized_spool_write(
+        self,
+    ) -> None:
+        for channel in ("stdout", "stderr"):
+            client = self.client()
+            with (
+                self.subTest(channel=channel),
+                tempfile.TemporaryFile() as output,
+                tempfile.TemporaryFile() as errors,
+                mock.patch.object(codeql_preflight, "MAX_GH_RESPONSE_BYTES", 8192),
+                self.assertRaisesRegex(codeql_preflight.InspectionError, "byte count"),
+            ):
+                try:
+                    client._execute_bounded(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-c",
+                            "import sys;sys." + channel + ".buffer.write(b'x'*1048576)",
+                        ],
+                        stdout=output,
+                        stderr=errors,
+                        env=os.environ.copy(),
+                        timeout=2,
+                    )
+                finally:
+                    output.seek(0, 2)
+                    errors.seek(0, 2)
+                    self.assertLessEqual(max(output.tell(), errors.tell()), 8192)
+            self.assertEqual(client.response_bytes, 8193)
+
+    def test_native_capture_checks_joint_budget_before_writes(self) -> None:
+        client = self.client()
+        with (
+            tempfile.TemporaryFile() as output,
+            tempfile.TemporaryFile() as errors,
+            mock.patch.object(codeql_preflight, "MAX_TOTAL_GH_RESPONSE_BYTES", 9),
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "total response"),
+        ):
+            try:
+                client._execute_bounded(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-c",
+                        "import sys;sys.stdout.buffer.write(b'12345');sys.stderr.buffer.write(b'67890')",
+                    ],
+                    stdout=output,
+                    stderr=errors,
+                    env=os.environ.copy(),
+                    timeout=2,
+                )
+            finally:
+                output.seek(0, 2)
+                errors.seek(0, 2)
+                self.assertLessEqual(output.tell() + errors.tell(), 9)
+        self.assertEqual(client.response_bytes, 10)
+
+    def test_native_capture_timeout_reaps_process_and_closes_pipes(self) -> None:
+        client = self.client()
+        owned = codeql_preflight.subprocess.Popen(
+            [sys.executable, "-I", "-c", "import time;time.sleep(5)"],
+            stdin=codeql_preflight.subprocess.DEVNULL,
+            stdout=codeql_preflight.subprocess.PIPE,
+            stderr=codeql_preflight.subprocess.PIPE,
+            bufsize=0,
+        )
+        client.deadline = codeql_preflight.time.monotonic() + 0.1
+        with (
+            mock.patch.object(codeql_preflight.subprocess, "Popen", return_value=owned),
+            self.assertRaises(codeql_preflight.subprocess.TimeoutExpired),
+        ):
+            self.capture(client, "import time;time.sleep(5)")
+        self.assertIsNotNone(owned.poll())
+        self.assertTrue(owned.stdout.closed and owned.stderr.closed)
+
+    def test_capture_short_write_cannot_return_partial_success(self) -> None:
+        client = self.client()
+        with (
+            tempfile.TemporaryFile() as errors,
+            self.assertRaisesRegex(OSError, "incomplete"),
+        ):
+            client._execute_bounded(
+                [sys.executable, "-I", "-c", "print('complete')"],
+                stdout=mock.Mock(write=mock.Mock(return_value=0)),
+                stderr=errors,
+                env=os.environ.copy(),
+                timeout=2,
+            )
+
+    def test_capture_check_and_empty_eof_dispositions(self) -> None:
+        client = self.client()
+        self.assertEqual(self.capture(client, "pass", check=True), (b"", b""))
+        with self.assertRaises(codeql_preflight.subprocess.CalledProcessError):
+            self.capture(client, "raise SystemExit(7)", check=True)
+        with mock.patch.object(
+            codeql_preflight.GitHubClient, "_pipe_available", return_value=1
+        ):
+            self.assertEqual(
+                self.capture(client, "print('x')"),
+                (b"x\r\n" if os.name == "nt" else b"x\n", b""),
+            )
+
+    def test_posix_pipe_readiness_is_separate_from_windows_backend(self) -> None:
+        stream = mock.Mock()
+        for ready, expected in (
+            ([], 0),
+            ([stream], codeql_preflight.GH_CAPTURE_READ_BYTES),
+        ):
+            with (
+                self.subTest(ready=bool(ready)),
+                mock.patch.object(codeql_preflight.sys, "platform", "linux"),
+                mock.patch.object(
+                    codeql_preflight.select, "select", return_value=(ready, [], [])
+                ),
+            ):
+                self.assertEqual(
+                    codeql_preflight.GitHubClient._pipe_available(stream), expected
+                )
+
+    @unittest.skipUnless(sys.platform == "win32", "requires native Windows pipe API")
+    def test_windows_pipe_closure_and_error_dispositions(self) -> None:
+        kernel = mock.Mock()
+        with tempfile.TemporaryFile() as stream:
+            for code in (109, 232, 5):
+                with (
+                    self.subTest(code=code),
+                    mock.patch.object(
+                        codeql_preflight.ctypes, "WinDLL", return_value=kernel
+                    ),
+                    mock.patch.object(
+                        codeql_preflight.ctypes, "get_last_error", return_value=code
+                    ),
+                ):
+                    kernel.PeekNamedPipe.return_value = 0
+                    if code == 5:
+                        with self.assertRaises(OSError):
+                            codeql_preflight.GitHubClient._pipe_available(stream)
+                    else:
+                        self.assertEqual(
+                            codeql_preflight.GitHubClient._pipe_available(stream), -1
+                        )
+
+    def test_exhausted_budget_refuses_before_process_start(self) -> None:
+        client = self.client()
+        client.response_bytes = codeql_preflight.MAX_TOTAL_GH_RESPONSE_BYTES
+        with (
+            mock.patch.object(codeql_preflight.subprocess, "Popen") as start,
+            self.assertRaisesRegex(codeql_preflight.InspectionError, "exhausted"),
+        ):
+            client.raw("repos/octo/repo")
+        start.assert_not_called()
+
+    def test_capture_environment_cannot_enable_paging_or_debug_output(self) -> None:
+        client = self.client()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "GH_FORCE_TTY": "1",
+                    "GH_DEBUG": "api",
+                    "DEBUG": "1",
+                    "GH_PAGER": "unknown",
+                    "PAGER": "unknown",
+                },
+            ),
+            mock.patch.object(
+                codeql_preflight.GitHubClient,
+                "_execute_bounded",
+                return_value=mock.Mock(returncode=0),
+            ) as capture,
+        ):
+            self.assertEqual(client.raw("repos/octo/repo"), "")
+            environment = capture.call_args.kwargs["env"]
+            self.assertEqual((environment["GH_PAGER"], environment["PAGER"]), ("", ""))
+            self.assertNotIn("GH_FORCE_TTY", environment)
+            self.assertNotIn("GH_DEBUG", environment)
+            self.assertNotIn("DEBUG", environment)
+            self.assertEqual(os.environ["GH_DEBUG"], "api")
 
 
 class InputValidationTests(unittest.TestCase):
@@ -3425,6 +4246,7 @@ class InputValidationTests(unittest.TestCase):
             args = argparse.Namespace(
                 repo_root=str(PLUGIN_ROOT),
                 repository="octo/repo",
+                expected_repository_id=42,
                 default_branch=default_branch,
                 hostname="github.com",
                 confirm_no_external_codeql=True,
@@ -3461,6 +4283,7 @@ class InputValidationTests(unittest.TestCase):
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="main",
             hostname="ghe.example.test",
             confirm_no_external_codeql=True,
@@ -3476,6 +4299,7 @@ class InputValidationTests(unittest.TestCase):
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="main",
             hostname="github.com",
             confirm_no_external_codeql=True,
@@ -3497,6 +4321,217 @@ class InputValidationTests(unittest.TestCase):
 
 
 class DefaultSetupDecisionTests(unittest.TestCase):
+    def test_boolean_caller_controls_reject_substitutes_before_client_creation(
+        self,
+    ) -> None:
+        values: tuple[object, ...] = (None, "false", "true", 0, 1, [], {}, [True])
+        for control in (
+            "confirm_no_external_codeql",
+            "require_administration_permission",
+        ):
+            for value in values:
+                with (
+                    self.subTest(control=control, value=value),
+                    mock.patch.object(codeql_preflight, "GitHubClient") as client,
+                    self.assertRaisesRegex(codeql_preflight.InspectionError, "Boolean"),
+                ):
+                    codeql_preflight.run(
+                        argparse.Namespace(
+                            hostname="github.com",
+                            repository="synthetic/target",
+                            default_branch="main",
+                            repo_root=".",
+                            expected_repository_id=42,
+                            **{
+                                "confirm_no_external_codeql": True,
+                                "require_administration_permission": False,
+                                control: value,
+                            },
+                        )
+                    )
+                client.assert_not_called()
+
+    def test_remote_branch_head_change_cannot_reuse_old_workflow_absence_proof(
+        self,
+    ) -> None:
+        metadata = {
+            "id": 42,
+            "full_name": "synthetic/target",
+            "default_branch": "main",
+            "archived": False,
+            "disabled": False,
+        }
+        client = mock.Mock(request_count=0, deadline=float("inf"))
+
+        def response(endpoint: str) -> object:
+            if endpoint == "repos/synthetic/target":
+                return metadata
+            if endpoint.endswith("code-scanning/default-setup"):
+                return {"state": "not-configured"}
+            if endpoint.endswith("commits/main"):
+                return {"sha": "b" * 40}
+            if "code-scanning/analyses" in endpoint:
+                return []
+            raise AssertionError(endpoint)
+
+        client.json.side_effect = response
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(codeql_preflight, "GitHubClient", return_value=client),
+            mock.patch.object(
+                codeql_preflight, "load_local_workflows", return_value={}
+            ),
+            mock.patch.object(
+                codeql_preflight,
+                "load_remote_default_branch",
+                return_value=("a" * 40, {}),
+            ),
+            self.assertRaisesRegex(
+                codeql_preflight.InspectionError, "head.*changed|snapshot"
+            ),
+        ):
+            codeql_preflight.run(
+                argparse.Namespace(
+                    repo_root=directory,
+                    repository="synthetic/target",
+                    default_branch="main",
+                    hostname="github.com",
+                    confirm_no_external_codeql=True,
+                    expected_repository_id=42,
+                )
+            )
+
+    def test_nested_inspection_reuses_the_parent_api_counter_instead_of_resetting_budget(
+        self,
+    ) -> None:
+        original = {"id": 42, "full_name": "synthetic/target", "default_branch": "main"}
+        client = mock.Mock(request_count=17)
+
+        def response(endpoint: str) -> object:
+            client.request_count += 1
+            return (
+                original
+                if endpoint == "repos/synthetic/target"
+                else {"state": "configured"}
+            )
+
+        client.json.side_effect = response
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(codeql_preflight, "GitHubClient") as factory,
+        ):
+            result = codeql_preflight.run(
+                argparse.Namespace(
+                    repo_root=directory,
+                    repository="synthetic/target",
+                    default_branch="main",
+                    hostname="github.com",
+                    confirm_no_external_codeql=False,
+                    expected_repository_id=42,
+                ),
+                _client=client,
+            )
+        factory.assert_not_called()
+        self.assertEqual(result["github_api_requests"], 21)
+
+    def test_default_setup_preservation_rejects_mid_inspection_target_or_state_drift(
+        self,
+    ) -> None:
+        original = {"id": 42, "full_name": "synthetic/target", "default_branch": "main"}
+        for responses in (
+            [original, {"state": "configured"}, {**original, "id": 43}],
+            [
+                original,
+                {"state": "configured"},
+                {**original, "default_branch": "develop"},
+            ],
+            [original, {"state": "configured"}, original, {"state": "not-configured"}],
+            [original, {"state": "configured"}, original, None],
+        ):
+            client = mock.Mock(request_count=0)
+            client.json.side_effect = responses
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                self.subTest(responses=responses),
+                mock.patch.object(
+                    codeql_preflight, "GitHubClient", return_value=client
+                ),
+                self.assertRaises(codeql_preflight.InspectionError),
+            ):
+                codeql_preflight.run(
+                    argparse.Namespace(
+                        repo_root=directory,
+                        repository="synthetic/target",
+                        default_branch="main",
+                        hostname="github.com",
+                        confirm_no_external_codeql=False,
+                        expected_repository_id=42,
+                    )
+                )
+
+    def test_unbound_configured_inspection_is_discovery_only_and_keeps_unknown_evidence(
+        self,
+    ) -> None:
+        original = {"id": 42, "full_name": "synthetic/target", "default_branch": "main"}
+        client = mock.Mock(request_count=0)
+        client.json.side_effect = lambda endpoint: (
+            original
+            if endpoint == "repos/synthetic/target"
+            else {"state": "configured"}
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(codeql_preflight, "GitHubClient", return_value=client),
+        ):
+            result = codeql_preflight.run(
+                argparse.Namespace(
+                    repo_root=directory,
+                    repository="synthetic/target",
+                    default_branch="main",
+                    hostname="github.com",
+                    confirm_no_external_codeql=False,
+                    expected_repository_id=None,
+                )
+            )
+        self.assertEqual(result["decision"], "bind-repository-identity-before-mutation")
+        self.assertIsNone(result["advanced_workflows"])
+        self.assertIsNone(result["has_codeql_analysis"])
+
+    def test_configured_setup_still_binds_numeric_identity_without_inventing_inspection(
+        self,
+    ) -> None:
+        metadata = {"id": 42, "full_name": "synthetic/target", "default_branch": "main"}
+        client = mock.Mock(request_count=0)
+        client.json.side_effect = lambda endpoint: (
+            metadata
+            if endpoint == "repos/synthetic/target"
+            else {"state": "configured"}
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(codeql_preflight, "GitHubClient", return_value=client),
+        ):
+            args = argparse.Namespace(
+                repo_root=directory,
+                repository="synthetic/target",
+                default_branch="main",
+                hostname="github.com",
+                confirm_no_external_codeql=False,
+                expected_repository_id=42,
+            )
+            result = codeql_preflight.run(args)
+            self.assertEqual(result.get("repository_id"), 42)
+            self.assertFalse(result["workflow_inspection_performed"])
+            self.assertFalse(result["analysis_inspection_performed"])
+            self.assertIsNone(result["administration_permission"])
+            for identity in (43, None, True, "42"):
+                metadata["id"] = identity
+                with (
+                    self.subTest(identity=identity),
+                    self.assertRaises(codeql_preflight.InspectionError),
+                ):
+                    codeql_preflight.run(args)
+
     def test_default_setup_docs_require_user_approval_and_fresh_bound_evidence(
         self,
     ) -> None:
@@ -3516,12 +4551,16 @@ class DefaultSetupDecisionTests(unittest.TestCase):
         self.assertIn(
             "$finalPreflight.has_codeql_analysis -ne $initialHasCodeqlAnalysis", codeql
         )
+        self.assertIn(
+            "$finalPreflight.remote_inspection_commit -cne $initialRemoteCodeqlCommit",
+            codeql,
+        )
         self.assertNotIn("$defaultSetupMutationApproved = $true", codeql)
         final_preflight_index = codeql.index(
             "$finalPreflightOutput = & $pythonCommand.Source"
         )
         patch_index = codeql.index(
-            "$setupOutput = & gh api --hostname github.com -X PATCH"
+            "$setupOutput = & gh api --hostname github.com --include -X PATCH"
         )
         self.assertLess(final_preflight_index, patch_index)
 
@@ -3540,6 +4579,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                 if endpoint == "repos/octo/repo":
                     return {
                         "full_name": "octo/repo",
+                        "id": 42,
                         "default_branch": "main",
                         "archived": False,
                         "disabled": False,
@@ -3549,6 +4589,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="main",
             hostname="github.com",
             confirm_no_external_codeql=False,
@@ -3561,11 +4602,14 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             [
                 "repos/octo/repo",
                 "repos/octo/repo/code-scanning/default-setup",
+                "repos/octo/repo",
+                "repos/octo/repo/code-scanning/default-setup",
             ],
         )
         self.assertEqual(result["repository"], "octo/repo")
         self.assertEqual(result["default_branch"], "main")
         self.assertIsNone(result["advanced_workflows"])
+        self.assertIsNone(result["remote_inspection_commit"])
         self.assertIsNone(result["has_codeql_analysis"])
         self.assertFalse(result["workflow_inspection_performed"])
         self.assertFalse(result["analysis_inspection_performed"])
@@ -3585,17 +4629,21 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                 if endpoint == "repos/octo/repo":
                     return {
                         "full_name": "octo/repo",
+                        "id": 42,
                         "default_branch": "main",
                         "archived": False,
                         "disabled": False,
                     }
                 if endpoint.endswith("code-scanning/default-setup"):
                     return {"state": "future-state"}
+                if endpoint == "repos/octo/repo/commits/main":
+                    return {"sha": "a" * 40}
                 raise AssertionError(endpoint)
 
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="main",
             hostname="github.com",
             confirm_no_external_codeql=True,
@@ -3622,15 +4670,19 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                 if endpoint == "repos/octo/repo":
                     return {
                         "full_name": "octo/repo",
+                        "id": 42,
                         "default_branch": "main",
                     }
                 if endpoint.endswith("code-scanning/default-setup"):
                     return []
+                if endpoint == "repos/octo/repo/commits/main":
+                    return {"sha": "a" * 40}
                 raise AssertionError(endpoint)
 
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="main",
             hostname="github.com",
             confirm_no_external_codeql=True,
@@ -3660,6 +4712,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                 if endpoint == "repos/octo/repo":
                     return {
                         "full_name": "octo/repo",
+                        "id": 42,
                         "default_branch": "main",
                         "archived": False,
                         "disabled": False,
@@ -3669,11 +4722,14 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                     return {"enabled": True}
                 if "code-scanning/analyses" in endpoint:
                     return []
+                if endpoint == "repos/octo/repo/commits/main":
+                    return {"sha": "a" * 40}
                 raise AssertionError(endpoint)
 
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="main",
             hostname="github.com",
             confirm_no_external_codeql=False,
@@ -3711,6 +4767,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             (
                 {
                     "full_name": "octo/repo",
+                    "id": 42,
                     "default_branch": "main",
                     "archived": True,
                     "disabled": False,
@@ -3722,6 +4779,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             (
                 {
                     "full_name": "octo/repo",
+                    "id": 42,
                     "default_branch": "main",
                     "archived": False,
                     "disabled": True,
@@ -3733,6 +4791,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             (
                 {
                     "full_name": "octo/repo",
+                    "id": 42,
                     "default_branch": "main",
                     "archived": False,
                     "disabled": False,
@@ -3744,6 +4803,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             (
                 {
                     "full_name": "octo/repo",
+                    "id": 42,
                     "default_branch": "main",
                     "archived": False,
                     "disabled": False,
@@ -3755,6 +4815,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             (
                 {
                     "full_name": "octo/repo",
+                    "id": 42,
                     "default_branch": "main",
                     "archived": False,
                     "disabled": False,
@@ -3766,6 +4827,7 @@ class DefaultSetupDecisionTests(unittest.TestCase):
             (
                 {
                     "full_name": "octo/repo",
+                    "id": 42,
                     "default_branch": "main",
                     "archived": False,
                     "disabled": False,
@@ -3792,11 +4854,14 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                         return {"state": "not-configured"}
                     if endpoint == "repos/octo/repo/actions/permissions":
                         return {"enabled": actions_enabled}
+                    if endpoint == "repos/octo/repo/commits/main":
+                        return {"sha": "a" * 40}
                     raise AssertionError(endpoint)
 
             args = argparse.Namespace(
                 repo_root=str(PLUGIN_ROOT),
                 repository="octo/repo",
+                expected_repository_id=42,
                 default_branch="main",
                 hostname="github.com",
                 confirm_no_external_codeql=True,
@@ -3845,15 +4910,19 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                 if endpoint == "repos/octo/repo":
                     return {
                         "full_name": "octo/repo",
+                        "id": 42,
                         "default_branch": "main",
                         "archived": False,
                         "disabled": False,
                     }
+                if endpoint == "repos/octo/repo/commits/main":
+                    return {"sha": "a" * 40}
                 raise AssertionError(endpoint)
 
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="develop",
             hostname="github.com",
             confirm_no_external_codeql=True,
@@ -3886,12 +4955,15 @@ class DefaultSetupDecisionTests(unittest.TestCase):
                 if endpoint == "repos/octo/repo":
                     return {
                         "full_name": "octo/repo",
+                        "id": 42,
                         "default_branch": "main",
                         "archived": False,
                         "disabled": False,
                     }
                 if "code-scanning/analyses" in endpoint:
                     return []
+                if endpoint == "repos/octo/repo/commits/main":
+                    return {"sha": "a" * 40}
                 raise AssertionError(endpoint)
 
         workflow = """
@@ -3907,6 +4979,7 @@ jobs:
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="main",
             hostname="github.com",
             confirm_no_external_codeql=False,
@@ -3944,6 +5017,7 @@ jobs:
             args = argparse.Namespace(
                 repo_root=str(root_file),
                 repository="octo/repo",
+                expected_repository_id=42,
                 default_branch="main",
                 hostname="github.com",
                 confirm_no_external_codeql=True,
@@ -3997,12 +5071,15 @@ jobs:
                 if endpoint == "repos/octo/repo":
                     return {
                         "full_name": "octo/repo",
+                        "id": 42,
                         "default_branch": "main",
                         "archived": False,
                         "disabled": False,
                     }
                 if "code-scanning/analyses" in endpoint:
                     return [{"id": 1}]
+                if endpoint == "repos/octo/repo/commits/main":
+                    return {"sha": "a" * 40}
                 raise AssertionError(endpoint)
 
         commit = "a" * 40
@@ -4011,6 +5088,7 @@ jobs:
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="main",
             hostname="github.com",
             confirm_no_external_codeql=True,
@@ -4048,17 +5126,21 @@ jobs:
                 if endpoint == "repos/octo/repo":
                     return {
                         "full_name": "octo/repo",
+                        "id": 42,
                         "default_branch": "main",
                         "archived": False,
                         "disabled": False,
                     }
                 if "code-scanning/analyses" in endpoint:
                     return {}
+                if endpoint == "repos/octo/repo/commits/main":
+                    return {"sha": "a" * 40}
                 raise AssertionError(endpoint)
 
         args = argparse.Namespace(
             repo_root=str(PLUGIN_ROOT),
             repository="octo/repo",
+            expected_repository_id=42,
             default_branch="main",
             hostname="github.com",
             confirm_no_external_codeql=True,
@@ -4148,6 +5230,442 @@ class CommandLineTests(unittest.TestCase):
 
 
 class PlaceholderContractTests(unittest.TestCase):
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_default_setup_readonly_preservation_retains_unknowns_and_invalid_proofs_are_not_cached(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        beginning = (
+            "      try {\n        $preflightText = $preflightOutput | Out-String"
+        )
+        consumer = (
+            beginning
+            + reference.split(beginning, 1)[1].split("\n    }\n  }\n  ```", 1)[0]
+        )
+        identity = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert identity is not None
+        base: dict[str, object] = {
+            "inspection_complete": True,
+            "decision": "may-offer-default-setup",
+            "repository": "OWNER/REPO",
+            "repository_id": 42,
+            "default_branch": "main",
+            "default_setup_state": "not-configured",
+            "administration_permission": True,
+            "github_actions_enabled": True,
+            "advanced_workflows": [],
+            "has_codeql_analysis": False,
+            "workflow_inspection_performed": True,
+            "analysis_inspection_performed": True,
+            "remote_inspection_commit": "a" * 40,
+        }
+        preserve = {
+            **base,
+            "decision": "preserve-default-setup",
+            "default_setup_state": "configured",
+            "administration_permission": None,
+            "github_actions_enabled": None,
+            "advanced_workflows": None,
+            "has_codeql_analysis": None,
+            "workflow_inspection_performed": False,
+            "analysis_inspection_performed": False,
+            "remote_inspection_commit": None,
+        }
+        prefix = "$ErrorActionPreference='Stop'\n$SELECTED_REPOSITORY_ID=42\n$DEFAULT_BRANCH='main'\n$preflightOutput=Get-Content -Raw -LiteralPath $env:FIXTURE\n$initialCodeqlDecision=$null; $initialAdvancedWorkflows=$null; $initialHasCodeqlAnalysis=$null; $initialRemoteCodeqlCommit=$null\n"
+        suffix = "\n} catch { $failure=$_.Exception.Message }\n@{decision=$initialCodeqlDecision;advanced=$initialAdvancedWorkflows;analysis=$initialHasCodeqlAnalysis;commit=$initialRemoteCodeqlCommit;failure=$failure} | ConvertTo-Json -Compress\n"
+        cases: tuple[tuple[dict[str, object], str | None], ...] = (
+            (base, "may-offer-default-setup"),
+            (preserve, "preserve-default-setup"),
+            ({**base, "inspection_complete": False}, None),
+            ({**base, "administration_permission": "true"}, None),
+            ({**base, "advanced_workflows": "one.yml"}, None),
+            ({**base, "workflow_inspection_performed": False}, None),
+            ({**base, "repository": ["OWNER/REPO"]}, None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "readonly-default.ps1"
+            script.write_bytes(
+                (
+                    prefix
+                    + identity[0]
+                    + "\n$failure=$null\ntry {\n"
+                    + consumer
+                    + suffix
+                ).encode("utf-8-sig")
+            )
+            fixture = root / "verdict.json"
+            for document, decision in cases:
+                with self.subTest(document=document):
+                    fixture.write_text(json.dumps(document), encoding="utf-8")
+                    result = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(script),
+                        ],
+                        env={**os.environ, "FIXTURE": str(fixture)},
+                        capture_output=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    text = result.stdout.decode("utf-8-sig").strip()
+                    observed = json.loads(text.splitlines()[-1])
+                    self.assertEqual(observed["decision"], decision, observed)
+                    if decision == "preserve-default-setup":
+                        self.assertIsNone(observed["advanced"])
+                        self.assertIsNone(observed["analysis"])
+                        self.assertIsNone(observed["commit"])
+                    if decision is None:
+                        self.assertNotIn(
+                            "Default setup is eligible to be offered", text
+                        )
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_default_setup_fresh_guard_rejects_ambiguous_verdict_before_patch(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        beginning = "  if ($defaultSetupEnablementApproved -isnot [bool] -or -not $defaultSetupEnablementApproved) {"
+        consumer = (
+            beginning
+            + reference.split(beginning, 1)[1].split(
+                '  $defaultSetupPath = "repos/OWNER/REPO/code-scanning/default-setup"',
+                1,
+            )[0]
+        )
+        identity = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert identity is not None
+        base: dict[str, object] = {
+            "inspection_complete": True,
+            "decision": "may-offer-default-setup",
+            "repository": "OWNER/REPO",
+            "repository_id": 42,
+            "default_branch": "main",
+            "default_setup_state": "not-configured",
+            "external_codeql_absence_confirmed": True,
+            "administration_permission": True,
+            "github_actions_enabled": True,
+            "workflow_inspection_performed": True,
+            "analysis_inspection_performed": True,
+            "has_codeql_analysis": False,
+            "advanced_workflows": [],
+            "remote_inspection_commit": "a" * 40,
+        }
+        prefix = r"""
+$ErrorActionPreference='Stop'
+$SELECTED_REPOSITORY_ID=42
+$DEFAULT_BRANCH='main'
+$REPO_ROOT=$PSScriptRoot
+$defaultSetupEnablementApproved=$true
+$defaultSetupSwitchApproved=$false
+$noExternalCodeqlConfirmed=$true
+$initialCodeqlDecision='may-offer-default-setup'
+$initialAdvancedWorkflows=@()
+$initialHasCodeqlAnalysis=$false
+$initialRemoteCodeqlCommit='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+$pythonCommand=@{Source='Invoke-CurrentCodeqlFixture'}
+$preflightScript='unused-synthetic-entrypoint'
+$consentPacket=Get-Content -Raw -LiteralPath $env:FIXTURE | ConvertFrom-Json
+if ($null -ne $consentPacket.PSObject.Properties['enablement_consent']) { $defaultSetupEnablementApproved=$consentPacket.enablement_consent }
+if ($null -ne $consentPacket.PSObject.Properties['uploader_consent']) { $noExternalCodeqlConfirmed=$consentPacket.uploader_consent }
+if ($null -ne $consentPacket.PSObject.Properties['switch_consent']) {
+  $defaultSetupSwitchApproved=$consentPacket.switch_consent
+  $initialCodeqlDecision='require-explicit-switch-confirmation'
+}
+function Invoke-CurrentCodeqlFixture { $global:LASTEXITCODE=0; Get-Content -Raw -LiteralPath $env:FIXTURE }
+"""
+        suffix = "\n$patches++\n} catch { $failure=$_.Exception.Message }\n@{patches=$patches;failure=$failure} | ConvertTo-Json -Compress\n"
+        overrides: tuple[dict[str, object], ...] = (
+            {},
+            {"repository": ["OWNER/REPO"]},
+            {"default_branch": ["main"]},
+            {"decision": ["may-offer-default-setup"]},
+            {"default_setup_state": ["not-configured"]},
+            {"administration_permission": [True]},
+            {"github_actions_enabled": [True]},
+            {"external_codeql_absence_confirmed": [True]},
+            {"has_codeql_analysis": [False]},
+            {"workflow_inspection_performed": False},
+            {"analysis_inspection_performed": None},
+            {"enablement_consent": "false"},
+            {"enablement_consent": "true"},
+            {"enablement_consent": 1},
+            {"enablement_consent": [True]},
+            {"uploader_consent": "false"},
+            {"uploader_consent": [True]},
+            {
+                "switch_consent": "false",
+                "decision": "require-explicit-switch-confirmation",
+            },
+            {
+                "switch_consent": [True],
+                "decision": "require-explicit-switch-confirmation",
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "default-pre-patch.ps1"
+            script.write_bytes(
+                (
+                    prefix
+                    + identity[0]
+                    + "\n$patches=0; $failure=$null\ntry {\n"
+                    + consumer
+                    + suffix
+                ).encode("utf-8-sig")
+            )
+            fixture = root / "verdict.json"
+            for override in overrides:
+                with self.subTest(override=override):
+                    fixture.write_text(
+                        json.dumps({**base, **override}), encoding="utf-8"
+                    )
+                    result = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(script),
+                        ],
+                        env={**os.environ, "FIXTURE": str(fixture)},
+                        capture_output=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    observed = json.loads(
+                        result.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                    )
+                    self.assertEqual(
+                        observed["patches"], 0 if override else 1, observed
+                    )
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_default_setup_write_reads_back_after_failed_ack_and_binds_validation_run(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        beginning = '$defaultSetupPath = "repos/OWNER/REPO/code-scanning/default-setup"'
+        consumer = beginning + reference.split(beginning, 1)[1].split("\n  ```", 1)[0]
+        identity = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert identity is not None
+        repository = {"id": 42, "full_name": "OWNER/REPO", "default_branch": "main"}
+        run = {
+            "id": 99,
+            "repository": repository,
+            "status": "completed",
+            "conclusion": "success",
+        }
+        positive: dict[str, object] = {
+            "patch_exit": 0,
+            "patch_status": 202,
+            "patch_body": {"run_id": 99},
+            "repository": repository,
+            "run": run,
+            "state": {"state": "configured"},
+        }
+        cases: list[tuple[str, dict[str, object], bool, int]] = [
+            ("positive", positive, True, 1),
+            (
+                "bodyless-200",
+                {**positive, "patch_status": 200, "patch_body": None},
+                True,
+                0,
+            ),
+            ("lost-ack", {**positive, "patch_exit": 1}, False, 0),
+            (
+                "foreign-run",
+                {**positive, "run": {**run, "repository": {**repository, "id": 43}}},
+                False,
+                1,
+            ),
+            ("mismatched-run", {**positive, "run": {**run, "id": 100}}, False, 1),
+            ("text-run-id", {**positive, "patch_body": {"run_id": "99"}}, False, 0),
+            ("boolean-run-id", {**positive, "patch_body": {"run_id": True}}, False, 0),
+            ("zero-run-id", {**positive, "patch_body": {"run_id": 0}}, False, 0),
+            ("array-ack", {**positive, "patch_body": []}, False, 0),
+            ("unexpected-http-status", {**positive, "patch_status": 204}, False, 0),
+            (
+                "path-run-id",
+                {**positive, "patch_body": {"run_id": "../other"}},
+                False,
+                0,
+            ),
+            ("missing-run-id", {**positive, "patch_body": {}}, False, 0),
+            (
+                "unknown-status",
+                {**positive, "run": {**run, "status": "unknown"}},
+                False,
+                1,
+            ),
+            (
+                "missing-conclusion",
+                {**positive, "run": {**run, "conclusion": None}},
+                False,
+                1,
+            ),
+            ("array-state", {**positive, "state": {"state": ["configured"]}}, False, 1),
+            (
+                "unconfigured-state",
+                {**positive, "state": {"state": "not-configured"}},
+                False,
+                1,
+            ),
+            ("run-query-failure", {**positive, "run_exit": 1}, False, 1),
+            ("readback-failure", {**positive, "state_exit": 1}, False, 1),
+            (
+                "foreign-final-identity",
+                {**positive, "repository_after": {**repository, "id": 43}},
+                False,
+                1,
+            ),
+            (
+                "final-branch-drift",
+                {
+                    **positive,
+                    "repository_after": {**repository, "default_branch": "develop"},
+                },
+                False,
+                1,
+            ),
+            (
+                "text-final-id",
+                {**positive, "repository_after": {**repository, "id": "42"}},
+                False,
+                1,
+            ),
+            (
+                "foreign-final-name",
+                {
+                    **positive,
+                    "repository_after": {**repository, "full_name": "other/target"},
+                },
+                False,
+                1,
+            ),
+            (
+                "unsuccessful-validation",
+                {**positive, "run": {**run, "conclusion": "failure"}},
+                True,
+                1,
+            ),
+            (
+                "pending-validation",
+                {
+                    **positive,
+                    "run": {**run, "status": "in_progress", "conclusion": None},
+                },
+                False,
+                4,
+            ),
+        ]
+        prelude = r"""
+$ErrorActionPreference='Stop'
+$SELECTED_REPOSITORY_ID=42
+$DEFAULT_BRANCH='main'
+$finalPreflight=@{remote_inspection_commit=('a' * 40)}
+$fixture=Get-Content -LiteralPath $env:FIXTURE -Raw -Encoding UTF8 | ConvertFrom-Json
+$global:reads=0; $global:polls=0; $global:patches=0; $global:identityReads=0
+function Start-Sleep { param($Seconds) }
+function gh {
+ $path=@($args | Where-Object { $_ -like 'repos/*' })[0]
+ if ($args -contains 'PATCH') {
+  $global:patches++; $global:LASTEXITCODE=$fixture.patch_exit
+  if ($fixture.patch_exit -ne 0) { return 'HTTP 503: synthetic lost acknowledgment' }
+  $body=if ($null -eq $fixture.patch_body) { '' } else { $fixture.patch_body | ConvertTo-Json -Compress -Depth 10 }
+  if ($args -contains '--include') { return "HTTP/2.0 $($fixture.patch_status) Synthetic`nContent-Type: application/json`n`n$body" }
+  return $body
+ }
+ $global:LASTEXITCODE=0
+ if ($path -like 'repos/OWNER/REPO/actions/runs/*') {
+  $global:polls++
+  if ($fixture.run_exit -eq 1) { $global:LASTEXITCODE=1; return 'synthetic unavailable run' }
+  return ($fixture.run | ConvertTo-Json -Compress -Depth 10)
+ }
+ if ($path -eq 'repos/OWNER/REPO') {
+  $global:identityReads++
+  if ($global:identityReads -eq 2 -and $null -ne $fixture.repository_after) {
+   return ($fixture.repository_after | ConvertTo-Json -Compress -Depth 10)
+  }
+  return ($fixture.repository | ConvertTo-Json -Compress -Depth 10)
+ }
+ if ($path -eq 'repos/OWNER/REPO/code-scanning/default-setup') {
+  $global:reads++
+  if ($fixture.state_exit -eq 1) { $global:LASTEXITCODE=1; return 'synthetic unavailable state' }
+  return ($fixture.state | ConvertTo-Json -Compress -Depth 10)
+ }
+ throw 'Unexpected endpoint in isolated probe'
+}
+$errorMessage=$null
+try {
+"""
+        postlude = r"""
+} catch { $errorMessage=$_.Exception.Message }
+@{enabled=$defaultSetupEnabled; observed=$observedDefaultSetupState; reads=$global:reads; polls=$global:polls; patches=$global:patches; error=$errorMessage} | ConvertTo-Json -Compress
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "consumer.ps1"
+            script.write_bytes(
+                (identity[0] + prelude + consumer + postlude).encode("utf-8-sig")
+            )
+            for label, fixture, enabled, polls in cases:
+                with self.subTest(case=label):
+                    fixture_path = root / "fixture.json"
+                    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+                    process = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(script),
+                        ],
+                        cwd=root,
+                        env={**os.environ, "FIXTURE": str(fixture_path)},
+                        capture_output=True,
+                        check=False,
+                        timeout=30,
+                    )
+                    self.assertEqual(process.returncode, 0, process.stderr)
+                    result = json.loads(
+                        process.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                    )
+                    self.assertEqual(result["patches"], 1, result)
+                    self.assertEqual(result["reads"], 1, result)
+                    self.assertEqual(result["polls"], polls, result)
+                    self.assertEqual(result["enabled"], enabled, result)
+                    self.assertIsNone(result["error"], result)
+                    if label in {
+                        "lost-ack",
+                        "pending-validation",
+                        "unsuccessful-validation",
+                    }:
+                        self.assertEqual(result["observed"], "configured", result)
+
     def test_assets_use_only_namespaced_internal_markers(self) -> None:
         assets = PLUGIN_ROOT / "skills" / "repo-scaffold" / "assets"
         unprefixed = re.compile(
@@ -4346,6 +5864,62 @@ class PlaceholderContractTests(unittest.TestCase):
                     ".lycheeignore",
                 ):
                     self.assertIn(required_guard, script)
+
+    def test_release_exception_rejects_invalid_semver_before_ignore_mutation(
+        self,
+    ) -> None:
+        for workflow_path in (
+            PLUGIN_ROOT / ".github/workflows/links.yml",
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows/links.yml",
+        ):
+            document = codeql_preflight.yaml.load(
+                workflow_path.read_text(encoding="utf-8"),
+                Loader=codeql_preflight.UniqueKeyBaseLoader,
+            )
+            prepare = next(
+                step
+                for step in document["jobs"]["links"]["steps"]
+                if step["name"] == "Prepare Release Please comparison exception"
+            )
+            code = prepare["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+            for version, previous in (
+                ("1.2.3-01", "1.2.2"),
+                ("1.2.3-alpha.01", "1.2.2"),
+                ("1.2\u0662.3", "1.2.2"),
+                ("1.2.3", "1.2.2-01"),
+            ):
+                with (
+                    self.subTest(
+                        workflow=workflow_path, version=version, previous=previous
+                    ),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    (root / ".release-please-manifest.json").write_text(
+                        json.dumps({".": version}), encoding="utf-8"
+                    )
+                    (root / "CHANGELOG.md").write_text(
+                        f"## [{version}](https://github.com/synthetic/example/compare/"
+                        f"v{previous}...v{version}) (2026-10-09)\n",
+                        encoding="utf-8",
+                    )
+                    ignore_path = root / ".lycheeignore"
+                    ignore_path.write_bytes(b"# preserve existing rules\n")
+                    with (
+                        mock.patch.object(Path, "cwd", return_value=root),
+                        mock.patch.dict(
+                            os.environ, {"REPOSITORY": "synthetic/example"}
+                        ),
+                        mock.patch(
+                            "subprocess.run",
+                            side_effect=AssertionError("invalid version reached Git"),
+                        ),
+                        self.assertRaisesRegex(SystemExit, "not valid SemVer"),
+                    ):
+                        exec(compile(code, "links.yml", "exec"), {})
+                    self.assertEqual(
+                        ignore_path.read_bytes(), b"# preserve existing rules\n"
+                    )
 
     def test_release_exception_ignores_only_the_exact_future_comparison(self) -> None:
         workflow_path = PLUGIN_ROOT / ".github" / "workflows" / "links.yml"

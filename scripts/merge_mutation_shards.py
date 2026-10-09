@@ -192,18 +192,21 @@ def metadata_paths(mutants: Path, expected_count: int) -> list[Path]:
         current = pending.pop()
         try:
             with os.scandir(current) as directory:
-                entries = sorted(directory, key=lambda entry: entry.name)
+                entries = []
+                for entry in directory:
+                    scanned += 1
+                    if scanned > MAX_METADATA_SCAN_ENTRIES:
+                        raise ValueError(
+                            "mutation metadata inventory exceeds the "
+                            f"{MAX_METADATA_SCAN_ENTRIES}-entry safety cap"
+                        )
+                    entries.append(entry)
+                entries.sort(key=lambda entry: entry.name)
         except OSError as error:
             raise ValueError(
                 f"could not enumerate mutation metadata: {current}"
             ) from error
         for entry in entries:
-            scanned += 1
-            if scanned > MAX_METADATA_SCAN_ENTRIES:
-                raise ValueError(
-                    "mutation metadata inventory exceeds the "
-                    f"{MAX_METADATA_SCAN_ENTRIES}-entry safety cap"
-                )
             path = Path(entry.path)
             try:
                 if _is_link_or_reparse(path):

@@ -1,0 +1,26 @@
+{
+  "config": {
+    "default": true,
+    "MD012": {
+      "maximum": 2
+    },
+    "MD013": false,
+    "MD033": {
+      "allowed_elements": ["div", "p", "img"]
+    },
+    "MD034": false,
+    "MD041": false
+  },
+  "ignores": [
+    ".git/**",
+    ".mypy_cache/**",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+    ".venv/**",
+    "build/**",
+    "dist/**",
+    "node_modules/**",
+    "vendor/**",
+    "venv/**"
+  ]
+}

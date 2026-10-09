@@ -15,12 +15,17 @@ from urllib.parse import quote
 import yaml
 
 from codeql_preflight import (
+    request_metrics,
     FULL_OBJECT_ID,
+    MAX_REMOTE_TREE_ENTRIES,
     GitHubClient,
     InspectionError,
     UniqueKeyBaseLoader,
     is_direct_workflow_path,
+    revalidate_repository_state,
+    read_verified_workflow_blob,
     split_repository,
+    verified_repository_id,
 )
 
 
@@ -28,6 +33,12 @@ MAX_WORKFLOWS = 500
 MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
 MAX_TOTAL_WORKFLOW_BYTES = 64 * 1024 * 1024
 CONTEXT = re.compile(r"^[^\r\n\x00]{1,256}$")
+CLOSED_PR_CONTEXT = re.compile(
+    r"\$\{\{ github\.event_name == 'pull_request(?:_target)?' && "
+    r"github\.event\.pull_request\.state == 'closed' && "
+    r"'(?P<closed>(?:[^'\r\n]|'')+)' \|\| "
+    r"'(?P<required>(?:[^'\r\n]|'')+)' \}\}"
+)
 CHECK_RUN_WORKFLOW_EVENTS = frozenset(
     {
         "push",
@@ -118,6 +129,55 @@ class Producer:
     executable: bool
 
 
+def step_executes_for_required_events(step: object) -> bool:
+    """Reject conditional gates, except checkout skipped only for a closed PR.
+
+    This literal guard is true for every open pull request and merge group.
+    Limit its use to a pinned head-bound checkout, not arbitrary validation.
+    """
+    if not isinstance(step, dict) or "continue-on-error" in step:
+        return False
+    if "if" not in step:
+        return True
+    checkout = step.get("uses")
+    options = step.get("with")
+    return (
+        step.get("if")
+        == "github.event_name != 'pull_request' || github.event.pull_request.state != 'closed'"
+        and isinstance(checkout, str)
+        and re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout) is not None
+        and "run" not in step
+        and isinstance(options, dict)
+        and options.get("persist-credentials") == "false"
+        and options.get("ref")
+        == "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"
+    )
+
+
+def required_event_job_context(value: object) -> str | None:
+    """Resolve only static or closed-PR-only names for open PR/queue admission."""
+    if not isinstance(value, str) or not value:
+        return None
+    if "${{" not in value:
+        return value
+    if len(value) > 1024:
+        return None
+    match = CLOSED_PR_CONTEXT.fullmatch(value)
+    if match is None:
+        return None
+    closed = match.group("closed").replace("''", "'")
+    required = match.group("required").replace("''", "'")
+    if (
+        not CONTEXT.fullmatch(closed)
+        or not CONTEXT.fullmatch(required)
+        or "${{" in closed
+        or "${{" in required
+        or closed.casefold() == required.casefold()
+    ):
+        return None
+    return required
+
+
 def workflow_producers(
     client: GitHubClient,
     owner: str,
@@ -131,11 +191,19 @@ def workflow_producers(
     entries = tree.get("tree")
     if not isinstance(entries, list):
         raise InspectionError("Workflow tree has no tree array.")
+    if len(entries) > MAX_REMOTE_TREE_ENTRIES:
+        raise InspectionError("Workflow tree exceeds the entry safety cap.")
     workflows: list[dict[str, Any]] = []
     seen_workflow_paths: set[str] = set()
     for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
-            continue
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("path"), str)
+            or not entry["path"]
+        ):
+            raise InspectionError(
+                "Workflow tree contains an unclassifiable path entry."
+            )
         path = entry["path"]
         pure_path = PurePosixPath(path)
         if pure_path.parent != PurePosixPath(".github/workflows"):
@@ -161,7 +229,7 @@ def workflow_producers(
         path = entry["path"]
         if not isinstance(blob, str) or not FULL_OBJECT_ID.fullmatch(blob):
             raise InspectionError(f"Workflow {path!r} has an invalid blob ID.")
-        text = client.raw(f"repos/{owner}/{repo}/git/blobs/{blob}")
+        text = read_verified_workflow_blob(client, owner, repo, blob, path)
         total_bytes += len(text.encode("utf-8"))
         if total_bytes > MAX_TOTAL_WORKFLOW_BYTES:
             raise InspectionError(
@@ -179,15 +247,13 @@ def workflow_producers(
         for job_id, job in jobs.items():
             if not isinstance(job_id, str) or not isinstance(job, dict):
                 raise InspectionError(f"Workflow {path!r} has an invalid job entry.")
-            context = job.get("name", job_id)
-            if not isinstance(context, str) or not context or "${{" in context:
+            context = required_event_job_context(job.get("name", job_id))
+            if context is None:
                 continue
             steps = job.get("steps")
             executable_steps = steps if isinstance(steps, list) else []
             step_controls_are_safe = isinstance(steps, list) and all(
-                isinstance(step, dict)
-                and not {"if", "continue-on-error"}.intersection(step)
-                for step in executable_steps
+                step_executes_for_required_events(step) for step in executable_steps
             )
             executable = (
                 "uses" not in job
@@ -337,7 +403,8 @@ def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
     matches = [
         item
         for item in check_runs
-        if str(item.get("name", "")).casefold() == context.casefold()
+        if isinstance(item.get("name"), str)
+        and item["name"].casefold() == context.casefold()
     ]
     if not matches:
         raise InspectionError(f"Required check {context!r} has no Check Run evidence.")
@@ -358,6 +425,8 @@ def app_id_for_check(payload: Any, context: str, now: datetime) -> int:
         raise InspectionError(
             f"Required check {context!r} has incomplete Check Run evidence."
         )
+    if item.get("status") != "completed":
+        raise InspectionError(f"Required check {context!r} has no completed Check Run.")
     try:
         completed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
     except ValueError as exc:
@@ -422,7 +491,8 @@ def inspect_commit_evidence(
     matches = [
         check_run
         for check_run in check_runs
-        if str(check_run.get("name", "")).casefold() == context.casefold()
+        if isinstance(check_run.get("name"), str)
+        and check_run["name"].casefold() == context.casefold()
     ]
     app_id: int | None = None
     if matches:
@@ -458,6 +528,39 @@ def require_boolean(document: dict[str, Any], field: str) -> bool:
     return value
 
 
+def pull_request_binding(document: dict[str, Any]) -> tuple[object, ...]:
+    """Retain typed controlling fields, ignoring unrelated presentation metadata."""
+    values: list[object] = []
+    for path in (
+        "number",
+        "state",
+        "mergeable",
+        "merge_commit_sha",
+        "head.sha",
+        "base.sha",
+        "base.ref",
+        "base.repo.id",
+        "base.repo.full_name",
+    ):
+        value: object = document
+        for component in path.split("."):
+            value = value.get(component) if isinstance(value, dict) else None
+        if path == "base.repo.full_name" and isinstance(value, str):
+            value = value.casefold()
+        values.append((type(value).__name__, value))
+    return tuple(values)
+
+
+def rules_binding(value: object) -> str:
+    """Keep finite JSON values without bool/integer equality coercion."""
+    try:
+        return json.dumps(value, sort_keys=True, allow_nan=False)
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise InspectionError(
+            "Effective branch rules have invalid JSON values."
+        ) from exc
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(args.hostname, str) or args.hostname.casefold() != "github.com":
         raise InspectionError("Branch-protection preflight supports GitHub.com only.")
@@ -469,7 +572,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         or any(character in args.default_branch for character in "\r\n\x00")
     ):
         raise InspectionError("Default branch must be a non-empty single line.")
-    if not isinstance(args.pull_request, int) or args.pull_request <= 0:
+    if type(args.pull_request) is not int or args.pull_request <= 0:
         raise InspectionError("Pull request number must be positive.")
     client = GitHubClient(args.hostname)
     repository = client.json(f"repos/{owner}/{repo}")
@@ -481,6 +584,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         or full_name.casefold() != args.repository.casefold()
     ):
         raise InspectionError("GitHub returned a different repository than requested.")
+    repository_id = verified_repository_id(
+        repository, getattr(args, "expected_repository_id", None)
+    )
     if require_boolean(repository, "archived"):
         raise InspectionError("Archived repositories cannot have protection changed.")
     if require_boolean(repository, "disabled"):
@@ -517,6 +623,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     if pr.get("mergeable") is not True:
         raise InspectionError("Representative pull request is not confirmed mergeable.")
+    if type(pr.get("number")) is not int or pr["number"] != args.pull_request:
+        raise InspectionError(
+            "Representative pull request number is not bound to the request."
+        )
     base = pr.get("base")
     base_repo = base.get("repo") if isinstance(base, dict) else None
     base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
@@ -530,6 +640,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "Representative pull request does not verify the target repository and branch."
         )
     base_sha = base.get("sha") if isinstance(base, dict) else None
+    verified_repository_id(cast(dict[str, Any], base_repo), repository_id)
+    original_pr_binding = pull_request_binding(pr)
     rules = client.json(
         f"repos/{owner}/{repo}/rules/branches/"
         f"{quote(args.default_branch, safe='')}?per_page=100"
@@ -547,6 +659,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             or not rule["type"].strip()
         ):
             raise InspectionError("Effective rule has an invalid or missing type.")
+    original_rule_binding = rules_binding(rules)
     queue_required = any(rule["type"] == "merge_queue" for rule in rules)
     merge_group_sha = getattr(args, "merge_group_sha", None)
     if queue_required:
@@ -713,10 +826,39 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "producer": producer.identity,
             }
         )
+    fresh_pr = client.json(f"repos/{owner}/{repo}/pulls/{args.pull_request}")
+    if (
+        not isinstance(fresh_pr, dict)
+        or pull_request_binding(fresh_pr) != original_pr_binding
+    ):
+        raise InspectionError("Representative pull request changed during inspection.")
+    fresh_rules = client.json(
+        f"repos/{owner}/{repo}/rules/branches/"
+        f"{quote(args.default_branch, safe='')}?per_page=100"
+    )
+    if rules_binding(fresh_rules) != original_rule_binding:
+        raise InspectionError("Effective branch rules changed during inspection.")
+    if target_contexts:
+        fresh_default = client.json(
+            f"repos/{owner}/{repo}/commits/{quote(args.default_branch, safe='')}"
+        )
+        if not isinstance(fresh_default, dict) or fresh_default.get("sha") != base_sha:
+            raise InspectionError("Trusted default branch changed during inspection.")
+    revalidate_repository_state(
+        client,
+        args.repository,
+        repository,
+        ("default_branch", "archived", "disabled", "permissions.admin"),
+    )
     return {
         "inspection_complete": True,
-        "decision": "may-configure-classic-protection",
+        "decision": (
+            "bind-repository-identity-before-mutation"
+            if getattr(args, "expected_repository_id", None) is None
+            else "may-configure-classic-protection"
+        ),
         "repository": args.repository,
+        "repository_id": repository_id,
         "default_branch": args.default_branch,
         "administration_permission": True,
         "pull_request": args.pull_request,
@@ -725,13 +867,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "merge_queue_required": queue_required,
         "merge_group_sha": merge_group_sha,
         "required_checks": verified,
-        "github_api_requests": client.request_count,
+        **request_metrics(client.request_count),
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--default-branch", required=True)
     parser.add_argument("--pull-request", required=True, type=int)
     parser.add_argument("--merge-group-sha")

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import stat
@@ -14,10 +16,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from hashlib import sha1
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from urllib.parse import quote
 
 try:
@@ -37,6 +40,7 @@ except ImportError as exc:
 
 MAX_LOCAL_WORKFLOWS = 500
 MAX_REMOTE_WORKFLOWS = 500
+MAX_REMOTE_TREE_ENTRIES = 100_000
 MAX_LOCAL_DIRECTORY_ENTRIES = 10_000
 MAX_WORKFLOW_BYTES = 5 * 1024 * 1024
 MAX_TOTAL_WORKFLOW_BYTES = 64 * 1024 * 1024
@@ -46,6 +50,8 @@ MAX_INSPECTION_SECONDS = 600
 MAX_GH_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_GH_RESPONSE_BYTES = 128 * 1024 * 1024
 MAX_GH_JSON_NESTING = 100
+GH_CAPTURE_READ_BYTES = 64 * 1024
+GH_CAPTURE_POLL_SECONDS = 0.01
 MAX_REUSABLE_WORKFLOWS_PER_ROOT = 50
 MAX_REUSABLE_REFERENCES_PER_ROOT = 500
 MAX_WORKFLOW_LEVELS = 10
@@ -122,6 +128,55 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise DuplicateJsonMember(f"duplicate JSON member {key!r}")
         document[key] = value
     return document
+
+
+def verified_repository_id(
+    document: dict[str, Any], expected_repository_id: object = None
+) -> int:
+    """Bind a current response to a discovered numeric repository identity."""
+    if expected_repository_id is not None and (
+        type(expected_repository_id) is not int or expected_repository_id <= 0
+    ):
+        raise InspectionError("Expected repository ID must be a positive integer.")
+    value = document.get("id")
+    if type(value) is not int or value <= 0:
+        raise InspectionError("GitHub returned an invalid numeric repository ID.")
+    if expected_repository_id is not None and value != expected_repository_id:
+        raise InspectionError(
+            "Numeric repository identity changed since discovery; stop and "
+            "review the target instead of reusing the previous authorization."
+        )
+    return value
+
+
+def revalidate_repository_state(
+    client: GitHubClient,
+    repository_name: str,
+    original: dict[str, Any],
+    fields: tuple[str, ...],
+) -> None:
+    """Reject target or controlling-state drift across a multi-request inspection."""
+    final = client.json(f"repos/{repository_name}")
+    if (
+        not isinstance(final, dict)
+        or not isinstance(final.get("full_name"), str)
+        or final["full_name"].casefold() != repository_name.casefold()
+    ):
+        raise InspectionError(
+            "Repository identity could not be bound during revalidation."
+        )
+    verified_repository_id(final, verified_repository_id(original))
+    for selector in fields:
+        before: Any = original
+        after: Any = final
+        for component in selector.split("."):
+            before = before.get(component) if isinstance(before, dict) else None
+            after = after.get(component) if isinstance(after, dict) else None
+        if type(before) is not type(after) or before != after:
+            raise InspectionError(
+                f"Controlling repository state {selector!r} changed during inspection; "
+                "repeat the inspection before using its verdict."
+            )
 
 
 def resolve_path_executable(name: str, *, forbidden_root: Path) -> str | None:
@@ -251,6 +306,27 @@ class WorkflowNode:
     signals: WorkflowSignals
 
 
+def request_metrics(count: int) -> dict[str, Any]:
+    """Report client attempts without inventing an underlying HTTP request count."""
+    if type(count) is not int or count < 0:
+        raise InspectionError("Client request metric must be a non-negative integer.")
+    return {
+        "github_client_requests": count,
+        "github_api_requests": count,
+        "github_api_requests_unit": "client-request-attempts",
+        "github_http_requests": None,
+        "github_http_requests_state": "not-measured",
+    }
+
+
+class PipeDescriptor(Protocol):
+    def fileno(self) -> int: ...
+
+
+class ByteOutputSink(Protocol):
+    def write(self, payload: bytes, /) -> int: ...
+
+
 class GitHubClient:
     def __init__(self, hostname: str, *, forbidden_root: Path | None = None) -> None:
         self.hostname = hostname
@@ -281,10 +357,136 @@ class GitHubClient:
         except UnicodeDecodeError as exc:
             raise InspectionError(f"GitHub API {label} is not valid UTF-8.") from exc
 
-    def _run(self, endpoint: str, *, raw: bool = False) -> str:
+    @staticmethod
+    def _pipe_available(stream: PipeDescriptor) -> int:
+        """Return readable bytes, zero for a live empty pipe, or -1 for EOF."""
+        if sys.platform != "win32":
+            ready, _, _ = select.select([stream], [], [], 0)
+            return GH_CAPTURE_READ_BYTES if ready else 0
+        import msvcrt
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        peek = kernel.PeekNamedPipe
+        peek.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        peek.restype = wintypes.BOOL
+        available = wintypes.DWORD()
+        if not peek(
+            msvcrt.get_osfhandle(stream.fileno()),
+            None,
+            0,
+            None,
+            ctypes.byref(available),
+            None,
+        ):
+            code = ctypes.get_last_error()
+            if code in {109, 232}:  # Broken pipe or closing pipe with no data.
+                return -1
+            raise OSError(code, "GitHub CLI output pipe could not be inspected")
+        return available.value
+
+    def _execute_bounded(
+        self,
+        command: list[str],
+        *,
+        stdout: ByteOutputSink,
+        stderr: ByteOutputSink,
+        env: dict[str, str],
+        timeout: int,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Admit pipe bytes before spool writes, with no background reader threads."""
+        deadline = min(self.deadline, time.monotonic() + timeout)
+        process = subprocess.Popen(  # noqa: S603 - executable is resolved safely
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            env=env,
+        )
+        assert process.stdout is not None and process.stderr is not None
+        streams = (process.stdout, process.stderr)
+        sinks = (stdout, stderr)
+        labels = ("response byte count", "error response byte count")
+        written = [0, 0]
+        complete = [False, False]
+        try:
+            while not all(complete) or process.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                made_progress = False
+                for index, stream in enumerate(streams):
+                    if complete[index]:
+                        continue
+                    available = self._pipe_available(stream)
+                    if available < 0:
+                        complete[index] = True
+                        made_progress = True
+                        continue
+                    if available == 0:
+                        continue
+                    remaining = min(
+                        MAX_GH_RESPONSE_BYTES - written[index],
+                        MAX_TOTAL_GH_RESPONSE_BYTES - self.response_bytes,
+                    )
+                    chunk = stream.read(
+                        min(available, GH_CAPTURE_READ_BYTES, max(1, remaining + 1))
+                    )
+                    if not chunk:
+                        complete[index] = True
+                        made_progress = True
+                        continue
+                    made_progress = True
+                    self.response_bytes += len(chunk)
+                    if written[index] + len(chunk) > MAX_GH_RESPONSE_BYTES:
+                        raise InspectionError(
+                            f"GitHub API {labels[index]} exceeds the {MAX_GH_RESPONSE_BYTES}-byte safety cap."
+                        )
+                    if self.response_bytes > MAX_TOTAL_GH_RESPONSE_BYTES:
+                        raise InspectionError(
+                            "GitHub API inspection exceeded the total response byte safety cap of "
+                            f"{MAX_TOTAL_GH_RESPONSE_BYTES} bytes."
+                        )
+                    count = sinks[index].write(chunk)
+                    if count != len(chunk):
+                        raise OSError("GitHub CLI output spool write was incomplete")
+                    written[index] += count
+                if not made_progress:
+                    time.sleep(
+                        min(
+                            GH_CAPTURE_POLL_SECONDS, max(0, deadline - time.monotonic())
+                        )
+                    )
+            result: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(
+                command, process.returncode
+            )
+            if check:
+                result.check_returncode()
+            return result
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            for stream in streams:
+                stream.close()
+
+    def _run(self, endpoint: str, *, raw: bool = False, include: bool = False) -> str:
         if self.request_count >= MAX_GH_REQUESTS:
             raise InspectionError(
-                f"GitHub API inspection exceeded the {MAX_GH_REQUESTS}-request safety cap."
+                f"GitHub API inspection exceeded the {MAX_GH_REQUESTS}-request safety cap "
+                "(client attempts, not HTTP transmissions)."
+            )
+        if self.response_bytes >= MAX_TOTAL_GH_RESPONSE_BYTES:
+            raise InspectionError(
+                "GitHub API inspection exhausted the total response byte safety cap."
             )
         self.request_count += 1
         remaining = self.deadline - time.monotonic()
@@ -294,14 +496,19 @@ class GitHubClient:
             )
         timeout = min(GH_REQUEST_TIMEOUT_SECONDS, max(1, int(remaining)))
         command = [self.gh_executable, "api", "--hostname", self.hostname]
+        if include:
+            command.append("--include")
         if raw:
             command.extend(["-H", "Accept: application/vnd.github.raw+json"])
         command.append(endpoint)
         environment = os.environ.copy()
-        environment.update({"GH_PAGER": "cat", "NO_COLOR": "1"})
+        environment.update({"GH_PAGER": "", "PAGER": "", "NO_COLOR": "1"})
+        environment.pop("GH_FORCE_TTY", None)
+        environment.pop("GH_DEBUG", None)
+        environment.pop("DEBUG", None)
         try:
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-                result = subprocess.run(  # noqa: S603 - executable is resolved safely
+                result = self._execute_bounded(
                     command,
                     check=False,
                     stdout=stdout,
@@ -309,10 +516,10 @@ class GitHubClient:
                     env=environment,
                     timeout=timeout,
                 )
-                stdout_text, stdout_size = self._read_output(
+                stdout_text, _ = self._read_output(
                     stdout, MAX_GH_RESPONSE_BYTES, "response byte count"
                 )
-                stderr_text, stderr_size = self._read_output(
+                stderr_text, _ = self._read_output(
                     stderr, MAX_GH_RESPONSE_BYTES, "error response byte count"
                 )
         except FileNotFoundError as exc:
@@ -326,7 +533,7 @@ class GitHubClient:
                 f"GitHub API request timed out for {endpoint!r} after "
                 f"{timeout} seconds."
             ) from exc
-        self.response_bytes += stdout_size + stderr_size
+        # Capture accounted bytes before each write; decoding does not charge twice.
         if self.response_bytes > MAX_TOTAL_GH_RESPONSE_BYTES:
             raise InspectionError(
                 "GitHub API inspection exceeded the total response byte safety cap of "
@@ -351,6 +558,65 @@ class GitHubClient:
 
     def raw(self, endpoint: str) -> str:
         return self._run(endpoint, raw=True)
+
+    def json_at_status(self, endpoint: str, expected_status: int) -> Any:
+        """Bind JSON to the exact observable HTTP status within transport limits."""
+        if type(expected_status) is not int or not 100 <= expected_status <= 599:
+            raise InspectionError(
+                "Expected HTTP status must be an integer from 100 to 599."
+            )
+        payload = self._run(endpoint, include=True)
+        envelope = re.fullmatch(
+            r"HTTP/[0-9]+(?:\.[0-9]+)? (?P<status>[1-5][0-9]{2})[^\r\n]*\r?\n"
+            r"(?P<headers>(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*\r?\n)*)\r?\n(?P<body>.*)",
+            payload,
+            re.DOTALL,
+        )
+        if envelope is None:
+            raise InspectionError(
+                "GitHub API returned an ambiguous HTTP response envelope."
+            )
+        headers = envelope["headers"]
+        if len(headers) > 8192 or headers.count("\n") > 100:
+            raise InspectionError(
+                "GitHub API response headers exceed the safety bound."
+            )
+        status = int(envelope["status"])
+        if status != expected_status:
+            raise InspectionError(
+                f"GitHub API returned unexpected HTTP {status} status."
+            )
+        body = envelope["body"]
+        _require_json_nesting_within_limit(body)
+        try:
+            return json.loads(body, object_pairs_hook=unique_json_object)
+        except (ValueError, RecursionError) as error:
+            raise InspectionError(
+                f"GitHub API returned invalid JSON for {endpoint!r}."
+            ) from error
+
+    def require_empty_response(self, endpoint: str, expected_status: int) -> None:
+        """Verify an exact no-content status inside the existing transport budget."""
+        payload = self._run(endpoint, include=True)
+        envelope = re.fullmatch(
+            r"HTTP/[0-9]+(?:\.[0-9]+)? (?P<status>[1-5][0-9]{2})[^\r\n]*\r?\n"
+            r"(?P<headers>(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*\r?\n)*)\r?\n(?P<body>.*)",
+            payload,
+            re.DOTALL,
+        )
+        if envelope is None:
+            raise InspectionError(
+                "GitHub API returned an ambiguous HTTP response envelope."
+            )
+        status = int(envelope["status"])
+        if type(expected_status) is not int or status != expected_status:
+            raise InspectionError(
+                f"GitHub API returned unexpected HTTP {status} status."
+            )
+        if envelope["body"].strip(" \t\r\n"):
+            raise InspectionError(
+                "GitHub API no-content response contains an unexpected body."
+            )
 
 
 def _mask(chars: list[str], start: int, end: int) -> None:
@@ -2772,6 +3038,31 @@ def load_local_workflows(
     return workflows
 
 
+def read_verified_workflow_blob(
+    client: GitHubClient, owner: str, repo: str, blob: object, source: str
+) -> str:
+    """Bind bounded UTF-8 workflow bytes to the advertised GitHub SHA-1 object."""
+    if not isinstance(blob, str) or re.fullmatch(r"[0-9a-fA-F]{40}", blob) is None:
+        raise InspectionError(f"Workflow {source!r} has an invalid GitHub blob ID.")
+    text = client.raw(f"repos/{owner}/{repo}/git/blobs/{blob}")
+    if not isinstance(text, str):
+        raise InspectionError(f"Workflow {source!r} did not return UTF-8 text.")
+    if len(text) > MAX_WORKFLOW_BYTES:
+        raise InspectionError(f"Workflow {source!r} exceeds the byte safety cap.")
+    try:
+        payload = text.encode("utf-8")
+    except UnicodeError as error:
+        raise InspectionError(f"Workflow {source!r} is not valid UTF-8.") from error
+    if len(payload) > MAX_WORKFLOW_BYTES:
+        raise InspectionError(f"Workflow {source!r} exceeds the byte safety cap.")
+    digest = sha1(usedforsecurity=False)
+    digest.update(b"blob " + str(len(payload)).encode("ascii") + b"\0")
+    digest.update(payload)
+    if digest.hexdigest() != blob.casefold():
+        raise InspectionError(f"Workflow {source!r} has mismatched Git blob identity.")
+    return text
+
+
 class WorkflowResolver:
     def __init__(
         self,
@@ -2784,6 +3075,7 @@ class WorkflowResolver:
         self.budget = budget or WorkflowByteBudget()
         self.exact_workflows: dict[tuple[str, str, str, str], WorkflowSignals] = {}
         self.ref_cache: dict[tuple[str, str, str], str] = {}
+        self.remote_trees: dict[tuple[str, str, str], dict[str, dict[str, Any]]] = {}
 
     def seed_exact_workflow(
         self, owner: str, repo: str, commit: str, path: str, signals: WorkflowSignals
@@ -2799,15 +3091,47 @@ class WorkflowResolver:
         cached = self.exact_workflows.get(cache_key)
         if cached is not None:
             return cached
-        encoded_path = "/".join(
-            quote(component, safe="") for component in path.split("/")
+        tree_key = (owner.casefold(), repo.casefold(), commit.lower())
+        entries = self.remote_trees.get(tree_key)
+        if entries is None:
+            self.budget.check_deadline()
+            tree = self.client.json(
+                f"repos/{owner}/{repo}/git/trees/{quote(commit, safe='')}?recursive=1"
+            )
+            items = tree.get("tree") if isinstance(tree, dict) else None
+            if (
+                not isinstance(tree, dict)
+                or tree.get("truncated") is not False
+                or not isinstance(items, list)
+            ):
+                raise InspectionError("Reusable workflow tree is missing or truncated.")
+            if len(items) > MAX_REMOTE_TREE_ENTRIES:
+                raise InspectionError(
+                    "Reusable workflow tree exceeds the entry safety cap."
+                )
+            entries = {}
+            for item in items:
+                item_path = item.get("path") if isinstance(item, dict) else None
+                if (
+                    not isinstance(item_path, str)
+                    or not item_path
+                    or item_path in entries
+                ):
+                    raise InspectionError("Reusable workflow tree has ambiguous paths.")
+                entries[item_path] = item
+            self.remote_trees[tree_key] = entries
+        item = entries.get(path)
+        if item is None:
+            raise InspectionError(
+                f"Reusable workflow does not exist at the commit: {path}"
+            )
+        if item.get("type") != "blob" or item.get("mode") not in {"100644", "100755"}:
+            raise InspectionError(f"Reusable workflow is not a regular file: {path}")
+        self.budget.check_deadline()
+        text = read_verified_workflow_blob(
+            self.client, owner, repo, item.get("sha"), path
         )
-        endpoint = (
-            f"repos/{owner}/{repo}/contents/{encoded_path}?ref={quote(commit, safe='')}"
-        )
-        signals = self.budget.parse(
-            self.client.raw(endpoint), f"external:{owner}/{repo}/{path}@{commit}"
-        )
+        signals = self.budget.parse(text, f"external:{owner}/{repo}/{path}@{commit}")
         self.exact_workflows[cache_key] = signals
         return signals
 
@@ -2874,7 +3198,14 @@ class WorkflowResolver:
                 raise InspectionError(
                     f"Reusable workflow did not resolve to a full object ID: {call}"
                 )
-            self.ref_cache[ref_key] = commit
+        if (
+            FULL_OBJECT_ID.fullmatch(reference)
+            and reference.casefold() != commit.casefold()
+        ):
+            raise InspectionError(
+                f"Reusable workflow literal commit pin changed: {call}"
+            )
+        self.ref_cache[ref_key] = commit
         signals = self._load_exact_workflow(owner, repo, commit, path)
         exact_context = WorkflowContext("exact", owner, repo, commit)
         identity = ("exact", owner.casefold(), repo.casefold(), commit.lower(), path)
@@ -2906,11 +3237,19 @@ def load_remote_default_branch(
     items = tree.get("tree")
     if not isinstance(items, list):
         raise InspectionError("Default-branch tree has no tree array.")
+    if len(items) > MAX_REMOTE_TREE_ENTRIES:
+        raise InspectionError("Default-branch tree exceeds the entry safety cap.")
     workflow_items: list[dict[str, Any]] = []
     seen_workflow_paths: set[str] = set()
     for item in items:
-        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-            continue
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or not item["path"]
+        ):
+            raise InspectionError(
+                "Default-branch tree contains an unclassifiable path entry."
+            )
         path = item["path"]
         pure_path = PurePosixPath(path)
         if pure_path.parent != PurePosixPath(".github/workflows"):
@@ -2946,7 +3285,7 @@ def load_remote_default_branch(
             raise InspectionError(
                 f"Remote workflow has invalid blob ID: {item['path']}"
             )
-        text = client.raw(f"repos/{owner}/{repo}/git/blobs/{blob}")
+        text = read_verified_workflow_blob(client, owner, repo, blob, item["path"])
         workflows[item["path"]] = budget.parse(text, f"remote:{item['path']}@{commit}")
     return commit, workflows
 
@@ -3044,7 +3383,25 @@ def require_verified_default_branch(
         )
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+def revalidate_default_setup_state(
+    client: GitHubClient, owner: str, repo: str, expected_state: str
+) -> None:
+    """Keep the setup-ownership verdict bound to the latest inspected state."""
+    current = client.json(f"repos/{owner}/{repo}/code-scanning/default-setup")
+    if not isinstance(current, dict) or current.get("state") != expected_state:
+        raise InspectionError(
+            "CodeQL default-setup state changed or could not be revalidated; "
+            "repeat inspection before using the verdict."
+        )
+
+
+def run(
+    args: argparse.Namespace, *, _client: GitHubClient | None = None
+) -> dict[str, Any]:
+    if type(getattr(args, "confirm_no_external_codeql", None)) is not bool:
+        raise InspectionError("CodeQL absence confirmation must be Boolean.")
+    if type(getattr(args, "require_administration_permission", False)) is not bool:
+        raise InspectionError("CodeQL administration requirement must be Boolean.")
     if not isinstance(args.hostname, str) or args.hostname.casefold() != "github.com":
         raise InspectionError("CodeQL preflight supports GitHub.com only.")
     if (
@@ -3058,11 +3415,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require_safe_root(repo_root)
     if not repo_root.is_dir():
         raise InspectionError("Repository root is not a directory.")
-    client = GitHubClient(args.hostname, forbidden_root=repo_root)
+    client = (
+        _client
+        if _client is not None
+        else GitHubClient(args.hostname, forbidden_root=repo_root)
+    )
 
     repository_document = client.json(f"repos/{owner}/{repo}")
     require_verified_default_branch(
         repository_document, args.repository, args.default_branch
+    )
+    repository_id = verified_repository_id(
+        repository_document, getattr(args, "expected_repository_id", None)
     )
     current_setup = client.json(f"repos/{owner}/{repo}/code-scanning/default-setup")
     if not isinstance(current_setup, dict) or not isinstance(
@@ -3072,19 +3436,29 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if current_setup["state"] not in {"configured", "not-configured"}:
         raise InspectionError("Default-setup endpoint returned an unknown state.")
     if current_setup["state"] == "configured":
+        revalidate_repository_state(
+            client, args.repository, repository_document, ("default_branch",)
+        )
+        revalidate_default_setup_state(client, owner, repo, "configured")
         return {
             "inspection_complete": True,
-            "decision": "preserve-default-setup",
+            "decision": (
+                "bind-repository-identity-before-mutation"
+                if getattr(args, "expected_repository_id", None) is None
+                else "preserve-default-setup"
+            ),
             "repository": args.repository,
+            "repository_id": repository_id,
             "default_branch": args.default_branch,
             "administration_permission": None,
             "github_actions_enabled": None,
             "default_setup_state": current_setup["state"],
+            "remote_inspection_commit": None,
             "advanced_workflows": None,
             "has_codeql_analysis": None,
             "workflow_inspection_performed": False,
             "analysis_inspection_performed": False,
-            "github_api_requests": client.request_count,
+            **request_metrics(client.request_count),
         }
 
     if repository_document.get("archived") is not False:
@@ -3173,20 +3547,41 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if advanced or has_analysis
         else "may-offer-default-setup"
     )
+    revalidate_repository_state(
+        client,
+        args.repository,
+        repository_document,
+        ("default_branch", "archived", "disabled", "permissions.admin"),
+    )
+    current_head = client.json(
+        f"repos/{owner}/{repo}/commits/{quote(args.default_branch, safe='')}"
+    )
+    current_sha = current_head.get("sha") if isinstance(current_head, dict) else None
+    if not isinstance(current_sha, str) or current_sha.lower() != remote_commit.lower():
+        raise InspectionError(
+            "Default-branch head changed or snapshot could not be revalidated; repeat workflow inspection."
+        )
+    revalidate_default_setup_state(client, owner, repo, "not-configured")
     return {
         "inspection_complete": True,
-        "decision": decision,
+        "decision": (
+            "bind-repository-identity-before-mutation"
+            if getattr(args, "expected_repository_id", None) is None
+            else decision
+        ),
         "repository": args.repository,
+        "repository_id": repository_id,
         "default_branch": args.default_branch,
         "administration_permission": administration_permission,
         "github_actions_enabled": github_actions_enabled,
         "default_setup_state": current_setup["state"],
+        "remote_inspection_commit": remote_commit,
         "advanced_workflows": advanced,
         "has_codeql_analysis": has_analysis,
         "workflow_inspection_performed": True,
         "analysis_inspection_performed": True,
         "external_codeql_absence_confirmed": bool(args.confirm_no_external_codeql),
-        "github_api_requests": client.request_count,
+        **request_metrics(client.request_count),
     }
 
 
@@ -3194,6 +3589,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--default-branch", required=True)
     parser.add_argument("--hostname", default="github.com")
     parser.add_argument("--confirm-no-external-codeql", action="store_true")

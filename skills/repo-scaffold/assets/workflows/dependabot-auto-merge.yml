@@ -11,8 +11,9 @@ name: Dependabot auto-merge
 #
 # Uses pull_request because Dependabot-triggered pull_request_target workflows
 # have their own read-only-token and secret restrictions. Before installation,
-# verify that Actions is allowed to send write tokens to pull-request workflows;
-# otherwise GitHub can reduce the explicit permissions below to read-only. Safe use:
+# verify effective write scopes for this same-repository actor/event under the
+# target's policy. Private-fork write-token settings are not a general prerequisite
+# and must not be broadened merely to install this asset. Safe use:
 # this workflow never checks out or runs PR code and only acts on same-repository PRs
 # authored by dependabot[bot].
 on:

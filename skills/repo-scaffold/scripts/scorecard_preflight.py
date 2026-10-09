@@ -7,7 +7,14 @@ import argparse
 import json
 from typing import Any
 
-from codeql_preflight import GitHubClient, InspectionError, split_repository
+from codeql_preflight import (
+    request_metrics,
+    GitHubClient,
+    InspectionError,
+    revalidate_repository_state,
+    split_repository,
+    verified_repository_id,
+)
 
 
 SUPPORTED_VISIBILITIES = frozenset({"public", "private", "internal"})
@@ -58,6 +65,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         or full_name.casefold() != args.repository.casefold()
     ):
         raise InspectionError("GitHub returned a different repository than requested.")
+    repository_id = verified_repository_id(
+        repository, getattr(args, "expected_repository_id", None)
+    )
     if require_boolean(repository, "archived"):
         raise InspectionError(
             "Archived repositories cannot install Scorecard workflows."
@@ -87,14 +97,29 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "inspection_complete": True,
                 "decision": "enable-github-code-security-before-installing-scorecard",
                 "repository": args.repository,
+                "repository_id": repository_id,
                 "visibility": visibility,
                 "github_code_security": github_code_security,
                 "github_actions_enabled": None,
-                "github_api_requests": client.request_count,
+                **request_metrics(client.request_count),
             }
 
     github_actions_enabled = actions_are_enabled(
         client.json(f"repos/{owner}/{repo}/actions/permissions")
+    )
+    revalidate_repository_state(
+        client,
+        args.repository,
+        repository,
+        (
+            "archived",
+            "disabled",
+            "visibility",
+            "owner.type",
+            "owner.id",
+            "security_and_analysis.code_security.status",
+            "security_and_analysis.advanced_security.status",
+        ),
     )
     decision = (
         "may-install-scorecard-workflow"
@@ -103,18 +128,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     return {
         "inspection_complete": True,
-        "decision": decision,
+        "decision": (
+            "bind-repository-identity-before-mutation"
+            if getattr(args, "expected_repository_id", None) is None
+            else decision
+        ),
         "repository": args.repository,
+        "repository_id": repository_id,
         "visibility": visibility,
         "github_code_security": github_code_security,
         "github_actions_enabled": github_actions_enabled,
-        "github_api_requests": client.request_count,
+        **request_metrics(client.request_count),
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--hostname", default="github.com")
     return parser.parse_args()
 

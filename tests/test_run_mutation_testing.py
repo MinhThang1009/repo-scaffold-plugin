@@ -480,6 +480,23 @@ class MutationRunnerTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), original)
             self.assertFalse(list(path.parent.glob(f".{path.name}.*.tmp")))
 
+    def test_impossible_shard_fanout_fails_before_replacing_existing_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = run_mutation_testing.write_shard_plan(
+                root, ["scripts.one__mutmut_1"], 1
+            )
+            original = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "exceeds the mutant inventory"):
+                run_mutation_testing.write_shard_plan(
+                    root, ["scripts.one__mutmut_1"], 2
+                )
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(
+                run_mutation_testing.load_shard_names(root, 0),
+                ["scripts.one__mutmut_1"],
+            )
+
     def test_concurrent_shard_plan_writes_leave_a_complete_atomic_plan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

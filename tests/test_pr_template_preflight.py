@@ -18,7 +18,9 @@ SCRIPT_PATH = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "pr_template_preflight.py"
 )
 sys.path.insert(0, str(SCRIPT_PATH.parent))
-SPEC = importlib.util.spec_from_file_location("pr_template_preflight", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "skills.repo-scaffold.scripts.pr_template_preflight", SCRIPT_PATH
+)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load pr_template_preflight.py")
 pr_template_preflight = importlib.util.module_from_spec(SPEC)
@@ -58,6 +60,218 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
         for title, expected in cases.items():
             with self.subTest(title=title):
                 self.assertEqual(pr_template_preflight.select_template(title), expected)
+
+    def test_complete_draft_body_is_accepted_and_partial_bodies_fail_closed(
+        self,
+    ) -> None:
+        template = (
+            "<!-- repo-scaffold:pr-template=bugfix -->\n\n"
+            "## Purpose\n\nDescribe the change.\n\n## Required checklist\n\n"
+            "<!-- repo-scaffold:required-checklist:start -->\n"
+            "- [ ] Explain the scope\n<!-- repo-scaffold:required-checklist:end -->\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            (root / ".github/PULL_REQUEST_TEMPLATE/bugfix.md").write_bytes(
+                template.encode("utf-8")
+            )
+            pr_template_preflight.validate_body_structure(root, "fix: draft", template)
+            body_path = root / "body.md"
+            body_path.write_bytes(template.encode("utf-8"))
+            with redirect_stdout(StringIO()):
+                result = pr_template_preflight.main(
+                    [
+                        "--title",
+                        "fix: draft",
+                        "--repository-root",
+                        str(root),
+                        "--body-file",
+                        str(body_path),
+                        "--require-structure",
+                    ]
+                )
+            self.assertEqual(result, 0)
+            invalid = (
+                template.replace("## Purpose", "## Other"),
+                template.replace("Explain the scope", "Different checklist item"),
+                template.replace("<!-- repo-scaffold:required-checklist:start -->", ""),
+                template.replace("<!-- repo-scaffold:pr-template=bugfix -->", ""),
+            )
+            for body in invalid:
+                with self.subTest(body=body), self.assertRaises(ValueError):
+                    pr_template_preflight.validate_body_structure(
+                        root, "fix: draft", body
+                    )
+
+    def test_hidden_markdown_cannot_supply_required_structure(self) -> None:
+        template = (
+            "<!-- repo-scaffold:pr-template=bugfix -->\n\n## Purpose\n\n"
+            "## Required checklist\n\n<!-- repo-scaffold:required-checklist:start -->\n"
+            "- [ ] Explain the scope\n<!-- repo-scaffold:required-checklist:end -->\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            (root / ".github/PULL_REQUEST_TEMPLATE/bugfix.md").write_bytes(
+                template.encode("utf-8")
+            )
+            hidden = template.removeprefix(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n\n"
+            )
+            for opener, closer in (
+                ("```markdown", "```"),
+                ("<!--", "-->"),
+                ("<pre>", "</pre>"),
+            ):
+                body = (
+                    "<!-- repo-scaffold:pr-template=bugfix -->\n\n"
+                    + opener
+                    + "\n"
+                    + hidden
+                    + closer
+                    + "\n"
+                )
+                with self.subTest(opener=opener), self.assertRaises(ValueError):
+                    pr_template_preflight.validate_body_structure(
+                        root, "fix: hidden", body
+                    )
+
+    def test_block_heading_interrupts_unclosed_inline_backticks(self) -> None:
+        template = (
+            "<!-- repo-scaffold:pr-template=bugfix -->\n\n## Purpose\n\n"
+            "## Required checklist\n\n<!-- repo-scaffold:required-checklist:start -->\n"
+            "- [ ] Explain the scope\n<!-- repo-scaffold:required-checklist:end -->\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            (root / ".github/PULL_REQUEST_TEMPLATE/bugfix.md").write_bytes(
+                template.encode("utf-8")
+            )
+            body = template.replace(
+                "## Purpose\n\n", "`literal example\n## Purpose\nend`\n\n"
+            )
+            self.assertIsNone(
+                pr_template_preflight.validate_body_structure(
+                    root, "fix: visible", body
+                )
+            )
+
+    def test_root_wrapper_exports_catalog_and_validator_in_either_import_order(
+        self,
+    ) -> None:
+        module = runpy.run_path(
+            str(ROOT_ENTRYPOINT), run_name="scripts.pr_template_preflight"
+        )
+        self.assertIn("template_catalog", module)
+        self.assertIn("validate_body_structure", module)
+
+    def test_ambiguous_checklist_protocol_fails_before_body_publication(self) -> None:
+        template = (
+            "<!-- repo-scaffold:pr-template=bugfix -->\n\n## Purpose\n\n"
+            "## Required checklist\n\n<!-- repo-scaffold:required-checklist:start -->\n"
+            "- [ ] Explain the scope\n<!-- repo-scaffold:required-checklist:end -->\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            (root / ".github/PULL_REQUEST_TEMPLATE/bugfix.md").write_bytes(
+                template.encode("utf-8")
+            )
+            for extra in (
+                "<!-- repo-scaffold:required-checklist:start -->",
+                "<!-- repo-scaffold:required-checklist:end -->",
+            ):
+                with self.subTest(extra=extra), self.assertRaises(ValueError):
+                    pr_template_preflight.validate_body_structure(
+                        root, "fix: ambiguous", template + extra + "\n"
+                    )
+
+    def test_strict_cli_binds_body_to_the_explicitly_selected_template(self) -> None:
+        def template(identifier: str) -> str:
+            return (
+                f"<!-- repo-scaffold:pr-template={identifier} -->\n\n## Purpose\n\n"
+                "## Required checklist\n\n<!-- repo-scaffold:required-checklist:start -->\n"
+                "- [ ] Explain the scope\n<!-- repo-scaffold:required-checklist:end -->\n"
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            (root / ".github/PULL_REQUEST_TEMPLATE.md").write_bytes(
+                template("default").encode("utf-8")
+            )
+            (root / ".github/PULL_REQUEST_TEMPLATE/security.md").write_bytes(
+                template("security").encode("utf-8")
+            )
+            body = root / "body.md"
+            arguments = [
+                "--title",
+                "chore: focused security review",
+                "--repository-root",
+                str(root),
+                "--body-file",
+                str(body),
+                "--template",
+                "security",
+                "--require-structure",
+            ]
+            body.write_bytes(template("default").encode("utf-8"))
+            with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+                rejected = pr_template_preflight.main(arguments)
+            self.assertEqual(rejected, 1)
+            body.write_bytes(template("security").encode("utf-8"))
+            with redirect_stdout(StringIO()):
+                approved = pr_template_preflight.main(arguments)
+            self.assertEqual(approved, 0)
+
+    def test_library_structure_validation_is_bounded_before_markdown_parsing(
+        self,
+    ) -> None:
+        for body in ("字字", "xxxxx"):
+            with self.subTest(body=body):
+                with (
+                    mock.patch.object(pr_template_preflight, "MAX_BODY_FILE_BYTES", 4),
+                    mock.patch.object(
+                        pr_template_preflight, "_visible_structure"
+                    ) as parser,
+                    self.assertRaisesRegex(ValueError, "body exceeds"),
+                ):
+                    pr_template_preflight.validate_body_structure(
+                        Path("."), "chore: bounded", body
+                    )
+                parser.assert_not_called()
+
+    def test_library_structure_validation_rejects_nontext_without_parser_errors(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "body must be text"):
+            pr_template_preflight.validate_body_structure(
+                Path("."), "chore: bounded", None
+            )
+
+    def test_strict_cli_requires_a_body_file_and_a_complete_template(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            body = root / "body.md"
+            body.write_text(
+                "<!-- repo-scaffold:pr-template=bugfix -->\n", encoding="utf-8"
+            )
+            for extra in ([], ["--body-file", str(body)]):
+                with redirect_stderr(StringIO()):
+                    result = pr_template_preflight.main(
+                        [
+                            "--title",
+                            "fix: incomplete",
+                            "--repository-root",
+                            str(root),
+                            "--require-structure",
+                            *extra,
+                        ]
+                    )
+                self.assertEqual(result, 1)
 
     def test_main_reports_the_template_and_safe_gh_body_file_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

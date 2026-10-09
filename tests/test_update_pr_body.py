@@ -13,7 +13,7 @@ from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPOSITORY_ROOT / "scripts" / "update_pr_body.py"
-SPEC = importlib.util.spec_from_file_location("update_pr_body", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location("scripts.update_pr_body", SCRIPT_PATH)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load update_pr_body.py")
 update_pr_body = importlib.util.module_from_spec(SPEC)
@@ -245,6 +245,110 @@ class UpdatePullRequestBodyTests(unittest.TestCase):
         open_file.assert_called_once_with("rb")
         self.assertEqual(source.read_sizes, [11])
 
+    def test_failed_body_publication_preserves_existing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "body.md"
+            output.write_bytes(b"previous body")
+            with (
+                mock.patch.object(
+                    update_pr_body.os, "replace", side_effect=OSError("disk full")
+                ),
+                self.assertRaisesRegex(ValueError, "could not write"),
+            ):
+                update_pr_body.write_body(output, "replacement body")
+
+            self.assertEqual(output.read_bytes(), b"previous body")
+            self.assertEqual(
+                sorted(path.name for path in output.parent.iterdir()), ["body.md"]
+            )
+            with (
+                mock.patch.object(
+                    update_pr_body.tempfile,
+                    "NamedTemporaryFile",
+                    side_effect=OSError("cannot allocate temporary file"),
+                ),
+                self.assertRaisesRegex(ValueError, "could not write"),
+            ):
+                update_pr_body.write_body(output, "replacement body")
+
+    def test_publication_and_cleanup_failures_remain_controlled_and_preserve_output(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "body.md"
+            output.write_bytes(b"previous body")
+            with (
+                mock.patch.object(
+                    update_pr_body.os,
+                    "replace",
+                    side_effect=OSError("synthetic publication failed"),
+                ),
+                mock.patch.object(
+                    Path, "unlink", side_effect=OSError("synthetic cleanup failed")
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "cleanup.*synthetic cleanup failed.*publication.*synthetic publication failed",
+                ):
+                    update_pr_body.write_body(output, "replacement body")
+            self.assertEqual(output.read_bytes(), b"previous body")
+            self.assertEqual(len(list(output.parent.glob(".body.md.*.tmp"))), 1)
+
+    def test_cleanup_error_after_publication_does_not_claim_unchanged_output(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "body.md"
+            output.write_bytes(b"previous body")
+            with mock.patch.object(
+                Path, "unlink", side_effect=OSError("synthetic cleanup failed")
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "cleanup.*state may have changed"
+                ):
+                    update_pr_body.write_body(output, "replacement body")
+            self.assertEqual(output.read_bytes(), b"replacement body")
+
+    def test_cli_cleanup_failure_reports_error_without_success_or_traceback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.md"
+            source.write_bytes(b"Synthetic source body\n")
+            output = root / "body.md"
+            output.write_bytes(b"previous body")
+            errors, messages = StringIO(), StringIO()
+            with (
+                mock.patch.object(
+                    update_pr_body.os,
+                    "replace",
+                    side_effect=OSError("synthetic publication failed"),
+                ),
+                mock.patch.object(
+                    Path, "unlink", side_effect=OSError("synthetic cleanup failed")
+                ),
+                redirect_stderr(errors),
+                redirect_stdout(messages),
+            ):
+                status = update_pr_body.main(
+                    [
+                        "--body-file",
+                        str(source),
+                        "--output",
+                        str(output),
+                        "--head-sha",
+                        HEAD_SHA,
+                    ]
+                )
+            self.assertEqual(status, 1)
+            self.assertIn("cleanup failed", errors.getvalue())
+            self.assertIn("publication failed", errors.getvalue())
+            self.assertEqual(messages.getvalue(), "")
+            self.assertNotIn("Traceback", errors.getvalue())
+            self.assertEqual(output.read_bytes(), b"previous body")
+
     def test_write_body_rejects_oversized_and_unwritable_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "body.md"
@@ -253,7 +357,9 @@ class UpdatePullRequestBodyTests(unittest.TestCase):
                     output, "x" * (update_pr_body.MAX_BODY_BYTES + 1)
                 )
 
-            with mock.patch.object(Path, "write_bytes", side_effect=OSError("denied")):
+            with mock.patch.object(
+                update_pr_body.os, "replace", side_effect=OSError("denied")
+            ):
                 with self.assertRaisesRegex(ValueError, "could not write"):
                     update_pr_body.write_body(output, "body")
 

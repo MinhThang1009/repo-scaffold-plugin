@@ -11,9 +11,9 @@ import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
-from io import BytesIO, StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, ClassVar
 from unittest import mock
 from urllib.request import Request
@@ -45,6 +45,30 @@ def release(tag: str, sha: str) -> Any:
 
 
 class FreshnessTests(unittest.TestCase):
+    def test_bad_callback_releases_are_inspection_errors_not_stale_verdicts(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            trackers = freshness.load_trackers(root, freshness.DEFAULT_TRACKER_REGISTRY)
+            errors: list[str] = []
+            result = freshness.action_findings(
+                root,
+                trackers.workflow_directories,
+                lambda repository: SimpleNamespace(tag="v1.0.1", sha="invalid"),
+                errors,
+            )  # type: ignore[arg-type]
+            self.assertEqual(result, [])
+            self.assertEqual(len(errors), 1)
+            self.assertIn("supported bounded tag", errors[0])
+            with self.assertRaisesRegex(ValueError, "supported bounded tag"):
+                freshness.action_findings(
+                    root,
+                    trackers.workflow_directories,
+                    lambda repository: SimpleNamespace(tag="v1.0.1", sha="invalid"),
+                )  # type: ignore[arg-type]
+
     def write_repository(self, root: Path) -> None:
         for relative, content in {
             ".github/freshness-trackers.json": json.dumps(
@@ -207,6 +231,35 @@ class FreshnessTests(unittest.TestCase):
             with mock.patch.object(freshness, "MAX_REQUIREMENT_PINS", 1):
                 with self.assertRaisesRegex(freshness.AuditError, "pin safety cap"):
                     freshness.pinned_requirements(path)
+
+    def test_python_version_conditional_pins_remain_in_freshness_inventory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "requirements.in"
+            for suffix in (
+                '; python_version == "3.13"',
+                "; python_version == '3.10' \\",
+            ):
+                with self.subTest(suffix=suffix):
+                    path.write_text(
+                        "example-package==1.2.3" + suffix + "\n", encoding="utf-8"
+                    )
+                    self.assertEqual(
+                        freshness.pinned_requirements(path),
+                        {"example-package": ("example-package", "1.2.3")},
+                    )
+            for suffix in (
+                "; python_version == 3.13",
+                "; python_version == \"3.13'",
+                '; invented_variable == "x"',
+            ):
+                with self.subTest(suffix=suffix):
+                    path.write_text(
+                        "example-package==1.2.3" + suffix + "\n", encoding="utf-8"
+                    )
+                    with self.assertRaises(freshness.AuditError):
+                        freshness.pinned_requirements(path)
 
     def test_action_findings_are_semantic_and_cache_upstream_releases(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1651,6 +1704,143 @@ class FreshnessTests(unittest.TestCase):
                 report = freshness.audit(root, "token")
             self.assertEqual(report["status"], "indeterminate")
             self.assertIn("CI toolchain unavailable", report["errors"])
+
+    def test_freshness_report_supports_selected_project_language(self) -> None:
+        report: dict[str, Any] = {
+            "checked-at": "2026-10-02T00:00:00Z",
+            "status": "current",
+            "findings": [],
+            "errors": [],
+        }
+        english = freshness.markdown_report(report)
+        vietnamese = freshness.markdown_report(report, language="vi")
+        self.assertEqual(freshness.markdown_report(report, language="en"), english)
+        self.assertIn("# Báo cáo freshness của repository", vietnamese)
+        self.assertIn("Không phát hiện đầu vào phiên bản đã lỗi thời.", vietnamese)
+        self.assertIn("<!-- repo-scaffold-freshness-audit -->", vietnamese)
+        self.assertIn("`current`", vietnamese)
+        report["status"] = "indeterminate"
+        report["errors"] = ["upstream timeout"]
+        report["findings"] = [
+            {
+                "kind": "python-package",
+                "subject": "example",
+                "current": "1.0",
+                "latest": "2.0",
+            }
+        ]
+        vietnamese = freshness.markdown_report(report, language="vi")
+        self.assertIn(
+            "| Kiểm tra | Đường dẫn | Đối tượng | Hiện tại | Mới nhất | Chi tiết |",
+            vietnamese,
+        )
+        self.assertIn("## Các kiểm tra chưa xác định được kết quả", vietnamese)
+        self.assertIn("`upstream timeout`", vietnamese)
+        self.assertEqual(report["status"], "indeterminate")
+        with self.assertRaisesRegex(ValueError, "en.*vi"):
+            freshness.markdown_report(report, language="unsupported")
+
+    def test_freshness_cli_language_preserves_machine_protocol_and_outputs(
+        self,
+    ) -> None:
+        report = {
+            "checked-at": "2026-10-02T00:00:00Z",
+            "status": "indeterminate",
+            "findings": [],
+            "errors": ["upstream timeout"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "report.md"
+            json_output = root / "report.json"
+            arguments = [
+                "--repository-root",
+                str(root),
+                "--json-output",
+                str(json_output),
+                "--markdown-output",
+                str(output),
+            ]
+            with (
+                mock.patch.object(freshness, "audit", return_value=report),
+                redirect_stdout(StringIO()) as stdout,
+            ):
+                self.assertEqual(freshness.main([*arguments, "--language", "vi"]), 2)
+            self.assertIn(
+                "Trạng thái freshness của repository: indeterminate", stdout.getvalue()
+            )
+            self.assertIn(
+                "# Báo cáo freshness của repository", output.read_text(encoding="utf-8")
+            )
+            self.assertEqual(json.loads(json_output.read_bytes()), report)
+            before = output.read_bytes(), json_output.read_bytes()
+            with (
+                mock.patch.object(freshness, "audit") as audit,
+                redirect_stderr(StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as rejected:
+                    freshness.main([*arguments, "--language", "unsupported"])
+            self.assertEqual(rejected.exception.code, 2)
+            audit.assert_not_called()
+            self.assertEqual((output.read_bytes(), json_output.read_bytes()), before)
+
+    def test_vietnamese_cli_preserves_indeterminate_exit_with_non_utf8_stdout(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = os.environ.copy()
+            environment.update({"PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"})
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--repository-root",
+                    str(root),
+                    "--language",
+                    "vi",
+                    "--json-output",
+                    str(root / "report.json"),
+                    "--markdown-output",
+                    str(root / "report.md"),
+                ],
+                env=environment,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn(
+                "Trạng thái freshness của repository: indeterminate",
+                result.stdout.decode("utf-8", errors="strict"),
+            )
+            self.assertEqual(
+                json.loads((root / "report.json").read_bytes())["status"],
+                "indeterminate",
+            )
+
+    def test_cli_entrypoint_configures_real_text_stream_as_utf8(self) -> None:
+        raw_output = BytesIO()
+        text_output = TextIOWrapper(raw_output, encoding="cp1252")
+        with (
+            mock.patch.object(sys, "argv", [str(SCRIPT_PATH), "--help"]),
+            redirect_stdout(text_output),
+        ):
+            with self.assertRaises(SystemExit) as terminated:
+                runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+        self.assertEqual(terminated.exception.code, 0)
+        self.assertEqual(text_output.encoding, "utf-8")
+        text_output.flush()
+        self.assertIn("--language", raw_output.getvalue().decode("utf-8"))
+        text_output.detach()
+        with (
+            mock.patch.object(sys, "argv", [str(SCRIPT_PATH), "--help"]),
+            redirect_stdout(StringIO()) as output,
+        ):
+            with self.assertRaises(SystemExit) as terminated:
+                runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+        self.assertEqual(terminated.exception.code, 0)
+        self.assertIn("--language", output.getvalue())
 
     def test_audit_markdown_and_main_statuses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

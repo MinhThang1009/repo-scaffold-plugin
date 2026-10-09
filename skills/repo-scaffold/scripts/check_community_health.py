@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from http.client import HTTPException, HTTPResponse
+
 import argparse
 import json
 import os
@@ -25,6 +27,8 @@ MAX_POLICY_BYTES = 1024 * 1024
 MAX_REGISTRY_BYTES = 1024 * 1024
 MAX_REGISTRY_ENTRIES = 256
 MAX_DIRECTORY_ENTRIES = 10_000
+MAX_UPSTREAM_TREE_ENTRIES = 100_000
+MAX_VERSION_COMPONENT_DIGITS = 32
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 VERSION_PATTERN = re.compile(r"\d+(?:\.\d+){1,2}\Z")
 CONTRIBUTOR_COVENANT_PATH = re.compile(
@@ -64,7 +68,19 @@ class RejectRedirectHandler(HTTPRedirectHandler):
         headers: Any,
         new_url: str,
     ) -> Request | None:
+        if response is not None:
+            try:
+                response.close()
+            except OSError as error:
+                raise AuditError("Redirect response could not be closed") from error
         raise AuditError("GitHub API redirects are not allowed")
+
+    def http_error_302(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any
+    ) -> Request | None:
+        return self.redirect_request(req, fp, code, msg, headers, req.full_url)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
 GITHUB_API_OPENER = build_opener(RejectRedirectHandler())
@@ -93,6 +109,43 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return document
 
 
+def read_http_payload(response: Any, limit: int) -> bytes:
+    """Read bounded bytes without accepting ambiguous native length framing."""
+    expected: int | None = None
+    if isinstance(response, HTTPResponse):
+        values = response.headers.get_all("Content-Length", [])
+        if len(values) > 100 or sum(len(value) for value in values) > 8192:
+            raise ValueError("HTTP Content-Length exceeds the header safety bound")
+        canonical: str | None = None
+        members = 0
+        for value in values:
+            for item in value.split(","):
+                members += 1
+                item = item.strip(" \t")
+                if members > 100 or re.fullmatch(r"[0-9]+", item) is None:
+                    raise ValueError("HTTP Content-Length is invalid")
+                normalized = item.lstrip("0") or "0"
+                if canonical is not None and normalized != canonical:
+                    raise ValueError("HTTP Content-Length values conflict")
+                canonical = normalized
+        if canonical is not None:
+            if len(canonical) > len(str(limit)) or (
+                len(canonical) == len(str(limit)) and canonical > str(limit)
+            ):
+                raise ValueError(
+                    "HTTP Content-Length exceeds the response safety bound"
+                )
+            if not response.chunked:
+                expected = int(canonical)
+    payload: bytes = response.read(limit + 1)
+    if isinstance(response, HTTPResponse) and (
+        response.length not in {None, 0}
+        or (expected is not None and len(payload) != expected)
+    ):
+        raise ValueError("HTTP response is incomplete")
+    return payload
+
+
 class GitHubClient:
     """Small bounded client for read-only GitHub API requests."""
 
@@ -113,12 +166,18 @@ class GitHubClient:
         request = Request(f"{API_ROOT}/{endpoint}", headers=headers)
         try:
             with GITHUB_API_OPENER.open(request, timeout=self.timeout) as response:
-                payload = response.read(MAX_RESPONSE_BYTES + 1)
+                payload = read_http_payload(response, MAX_RESPONSE_BYTES)
         except HTTPError as error:
+            try:
+                error.close()
+            except OSError as cleanup_error:
+                raise AuditError(
+                    "GitHub API error response could not be closed"
+                ) from cleanup_error
             raise AuditError(
                 f"GitHub API returned HTTP {error.code} for {endpoint}"
             ) from error
-        except (OSError, URLError) as error:
+        except (OSError, URLError, HTTPException, ValueError) as error:
             raise AuditError(
                 f"GitHub API request failed for {endpoint}: {error}"
             ) from error
@@ -358,8 +417,16 @@ def inventory_entry(root: Path, entry: RegistryEntry) -> dict[str, Any]:
 
 
 def version_tuple(value: str) -> tuple[int, int, int]:
-    if not VERSION_PATTERN.fullmatch(value):
-        raise AuditError(f"invalid semantic version: {value!r}")
+    if (
+        not isinstance(value, str)
+        or len(value) > MAX_VERSION_COMPONENT_DIGITS * 3 + 2
+        or not VERSION_PATTERN.fullmatch(value)
+        or any(
+            len(component) > MAX_VERSION_COMPONENT_DIGITS
+            for component in value.split(".")
+        )
+    ):
+        raise AuditError("invalid semantic version (malformed or oversized component)")
     components = [int(component) for component in value.split(".")]
     major, minor, patch = (components + [0, 0])[:3]
     return major, minor, patch
@@ -402,24 +469,41 @@ def latest_contributor_covenant(client: GitHubClient) -> dict[str, str]:
     raw_entries = tree.get("tree") if isinstance(tree, dict) else None
     if not isinstance(raw_entries, list) or tree.get("truncated") is not False:
         raise AuditError("Contributor Covenant source tree is missing or truncated")
-    candidates: list[tuple[tuple[int, ...], str, str]] = []
+    if len(raw_entries) > MAX_UPSTREAM_TREE_ENTRIES:
+        raise AuditError("Contributor Covenant tree exceeds the entry safety cap")
+    candidates: list[tuple[tuple[int, ...], str, str, str]] = []
+    paths: set[str] = set()
     for value in raw_entries:
         path = value.get("path") if isinstance(value, dict) else None
-        if not isinstance(path, str):
-            continue
+        if not isinstance(path, str) or not path or path in paths:
+            raise AuditError(
+                "Contributor Covenant tree has malformed or duplicate paths"
+            )
+        paths.add(path)
         match = CONTRIBUTOR_COVENANT_PATH.fullmatch(path)
         if match:
+            blob_sha = value.get("sha")
+            if (
+                value.get("type") != "blob"
+                or value.get("mode") not in ("100644", "100755")
+                or not isinstance(blob_sha, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", blob_sha)
+            ):
+                raise AuditError(
+                    "Contributor Covenant policy must be a regular bound blob"
+                )
             version = match.group("path_version").replace("/", ".")
-            candidates.append((version_tuple(version), version, path))
+            candidates.append((version_tuple(version), version, path, blob_sha))
     if not candidates:
         raise AuditError(
             "Contributor Covenant source tree has no stable English policy"
         )
-    _, version, path = max(candidates)
+    _, version, path, blob_sha = max(candidates)
     return {
         "version": version,
         "commit": commit,
         "path": path,
+        "blob_sha": blob_sha,
         "url": f"https://github.com/{CONTRIBUTOR_COVENANT_REPOSITORY}/blob/{commit}/{path}",
     }
 

@@ -2,6 +2,35 @@
   "schema-version": 1,
   "claims": [
     {
+      "id": "github-active-label-prerequisites",
+      "label": "GitHub label schema and archived-label applicability",
+      "url": "https://docs.github.com/en/rest/issues/labels",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        "tests/test_repository_settings_preflight.py"
+      ],
+      "required-markers": ["Archived labels cannot be added to issues or pull requests", "archived_at"],
+      "reviewed-on": "2026-10-05",
+      "review-period-days": 90
+    },
+    {
+      "id": "github-public-security-advisory-availability",
+      "label": "GitHub public repository security advisory and reporting availability",
+      "url": "https://docs.github.com/en/code-security/concepts/vulnerability-reporting-and-management/repository-security-advisories",
+      "allowed-hosts": ["docs.github.com"],
+      "paths": [
+        "README.md",
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/security_features_preflight.py",
+        "tests/test_security_features_preflight.py"
+      ],
+      "required-markers": ["Repository security advisories", "public repositories", "fork owns a package"],
+      "reviewed-on": "2026-10-04",
+      "review-period-days": 90
+    },
+    {
       "id": "agent-skills-standard",
       "label": "Agent Skills standard",
       "url": "https://agentskills.io",
@@ -314,6 +343,8 @@
       "url": "https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
+        "skills/repo-scaffold/SKILL.md",
+        "skills/repo-scaffold/references/github-setup.md",
         "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml"
       ],
       "required-markers": [
@@ -345,7 +376,9 @@
       "url": "https://docs.github.com/en/rest/dependency-graph/sboms",
       "allowed-hosts": ["docs.github.com"],
       "paths": [
+        "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/scripts/codeql_preflight.py",
         "skills/repo-scaffold/scripts/dependency_review_preflight.py"
       ],
       "required-markers": [
@@ -353,7 +386,7 @@
         "November 13, 2026",
         "SPDX JSON"
       ],
-      "reviewed-on": "2026-09-07",
+      "reviewed-on": "2026-10-07",
       "review-period-days": 30
     },
     {
@@ -789,14 +822,19 @@
         "skills/repo-scaffold/scripts/check_community_health.py",
         "skills/repo-scaffold/scripts/branch_protection_preflight.py",
         "skills/repo-scaffold/scripts/codeql_preflight.py",
-        "skills/repo-scaffold/references/github-setup.md"
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/references/scaffold-generation.md",
+        "tests/test_check_community_health.py"
       ],
       "required-markers": [
         "Get a tree",
         "recursive",
-        "truncated"
+        "truncated",
+        "100644",
+        "120000",
+        "100,000"
       ],
-      "reviewed-on": "2026-09-08",
+      "reviewed-on": "2026-10-05",
       "review-period-days": 90
     },
     {

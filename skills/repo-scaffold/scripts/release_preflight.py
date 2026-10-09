@@ -8,10 +8,13 @@ import json
 from typing import Any
 
 from codeql_preflight import (
+    request_metrics,
     GitHubClient,
     InspectionError,
     github_api_status,
+    revalidate_repository_state,
     split_repository,
+    verified_repository_id,
 )
 
 
@@ -43,6 +46,8 @@ def attestation_decision(
     visibility: str, request_attestations: bool, enterprise_cloud: bool
 ) -> str:
     """Choose only a documented attestation variant from verified eligibility."""
+    if type(request_attestations) is not bool or type(enterprise_cloud) is not bool:
+        raise InspectionError("Attestation controls must be Boolean.")
     if not request_attestations:
         return "may-install-release-workflows"
     if visibility == "public":
@@ -77,6 +82,13 @@ def verify_release_please_token(client: GitHubClient, owner: str, repo: str) -> 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     """Inspect one exact GitHub.com repository before release asset installation."""
+    for control in (
+        "with_attestations",
+        "github_enterprise_cloud",
+        "require_release_please_token",
+    ):
+        if type(getattr(args, control, None)) is not bool:
+            raise InspectionError(f"Release control {control} must be a Boolean.")
     if not isinstance(args.hostname, str) or args.hostname.casefold() != "github.com":
         raise InspectionError("Release preflight supports GitHub.com only.")
     if not isinstance(args.default_branch, str) or not args.default_branch.strip():
@@ -92,6 +104,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         or full_name.casefold() != args.repository.casefold()
     ):
         raise InspectionError("GitHub returned a different repository than requested.")
+    repository_id = verified_repository_id(
+        repository, getattr(args, "expected_repository_id", None)
+    )
     if require_boolean(repository, "archived"):
         raise InspectionError("Archived repositories cannot install release workflows.")
     if require_boolean(repository, "disabled"):
@@ -109,26 +124,38 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.require_release_please_token:
         verify_release_please_token(client, owner, repo)
         release_please_token = "verified-present"
+        revalidate_repository_state(
+            client,
+            args.repository,
+            repository,
+            ("archived", "disabled", "visibility", "fork", "default_branch"),
+        )
     decision = attestation_decision(
         visibility, args.with_attestations, args.github_enterprise_cloud
     )
     return {
         "inspection_complete": True,
-        "decision": decision,
+        "decision": (
+            "bind-repository-identity-before-mutation"
+            if getattr(args, "expected_repository_id", None) is None
+            else decision
+        ),
         "repository": args.repository,
+        "repository_id": repository_id,
         "default_branch": actual_default_branch,
         "visibility": visibility,
         "is_fork": is_fork,
         "attestations_requested": args.with_attestations,
         "github_enterprise_cloud_confirmed": args.github_enterprise_cloud,
         "release_please_token": release_please_token,
-        "github_api_requests": client.request_count,
+        **request_metrics(client.request_count),
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--default-branch", required=True)
     parser.add_argument("--hostname", default="github.com")
     parser.add_argument("--with-attestations", action="store_true")
