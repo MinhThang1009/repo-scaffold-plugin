@@ -2281,6 +2281,16 @@ function Get-ValidatedSecurityFeaturePreflight {
   workflow-installation preflight as well, because it independently checks the
   Actions policy and exact action pin.
 
+  The [synchronous SBOM export API](https://docs.github.com/en/rest/dependency-graph/sboms)
+  currently returns HTTP 200 with SPDX JSON, but GitHub will retire it after
+  November 13, 2026. Review that deadline before using this preflight. The
+  asynchronous flow is separate: `generate-report` starts a report job and
+  returns HTTP 201; `fetch-report` returns HTTP 202 while pending or HTTP 302
+  when ready. Do not treat a pending response or redirect as completed SBOM
+  evidence, and do not start asynchronous generation without explicit approval.
+  Migrating the export lifecycle remains separate from this documentation
+  review; a review date does not certify that migration has been implemented.
+
   ```powershell
   $dependencyReviewPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/dependency_review_preflight.py"
   if (-not (Test-Path -LiteralPath $dependencyReviewPreflight -PathType Leaf)) {
