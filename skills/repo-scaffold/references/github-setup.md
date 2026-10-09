@@ -2290,6 +2290,9 @@ function Get-ValidatedSecurityFeaturePreflight {
   evidence, and do not start asynchronous generation without explicit approval.
   Migrating the export lifecycle remains separate from this documentation
   review; a review date does not certify that migration has been implemented.
+  Asynchronous reports may be retained for up to one week. Their temporary
+  download URLs expire independently, with expiry set when the fetch request
+  is made; a migration must validate report and URL freshness separately.
 
   ```powershell
   $dependencyReviewPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/dependency_review_preflight.py"
