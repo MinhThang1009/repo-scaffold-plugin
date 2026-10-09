@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from functools import lru_cache
 from io import StringIO
 from pathlib import Path
 from typing import BinaryIO, Protocol, cast
@@ -20,6 +21,7 @@ from unittest import mock
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+NATIVE_GIT = shutil.which("git")
 SCRIPT_PATH = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "codeql_preflight.py"
 )
@@ -71,15 +73,26 @@ class GitHubClientProtocol(Protocol):
         env: dict[str, str],
         timeout: int,
         check: bool = False,
-    ) -> object: ...
+    ) -> subprocess.CompletedProcess[bytes]: ...
 
 
+@lru_cache(maxsize=128)
 def git_blob_id(text: str) -> str:
-    payload = text.encode("utf-8")
-    return hashlib.sha1(
-        b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload,
-        usedforsecurity=False,
-    ).hexdigest()
+    """Use Git's object-format implementation for synthetic workflow fixtures."""
+    if NATIVE_GIT is None:
+        raise unittest.SkipTest("requires Git for canonical fixture object IDs")
+    result = subprocess.run(
+        [NATIVE_GIT, "hash-object", "--stdin", "--no-filters"],
+        input=text.encode("utf-8"),
+        cwd=PLUGIN_ROOT,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    object_id = result.stdout.decode("ascii").strip()
+    if re.fullmatch(r"[0-9a-f]{40}", object_id) is None:
+        raise AssertionError("Git did not return a canonical SHA-1 fixture object ID")
+    return object_id
 
 
 class ExecutableResolutionTests(unittest.TestCase):
@@ -4156,6 +4169,82 @@ class GitHubCaptureTests(unittest.TestCase):
                 self.assertEqual(
                     codeql_preflight.GitHubClient._pipe_available(stream), expected
                 )
+
+    def test_windows_pipe_backend_contract_is_platform_independent(self) -> None:
+        from ctypes import wintypes
+
+        kernel = mock.Mock()
+        pipe = mock.Mock()
+        pipe.fileno.return_value = 42
+        windows_io = mock.Mock()
+        windows_io.get_osfhandle.return_value = 37
+        with (
+            mock.patch.object(codeql_preflight.sys, "platform", "win32"),
+            mock.patch.dict(sys.modules, {"msvcrt": windows_io}),
+            mock.patch.object(
+                codeql_preflight.ctypes, "WinDLL", return_value=kernel, create=True
+            ),
+            mock.patch.object(
+                codeql_preflight.ctypes, "get_last_error", create=True
+            ) as last_error,
+        ):
+            for count in (0, 7, codeql_preflight.GH_CAPTURE_READ_BYTES):
+
+                def peek(*arguments: object) -> int:
+                    pointer = codeql_preflight.ctypes.cast(
+                        arguments[4], codeql_preflight.ctypes.POINTER(wintypes.DWORD)
+                    )
+                    pointer.contents.value = count
+                    return 1
+
+                kernel.PeekNamedPipe.side_effect = peek
+                self.assertEqual(
+                    codeql_preflight.GitHubClient._pipe_available(pipe), count
+                )
+            kernel.PeekNamedPipe.side_effect = None
+            kernel.PeekNamedPipe.return_value = 0
+            for code in (109, 232, 5):
+                last_error.return_value = code
+                with self.subTest(code=code):
+                    if code == 5:
+                        with self.assertRaises(OSError):
+                            codeql_preflight.GitHubClient._pipe_available(pipe)
+                    else:
+                        self.assertEqual(
+                            codeql_preflight.GitHubClient._pipe_available(pipe), -1
+                        )
+        windows_io.get_osfhandle.assert_called_with(42)
+
+    def test_capture_closed_pipe_signal_finishes_without_reading(self) -> None:
+        client = self.client()
+        process = mock.Mock()
+        process.returncode = 0
+        process.poll.return_value = 0
+        with (
+            tempfile.TemporaryFile() as output,
+            tempfile.TemporaryFile() as errors,
+            mock.patch.object(
+                codeql_preflight.subprocess, "Popen", return_value=process
+            ),
+            mock.patch.object(
+                codeql_preflight.GitHubClient, "_pipe_available", return_value=-1
+            ),
+        ):
+            result = client._execute_bounded(
+                [sys.executable, "-I", "-c", "pass"],
+                stdout=output,
+                stderr=errors,
+                env=os.environ.copy(),
+                timeout=2,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(client.response_bytes, 0)
+        process.stdout.read.assert_not_called()
+        process.stderr.read.assert_not_called()
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+        process.wait.assert_called_once()
+        process.kill.assert_not_called()
 
     @unittest.skipUnless(sys.platform == "win32", "requires native Windows pipe API")
     def test_windows_pipe_closure_and_error_dispositions(self) -> None:

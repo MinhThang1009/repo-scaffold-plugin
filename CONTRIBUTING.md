@@ -38,6 +38,7 @@ The plugin has no build step. Development checks require:
 - markdown-it-py, for CommonMark-compliant Markdown validation
 - PyYAML
 - pytest
+- Git, including `hash-object` for independent fixture object IDs
 - mutmut, on Linux, macOS, or Windows through WSL
 - Ruff
 - mypy
@@ -52,6 +53,15 @@ Bash (Git Bash on Windows). They serve synthetic responses only on loopback,
 isolate GitHub CLI configuration, and never require real credentials or write
 to GitHub. When either tool is absent, report the corresponding applicability
 skip rather than claiming the integration passed.
+
+Workflow-blob fixtures use `git hash-object --stdin --no-filters` as an
+independent object-format oracle. Up to 128 fixture IDs are memoized by exact
+text; this is deterministic object-format data, not cached GitHub evidence or
+authorization. Their workflow text is synthetic, not a
+credential or password hash. Portable Windows pipe-backend contract tests
+exercise control flow through modeled APIs on every platform; retain the
+native Windows tests separately. Passing those contract tests on Linux does
+not establish Windows ABI or native pipe behavior.
 
 CI pins for markdownlint and standalone downloaded tools, plus the rolling
 documentation bootstrap and minimum bundled-tooling Python runtimes, are

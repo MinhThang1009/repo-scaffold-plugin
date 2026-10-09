@@ -14,12 +14,14 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+NATIVE_GIT = shutil.which("git")
 SCRIPT_DIRECTORY = PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts"
 CODEQL_SPEC = importlib.util.spec_from_file_location(
     "skills.repo-scaffold.scripts.codeql_preflight",
@@ -74,12 +76,23 @@ class FakeClient:
         return value
 
 
+@lru_cache(maxsize=128)
 def git_blob_id(text: str) -> str:
-    payload = text.encode("utf-8")
-    return hashlib.sha1(
-        b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload,
-        usedforsecurity=False,
-    ).hexdigest()
+    """Use Git's object-format implementation for synthetic workflow fixtures."""
+    if NATIVE_GIT is None:
+        raise unittest.SkipTest("requires Git for canonical fixture object IDs")
+    result = subprocess.run(
+        [NATIVE_GIT, "hash-object", "--stdin", "--no-filters"],
+        input=text.encode("utf-8"),
+        cwd=PLUGIN_ROOT,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    object_id = result.stdout.decode("ascii").strip()
+    if re.fullmatch(r"[0-9a-f]{40}", object_id) is None:
+        raise AssertionError("Git did not return a canonical SHA-1 fixture object ID")
+    return object_id
 
 
 def check_runs(
