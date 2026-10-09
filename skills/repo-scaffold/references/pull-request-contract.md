@@ -68,6 +68,9 @@ update can be overwritten; the workflow minimizes that window and verifies the
 result afterward.
 The renderer adds the current Checks-tab status line automatically; do not
 repeat that live-status statement in a structured `Verification:` value.
+Keep a cumulative summary to at most five key-change bullets and four
+verification notes. Combine related evidence without omitting material scope;
+the renderer adds its Checks-tab reminder separately from those four notes.
 
 In the body file, keep each prose paragraph on one physical line and each list
 item on a single line; separate paragraphs with blank lines and let GitHub wrap
