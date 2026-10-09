@@ -62,6 +62,9 @@ credential or password hash. Portable Windows pipe-backend contract tests
 exercise control flow through modeled APIs on every platform; retain the
 native Windows tests separately. Passing those contract tests on Linux does
 not establish Windows ABI or native pipe behavior.
+Each platform's quality run keeps the declared coverage floor. Do not exclude
+a native backend solely because that quality runner uses another OS; pair
+portable contract seams with the applicable native integration checks.
 
 CI pins for markdownlint and standalone downloaded tools, plus the rolling
 documentation bootstrap and minimum bundled-tooling Python runtimes, are
