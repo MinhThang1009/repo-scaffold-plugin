@@ -45,8 +45,13 @@ rollout or rollback plans when the selected template requires them; automation
 must not substitute a file-count summary for those decisions.
 
 The optional `pr-body-sync.yml` workflow uses explicit `Why:`, `Root cause:`,
-`Changes:`, and `Verification:` commit fields, with multiline paragraphs and
-bullets supported. Use the selected project language for their values. For a
+`Changes:`, and `Verification:` commit fields. A field may contain paragraphs
+or bullet lists on following lines, but each authored paragraph and bullet item
+must occupy one physical line. Do not hard-wrap commit prose at 72 or 80
+characters; separate paragraphs and fields with blank lines and preserve
+intentional code-block newlines. Wrapped legacy messages remain supported:
+the renderer joins their continuations without rewriting published commits.
+Use the selected project language for field values. For a
 long PR, use a maintainer-reviewed commit containing
 `PR-summary-base: <full-current-base-SHA>` and all four fields to record a
 cumulative summary through that commit. The workflow validates the base SHA and
