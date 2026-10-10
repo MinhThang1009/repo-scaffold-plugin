@@ -43,6 +43,12 @@ sys.modules[WORKFLOW_SPEC.name] = validate_workflows
 WORKFLOW_SPEC.loader.exec_module(validate_workflows)
 
 
+def repository_entrypoint_path(repository_root: Path) -> Path:
+    """Validate repository data from its bound source, not mutmut instrumentation."""
+    source_root = validate_repository.release_archive_source_root(repository_root)
+    return source_root / "scripts" / "validate_repository.py"
+
+
 def run_test_subprocess(
     command: list[str], **kwargs: Any
 ) -> subprocess.CompletedProcess[Any]:
@@ -4662,9 +4668,63 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
     def test_script_entrypoint_returns_main_status(self) -> None:
         output = StringIO()
         with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
-            runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+            runpy.run_path(
+                str(repository_entrypoint_path(PLUGIN_ROOT)), run_name="__main__"
+            )
 
         self.assertEqual(raised.exception.code, 0)
+
+    def test_repository_entrypoint_uses_only_bound_original_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source_root = Path(directory).resolve()
+            (source_root / ".git").mkdir()
+            generated_root = source_root / "mutants"
+            generated_root.mkdir()
+            for root, status in ((source_root, 0), (generated_root, 23)):
+                script = root / "scripts" / "validate_repository.py"
+                script.parent.mkdir()
+                script.write_text(f"raise SystemExit({status})\n", encoding="utf-8")
+            oversized = generated_root / "instrumented.py"
+            oversized.write_bytes(
+                b"x" * (validate_repository.MAX_VALIDATION_FILE_BYTES + 1)
+            )
+            with self.assertRaisesRegex(OSError, "safety cap"):
+                validate_repository.read_bounded_text(oversized)
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": str(source_root)},
+                ),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                runpy.run_path(
+                    str(repository_entrypoint_path(generated_root)), run_name="__main__"
+                )
+            self.assertEqual(raised.exception.code, 0)
+
+    def test_repository_entrypoint_rejects_unrelated_source_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            unrelated_source = root / "unrelated"
+            unrelated_source.mkdir()
+            (unrelated_source / ".git").mkdir()
+            generated_root = root / "mutants"
+            generated_root.mkdir()
+            for location, status in ((unrelated_source, 0), (generated_root, 23)):
+                script = location / "scripts" / "validate_repository.py"
+                script.parent.mkdir()
+                script.write_text(f"raise SystemExit({status})\n", encoding="utf-8")
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": str(unrelated_source)},
+                ),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                runpy.run_path(
+                    str(repository_entrypoint_path(generated_root)), run_name="__main__"
+                )
+            self.assertEqual(raised.exception.code, 23)
 
 
 class TestQualityContractTests(unittest.TestCase):
