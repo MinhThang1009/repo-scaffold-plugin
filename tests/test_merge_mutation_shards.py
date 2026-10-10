@@ -519,6 +519,58 @@ class MergeMutationShardsTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "inventory exceeds"):
                     merge_mutation_shards.merge(root, root / "mutation-shards")
 
+    def test_metadata_inventory_bounds_native_iteration_before_materializing(
+        self,
+    ) -> None:
+        native_scandir = os.scandir
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for number in range(16):
+                (root / f"unrelated-{number}.txt").write_text(
+                    "preserved", encoding="utf-8"
+                )
+            for cap in (1, 3, 16):
+                consumed = 0
+                closed = False
+
+                class CountingDirectory:
+                    def __enter__(self):
+                        self.entries = native_scandir(root)
+
+                        def observed():
+                            nonlocal consumed
+                            for entry in self.entries:
+                                consumed += 1
+                                yield entry
+
+                        return observed()
+
+                    def __exit__(self, *_args: object) -> None:
+                        nonlocal closed
+                        self.entries.close()
+                        closed = True
+
+                with (
+                    self.subTest(cap=cap),
+                    mock.patch.object(
+                        merge_mutation_shards.os,
+                        "scandir",
+                        side_effect=lambda _path: CountingDirectory(),
+                    ),
+                    mock.patch.object(
+                        merge_mutation_shards, "MAX_METADATA_SCAN_ENTRIES", cap
+                    ),
+                ):
+                    if cap < 16:
+                        with self.assertRaisesRegex(ValueError, "inventory exceeds"):
+                            merge_mutation_shards.metadata_paths(root, 0)
+                    else:
+                        self.assertEqual(
+                            merge_mutation_shards.metadata_paths(root, 0), []
+                        )
+                    self.assertEqual(consumed, min(cap + 1, 16))
+                    self.assertTrue(closed)
+
     def test_metadata_inventory_rejects_enumeration_and_entry_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

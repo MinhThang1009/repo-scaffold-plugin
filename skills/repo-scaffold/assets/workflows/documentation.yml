@@ -37,9 +37,22 @@ jobs:
   docs-contract:
     name: docs-contract
     needs: prepare_docs
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Require verified documentation policy
+        if: ${{ always() }}
+        env:
+          PREPARE_DOCS_RESULT: ${{ needs.prepare_docs.result }}
+          DOCUMENTATION_PYTHON: ${{ needs.prepare_docs.outputs.documentation_python }}
+        shell: bash
+        run: |
+          if [[ "$PREPARE_DOCS_RESULT" != 'success' || ! "$DOCUMENTATION_PYTHON" =~ ^3\.(x|0|[1-9][0-9]*)$ ]]; then
+            printf 'Required documentation policy preparation or runtime output is invalid.\n' >&2
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

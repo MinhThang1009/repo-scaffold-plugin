@@ -8,10 +8,13 @@ import json
 from typing import Any
 
 from codeql_preflight import (
+    request_metrics,
     GitHubClient,
     InspectionError,
     github_api_status,
+    revalidate_repository_state,
     split_repository,
+    verified_repository_id,
 )
 
 
@@ -78,7 +81,7 @@ def dependabot_alerts_precondition(
     if args.dependabot_alerts:
         return "requested-for-prior-enable"
     try:
-        client.raw(f"repos/{owner}/{repo}/vulnerability-alerts")
+        client.require_empty_response(f"repos/{owner}/{repo}/vulnerability-alerts", 204)
     except InspectionError as exc:
         status = github_api_status(exc)
         detail = (
@@ -121,6 +124,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         or full_name.casefold() != args.repository.casefold()
     ):
         raise InspectionError("GitHub returned a different repository than requested.")
+    repository_id = verified_repository_id(
+        repository, getattr(args, "expected_repository_id", None)
+    )
     if require_boolean(repository, "archived"):
         raise InspectionError(
             "Archived repositories cannot have security settings changed."
@@ -158,9 +164,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise InspectionError(
             "Push protection requires secret scanning to be enabled first."
         )
-    if args.private_vulnerability_reporting and (visibility != "public" or is_fork):
+    if args.private_vulnerability_reporting and visibility != "public":
         raise InspectionError(
-            "Private vulnerability reporting is limited to public non-fork repositories."
+            "Private vulnerability reporting is limited to public repositories."
         )
     alerts_precondition = dependabot_alerts_precondition(client, owner, repo, args)
     private_security_feature_eligibility = "not-required"
@@ -171,15 +177,38 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             else "confirmation-required"
         )
 
+    if alerts_precondition == "verified-enabled":
+        dependabot_alerts_precondition(client, owner, repo, args)
+        revalidate_repository_state(
+            client,
+            args.repository,
+            repository,
+            (
+                "archived",
+                "disabled",
+                "permissions.admin",
+                "fork",
+                "visibility",
+                "owner.id",
+                "owner.type",
+                "security_and_analysis.dependabot_security_updates.status",
+                "security_and_analysis.secret_scanning.status",
+                "security_and_analysis.secret_scanning_push_protection.status",
+            ),
+        )
+
     return {
         "inspection_complete": True,
         "decision": (
-            "confirm-private-secret-protection-eligibility"
+            "bind-repository-identity-before-mutation"
+            if getattr(args, "expected_repository_id", None) is None
+            else "confirm-private-secret-protection-eligibility"
             if private_security_feature_eligibility == "confirmation-required"
             else "may-configure-security-features"
         ),
         "requested_features": requested,
         "repository": args.repository,
+        "repository_id": repository_id,
         "administration_permission": True,
         "visibility": visibility,
         "is_fork": is_fork,
@@ -187,13 +216,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "security_and_analysis": statuses,
         "dependabot_alerts_precondition": alerts_precondition,
         "private_security_feature_eligibility": private_security_feature_eligibility,
-        "github_api_requests": client.request_count,
+        **request_metrics(client.request_count),
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--hostname", default="github.com")
     for feature in SECURITY_FEATURES:
         parser.add_argument(

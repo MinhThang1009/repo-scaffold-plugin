@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, unquote_plus, urlsplit
 
 import yaml
 from markdown_it import MarkdownIt
@@ -170,8 +170,33 @@ FRESHNESS_REMINDER_API_ENDPOINT = (
     "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+"
     "%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"
 )
-FRESHNESS_REMINDER_API_JQ = '[.items[].number] | join(" ")'
-FRESHNESS_REMINDER_API_JQ_LEGACY = ".items[].number"
+MANAGED_REMINDER_SEARCH_MARKERS = (
+    "<!-- repo-scaffold-freshness-audit -->",
+    "<!-- repo-scaffold-community-health-drift -->",
+    "<!-- repo-scaffold-official-docs-audit -->",
+    "<!-- repo-scaffold-ci-policy-drift -->",
+)
+FRESHNESS_REMINDER_API_JQ_GUARD = (
+    'if type == "object" and .incomplete_results == false '
+    'and (.total_count | type) == "number" and .total_count >= 0 '
+    'and .total_count == (.total_count | floor) and (.items | type) == "array" '
+    "and (.items | length) == ([.total_count, 2] | min) "
+    'and all(.items[]; type == "object" and (.number | type) == "number" '
+    "and .number > 0 and .number == (.number | floor)) "
+    "and ([.items[].number] | unique | length) == (.items | length) "
+)
+FRESHNESS_REMINDER_API_JQ = (
+    FRESHNESS_REMINDER_API_JQ_GUARD
+    + 'then if (.items | length) == 0 then "none" '
+    + 'else [.items[].number] | join(" ") end '
+    + 'else error("Incomplete or invalid issue search response") end'
+)
+FRESHNESS_REMINDER_API_JQ_LEGACY = (
+    FRESHNESS_REMINDER_API_JQ_GUARD
+    + 'then if (.items | length) == 0 then "none" '
+    + "else .items[].number end "
+    + 'else error("Incomplete or invalid issue search response") end'
+)
 FRESHNESS_REMINDER_API_JQ_VALUES = frozenset(
     {FRESHNESS_REMINDER_API_JQ, FRESHNESS_REMINDER_API_JQ_LEGACY}
 )
@@ -239,7 +264,36 @@ FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
 }
 TRUSTED_DEFAULT_BRANCH_REF = "${{ github.event.repository.default_branch }}"
 FRESHNESS_TITLE_ASSIGNMENT = "title=Repository freshness update required"
+FRESHNESS_VI_TITLE_ASSIGNMENT = "title=Cần cập nhật các đầu vào bảo trì repository"
+# Normalize only reviewed display tokens, never shell syntax or protocol values.
+FRESHNESS_LOCALIZED_PRINT_TEXT = {
+    "# Báo cáo freshness của repository": "# Repository freshness report",
+    "Checker đã lỗi trước khi tạo báo cáo. Hãy kiểm tra workflow run này.": (
+        "The checker failed before it could produce a report. Inspect this workflow run."
+    ),
+    "Có nhiều issue nhắc bảo trì freshness đang mở.\\n": (
+        "Found multiple open freshness reminder issues.\\n"
+    ),
+    "Checker freshness trả về exit status không hợp lệ: %s\\n": (
+        "Freshness checker returned an unexpected exit status: %s\\n"
+    ),
+    "Checker freshness chưa xác định được kết quả; không thay đổi issue nhắc bảo trì.\\n": (
+        "Freshness checker was indeterminate; no reminder issue was changed.\\n"
+    ),
+}
 FRESHNESS_ISSUE_NUMBERS_INITIALIZATION = "issue_numbers="
+FRESHNESS_EMPTY_SEARCH_GUARD = (
+    'if [[ -z "$issue_numbers_output" ]]; then',
+    "printf 'Issue search returned no verified result.\\n' >&2",
+    "exit 1",
+    "fi",
+)
+FRESHNESS_EMPTY_SEARCH_PRINTF = (
+    "printf",
+    "Issue search returned no verified result.\\n",
+    ">&",
+    "2",
+)
 FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS = (
     ("mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"),
     ("read", "-r", "-a", "issue_numbers", "<<<", "$issue_numbers_output"),
@@ -307,12 +361,14 @@ FRESHNESS_ALLOWED_PRINTF_COMMANDS = frozenset(
             "2",
         ),
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
+        FRESHNESS_EMPTY_SEARCH_PRINTF,
     }
 )
 FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
     {
         f'if [[ ! -f "{FRESHNESS_AUDIT_MARKDOWN_OUTPUT}" ]]; then',
-        'if [[ -n "$issue_numbers_output" ]]; then',
+        "if [[ \"$issue_numbers_output\" != 'none' ]]; then",
+        FRESHNESS_EMPTY_SEARCH_GUARD[0],
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
         FRESHNESS_INDETERMINATE_GUARD,
@@ -511,7 +567,8 @@ SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
     r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
-    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$",
+    re.ASCII,
 )
 RELEASE_PLEASE_ENGLISH_TEXT = {
     "pull-request-title-pattern": "chore${scope}: release${component} ${version}",
@@ -739,6 +796,13 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
         Path("skills/repo-scaffold/assets/requirements-docs.txt"),
         "assets/requirements-docs.txt",
         Path("requirements-docs.txt"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/assets/markdownlint-cli2.jsonc"),
+        "assets/markdownlint-cli2.jsonc",
+        Path(".markdownlint-cli2.jsonc"),
         False,
     ),
     (
@@ -1737,6 +1801,7 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     if any(line not in FRESHNESS_ALLOWED_SHELL_IF_LINES for line in if_lines):
         return False
     required_if_lines = (
+        FRESHNESS_EMPTY_SEARCH_GUARD[0],
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
         FRESHNESS_INDETERMINATE_GUARD,
@@ -1745,9 +1810,25 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     )
     if any(if_lines.count(line) != 1 for line in required_if_lines):
         return False
+    if (
+        sum(
+            tuple(lines[index : index + len(FRESHNESS_EMPTY_SEARCH_GUARD)])
+            == FRESHNESS_EMPTY_SEARCH_GUARD
+            for index in range(len(lines) - len(FRESHNESS_EMPTY_SEARCH_GUARD) + 1)
+        )
+        != 1
+    ):
+        return False
     duplicate_guard_count = sum(
         tuple(lines[index : index + len(FRESHNESS_DUPLICATE_ISSUE_GUARD)])
-        == FRESHNESS_DUPLICATE_ISSUE_GUARD
+        in (
+            FRESHNESS_DUPLICATE_ISSUE_GUARD,
+            (
+                FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
+                "printf 'Có nhiều issue nhắc bảo trì freshness đang mở.\\n' >&2",
+                *FRESHNESS_DUPLICATE_ISSUE_GUARD[2:],
+            ),
+        )
         for index in range(len(lines) - len(FRESHNESS_DUPLICATE_ISSUE_GUARD) + 1)
     )
     if duplicate_guard_count != 1:
@@ -1764,7 +1845,7 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     nonempty_indices = [
         index
         for index, line in enumerate(if_lines)
-        if line == 'if [[ -n "$issue_numbers_output" ]]; then'
+        if line == "if [[ \"$issue_numbers_output\" != 'none' ]]; then"
     ]
     if len(nonempty_indices) > 1 or any(
         index >= clean_index for index in nonempty_indices
@@ -2089,7 +2170,7 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
     if segments is None:
         return False
     printf_commands = [
-        tuple(command)
+        tuple(FRESHNESS_LOCALIZED_PRINT_TEXT.get(token, token) for token in command)
         for segment in segments
         if (command := shell_command_prefix(segment)) and command[0] == "printf"
     ]
@@ -2106,12 +2187,16 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         return False
     reconciliation_start = reconciliation_start_indices[0]
     reconciliation_printf_commands = [
-        tuple(shell_command_prefix(segment))
+        tuple(
+            FRESHNESS_LOCALIZED_PRINT_TEXT.get(token, token)
+            for token in shell_command_prefix(segment)
+        )
         for index, segment in enumerate(segments)
         if index >= reconciliation_start
         and (shell_command_prefix(segment) or [""])[0] == "printf"
     ]
     if reconciliation_printf_commands != [
+        FRESHNESS_EMPTY_SEARCH_PRINTF,
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
         (
             "printf",
@@ -2147,7 +2232,10 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         for token in shell_command_prefix(segment)
         if freshness_variable_reference(token, "title")
     ]
-    if title_assignments and title_assignments != [[FRESHNESS_TITLE_ASSIGNMENT]]:
+    if title_assignments and title_assignments not in (
+        [[FRESHNESS_TITLE_ASSIGNMENT]],
+        [[FRESHNESS_VI_TITLE_ASSIGNMENT]],
+    ):
         return False
     if title_references and not title_assignments:
         return False
@@ -2214,11 +2302,12 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         and len(close_mutations) == 1
         and len(edit_mutations) == 1
         and len(create_mutations) == 1
-        # One failure exit guards duplicate issues, one rejects an unexpected
+        # One failure exit rejects missing search evidence, one guards duplicate
+        # issues, one rejects an unexpected
         # checker status, one rejects indeterminate status, and one propagates
         # stale status.
         and len(indeterminate_tests) == 1
-        and len(failure_exits) == 4
+        and len(failure_exits) == 5
     ):
         return False
     issue_numbers_initialization_indices = [
@@ -2738,6 +2827,87 @@ def reminder_issue_mutation_blocks(
     return commands
 
 
+def managed_issue_search_projections_are_safe(command: str) -> bool:
+    """Reject incomplete-result projections for repo-scaffold reminder lookups."""
+    managed_context = any(
+        marker in command for marker in MANAGED_REMINDER_SEARCH_MARKERS
+    )
+    segments: list[list[str]] = []
+    parsed = shell_command_segments(command)
+    if parsed is None:
+        return False
+    segments.extend(parsed)
+    for segment in segments:
+        tokens = shell_command_prefix(segment)
+        for index in range(len(tokens) - 1):
+            if not (
+                is_github_cli_executable(tokens[index]) and tokens[index + 1] == "api"
+            ):
+                continue
+            arguments = tokens[index + 2 :]
+            if any(
+                token.startswith("search/issues?")
+                and (
+                    managed_context
+                    or any(
+                        marker in unquote_plus(token)
+                        for marker in MANAGED_REMINDER_SEARCH_MARKERS
+                    )
+                )
+                for token in arguments
+            ) and option_values(arguments, "--jq") not in (
+                (FRESHNESS_REMINDER_API_JQ,),
+                (FRESHNESS_REMINDER_API_JQ_LEGACY,),
+            ):
+                return False
+    lines = [
+        line.strip()
+        for line in command.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    mutations = [
+        index
+        for index, line in enumerate(lines)
+        if re.match(r"^gh issue (?:create|edit|close)(?:\s|$)", line)
+    ]
+    if mutations and any(
+        marker in unquote_plus(command) for marker in MANAGED_REMINDER_SEARCH_MARKERS
+    ):
+        lookups = [
+            index
+            for index, line in enumerate(lines)
+            if line == "issue_numbers_output=$("
+        ]
+        if len(lookups) != 1:
+            return False
+        preparation = [
+            index for index in range(lookups[0]) if lines[index] == "set -euo pipefail"
+        ]
+        if not preparation or any(
+            not line.startswith(("marker=", "title="))
+            and line != 'grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"'
+            for line in lines[preparation[-1] + 1 : lookups[0]]
+        ):
+            return False
+        closing = [
+            index for index in range(lookups[0] + 1, len(lines)) if lines[index] == ")"
+        ]
+        if not closing:
+            return False
+        receipt = (
+            ")",
+            *FRESHNESS_EMPTY_SEARCH_GUARD,
+            "issue_numbers=()",
+            "if [[ \"$issue_numbers_output\" != 'none' ]]; then",
+        )
+        start = closing[0]
+        if tuple(lines[start : start + len(receipt)]) != receipt or start + len(
+            receipt
+        ) > min(mutations):
+            return False
+    return True
+
+
 def has_repo_bound_issue_reconciliation(
     text: str,
     expected_body_files: set[str] | None = None,
@@ -2745,7 +2915,7 @@ def has_repo_bound_issue_reconciliation(
 ) -> bool:
     """Require every reminder issue mutation to bind its repository."""
     commands = reminder_issue_mutation_blocks(text)
-    if commands is None:
+    if commands is None or not managed_issue_search_projections_are_safe(text):
         return False
     body_commands = [
         (subcommand, tokens)
@@ -3253,6 +3423,7 @@ def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
             return None
         repository_root = values["--repository-root"]
         tracker_registry = option_values(tokens, "--tracker-registry")
+        language = option_values(tokens, "--language")
         if (
             repository_root is None
             or repository_root[0] != FRESHNESS_AUDIT_REPOSITORY_ROOT
@@ -3260,6 +3431,10 @@ def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
             or len(tracker_registry) > 1
             or tracker_registry
             and tracker_registry[0] != FRESHNESS_AUDIT_TRACKER_REGISTRY
+            or language is None
+            or len(language) > 1
+            or language
+            and language[0] not in {"en", "vi"}
         ):
             return None
         expected_argument_count = 2
@@ -3272,6 +3447,10 @@ def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
                 1
                 if any(token.startswith("--tracker-registry=") for token in tokens)
                 else 2
+            )
+        if language:
+            expected_argument_count += (
+                1 if any(token.startswith("--language=") for token in tokens) else 2
             )
         if len(tokens) != expected_argument_count:
             return None
@@ -4314,6 +4493,33 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
             "skills/repo-scaffold/assets/workflows/documentation.yml: "
             "docs-contract must consume the rolling policy runtime"
         )
+    docs_guard = docs_steps[0] if isinstance(docs_steps, list) and docs_steps else None
+    expected_docs_guard = {
+        "name": "Require verified documentation policy",
+        "if": "${{ always() }}",
+        "env": {
+            "PREPARE_DOCS_RESULT": "${{ needs.prepare_docs.result }}",
+            "DOCUMENTATION_PYTHON": "${{ needs.prepare_docs.outputs.documentation_python }}",
+        },
+        "shell": "bash",
+        "run": (
+            "if [[ \"$PREPARE_DOCS_RESULT\" != 'success' || "
+            '! "$DOCUMENTATION_PYTHON" =~ ^3\\.(x|0|[1-9][0-9]*)$ ]]; then\n'
+            "  printf 'Required documentation policy preparation or runtime output is invalid.\\n' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+        ),
+    }
+    if (
+        not isinstance(docs_contract, dict)
+        or docs_contract.get("if") != "${{ always() }}"
+        or docs_contract.get("continue-on-error") not in (None, "false")
+        or docs_guard != expected_docs_guard
+    ):
+        problems.append(
+            "skills/repo-scaffold/assets/workflows/documentation.yml: "
+            "docs-contract must fail closed on policy preparation and runtime output"
+        )
 
     workflow_reference_path = (
         repository_root
@@ -5168,18 +5374,28 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "-r requirements-dev.in"
     )
     for line in direct_lines[1:] if direct_shape_valid else direct_lines:
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;\\]+)", line)
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;\\]+)(?:;\s*(.+))?", line)
         if match is None:
             direct_shape_valid = False
             continue
         name = normalize_package_name(match.group(1))
+        marker = match.group(3)
+        if name == "pyyaml-ft":
+            if marker not in {"python_version == '3.13'", 'python_version == "3.13"'}:
+                direct_shape_valid = False
+        elif marker is not None:
+            direct_shape_valid = False
         if name in mutation_direct_pins:
             direct_shape_valid = False
         mutation_direct_pins[name] = match.group(2)
-    if not direct_shape_valid or set(mutation_direct_pins) != {"mutmut", "toml"}:
+    if not direct_shape_valid or set(mutation_direct_pins) != {
+        "mutmut",
+        "pyyaml-ft",
+        "toml",
+    }:
         problems.append(
             "requirements-mutation.in: must extend requirements-dev.in and use "
-            "exact pins for only mutmut and the Python 3.10 toml dependency"
+            "exact pins for mutmut, toml, and the Python 3.13-only pyyaml-ft provider"
         )
 
     lock_text = texts["requirements-mutation.txt"]
@@ -5193,9 +5409,9 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         problems.append(
             "requirements-mutation.txt: must be generated in portable hash mode"
         )
-    for package in ("mutmut", "toml"):
+    for package in ("mutmut", "pyyaml-ft", "toml"):
         entry = re.search(
-            rf"(?ms)^{package}==([^\s;\\]+)\s+\\$(.*?)(?=^[A-Za-z0-9_.-]+==|\Z)",
+            rf"(?ms)^{package}==([^\s;\\]+)(?:[ \t]*;[ \t]*([^\n\\]+))?\s+\\$(.*?)(?=^[A-Za-z0-9_.-]+==|\Z)",
             lock_text,
         )
         if (
@@ -5213,6 +5429,20 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 f"requirements-mutation.txt: {package} pin {entry.group(1)} does not "
                 f"match requirements-mutation.in pin {mutation_direct_pins[package]}"
             )
+        if entry is not None:
+            marker = entry.group(2)
+            if package == "pyyaml-ft":
+                if marker is None or marker.strip() not in {
+                    "python_version == '3.13'",
+                    'python_version == "3.13"',
+                }:
+                    problems.append(
+                        "requirements-mutation.txt: pyyaml-ft must apply only to Python 3.13"
+                    )
+            elif marker is not None:
+                problems.append(
+                    f"requirements-mutation.txt: {package} must remain unconditional"
+                )
 
     validator_relative = "scripts/validate_mutation_results.py"
     try:
@@ -7745,11 +7975,13 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
     expected_environment = {
         "GH_TOKEN": "${{ github.token }}",
         "REPOSITORY": "${{ github.repository }}",
+        "REPOSITORY_ID": "${{ github.repository_id }}",
         "PR_NUMBER": "${{ github.event.pull_request.number }}",
         "PR_TITLE": "${{ github.event.pull_request.title }}",
         "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
         "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
         "PR_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
+        "PR_HEAD_REPOSITORY_ID": "${{ github.event.pull_request.head.repo.id }}",
     }
     if (
         not isinstance(update, dict)
@@ -7816,9 +8048,23 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
     if (
         run.count("expected_payload_path = Path(sys.argv[7])") != 2
         or run.count('for field in ("commits", "changed_files")') != 2
+        or run.count("type(value) is not int") != 2
+        or run.count("type(expected_value) is not int") != 2
     ):
         problems.append(
             f"{relative}: body-sync must revalidate the commit and file inventory before and after the mutation"
+        )
+    if (
+        run.count('payload["number"] != expected_ids["PR_NUMBER"]') != 3
+        or run.count('base_repository["id"] != expected_ids["REPOSITORY_ID"]') != 3
+        or run.count('head_repository["id"] != expected_ids["PR_HEAD_REPOSITORY_ID"]')
+        != 3
+        or run.count('base_repository.get("archived") is not False') != 3
+        or run.count('base_repository.get("disabled") is not False') != 3
+        or run.count("object_pairs_hook=unique_object") != 7
+    ):
+        problems.append(
+            f"{relative}: body-sync must reject ambiguous, inactive, or unbound numeric PR/repository evidence at every boundary"
         )
     if (
         run.count("if body != original:") != 1
@@ -8010,6 +8256,7 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
         repository_root / "skills" / "repo-scaffold" / "assets" / "ISSUE_TEMPLATE",
     )
     for template_root in template_roots:
+        template_names: set[str] = set()
         for path in sorted(template_root.glob("*.md")):
             relative = path.relative_to(repository_root)
             try:
@@ -8026,6 +8273,12 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
             name = front_matter.get("name")
             if isinstance(name, str) and len(name.strip()) <= 3:
                 problems.append(f"{relative}: name must be more than 3 characters")
+            if isinstance(name, str):
+                if name in template_names:
+                    problems.append(
+                        f"{relative}: name must be unique among issue templates"
+                    )
+                template_names.add(name)
             if not template_body.strip():
                 problems.append(f"{relative}: template body must be nonempty")
 
@@ -8064,6 +8317,12 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
             name = document.get("name")
             if isinstance(name, str) and len(name.strip()) <= 3:
                 problems.append(f"{relative}: name must be more than 3 characters")
+            if isinstance(name, str):
+                if name in template_names:
+                    problems.append(
+                        f"{relative}: name must be unique among issue templates"
+                    )
+                template_names.add(name)
             form_body = document.get("body")
             if not isinstance(form_body, list) or not form_body:
                 problems.append(f"{relative}: body must be a nonempty list")
@@ -9090,6 +9349,8 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/assets/dependabot.yml",
                 },
                 "github-dependabot-auto-merge": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
                 },
                 "github-dependency-review": {
@@ -9099,7 +9360,9 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 },
                 "github-dependency-graph-sbom-api": {
+                    "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
                     "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 },
                 "github-actions-permissions-api": {
@@ -9624,7 +9887,8 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             or not isinstance(jobs, dict)
             or set(jobs) != {"code_scanning_gate"}
             or not isinstance(gate, dict)
-            or gate.get("name") != "code-scanning-gate"
+            or gate.get("name")
+            != "${{ github.event_name == 'pull_request_target' && github.event.pull_request.state == 'closed' && 'code-scanning-gate-closed-pr' || 'code-scanning-gate' }}"
             or "if" in gate
             or gate.get("timeout-minutes") != "25"
         ):
@@ -9650,12 +9914,23 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
                 "GITHUB_TOKEN": "${{ github.token }}",
                 "EVENT_NAME": "${{ github.event_name }}",
                 "PR_NUMBER": "${{ github.event.pull_request.number }}",
+                "PR_STATE": "${{ github.event.pull_request.state }}",
                 "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
                 "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
                 "MERGE_GROUP_REF": "${{ github.ref }}",
                 "MERGE_GROUP_SHA": "${{ github.sha }}",
             }
             or "scripts/check_code_scanning_alerts.py" not in run_text
+            or not run_text.startswith(
+                "# A closed PR has no merge admission to gate and may have no queryable ref.\n"
+                "if [[ \"$EVENT_NAME\" == 'pull_request_target' ]]; then\n"
+                '  case "$PR_STATE" in\n'
+                '    closed) echo "Code scanning gate is not applicable to a closed pull request."; exit 0 ;;\n'
+                "    open) ;;\n"
+                '    *) echo "::error::Pull request state must be open or closed."; exit 1 ;;\n'
+                "  esac\n"
+                "fi\n"
+            )
             or "if [[ \"$EVENT_NAME\" == 'pull_request_target' ]]; then" not in run_text
             or "elif [[ \"$EVENT_NAME\" == 'merge_group' ]]; then" not in run_text
             or "Unsupported event for the code-scanning gate." not in run_text

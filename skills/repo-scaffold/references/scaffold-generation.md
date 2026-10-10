@@ -8,6 +8,21 @@ canonical legal text, and write `.gitignore` as UTF-8 without a BOM. Obtain the
 latest stable Contributor Covenant from its official immutable release-branch
 commit. Use an official Vietnamese source only when it exists for that exact
 version; otherwise retain canonical English and report the gap.
+The upstream discovery receipt must come from a complete, unambiguous tree
+with at most 100,000 entries and a regular policy blob at the selected path.
+Record its commit and blob SHA; directories, symlinks, duplicate paths and
+missing object identities are inconclusive. Version components are bounded to
+32 digits before integer conversion. A version/current result checks freshness,
+not canonical-body completeness, enforcement approval or license compliance;
+review those separately before installing the policy.
+The canonical source may include website front matter. Parse and remove only
+that metadata envelope; verify its version against the selected immutable
+receipt and retain the policy body and attribution. Resolve only upstream
+reporting/enforcement implementation notes using confirmed project choices.
+Do not publish website metadata, copy unresolved notes, invent an enforcement
+commitment or translate canonical legal text unofficially. The MIT license API's
+implementation instructions designate `[year]` and `[fullname]`; other licenses
+need their own reviewed implementation instructions, not MIT's token rules.
 
 Copy assets and bundled scripts from this skill byte-for-byte where applicable.
 Every installed workflow that requires a bundled script, including an imported
@@ -26,6 +41,7 @@ destination:
 | `assets/workflows/documentation.yml` | `../scripts/validate_scaffold.py` | `scripts/validate_scaffold.py` |
 | `assets/workflows/documentation.yml` | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |
 | `assets/workflows/documentation.yml` | `assets/requirements-docs.txt` | `requirements-docs.txt` |
+| `assets/workflows/documentation.yml` | `assets/markdownlint-cli2.jsonc` | `.markdownlint-cli2.jsonc` |
 | `assets/workflows/freshness.yml` | `../scripts/audit_freshness.py` | `scripts/audit_freshness.py` |
 | `assets/workflows/freshness.yml` | `../scripts/markdown_body_preflight.py` | `scripts/markdown_body_preflight.py` |
 | `assets/workflows/freshness.yml` | `assets/freshness-trackers.json` | `.github/freshness-trackers.json` |
@@ -49,6 +65,16 @@ the companion files in the table, and verify the installed files. Record each
 optional asset as installed, not applicable, or explicitly deferred; never
 silently omit an applicable workflow or leave the generic CI sentinel in the
 finished project.
+
+Documentation installation includes the reviewed Markdownlint companion at
+`.markdownlint-cli2.jsonc`. It keeps the default lint rules, permits the known
+centered-header HTML elements, semantic line wrapping, plain contact links and
+non-H1 template/import entry points. Do not replace an existing project lint
+policy without approval: inspect its effective configuration and adapt output
+or request a reviewed policy change. Missing/uncopied policy is a verification
+gap, not permission to disable lint. Remove whole lines for omitted optional
+markers and redundant trailing blank lines in generated Markdown; do not alter
+literal code examples or existing project-authored content while doing so.
 
 The `pr-body-sync.yml` asset is the opt-in PR metadata workflow. Install it
 with `scripts/render_pr_body_evidence.py`, `scripts/markdown_body_preflight.py`,
@@ -99,6 +125,37 @@ and existing documentation may inform the recommendation but may not replace thi
 confirmation. Never leave an English/Vietnamese hybrid, and do not infer English
 from identifiers or technical literals.
 
+For the freshness workflow, keep the English asset for `en`. For `vi`, render
+the same canonical `.github/workflows/freshness.yml` using YAML data, add exactly
+one `--language vi` argument to the audit invocation, and use the reviewed
+display strings below in their corresponding literal title, comment, fallback,
+and `printf` values. The checker localizes report headings and prose; its JSON
+schema, finding/status values, technical diagnostic text, exit codes, marker,
+paths, shell syntax, `%s` placeholders, and `\n` escapes remain unchanged.
+Do not translate the stable `freshness-audit` job name or any GitHub context.
+The optional language argument accepts only `en` or `vi`; omitting it preserves
+the English report contract. No language argument may override a path, token,
+tracker, or checker-status binding.
+The standalone freshness CLI configures its standard text stdout as UTF-8 so
+localized output cannot change an indeterminate exit code on Windows pipes.
+Library calls preserve caller-supplied text streams.
+
+| English display text | Vietnamese display text |
+| --- | --- |
+| `Repository freshness` | `Freshness của repository` |
+| `Checkout` | `Checkout repository` |
+| `Set up Python` | `Thiết lập Python` |
+| `Audit versioned maintenance inputs` | `Kiểm tra các đầu vào bảo trì theo phiên bản` |
+| `Add report to job summary` | `Thêm báo cáo vào job summary` |
+| `Reconcile reminder issue` | `Đồng bộ issue nhắc bảo trì` |
+| `# Repository freshness report` | `# Báo cáo freshness của repository` |
+| `The checker failed before it could produce a report. Inspect this workflow run.` | `Checker đã lỗi trước khi tạo báo cáo. Hãy kiểm tra workflow run này.` |
+| `Repository freshness update required` | `Cần cập nhật các đầu vào bảo trì repository` |
+| `Found multiple open freshness reminder issues.` | `Có nhiều issue nhắc bảo trì freshness đang mở.` |
+| `Freshness checker returned an unexpected exit status: %s` | `Checker freshness trả về exit status không hợp lệ: %s` |
+| `Freshness checker was indeterminate; no reminder issue was changed.` | `Checker freshness chưa xác định được kết quả; không thay đổi issue nhắc bảo trì.` |
+| `The scheduled freshness audit is clean, so this reminder is closing automatically.` | `Kiểm tra freshness định kỳ không phát hiện đầu vào lỗi thời, nên tự động đóng issue nhắc bảo trì này.` |
+
 The Vietnamese mappings are:
 
 - `AGENTS.vi.md` → `AGENTS.md`
@@ -132,6 +189,28 @@ rendered output for those markers. Do not use a generic double-brace scan:
 project documentation may legitimately contain template expressions. Parse every
 rendered YAML/JSON file, construct YAML data with a serializer instead of string
 concatenation, and escape Markdown display text or URL components at their sink.
+
+Validate rendered Issue Forms as typed YAML data, not scalar text that conflates
+quoted strings with Boolean or integer values. GitHub permits an omitted input
+`id`; when one is supplied, retain its valid unique identifier. Require distinct
+dropdown choices, typed `multiple` and a valid integer `default` index; a default
+cannot accompany `None` or `n/a` choices. Text `min_length` is a non-negative
+integer, checkbox/validation `required` is Boolean, and upload `accept` is a
+comma-separated extension string. Missing required top-level fields produce
+diagnostics rather than exceptions; unknown per-type attributes/validations,
+duplicate keys, malformed values and unsafe paths must reject. This local
+schema check does not prove label existence, submission rights, GitHub feature
+availability or remote rendering; those retain separate applicability checks.
+Form names must have more than three characters to appear in GitHub's chooser
+and must be unique among the YAML and Markdown issue templates in the same
+directory. An existing template's name is part of that comparison; do not
+overwrite it or silently rename project-authored content to obtain a pass.
+Optional top-level `title` must remain a string; `labels`, `assignees` and
+`projects` accept string arrays or comma-delimited strings without coercion.
+Preserve omitted fields and valid empty selections rather than fabricating
+defaults. A schema pass does not prove that assigned labels/accounts/projects
+exist, that an organization-defined issue type is available, or that the
+submitter has project write permission.
 
 Encode values for their destination instead of doing blind text replacement. Use
 `{{REPO_SCAFFOLD_DEFAULT_BRANCH_GLOB_JSON_ESCAPED}}` only in workflow branch

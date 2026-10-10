@@ -14,6 +14,8 @@ from markdown_body_preflight import (
     MAX_BODY_FILE_BYTES as MAX_BODY_FILE_BYTES,
     hard_wrapped_prose_lines as _shared_hard_wrapped_prose_lines,
     read_body_file as _shared_read_body_file,
+    split_gfm_lines,
+    strip_html_comments,
 )
 
 MAX_TEMPLATE_DIRECTORY_ENTRIES = 128
@@ -215,6 +217,91 @@ def template_path(repository_root: Path, template: str) -> Path:
     return path
 
 
+def _visible_structure(markdown: str) -> str:
+    """Keep visible Markdown and standalone protocol comments for structure checks."""
+    opaque: set[int] = set()
+    _shared_hard_wrapped_prose_lines(
+        markdown, non_prose_line_numbers=opaque, html_block_line_indexes=set()
+    )
+    visible: list[str] = []
+    comment_open = False
+    protocol = re.compile(
+        r"^<!-- repo-scaffold:(?:pr-template=[a-z][a-z0-9-]*|"
+        r"required-checklist:(?:start|end)|optional-checklist:(?:start|end)) -->$"
+    )
+    for number, line in enumerate(split_gfm_lines(markdown), start=1):
+        if number in opaque:
+            visible.append("")
+        elif not comment_open and protocol.fullmatch(line):
+            visible.append(line)
+        else:
+            line, comment_open, _spans = strip_html_comments(line, comment_open)
+            visible.append(line)
+    return "\n".join(visible)
+
+
+def validate_body_structure(
+    repository_root: Path,
+    title: str,
+    body: str,
+    *,
+    requested_template: str | None = None,
+) -> None:
+    """Require the selected trusted template's structure, allowing draft checkboxes."""
+    if not isinstance(body, str):
+        raise ValueError("body must be text")
+    if (
+        len(body) > MAX_BODY_FILE_BYTES
+        or len(body.encode("utf-8")) > MAX_BODY_FILE_BYTES
+    ):
+        raise ValueError(f"body exceeds the {MAX_BODY_FILE_BYTES}-byte safety cap")
+    visible = _visible_structure(body)
+    markers = TEMPLATE_MARKER_PATTERN.findall(visible)
+    if len(markers) != 1:
+        raise ValueError("body must select exactly one trusted template marker")
+    selected = select_template(title, markers[0])
+    if requested_template is not None and selected != select_template(
+        title, requested_template
+    ):
+        raise ValueError("body marker does not match the selected template")
+    template = _visible_structure(
+        read_body_file(template_path(repository_root, selected))
+    )
+    optional = re.compile(
+        r"(?ms)^##[ \t]+(?:If applicable|Khi phù hợp|Danh sách tùy chọn)[ \t]*$\s*"
+        r"<!-- repo-scaffold:optional-checklist:start -->.*?"
+        r"<!-- repo-scaffold:optional-checklist:end -->\s*"
+    )
+    headings = re.compile(r"(?m)^##[ \t]+(.+?)[ \t]*$")
+    checklist = re.compile(
+        r"<!-- repo-scaffold:required-checklist:start -->\s*(.*?)\s*"
+        r"<!-- repo-scaffold:required-checklist:end -->",
+        re.DOTALL,
+    )
+    items = re.compile(r"(?m)^- \[[ xX]\] (.+?)\s*$")
+    required_headings = set(headings.findall(optional.sub("", template)))
+    template_lists = checklist.findall(template)
+    body_lists = checklist.findall(visible)
+    if (
+        not required_headings
+        or len(template_lists) != 1
+        or not items.findall(template_lists[0])
+    ):
+        raise ValueError("trusted template has incomplete required structure")
+    if (
+        len(body_lists) != 1
+        or visible.splitlines().count("<!-- repo-scaffold:required-checklist:start -->")
+        != 1
+        or visible.splitlines().count("<!-- repo-scaffold:required-checklist:end -->")
+        != 1
+    ):
+        raise ValueError("body must contain exactly one required checklist section")
+    if not required_headings <= set(headings.findall(visible)):
+        raise ValueError("body is missing required template headings")
+    if not set(items.findall(template_lists[0])) <= set(items.findall(body_lists[0])):
+        raise ValueError("body is missing required template checklist items")
+
+
 def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
     """Return line numbers where ordinary Markdown prose is hard-wrapped."""
     return _shared_hard_wrapped_prose_lines(markdown)
@@ -247,6 +334,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="UTF-8 pull-request body to reject when prose is hard-wrapped",
     )
+    parser.add_argument(
+        "--require-structure",
+        action="store_true",
+        help="Require the supplied body to preserve the selected template structure",
+    )
     return parser.parse_args(argv)
 
 
@@ -257,14 +349,22 @@ def main(argv: list[str] | None = None) -> int:
         template = select_template(arguments.title, arguments.template)
         path = template_path(arguments.repository_root, template)
         if arguments.body_file is not None:
-            wrapped_lines = hard_wrapped_prose_lines(
-                read_body_file(arguments.body_file)
-            )
+            body = read_body_file(arguments.body_file)
+            wrapped_lines = hard_wrapped_prose_lines(body)
             if wrapped_lines:
                 lines = ", ".join(str(line) for line in wrapped_lines)
                 raise ValueError(
                     f"body file contains hard-wrapped prose at line(s): {lines}"
                 )
+            if arguments.require_structure:
+                validate_body_structure(
+                    arguments.repository_root,
+                    arguments.title,
+                    body,
+                    requested_template=template,
+                )
+        elif arguments.require_structure:
+            raise ValueError("--require-structure needs --body-file")
     except (OSError, UnicodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
+import json
+import os
 import re
 import runpy
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -63,6 +69,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "hostname": "github.com",
         "repository": "octo/example",
+        "expected_repository_id": 42,
         "default_branch": "main",
         "require_auto_merge_workflows": False,
         "confirm_disable_merge_methods": False,
@@ -74,6 +81,527 @@ def arguments(**overrides: object) -> argparse.Namespace:
 
 
 class MergeSettingsPreflightTests(unittest.TestCase):
+    def test_boolean_caller_controls_reject_substitutes_before_client_creation(
+        self,
+    ) -> None:
+        values: tuple[object, ...] = (None, "false", "true", 0, 1, [], {}, [True])
+        for control in (
+            "require_auto_merge_workflows",
+            "confirm_disable_merge_methods",
+        ):
+            for value in values:
+                with (
+                    self.subTest(control=control, value=value),
+                    mock.patch.object(
+                        merge_settings_preflight, "GitHubClient"
+                    ) as client,
+                    self.assertRaisesRegex(
+                        merge_settings_preflight.InspectionError, "Boolean"
+                    ),
+                ):
+                    merge_settings_preflight.run(arguments(**{control: value}))
+                client.assert_not_called()
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_auto_merge_asset_copy_guard_rejects_malformed_consent_and_eligibility(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        section = reference.split(
+            "Run the exact workflow-installation preflight for the selected asset first.",
+            1,
+        )[1]
+        block = re.search(r"```powershell\n(.*?)\n```", section, re.DOTALL)
+        assert block is not None
+        variants: tuple[tuple[object, object, int], ...] = (
+            (True, True, 1),
+            (False, True, 0),
+            (True, False, 0),
+            ("false", True, 0),
+            ([True], True, 0),
+            (True, "true", 0),
+            (True, 1, 0),
+            (None, True, 0),
+        )
+        for requested, eligible, calls in variants:
+            with (
+                self.subTest(requested=requested, eligible=eligible),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                fixture = root / "copy-consent.json"
+                fixture.write_text(
+                    json.dumps({"requested": requested, "eligible": eligible}),
+                    encoding="utf-8",
+                )
+                prefix = "$ErrorActionPreference='Stop'\n$packet=Get-Content -Raw -LiteralPath $env:FIXTURE | ConvertFrom-Json\n$installAutoMergeAssetsRequested=$packet.requested\n$installAutoMergeWorkflows=$packet.eligible\n$calls=0;$failure=$null\nfunction Get-ValidatedFreshMergePreflight { $script:calls++;return @{auto_merge_workflows_eligible=$true} }\ntry {\n"
+                suffix = "\n} catch {$failure=$_.Exception.Message}\n@{calls=$calls;failure=$failure} | ConvertTo-Json -Compress\n"
+                command = root / "copy.ps1"
+                command.write_bytes((prefix + block[1] + suffix).encode("utf-8-sig"))
+                result = subprocess.run(
+                    [
+                        str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-File",
+                        str(command),
+                    ],
+                    env={**os.environ, "FIXTURE": str(fixture)},
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                observed = json.loads(
+                    result.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                )
+                self.assertEqual(observed["calls"], calls, observed)
+                self.assertEqual(
+                    observed["failure"] is None,
+                    isinstance(requested, bool) and isinstance(eligible, bool),
+                    observed,
+                )
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_auto_merge_capability_and_asset_consent_are_not_truthiness(self) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        start = "if ($installAutoMergeAssetsRequested -isnot [bool] -or\n"
+        fragment = (
+            start
+            + reference.split(start, 1)[1].split(
+                "\nfunction Get-ValidatedFreshMergePreflight", 1
+            )[0]
+        )
+        variants: tuple[tuple[object, object, bool, bool], ...] = (
+            (True, True, True, False),
+            (True, False, False, False),
+            (False, True, False, False),
+            (False, False, False, False),
+            ("false", True, False, True),
+            (True, "false", False, True),
+            ([True], True, False, True),
+            (True, 1, False, True),
+            (None, True, False, True),
+        )
+        for requested, consent, enabled, error in variants:
+            with (
+                self.subTest(requested=requested, consent=consent),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                fixture = root / "consent.json"
+                fixture.write_text(
+                    json.dumps({"requested": requested, "consent": consent}),
+                    encoding="utf-8",
+                )
+                prefix = "$ErrorActionPreference='Stop'\n$packet=Get-Content -Raw -LiteralPath $env:FIXTURE | ConvertFrom-Json\n$installAutoMergeAssetsRequested=$packet.requested\n$autoMergeCapabilityEnableApproved=$packet.consent\n$finalMergePreflight=@{auto_merge_enabled=$false}\n$enableAutoMergeNow=$false\n$failure=$null\ntry {\n"
+                suffix = "\n} catch {$failure=$_.Exception.Message}\n@{enable=$enableAutoMergeNow;failure=$failure} | ConvertTo-Json -Compress\n"
+                command = root / "merge-consent.ps1"
+                command.write_bytes((prefix + fragment + suffix).encode("utf-8-sig"))
+                result = subprocess.run(
+                    [
+                        str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-File",
+                        str(command),
+                    ],
+                    env={**os.environ, "FIXTURE": str(fixture)},
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                observed = json.loads(
+                    result.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                )
+                self.assertEqual(observed["enable"], enabled, observed)
+                self.assertEqual(observed["failure"] is not None, error, observed)
+
+    def test_multi_read_merge_verdict_rejects_target_policy_and_classic_gate_drift(
+        self,
+    ) -> None:
+        for changed_endpoint, delta in (
+            (
+                "repos/octo/example/branches/main",
+                {
+                    "name": "main",
+                    "protected": True,
+                    "protection": {
+                        "required_status_checks": {"contexts": ["other-gate"]}
+                    },
+                },
+            ),
+            ("repos/octo/example", {"id": 43}),
+            ("repos/octo/example", {"archived": True}),
+            ("repos/octo/example", {"permissions": {"admin": False}}),
+            ("repos/octo/example", {"allow_auto_merge": False}),
+            ("repos/octo/example", {"allow_rebase_merge": True}),
+            (
+                "repos/octo/example/rules/branches/main?per_page=100",
+                [
+                    {
+                        "type": "pull_request",
+                        "parameters": {"allowed_merge_methods": ["merge"]},
+                    }
+                ],
+            ),
+            (
+                "repos/octo/example/branches/main",
+                {
+                    "name": "main",
+                    "protected": False,
+                    "protection": {"required_status_checks": {"contexts": []}},
+                },
+            ),
+        ):
+            self.configure(
+                rules=[],
+                branch={
+                    "name": "main",
+                    "protected": True,
+                    "protection": {
+                        "required_status_checks": {"contexts": ["ci-success"]}
+                    },
+                },
+            )
+
+            class ChangingClient(FakeClient):
+                def json(self, endpoint: str) -> object:
+                    value = super().json(endpoint)
+                    if (
+                        endpoint == "repos/octo/example/branches/main"
+                        and self.request_count == 3
+                    ):
+                        original = self.responses[changed_endpoint]
+                        self.responses[changed_endpoint] = (
+                            {**original, **delta}
+                            if isinstance(original, dict) and isinstance(delta, dict)
+                            else delta
+                        )
+                    return value
+
+            with (
+                self.subTest(endpoint=changed_endpoint, delta=delta),
+                mock.patch.object(
+                    merge_settings_preflight, "GitHubClient", ChangingClient
+                ),
+                self.assertRaises(merge_settings_preflight.InspectionError),
+            ):
+                merge_settings_preflight.run(
+                    arguments(require_auto_merge_workflows=True)
+                )
+
+    def test_unbound_identity_inspection_does_not_authorize_a_mutation(self) -> None:
+        self.configure(rules=[])
+        with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
+            result = merge_settings_preflight.run(
+                arguments(expected_repository_id=None)
+            )
+        self.assertEqual(result["decision"], "bind-repository-identity-before-mutation")
+        self.assertEqual(result["repository_id"], 42)
+
+    def test_repository_id_binds_repeated_inspection_to_the_selected_target(
+        self,
+    ) -> None:
+        self.configure(rules=[])
+        response = FakeClient.responses["repos/octo/example"]
+        assert isinstance(response, dict)
+        response["id"] = 42
+        args = arguments(expected_repository_id=42)
+        with mock.patch.object(merge_settings_preflight, "GitHubClient", FakeClient):
+            result = merge_settings_preflight.run(args)
+        self.assertEqual(result.get("repository_id"), 42)
+        for changed in (43, None, True, "42", 0, -1, 42.5):
+            with self.subTest(identity=changed):
+                response["id"] = changed
+                with (
+                    mock.patch.object(
+                        merge_settings_preflight, "GitHubClient", FakeClient
+                    ),
+                    self.assertRaisesRegex(
+                        merge_settings_preflight.InspectionError,
+                        "repository ID|repository identity",
+                    ),
+                ):
+                    merge_settings_preflight.run(args)
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_fresh_merge_verdict_is_typed_before_authorizing_next_mutation(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        function = (
+            "function Get-ValidatedFreshMergePreflight {"
+            + reference.split("function Get-ValidatedFreshMergePreflight {", 1)[
+                1
+            ].split("\n$mergeArguments =", 1)[0]
+        )
+        identity_helper = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert identity_helper is not None
+        schema = "\n$SELECTED_REPOSITORY_ID=42\n" + identity_helper[0] + "\n"
+        if "function Assert-MergePreflightSchema {" in reference:
+            schema += (
+                "function Assert-MergePreflightSchema {"
+                + reference.split("function Assert-MergePreflightSchema {", 1)[1].split(
+                    "\n$preflightOutput =", 1
+                )[0]
+            )
+        valid: dict[str, object] = {
+            "inspection_complete": True,
+            "decision": "may-configure-merge-settings",
+            "repository": "OWNER/REPO",
+            "repository_id": 42,
+            "default_branch": "main",
+            "administration_permission": True,
+            "auto_merge_enabled": True,
+            "auto_merge_workflows_eligible": True,
+            "merge_queue_applies": False,
+            "ruleset_status_checks_required": True,
+            "classic_status_checks_required": None,
+            "status_checks_required": True,
+            "required_merge_methods": ["squash"],
+            "methods_to_disable": [],
+            "desired_merge_methods": {"squash": True, "merge": False, "rebase": False},
+            "current_merge_methods": {"squash": True, "merge": False, "rebase": False},
+            "requested_settings": {
+                "delete_branch_on_merge": True,
+                "squash_merge_commit_title": "PR_TITLE",
+            },
+            "current_settings": {
+                "delete_branch_on_merge": True,
+                "squash_merge_commit_title": "PR_TITLE",
+            },
+        }
+        cases: list[tuple[str, dict[str, object], bool]] = [("positive", valid, True)]
+        for field in (
+            "auto_merge_enabled",
+            "auto_merge_workflows_eligible",
+            "administration_permission",
+            "inspection_complete",
+            "merge_queue_applies",
+            "ruleset_status_checks_required",
+            "classic_status_checks_required",
+            "status_checks_required",
+        ):
+            cases.append((field, {**valid, field: "false"}, False))
+        cases.append(
+            (
+                "current-delete",
+                {
+                    **valid,
+                    "current_settings": {
+                        "delete_branch_on_merge": "false",
+                        "squash_merge_commit_title": "PR_TITLE",
+                    },
+                },
+                False,
+            )
+        )
+        cases.append(
+            ("repository-array", {**valid, "repository": ["OWNER/REPO"]}, False)
+        )
+        for mapping in ("current_merge_methods", "desired_merge_methods"):
+            for method in ("squash", "merge", "rebase"):
+                malformed = copy.deepcopy(valid)
+                method_state = malformed[mapping]
+                assert isinstance(method_state, dict)
+                method_state[method] = "false"
+                cases.append((f"{mapping}:{method}", malformed, False))
+        for field in ("required_merge_methods", "methods_to_disable"):
+            for invalid_inventory in (
+                None,
+                "squash",
+                ["squash", "squash"],
+                ["unknown"],
+                [1],
+            ):
+                cases.append(
+                    (
+                        f"{field}:{invalid_inventory}",
+                        {**valid, field: invalid_inventory},
+                        False,
+                    )
+                )
+        for field in ("classic_status_checks_required", "status_checks_required"):
+            cases.append(
+                (
+                    f"missing:{field}",
+                    {key: value for key, value in valid.items() if key != field},
+                    False,
+                )
+            )
+        prelude = r"""
+$ErrorActionPreference='Stop'
+$DEFAULT_BRANCH='main'
+$mergeSettingsPreflight='synthetic'
+$preflightArguments=@()
+$finalMergePreflight=(Get-Content -Raw -LiteralPath $env:APPROVED) | ConvertFrom-Json
+function python { $global:LASTEXITCODE=0; return (Get-Content -Raw -LiteralPath $env:FIXTURE) }
+"""
+        postlude = r"""
+$failure=$null; $mutations=0
+try {
+ $result=Get-ValidatedFreshMergePreflight -ExpectedAutoMergeEnabled $true -ExpectedDeleteBranchOnMerge $true -ExpectedSquashMergeCommitTitle 'PR_TITLE' -RequireDesiredMergeMethods
+ $mutations += 1
+} catch { $failure=$_.Exception.Message }
+@{failure=$failure;mutations=$mutations} | ConvertTo-Json -Compress
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "consumer.ps1"
+            script.write_bytes(
+                (prelude + schema + function + postlude).encode("utf-8-sig")
+            )
+            approved = root / "approved.json"
+            approved.write_text(json.dumps(valid), encoding="utf-8")
+            for label, state, accepted in cases:
+                with self.subTest(case=label):
+                    fixture = root / "fixture.json"
+                    fixture.write_text(json.dumps(state), encoding="utf-8")
+                    environment = {
+                        **os.environ,
+                        "APPROVED": str(approved),
+                        "FIXTURE": str(fixture),
+                    }
+                    process = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(script),
+                        ],
+                        env=environment,
+                        capture_output=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    self.assertEqual(process.returncode, 0, process.stderr)
+                    result = json.loads(
+                        process.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                    )
+                    self.assertEqual(result["mutations"], 1 if accepted else 0, result)
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_final_merge_readback_requires_bound_identity_and_typed_settings(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        beginning = (
+            "$finalMergeSettings = ($finalMergeOutput | Out-String) | ConvertFrom-Json"
+        )
+        consumer = (
+            beginning
+            + reference.split(beginning, 1)[1].split(
+                "$postMergePreflightOutput = python", 1
+            )[0]
+        )
+        identity_helper = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert identity_helper is not None
+        prelude = r"""
+$ErrorActionPreference='Stop'
+$mergeSettingsFailure=$null
+$completedMergeUpdates=@()
+$enableMergeCommit=$true
+$enableRebaseMerge=$false
+$expectedAutoMergeEnabled=$true
+$finalMergeOutput=Get-Content -Raw -LiteralPath $env:FIXTURE
+$failure=$null
+try {
+"""
+        postlude = "\n} catch { $failure=$_.Exception.Message }\n@{failure=$failure} | ConvertTo-Json -Compress\n"
+        valid: dict[str, object] = {
+            "full_name": "OWNER/REPO",
+            "id": 42,
+            "allow_squash_merge": True,
+            "allow_merge_commit": True,
+            "allow_rebase_merge": False,
+            "delete_branch_on_merge": True,
+            "allow_auto_merge": True,
+            "squash_merge_commit_title": "PR_TITLE",
+        }
+        cases: list[tuple[str, dict[str, object], bool]] = [
+            ("positive", valid, True),
+            ("different-repository", {**valid, "full_name": "other/target"}, False),
+            (
+                "missing-repository",
+                {key: value for key, value in valid.items() if key != "full_name"},
+                False,
+            ),
+            (
+                "nontext-title",
+                {**valid, "squash_merge_commit_title": ["PR_TITLE"]},
+                False,
+            ),
+        ]
+        for field in (
+            "allow_squash_merge",
+            "allow_merge_commit",
+            "allow_rebase_merge",
+            "delete_branch_on_merge",
+            "allow_auto_merge",
+        ):
+            for value in ("false", "true", 1, None):
+                cases.append((f"{field}:{value}", {**valid, field: value}, False))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "consumer.ps1"
+            script.write_bytes(
+                (
+                    prelude
+                    + "\n$SELECTED_REPOSITORY_ID=42\n"
+                    + identity_helper[0]
+                    + "\n"
+                    + consumer
+                    + postlude
+                ).encode("utf-8-sig")
+            )
+            for label, state, accepted in cases:
+                with self.subTest(case=label):
+                    fixture = root / "state.json"
+                    fixture.write_text(json.dumps(state), encoding="utf-8")
+                    environment = os.environ.copy()
+                    environment["FIXTURE"] = str(fixture)
+                    process = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(script),
+                        ],
+                        env=environment,
+                        capture_output=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    self.assertEqual(process.returncode, 0, process.stderr)
+                    result = json.loads(
+                        process.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                    )
+                    self.assertEqual(result["failure"] is None, accepted, result)
+
     def test_merge_mutation_docs_bind_and_recheck_the_optional_auto_merge_plan(
         self,
     ) -> None:
@@ -96,6 +624,13 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         self.assertIn("$installAutoMergeAssetsRequested = $false", merge)
         self.assertIn("$autoMergeCapabilityEnableApproved = $false", merge)
         self.assertIn("$copyMergePreflight = Get-ValidatedFreshMergePreflight", merge)
+        for variable in (
+            "mergeSettingsPreflightResult",
+            "finalMergePreflight",
+            "result",
+            "postMergePreflight",
+        ):
+            self.assertIn(f"Assert-MergePreflightSchema -Verdict ${variable}", merge)
         self.assertIn(
             "Repeat this check before the second asset if both were selected.", merge
         )
@@ -151,6 +686,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         FakeClient.responses = {
             "repos/octo/example": {
                 "full_name": "octo/example",
+                "id": 42,
                 "default_branch": "main",
                 "archived": False,
                 "disabled": False,
@@ -422,7 +958,7 @@ class MergeSettingsPreflightTests(unittest.TestCase):
         self.assertTrue(ready["ruleset_status_checks_required"])
         self.assertIsNone(ready["classic_status_checks_required"])
         self.assertTrue(ready["auto_merge_workflows_eligible"])
-        self.assertEqual(ready["github_api_requests"], 2)
+        self.assertEqual(ready["github_api_requests"], 4)
 
     def test_rejects_invalid_effective_rule_parameters(self) -> None:
         self.configure(rules=[{"type": "pull_request", "parameters": {}}])
@@ -727,6 +1263,8 @@ class MergeSettingsPreflightTests(unittest.TestCase):
                 "allow_auto_merge",
             ),
         ]:
+            if isinstance(repository, dict):
+                repository = {"id": 42, **repository}
             FakeClient.responses["repos/octo/example"] = repository
             with self.subTest(repository=repository):
                 with mock.patch.object(

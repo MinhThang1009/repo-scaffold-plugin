@@ -212,6 +212,8 @@ def shard_mutants(mutant_names: list[str], shard_count: int) -> list[list[str]]:
     names = sorted(_validate_mutant_name(name) for name in mutant_names)
     if not names:
         raise ValueError("mutation shard plan cannot be empty")
+    if shard_count > len(names):
+        raise ValueError("mutation shard count exceeds the mutant inventory")
     if len(names) != len(set(names)):
         raise ValueError("mutation shard plan contains duplicate mutant names")
     shards: list[list[str]] = [[] for _ in range(shard_count)]

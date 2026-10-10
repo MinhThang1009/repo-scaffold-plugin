@@ -33,6 +33,41 @@ def policy_document() -> dict[str, object]:
 
 
 class PythonSupportPolicyTests(unittest.TestCase):
+    def test_contiguity_validation_never_enumerates_numeric_version_span(
+        self,
+    ) -> None:
+        for versions in (["3.10", "3.100000"], ["3.10", "3.999999999999999999"]):
+            document = policy_document()
+            document["versions"] = versions
+            with (
+                self.subTest(versions=versions),
+                mock.patch.object(
+                    python_support,
+                    "range",
+                    side_effect=AssertionError("numeric-span allocation"),
+                    create=True,
+                ) as enumeration,
+                self.assertRaisesRegex(python_support.PolicyError, "gap-free"),
+            ):
+                python_support.parse_policy(document)
+            enumeration.assert_not_called()
+
+    def test_policy_rejects_unbounded_and_unicode_numeric_components(self) -> None:
+        for version in ("3." + "9" * 63, "3." + "9" * 5000, "3.1\u0662"):
+            document = policy_document()
+            document["versions"] = [version]
+            with (
+                self.subTest(version_length=len(version)),
+                self.assertRaisesRegex(python_support.PolicyError, "feature-release"),
+            ):
+                python_support.parse_policy(document)
+
+    def test_policy_version_length_bound_accepts_its_exact_boundary(self) -> None:
+        document = policy_document()
+        version = "3." + "9" * 62
+        document["versions"] = [version]
+        self.assertEqual(python_support.parse_policy(document).versions, (version,))
+
     def write_policy(self, directory: str, document: object | None = None) -> Path:
         path = Path(directory) / "policy.json"
         path.write_text(

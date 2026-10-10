@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -371,11 +372,18 @@ def snapshot_project(repository_root: Path) -> ProjectSnapshot:
     source_hashes: dict[str, str] = {}
     test_sources: dict[str, str] = {}
     control_hashes: dict[str, str] = {}
+    total_bytes = 0
     for relative, path in _project_files(repository_root):
         posix_path = PurePosixPath(relative)
-        content = _read_bounded_bytes(
-            path, MAX_FILE_BYTES, f"project file {relative!r} exceeds the size limit"
+        remaining_bytes = MAX_TOTAL_BYTES - total_bytes
+        read_limit = min(MAX_FILE_BYTES, remaining_bytes)
+        error_message = (
+            f"project file {relative!r} exceeds the size limit"
+            if MAX_FILE_BYTES <= remaining_bytes
+            else "project inventory exceeds the cache preparation limits"
         )
+        content = _read_bounded_bytes(path, read_limit, error_message)
+        total_bytes += len(content)
         if posix_path.suffix == ".py" and any(
             _is_within(posix_path, root) for root in SOURCE_ROOTS
         ):
@@ -465,14 +473,41 @@ def _write_json(path: Path, document: dict[str, Any], *, mutation_root: Path) ->
     _assert_safe_cache_path(mutation_root, path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _assert_safe_cache_path(mutation_root, path)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    _assert_safe_cache_path(mutation_root, temporary)
-    temporary.write_text(
-        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    output = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        newline="\n",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
     )
-    _assert_safe_cache_path(mutation_root, path)
-    _assert_safe_cache_path(mutation_root, temporary)
-    os.replace(temporary, path)
+    temporary = Path(output.name)
+    publication_failure: OSError | None = None
+    try:
+        with output:
+            _assert_safe_cache_path(mutation_root, temporary)
+            output.write(json.dumps(document, indent=2, sort_keys=True) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        _assert_safe_cache_path(mutation_root, path)
+        _assert_safe_cache_path(mutation_root, temporary)
+        os.replace(temporary, path)
+    except OSError as error:
+        publication_failure = error
+        raise
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as error:
+            detail = (
+                f" Previous publication failure: {publication_failure}."
+                if publication_failure is not None
+                else " The destination may already have been updated."
+            )
+            raise OSError(
+                f"Could not clean temporary mutation-cache file {temporary}.{detail}"
+            ) from error
 
 
 def _mutation_root(repository_root: Path) -> Path:
@@ -702,9 +737,10 @@ def prepare_cache(repository_root: Path) -> PreparationResult:
             reusable_sources.append(relative)
 
     if invalidated:
-        stats_path = mutation_root / "mutmut-stats.json"
-        _assert_safe_cache_path(mutation_root, stats_path)
-        stats_path.unlink(missing_ok=True)
+        for name in ("mutmut-stats.json", SHARD_PLAN_NAME):
+            stale_path = mutation_root / name
+            _assert_safe_cache_path(mutation_root, stale_path)
+            stale_path.unlink(missing_ok=True)
     _write_json(
         mutation_root / REUSABLE_SOURCES_NAME,
         {

@@ -21,7 +21,8 @@ POLICY_FIELDS = {
 }
 MAX_POLICY_BYTES = 64 * 1024
 MAX_SUPPORTED_VERSIONS = 32
-PYTHON_MINOR = re.compile(r"^3\.(0|[1-9]\d*)$")
+MAX_FEATURE_RELEASE_CHARACTERS = 64
+PYTHON_MINOR = re.compile(r"^3\.(0|[1-9][0-9]*)$")
 GITHUB_HOSTED_RUNNERS = frozenset({"ubuntu-latest", "windows-latest", "macos-latest"})
 
 
@@ -89,16 +90,20 @@ def parse_policy(document: Any) -> PythonSupportPolicy:
     )
     parsed_versions: list[tuple[int, int]] = []
     for version in versions:
-        match = PYTHON_MINOR.fullmatch(version)
+        match = (
+            PYTHON_MINOR.fullmatch(version)
+            if len(version) <= MAX_FEATURE_RELEASE_CHARACTERS
+            else None
+        )
         if match is None:
             raise PolicyError(
                 "versions must use stable CPython feature-release syntax such as 3.14"
             )
         parsed_versions.append((3, int(match.group(1))))
-    expected_versions = [
-        (3, minor) for minor in range(parsed_versions[0][1], parsed_versions[-1][1] + 1)
-    ]
-    if parsed_versions != expected_versions:
+    if any(
+        current[1] != previous[1] + 1
+        for previous, current in zip(parsed_versions, parsed_versions[1:])
+    ):
         raise PolicyError("versions must be ordered, contiguous, and gap-free")
 
     full_coverage_os = require_string_list(

@@ -17,7 +17,7 @@ concurrency:
 jobs:
   analysis:
     name: Scorecard analysis
-    if: github.event.repository.default_branch == github.ref_name
+    if: github.ref_type == 'branch' && github.event.repository.default_branch == github.ref_name
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

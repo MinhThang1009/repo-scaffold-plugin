@@ -98,6 +98,13 @@ class CiToolchainPolicyTests(unittest.TestCase):
         ):
             ci_toolchain.parse_policy(document)
 
+    def test_policy_rejects_non_ascii_numeric_runtime(self) -> None:
+        document = policy_document()
+        document["tooling-python-minimum"] = "3.1\u0662"
+
+        with self.assertRaisesRegex(ci_toolchain.ToolchainError, "feature release"):
+            ci_toolchain.parse_policy(document)
+
     def test_policy_rejects_invalid_tooling_python_minimum(self) -> None:
         document = policy_document()
         document["tooling-python-minimum"] = "latest"
@@ -154,6 +161,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
             ("tool", {**valid, "version": "latest"}, "stable SemVer"),
             ("tool", {**valid, "version": "1.2.3-rc.1"}, "stable SemVer"),
             ("tool", {**valid, "version": "1.2.3+build"}, "stable SemVer"),
+            ("tool", {**valid, "version": "1.2\u0662.3"}, "stable SemVer"),
         ]
 
         for name, value, message in cases:
@@ -181,6 +189,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
             ("tool", {**valid, "version": "latest"}, "stable SemVer"),
             ("tool", {**valid, "version": "1.2.3-rc.1"}, "stable SemVer"),
             ("tool", {**valid, "version": "1.2.3+build"}, "stable SemVer"),
+            ("tool", {**valid, "version": "1.2\u0662.3"}, "stable SemVer"),
             ("tool", {**valid, "tag-template": "release"}, "tag-template"),
             ("tool", {**valid, "tag-template": "../{version}"}, "tag-template"),
             ("tool", {**valid, "archive-format": "zip"}, "archive-format"),

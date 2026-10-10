@@ -3,7 +3,11 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import re
 import runpy
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -69,6 +73,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "hostname": "github.com",
         "repository": "octo/example",
+        "expected_repository_id": 42,
         "require_external_actions": False,
         "require_issues": False,
         "confirm_pull_request_write_tokens": False,
@@ -80,6 +85,702 @@ def arguments(**overrides: object) -> argparse.Namespace:
 
 
 class WorkflowInstallationPreflightTests(unittest.TestCase):
+    def test_caller_controls_require_real_booleans_before_inspection(self) -> None:
+        values: tuple[object, ...] = (None, "false", "true", 0, 1, [], {}, [True])
+        for name in (
+            "require_external_actions",
+            "require_issues",
+            "confirm_pull_request_write_tokens",
+        ):
+            for value in values:
+                with (
+                    self.subTest(control=name, value=value),
+                    mock.patch.object(
+                        workflow_installation_preflight, "GitHubClient"
+                    ) as client,
+                    self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError, "Boolean"
+                    ),
+                ):
+                    workflow_installation_preflight.run(arguments(**{name: value}))
+                client.assert_not_called()
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_native_write_token_assertion_is_not_powershell_truthiness(self) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        start = reference.index("$requiresIssueOperations = $false")
+        end = reference.index("$workflowPreflightOutput = python", start)
+        builder = reference[start:end]
+        cases = (
+            ("$false", False),
+            ("$true", True),
+            ('"false"', None),
+            ('"true"', None),
+            ("1", None),
+            ("$null", None),
+            ("@(1)", None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for value, expected in cases:
+                with self.subTest(value=value):
+                    script = root / "builder.ps1"
+                    script.write_text(
+                        "$ErrorActionPreference='Stop'\n$workflowPreflightArguments=@(); $observed=$null; $errorMessage=$null\ntry {\n"
+                        + builder.replace(
+                            "$pullRequestWriteTokensConfirmed = $false",
+                            f"$pullRequestWriteTokensConfirmed = {value}",
+                        )
+                        + "\n$observed=($workflowPreflightArguments -contains '--confirm-pull-request-write-tokens')\n} catch { $errorMessage=$_.Exception.Message }\n@{flag=$observed;error=$errorMessage} | ConvertTo-Json -Compress\n",
+                        encoding="utf-8-sig",
+                    )
+                    result = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(script),
+                        ],
+                        check=False,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    observed = json.loads(result.stdout.decode("utf-8-sig"))
+                    self.assertEqual(observed["flag"], expected, observed)
+                    if expected is None:
+                        self.assertIn("Boolean", observed["error"])
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_documented_workflow_consumer_binds_identity_before_asset_copy(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        section = reference.split("## Workflow installation preflight", 1)[1].split(
+            "## Inherited community-health policy", 1
+        )[0]
+        block = re.search(r"```powershell\n(.*?)\n```", section, re.DOTALL)
+        identity = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert block is not None and identity is not None
+        prelude = r"""
+$ErrorActionPreference='Stop'
+$SELECTED_REPOSITORY_ID=42
+$REPO_SCAFFOLD_SKILL_ROOT=$env:SKILL_ROOT
+function python { $global:LASTEXITCODE=0; return (Get-Content -Raw -LiteralPath $env:FIXTURE) }
+"""
+        postlude = "\n$copies += 1\n} catch { $failure=$_.Exception.Message }\n@{copies=$copies;failure=$failure} | ConvertTo-Json -Compress\n"
+        cases = (
+            (42, "may-install-workflow-assets", True, "OWNER/REPO", 1),
+            (43, "may-install-workflow-assets", True, "OWNER/REPO", 0),
+            (None, "may-install-workflow-assets", True, "OWNER/REPO", 0),
+            ("42", "may-install-workflow-assets", True, "OWNER/REPO", 0),
+            (True, "may-install-workflow-assets", True, "OWNER/REPO", 0),
+            (42, "bind-repository-identity-before-mutation", True, "OWNER/REPO", 0),
+            (
+                42,
+                "enable-github-actions-before-installing-workflows",
+                True,
+                "OWNER/REPO",
+                0,
+            ),
+            (42, "may-install-workflow-assets", False, "OWNER/REPO", 0),
+            (42, "may-install-workflow-assets", True, "other/target", 0),
+            (42, "may-install-workflow-assets", True, ["OWNER/REPO"], 0),
+            (42, ["may-install-workflow-assets"], True, "OWNER/REPO", 0),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            shutil.copyfile(SCRIPT_PATH, scripts / SCRIPT_PATH.name)
+            script = root / "consumer.ps1"
+            script.write_bytes(
+                (
+                    prelude
+                    + identity[0]
+                    + "\n$copies=0; $failure=$null\ntry {\n"
+                    + block[1]
+                    + postlude
+                ).encode("utf-8-sig")
+            )
+            for repository_id, decision, complete, repository_name, copies in cases:
+                with self.subTest(
+                    repository_id=repository_id,
+                    decision=decision,
+                    complete=complete,
+                    repository=repository_name,
+                ):
+                    fixture = root / "verdict.json"
+                    fixture.write_text(
+                        json.dumps(
+                            {
+                                "inspection_complete": complete,
+                                "repository_id": repository_id,
+                                "repository": repository_name,
+                                "decision": decision,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    result = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(script),
+                        ],
+                        env={
+                            **os.environ,
+                            "FIXTURE": str(fixture),
+                            "SKILL_ROOT": str(root),
+                        },
+                        capture_output=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    observed = json.loads(
+                        result.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                    )
+                    self.assertEqual(observed["copies"], copies, observed)
+
+    def test_selected_policy_binding_and_event_policy_are_revalidated(self) -> None:
+        self.configure(allowed_actions="selected")
+        permissions = FakeClient.responses["repos/octo/example/actions/permissions"]
+        assert isinstance(permissions, dict)
+        FakeClient.response_sequences["repos/octo/example/actions/permissions"] = [
+            permissions,
+            {
+                **permissions,
+                "selected_actions_url": "https://api.github.com/organizations/42/actions/permissions/selected-actions",
+            },
+        ]
+        FakeClient.responses[
+            "repos/octo/example/actions/permissions/selected-actions"
+        ] = {
+            "github_owned_allowed": True,
+            "verified_allowed": False,
+            "patterns_allowed": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text(
+                "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
+                + "a" * 40
+                + "\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(
+                    workflow_installation_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError, "binding changed"
+                ),
+            ):
+                workflow_installation_preflight.run(arguments(workflow=[workflow]))
+            self.configure()
+            workflow.write_text(
+                "on:\n  pull_request_target:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo verified\n",
+                encoding="utf-8",
+            )
+            index = "repos/octo/example/actions/policies?has_parents=true&per_page=100"
+            FakeClient.responses[index] = {"total_count": 1, "policies": [{"id": 7}]}
+            initial = {
+                "id": 7,
+                "enforcement": "active",
+                "rules": [
+                    {
+                        "type": "restrict_action_events",
+                        "parameters": {"allowed_events": ["pull_request_target"]},
+                    }
+                ],
+            }
+            FakeClient.response_sequences["repos/octo/example/actions/policies/7"] = [
+                initial,
+                {**initial, "rules": []},
+            ]
+            with (
+                mock.patch.object(
+                    workflow_installation_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError,
+                    "event policy changed",
+                ),
+            ):
+                workflow_installation_preflight.run(arguments(workflow=[workflow]))
+
+    def test_numeric_selected_action_endpoint_cannot_belong_to_a_different_repository(
+        self,
+    ) -> None:
+        self.configure(allowed_actions="selected")
+        permissions = FakeClient.responses["repos/octo/example/actions/permissions"]
+        assert isinstance(permissions, dict)
+        permissions["selected_actions_url"] = (
+            "https://api.github.com/repositories/43/actions/permissions/selected-actions"
+        )
+        FakeClient.responses["repositories/43/actions/permissions/selected-actions"] = {
+            "github_owned_allowed": True,
+            "verified_allowed": True,
+            "patterns_allowed": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "ci.yml"
+            workflow.write_text(
+                "jobs:\n  test:\n    steps:\n      - uses: actions/checkout@"
+                + "a" * 40
+                + "\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(
+                    workflow_installation_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    workflow_installation_preflight.InspectionError,
+                    "different repository",
+                ),
+            ):
+                workflow_installation_preflight.run(arguments(workflow=[workflow]))
+
+    def test_selected_action_snapshot_cannot_change_before_workflow_verdict(
+        self,
+    ) -> None:
+        self.configure(allowed_actions="selected")
+        original_policy = {
+            "github_owned_allowed": True,
+            "verified_allowed": False,
+            "patterns_allowed": [],
+        }
+        endpoint = "repos/octo/example/actions/permissions/selected-actions"
+        FakeClient.responses[endpoint] = original_policy
+        for final in (
+            {**original_policy, "github_owned_allowed": False},
+            {**original_policy, "patterns_allowed": ["!actions/*"]},
+        ):
+            FakeClient.response_sequences[endpoint] = [original_policy, final]
+            with tempfile.TemporaryDirectory() as directory:
+                workflow = Path(directory) / "ci.yml"
+                workflow.write_text(
+                    "jobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
+                    + "a" * 40
+                    + "\n",
+                    encoding="utf-8",
+                )
+                with (
+                    self.subTest(final=final),
+                    mock.patch.object(
+                        workflow_installation_preflight, "GitHubClient", FakeClient
+                    ),
+                    self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError,
+                        "policy changed",
+                    ),
+                ):
+                    workflow_installation_preflight.run(arguments(workflow=[workflow]))
+
+    def test_workflow_installation_binds_the_discovered_numeric_repository(
+        self,
+    ) -> None:
+        self.configure()
+        response = FakeClient.responses["repos/octo/example"]
+        assert isinstance(response, dict)
+        response["id"] = 42
+        with mock.patch.object(
+            workflow_installation_preflight, "GitHubClient", FakeClient
+        ):
+            positive = workflow_installation_preflight.run(
+                arguments(expected_repository_id=42)
+            )
+        self.assertEqual(positive.get("repository_id"), 42)
+        for identity in (43, None, True, "42", 0, -1, 42.5):
+            response["id"] = identity
+            with (
+                self.subTest(identity=identity),
+                mock.patch.object(
+                    workflow_installation_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaises(workflow_installation_preflight.InspectionError),
+            ):
+                workflow_installation_preflight.run(
+                    arguments(expected_repository_id=42)
+                )
+
+    def test_workflow_verdict_rejects_mid_inspection_repository_and_actions_drift(
+        self,
+    ) -> None:
+        self.configure()
+        response = FakeClient.responses["repos/octo/example"]
+        assert isinstance(response, dict)
+        original = {**response, "id": 42}
+        permissions = FakeClient.responses["repos/octo/example/actions/permissions"]
+        for final in (
+            {**original, "id": 43},
+            {**original, "archived": True},
+            {**original, "has_issues": False},
+            {**original, "visibility": "private"},
+            None,
+        ):
+            client = FakeClient("github.com")
+            with (
+                self.subTest(final=final),
+                mock.patch.object(
+                    client, "json", side_effect=[original, permissions, final]
+                ),
+                mock.patch.object(
+                    workflow_installation_preflight, "GitHubClient", return_value=client
+                ),
+                self.assertRaises(workflow_installation_preflight.InspectionError),
+            ):
+                workflow_installation_preflight.run(
+                    arguments(expected_repository_id=42, require_issues=True)
+                )
+        for policy in (
+            {"enabled": False, "allowed_actions": "all"},
+            {"enabled": True, "allowed_actions": "local_only"},
+            {"enabled": "true", "allowed_actions": "all"},
+        ):
+            client = FakeClient("github.com")
+            with (
+                self.subTest(policy=policy),
+                mock.patch.object(
+                    client,
+                    "json",
+                    side_effect=[original, permissions, original, policy],
+                ),
+                mock.patch.object(
+                    workflow_installation_preflight, "GitHubClient", return_value=client
+                ),
+                self.assertRaises(workflow_installation_preflight.InspectionError),
+            ):
+                workflow_installation_preflight.run(
+                    arguments(expected_repository_id=42, require_external_actions=True)
+                )
+
+    def test_unbound_workflow_inspection_does_not_authorize_asset_installation(
+        self,
+    ) -> None:
+        self.configure()
+        response = FakeClient.responses["repos/octo/example"]
+        assert isinstance(response, dict)
+        response["id"] = 42
+        with mock.patch.object(
+            workflow_installation_preflight, "GitHubClient", FakeClient
+        ):
+            result = workflow_installation_preflight.run(
+                arguments(expected_repository_id=None)
+            )
+        self.assertEqual(result["decision"], "bind-repository-identity-before-mutation")
+
+    def test_declared_freshness_is_bound_across_separate_run_steps(self) -> None:
+        source = (
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows/freshness.yml"
+        ).read_text(encoding="utf-8")
+        document = workflow_installation_preflight.workflow_document(
+            source, Path("freshness.yml")
+        )
+        audit = document["jobs"]["audit"]["steps"][2]
+        audit["run"] = (
+            audit["run"].split('if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then', 1)[0]
+            + 'printf \'checker_exit=%s\\n\' "$checker_exit" >> "$GITHUB_OUTPUT"\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "freshness.yml"
+            path.write_text(
+                workflow_installation_preflight.yaml.safe_dump(document),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError, "executable lifecycle"
+            ):
+                workflow_installation_preflight.workflow_capabilities([path])
+
+    def test_declared_invalid_freshness_is_not_treated_as_absent_optional_feature(
+        self,
+    ) -> None:
+        source = (
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows/freshness.yml"
+        ).read_text(encoding="utf-8")
+        document = workflow_installation_preflight.workflow_document(
+            source, Path("freshness.yml")
+        )
+        steps = document["jobs"]["audit"]["steps"]
+        document["jobs"]["audit"]["steps"] = [
+            step
+            for step in steps
+            if not str(step.get("uses", "")).startswith("actions/setup-python@")
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "freshness.yml"
+            workflow.write_text(
+                workflow_installation_preflight.yaml.safe_dump(document),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                workflow_installation_preflight.InspectionError, "executable lifecycle"
+            ):
+                workflow_installation_preflight.workflow_capabilities([workflow])
+
+    def test_inactive_lookup_cannot_authorize_reused_issue_state(self) -> None:
+        source = (
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows/freshness.yml"
+        ).read_text(encoding="utf-8")
+        document = workflow_installation_preflight.workflow_document(
+            source, Path("freshness.yml")
+        )
+        command = document["jobs"]["audit"]["steps"][-1]["run"]
+        begin = command.index("issue_numbers_output=$(")
+        end = command.index("if (( ${#issue_numbers[@]} > 1 )); then", begin)
+        inactive = (
+            command[:begin]
+            + "issue_numbers_output=41\nissue_numbers=(41)\nif false; then\n"
+            + command[begin:end]
+            + "fi\n"
+            + command[end:]
+        )
+        self.assertFalse(
+            workflow_installation_preflight.managed_issue_search_projections_are_safe(
+                inactive
+            )
+        )
+        document["jobs"]["audit"]["steps"][-1]["run"] = inactive
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "freshness.yml"
+            path.write_text(
+                workflow_installation_preflight.yaml.safe_dump(document),
+                encoding="utf-8",
+            )
+            with self.assertRaises(workflow_installation_preflight.InspectionError):
+                workflow_installation_preflight.workflow_capabilities([path])
+
+    def test_malformed_duplicate_issue_guard_is_rejected_with_valid_receipt(
+        self,
+    ) -> None:
+        document = workflow_installation_preflight.workflow_document(
+            (PLUGIN_ROOT / ".github/workflows/freshness.yml").read_text(
+                encoding="utf-8"
+            ),
+            Path("freshness.yml"),
+        )
+        command = document["jobs"]["audit"]["steps"][-1]["run"]
+        self.assertTrue(
+            workflow_installation_preflight.freshness_shell_control_flow_is_safe(
+                command
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.freshness_shell_control_flow_is_safe(
+                command.replace(
+                    "Found multiple open freshness reminder issues.",
+                    "Invalid duplicate diagnostic",
+                    1,
+                )
+            )
+        )
+
+    def test_receipt_binding_rejects_missing_lookup_closure_and_prior_mutation(
+        self,
+    ) -> None:
+        original = (PLUGIN_ROOT / ".github/workflows/freshness.yml").read_text(
+            encoding="utf-8"
+        )
+        for label, text in (
+            (
+                "missing assignment",
+                original.replace("issue_numbers_output=$(", "other_output=$(", 1),
+            ),
+            ("missing closure", original.replace("          )\n", "", 1)),
+            (
+                "prior mutation",
+                "gh issue close 41 --repo github.com/synthetic/example\n" + original,
+            ),
+        ):
+            with self.subTest(case=label):
+                self.assertFalse(
+                    workflow_installation_preflight.managed_issue_search_projections_are_safe(
+                        text
+                    )
+                )
+
+    def test_managed_reminder_receipt_guard_cannot_be_removed_before_installation(
+        self,
+    ) -> None:
+        for name in ("freshness.yml", "community-health.yml"):
+            original = (
+                PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows" / name
+            ).read_text(encoding="utf-8")
+            guard = (
+                "\n".join(
+                    " " * (12 if index in {1, 2} else 10) + line
+                    for index, line in enumerate(
+                        workflow_installation_preflight.FRESHNESS_EMPTY_SEARCH_GUARD
+                    )
+                )
+                + "\n"
+            )
+            self.assertIn(guard, original)
+            with tempfile.TemporaryDirectory() as directory:
+                workflow = Path(directory) / name
+                workflow.write_text(original.replace(guard, "", 1), encoding="utf-8")
+                with (
+                    self.subTest(workflow=name),
+                    self.assertRaises(workflow_installation_preflight.InspectionError),
+                ):
+                    workflow_installation_preflight.workflow_capabilities([workflow])
+
+    def test_search_projection_scope_uses_ownership_marker_not_repository_name(
+        self,
+    ) -> None:
+        self.assertFalse(
+            workflow_installation_preflight.managed_issue_search_projections_are_safe(
+                "gh api 'unterminated"
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.managed_issue_search_projections_are_safe(
+                'gh api "search/issues?q=repo:owner/repo-scaffold-plugin+is:issue+label:bug" --jq ".items[].number"'
+            )
+        )
+        self.assertTrue(
+            workflow_installation_preflight.managed_issue_search_projections_are_safe(
+                "echo ordinary-workflow"
+            )
+        )
+        base = 'gh api "search/issues?q=repo:synthetic/example+is:issue+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"'
+        for query in (
+            workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ,
+            workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ_LEGACY,
+        ):
+            with self.subTest(query=query):
+                self.assertTrue(
+                    workflow_installation_preflight.managed_issue_search_projections_are_safe(
+                        base + f" --jq '{query}'"
+                    )
+                )
+        self.assertFalse(
+            workflow_installation_preflight.managed_issue_search_projections_are_safe(
+                base
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.managed_issue_search_projections_are_safe(
+                base + ' --jq ".items[].number"'
+            )
+        )
+        self.assertFalse(
+            workflow_installation_preflight.has_issue_body_file_reconciliation(
+                base + ' --jq ".items[].number"\n'
+                "gh issue create --repo github.com/synthetic/example "
+                '--title reminder --body-file "$RUNNER_TEMP/freshness.md"'
+            )
+        )
+
+    def test_standalone_reminder_installation_rejects_unverified_search_projection(
+        self,
+    ) -> None:
+        for name in ("freshness.yml", "community-health.yml"):
+            asset = PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows" / name
+            original = asset.read_text(encoding="utf-8")
+            with tempfile.TemporaryDirectory() as directory:
+                workflow = Path(directory) / name
+                workflow.write_text(original, encoding="utf-8")
+                workflow_installation_preflight.workflow_capabilities([workflow])
+                unsafe = original.replace(
+                    workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ,
+                    '[.items[].number] | join(" ")',
+                    1,
+                )
+                self.assertNotEqual(unsafe, original)
+                workflow.write_text(unsafe, encoding="utf-8")
+                with self.subTest(workflow=name):
+                    with self.assertRaisesRegex(
+                        workflow_installation_preflight.InspectionError,
+                        "(?i)complete.*search|search.*complete",
+                    ):
+                        workflow_installation_preflight.workflow_capabilities(
+                            [workflow]
+                        )
+
+    def test_freshness_supports_reviewed_vietnamese_messages_without_weakening_guards(
+        self,
+    ) -> None:
+        source = (
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows/freshness.yml"
+        ).read_text(encoding="utf-8")
+        translations = {
+            "# Repository freshness report": "# Báo cáo freshness của repository",
+            "The checker failed before it could produce a report. Inspect this workflow run.": "Checker đã lỗi trước khi tạo báo cáo. Hãy kiểm tra workflow run này.",
+            "Repository freshness update required": "Cần cập nhật các đầu vào bảo trì repository",
+            "Found multiple open freshness reminder issues.": "Có nhiều issue nhắc bảo trì freshness đang mở.",
+            "Freshness checker returned an unexpected exit status: %s": "Checker freshness trả về exit status không hợp lệ: %s",
+            "Freshness checker was indeterminate; no reminder issue was changed.": "Checker freshness chưa xác định được kết quả; không thay đổi issue nhắc bảo trì.",
+            "The scheduled freshness audit is clean, so this reminder is closing automatically.": "Kiểm tra freshness định kỳ không phát hiện đầu vào lỗi thời, nên tự động đóng issue nhắc bảo trì này.",
+        }
+        localized = source
+        for english, vietnamese in translations.items():
+            localized = localized.replace(english, vietnamese)
+        localized = localized.replace(
+            "--repository-root .", "--repository-root . --language vi"
+        )
+        self.assertTrue(
+            workflow_installation_preflight.is_freshness_reminder_workflow(
+                localized, Path("freshness.yml")
+            )
+        )
+        for label, invalid in (
+            ("unknown language", localized.replace("--language vi", "--language fr")),
+            (
+                "duplicate language",
+                localized.replace("--language vi", "--language vi --language en"),
+            ),
+            (
+                "dynamic format",
+                localized.replace(
+                    "Checker freshness trả về exit status không hợp lệ: %s", "$GH_TOKEN"
+                ),
+            ),
+            (
+                "hidden mutation",
+                localized.replace(
+                    "Có nhiều issue nhắc bảo trì freshness đang mở.",
+                    "$(gh issue create --title bypass)",
+                ),
+            ),
+            (
+                "indeterminate bypass",
+                localized.replace(
+                    "if [[ \"$CHECKER_EXIT\" == '2' ]]; then",
+                    "if [[ \"$CHECKER_EXIT\" == '9' ]]; then",
+                ),
+            ),
+            (
+                "mismatched output",
+                localized.replace(
+                    '--markdown-output "$RUNNER_TEMP/freshness.md"',
+                    '--markdown-output "$RUNNER_TEMP/other.md"',
+                ),
+            ),
+        ):
+            with self.subTest(case=label):
+                self.assertFalse(
+                    workflow_installation_preflight.is_freshness_reminder_workflow(
+                        invalid, Path("freshness.yml")
+                    )
+                )
+
     def test_freshness_concurrency_group_is_stable_across_branch_names(self) -> None:
         for relative in (
             ".github/workflows/freshness.yml",
@@ -112,8 +813,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         workflow_path = PLUGIN_ROOT / ".github/workflows/freshness.yml"
         workflow_text = workflow_path.read_text(encoding="utf-8")
         legacy_query_with_read = workflow_text.replace(
-            "--jq '[.items[].number] | join(\" \")'",
-            "--jq '.items[].number'",
+            f"--jq '{workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ}'",
+            f"--jq '{workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ_LEGACY}'",
             1,
         )
         self.assertFalse(
@@ -299,6 +1000,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         FakeClient.responses = {
             "repos/octo/example": {
                 "full_name": "octo/example",
+                "id": 42,
                 "archived": False,
                 "disabled": False,
                 "has_issues": issues_enabled,
@@ -332,7 +1034,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         self.assertEqual(result["decision"], "may-install-workflow-assets")
         self.assertTrue(result["external_actions_verified"])
         self.assertTrue(result["issue_workflows_eligible"])
-        self.assertEqual(result["github_api_requests"], 2)
+        self.assertEqual(result["github_api_requests"], 4)
 
     def test_blocks_disabled_actions_and_external_action_restrictions(self) -> None:
         cases = [
@@ -402,7 +1104,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             result["unapproved_action_references"],
             ["octo/unapproved@cccccccccccccccccccccccccccccccccccccccc"],
         )
-        self.assertEqual(result["github_api_requests"], 3)
+        self.assertEqual(result["github_api_requests"], 6)
 
     def test_uses_selected_actions_endpoint_advertised_by_github(self) -> None:
         self.configure(allowed_actions="selected")
@@ -449,7 +1151,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             result["unapproved_action_references"],
             ["octo/allowed@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
         )
-        self.assertEqual(result["github_api_requests"], 3)
+        self.assertEqual(result["github_api_requests"], 6)
 
     def test_selected_actions_endpoint_rejects_untrusted_urls(self) -> None:
         with self.assertRaisesRegex(
@@ -1009,10 +1711,14 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "          issue_numbers_output=$(\n"
                 "            gh api --hostname github.com \\\n"
                 '              "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" \\\n'
-                "              --jq '.items[].number'\n"
+                f"              --jq '{workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ_LEGACY}'\n"
                 "          )\n"
+                '          if [[ -z "$issue_numbers_output" ]]; then\n'
+                "            printf 'Issue search returned no verified result.\\n' >&2\n"
+                "            exit 1\n"
+                "          fi\n"
                 "          issue_numbers=()\n"
-                '          if [[ -n "$issue_numbers_output" ]]; then\n'
+                "          if [[ \"$issue_numbers_output\" != 'none' ]]; then\n"
                 '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
                 "          fi\n"
                 "          if (( ${#issue_numbers[@]} > 1 )); then\n"
@@ -1096,43 +1802,9 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             )
             reminder = root / "freshness.yml"
             reminder.write_text(
-                "on:\n"
-                "  schedule:\n"
-                "    - cron: '17 6 * * 5'\n"
-                "  workflow_dispatch:\n"
-                "permissions:\n"
-                "  issues: write\n"
-                "concurrency:\n"
-                "  group: repo-scaffold-freshness-${{ github.repository }}\n"
-                "  cancel-in-progress: false\n"
-                "jobs:\n"
-                "  audit:\n"
-                "    name: freshness-audit\n"
-                "    runs-on: ubuntu-latest\n"
-                "    timeout-minutes: 15\n"
-                "    steps:\n"
-                "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
-                "        with:\n"
-                "          ref: ${{ github.event.repository.default_branch }}\n"
-                "          persist-credentials: false\n"
-                "      - run: |\n"
-                "          set +e\n"
-                "          python scripts/audit_freshness.py \\\n"
-                "            --repository-root . \\\n"
-                "            --json-output $RUNNER_TEMP/freshness.json \\\n"
-                "            --markdown-output $RUNNER_TEMP/freshness.md\n"
-                "          checker_exit=$?\n"
-                "          set -e\n"
-                '          if [[ ! -f "$RUNNER_TEMP/freshness.md" ]]; then\n'
-                "            printf '%s\\n' '<!-- repo-scaffold-freshness-audit -->' > \"$RUNNER_TEMP/freshness.md\"\n"
-                "            checker_exit=2\n"
-                "          fi\n"
-                "          gh api --hostname github.com "
-                '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" '
-                "--jq '.items[].number'\n"
-                "          marker='<!-- repo-scaffold-freshness-audit -->'\n"
-                '          grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"\n'
-                '          gh issue create --repo "github.com/$GITHUB_REPOSITORY" --title reminder --body-file "$RUNNER_TEMP/freshness.md"\n',
+                (
+                    PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows/freshness.yml"
+                ).read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
             invalid_allowlist = root / "code-scanning-allowlist.json"
@@ -1214,10 +1886,14 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "          issue_numbers_output=$(\n"
             "            gh api --hostname github.com \\\n"
             '              "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" \\\n'
-            "              --jq '.items[].number'\n"
+            f"              --jq '{workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ_LEGACY}'\n"
             "          )\n"
+            '          if [[ -z "$issue_numbers_output" ]]; then\n'
+            "            printf 'Issue search returned no verified result.\\n' >&2\n"
+            "            exit 1\n"
+            "          fi\n"
             "          issue_numbers=()\n"
-            '          if [[ -n "$issue_numbers_output" ]]; then\n'
+            "          if [[ \"$issue_numbers_output\" != 'none' ]]; then\n"
             '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
             "          fi\n"
             "          if (( ${#issue_numbers[@]} > 1 )); then\n"
@@ -1283,8 +1959,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             "extra API output": valid.replace(
                 repository_lookup_command,
                 repository_lookup_command.replace(
-                    "--jq '.items[].number'",
-                    "--jq '.items[].number, 999'",
+                    f"--jq '{workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ_LEGACY}'",
+                    f"--jq '{workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ_LEGACY}, 999'",
                     1,
                 ),
             ),
@@ -1300,16 +1976,15 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 1,
             ),
             "extra lookup API": valid.replace(
-                "          )\n          issue_numbers=()\n",
+                "          )\n",
                 "          )\n"
                 "          gh api --hostname github.com "
                 '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" '
-                "--jq '.items[].number'\n"
-                "          issue_numbers=()\n",
+                f"--jq '{workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ_LEGACY}'\n",
                 1,
             ),
             "API result ignored": valid.replace(
-                '          if [[ -n "$issue_numbers_output" ]]; then\n'
+                "          if [[ \"$issue_numbers_output\" != 'none' ]]; then\n"
                 '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n'
                 "          fi\n",
                 "",
@@ -1320,7 +1995,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ),
             "API result only tested": valid.replace(
                 '            mapfile -t issue_numbers <<< "$issue_numbers_output"\n',
-                '            if [[ -n "$issue_numbers_output" ]]; then :; fi\n',
+                "            if [[ \"$issue_numbers_output\" != 'none' ]]; then :; fi\n",
             ),
             "checker result ignored": valid.replace(
                 "          if [[ \"$CHECKER_EXIT\" == '0' ]]; then\n",
@@ -2979,7 +3654,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 audit_command + " --unexpected ignored"
             )
         )
-        jq_expression = ".items[].number"
+        jq_expression = workflow_installation_preflight.FRESHNESS_REMINDER_API_JQ_LEGACY
         api_lookup = (
             "gh api --hostname github.com "
             '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" '
@@ -5018,7 +5693,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
         nonempty_guard = (
             "\n".join(
                 (
-                    'if [[ -n "$issue_numbers_output" ]]; then',
+                    "if [[ \"$issue_numbers_output\" != 'none' ]]; then",
                     '  read -r -a issue_numbers <<< "$issue_numbers_output"',
                     "fi",
                 )
@@ -5072,6 +5747,7 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
                 "shell_command_segments",
                 return_value=[
                     ["set", "-euo", "pipefail"],
+                    list(workflow_installation_preflight.FRESHNESS_EMPTY_SEARCH_PRINTF),
                     [
                         "printf",
                         "Found multiple open freshness reminder issues.\\n",
@@ -6284,6 +6960,8 @@ class WorkflowInstallationPreflightTests(unittest.TestCase):
             ),
         ]
         for repository, message in cases:
+            if isinstance(repository, dict):
+                repository = {"id": 42, **repository}
             with self.subTest(repository=repository):
                 FakeClient.responses["repos/octo/example"] = repository
                 with mock.patch.object(

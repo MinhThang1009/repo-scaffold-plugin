@@ -38,6 +38,7 @@ The plugin has no build step. Development checks require:
 - markdown-it-py, for CommonMark-compliant Markdown validation
 - PyYAML
 - pytest
+- Git, including `hash-object` for independent fixture object IDs
 - mutmut, on Linux, macOS, or Windows through WSL
 - Ruff
 - mypy
@@ -46,6 +47,24 @@ The plugin has no build step. Development checks require:
 - ShellCheck
 - `pip-tools`, only when regenerating a lock; record the version used in the
   pull request verification
+
+Native reminder-query integration tests also use an available GitHub CLI and
+Bash (Git Bash on Windows). They serve synthetic responses only on loopback,
+isolate GitHub CLI configuration, and never require real credentials or write
+to GitHub. When either tool is absent, report the corresponding applicability
+skip rather than claiming the integration passed.
+
+Workflow-blob fixtures use `git hash-object --stdin --no-filters` as an
+independent object-format oracle. Up to 128 fixture IDs are memoized by exact
+text; this is deterministic object-format data, not cached GitHub evidence or
+authorization. Their workflow text is synthetic, not a
+credential or password hash. Portable Windows pipe-backend contract tests
+exercise control flow through modeled APIs on every platform; retain the
+native Windows tests separately. Passing those contract tests on Linux does
+not establish Windows ABI or native pipe behavior.
+Each platform's quality run keeps the declared coverage floor. Do not exclude
+a native backend solely because that quality runner uses another OS; pair
+portable contract seams with the applicable native integration checks.
 
 CI pins for markdownlint and standalone downloaded tools, plus the rolling
 documentation bootstrap and minimum bundled-tooling Python runtimes, are
@@ -85,7 +104,13 @@ Mutation testing uses a separate lock because mutmut requires operating-system
 same procedure: record `pip-compile --version` and preserve the lockfile
 header's hash-mode options. Its unconditional
 `toml` pin preserves mutmut's Python 3.10 dependency when the lock is generated
-on a newer interpreter. A mutmut update must pass the runner's internal API
+on a newer interpreter. Generate the mutation lock with CPython 3.13 so
+LibCST's Python 3.13-only `PyYAML-ft` dependency and its hashes are retained.
+Keep that provider explicitly pinned with `python_version == "3.13"` in
+`requirements-mutation.in`; it uses the separate `yaml_ft` namespace and does
+not replace the development toolchain's `yaml` package. The repository validator
+rejects a missing provider or a marker that activates it on other runtimes.
+A mutmut update must pass the runner's internal API
 integration and behavioral tests; validators derive the reviewed version from
 the direct input instead of duplicating it. Regenerating the lock alone remains
 insufficient. Trusted scheduled and manual runs
@@ -104,6 +129,21 @@ statistics. On a validated cache hit, preserved killed verdicts are carried into
 the merge and only pending assignments execute again. This preserves a full
 mutation run without accepting partial cache state or lowering the score gate.
 
+If preparation invalidates any source/cache metadata pair, remove the existing
+shard plan as well as stale statistics before reporting plan reuse. Regenerate
+the complete plan; verified killed results from other sources remain reusable.
+A remaining plan filename must not turn incomplete source state into a cache hit.
+
+The merger admits at most 10,000 directory entries across its metadata walk.
+It checks that budget while consuming each iterator, before retaining and
+sorting the directory entries. Even unrelated files count toward the budget;
+overflow closes the iterator and fails before metadata publication.
+
+Cache metadata uses an owned unique temporary file for replacement. Publication
+failures clean that temporary file without replacing the prior destination.
+A cleanup failure is reported separately, retaining any earlier I/O failure;
+an error after replacement does not imply rollback or an unchanged destination.
+
 ## Make a change
 
 1. Create a focused branch from the default branch.
@@ -120,6 +160,18 @@ Do not weaken validation, suppress a valid warning, disable a test, or replace a
 real check with a hardcoded result.
 
 ## Verify the change
+
+The commitlint and code-scanning required jobs still run on `edited` events,
+including metadata edits after a PR closes. Only an explicit `closed` PR state
+returns a not-applicable result without validating commits or polling analyses.
+Open PRs and merge groups retain the full gates, and unknown PR states fail.
+Closed-PR noops use separate `commitlint-closed-pr` and
+`code-scanning-gate-closed-pr` names, so their success cannot be counted under
+the required contexts on a shared head SHA. The normal contexts remain
+`commitlint` and `code-scanning-gate` for admission events.
+Commitlint checks out the event's exact head SHA rather than an implicit ref.
+This lifecycle handling does not change failed historical checks or attest that
+a closed PR passed validation.
 
 Run these commands from the repository root:
 
@@ -138,6 +190,30 @@ python scripts/validate_repository.py
 
 The coverage command enforces the repository's 100% branch-coverage floor from
 `.coveragerc`.
+Run boundary checks on the declared minimum/latest runtimes with their actual
+standard libraries. Approved documentation HTTP 308 redirects must preserve
+GET/HEAD methods even when the minimum runtime's redirect handler lacks 308;
+HTTPS/host, unsafe-method, body-ownership and loop limits still apply.
+Legacy body publication reports cleanup failures without hiding a prior write
+failure or claiming rollback. It registers cleanup only after allocation.
+
+The shared GitHub preflight client admits stdout/stderr bytes before writing
+temporary spools. Per-stream and inspection-total limits apply during capture,
+not only after the CLI exits. Require EOF on both pipes and a completed CLI
+before decoding; timeout, excess output and incomplete spool writes are errors,
+not partial evidence. Native Windows uses pipe readiness rather than socket-only
+`select`; POSIX uses selectable pipe descriptors. These checks do not certify
+SDK-internal allocation, descendant-process termination, HTTP redirect origin
+or underlying request counts. Preserve those independent audit requirements.
+
+Gh-backed preflight metrics distinguish client attempts from wire requests.
+`github_client_requests` is the counter charged at client admission.
+`github_api_requests` remains a compatibility alias, explicitly tagged with
+`github_api_requests_unit: client-request-attempts`. The transport count is
+`github_http_requests: null` with state `not-measured`, never zero or passed
+evidence. Neither redirects nor other SDK-internal requests can be counted
+from the returned CLI body. These diagnostic metrics do not authorize writes
+or prove an underlying HTTP-request quota or initial-response provenance.
 
 Mutation testing runs daily and on manual dispatch because a complete run is
 substantially more expensive than the required pull-request checks. The workflow
@@ -145,6 +221,16 @@ plans every mutant, runs 128 exact Linux shards, and merges only a complete,
 non-overlapping assignment before it applies the gate. Mutmut requires
 operating-system `fork` support, so run it on Linux or macOS, or in WSL on
 Windows:
+
+If the lock resolves LibCST to a source distribution because no compatible wheel
+is available, provision a compatible Rust toolchain and platform native build tools
+in an isolated build environment first. Derive compiler requirements from the
+hash-verified pinned source, including its Cargo manifest; do not assume Linux
+wheel availability also covers macOS Intel. The pip hash lock is not proof of a
+successful source build and does not provision Rust or the system linker/SDK.
+Record the actual toolchain and build/runtime result on the intended platform,
+or report that check as deferred. Do not lower the score gate, change the pin,
+or label metadata-only checks as runtime passes to bypass an unavailable build.
 
 ```bash
 python -m pip install --require-hashes --requirement requirements-mutation.txt
@@ -182,7 +268,9 @@ security, deployment, or dependency-update review whose title has no mandatory
 mapping, add `--template security`, `--template deployment`, or
 `--template dependency-update`.
 After preparing the UTF-8 body file, rerun the preflight with `--body-file <path>`;
-it rejects hard-wrapped prose before the GitHub mutation.
+add `--require-structure` so it also verifies the selected template's required
+headings and checklist items before the GitHub mutation. Draft items may remain
+unchecked; readiness checks are enforced separately by the template gate.
 
 When a commit changes behavior or policy, include structured summary fields in
 the commit body so the generated PR can preserve the review context:
@@ -225,7 +313,15 @@ change themes or verify narrative claims against patches. Live check status
 remains in GitHub's Checks tab. The workflow does not read a hard-coded PR-body
 narrative. The selected trusted PR template supplies the headings and checklist
 contract, while generated sections are replaced from current evidence. The
-workflow bounds API responses and combined evidence, runs the Markdown and
+renderer matches exact heading aliases outside code, comments, and raw HTML,
+preserving custom reviewer sections and combined verification/monitoring plans.
+Its CLI checks the rendered structure against the selected trusted template
+before replacing output, so partial bodies fail before the workflow can edit
+GitHub. Use `--repository-root` when invoking it outside the target repository.
+It preserves native Dependabot and same-repository Release Please bodies under
+the template gate's authenticated author rules, after validating complete bound
+PR evidence; bot names or release-like branches alone cannot claim an exemption.
+The workflow bounds API responses and combined evidence, runs the Markdown and
 PR-template preflights before editing, rechecks the head, base, title,
 repository, and current body immediately before the mutation, then verifies the
 complete body after GitHub accepts it. Missing, malformed, stale, incomplete,

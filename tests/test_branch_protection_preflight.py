@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import copy
 import importlib.util
+import json
+import os
 import re
 import runpy
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+NATIVE_GIT = shutil.which("git")
 SCRIPT_DIRECTORY = PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts"
 CODEQL_SPEC = importlib.util.spec_from_file_location(
     "skills.repo-scaffold.scripts.codeql_preflight",
@@ -43,8 +52,6 @@ MERGE_SHA = "b" * 40
 MERGE_GROUP_SHA = "7" * 40
 BLOB_SHA = "c" * 40
 BASE_SHA = "d" * 40
-BASE_BLOB_SHA = "e" * 40
-MERGE_EXTRA_BLOB_SHA = "f" * 40
 CHECK_SUITE_ID = 98765
 HEAD_CHECK_SUITE_ID = 98764
 MERGE_GROUP_CHECK_SUITE_ID = 98763
@@ -69,6 +76,25 @@ class FakeClient:
         return value
 
 
+@lru_cache(maxsize=128)
+def git_blob_id(text: str) -> str:
+    """Use Git's object-format implementation for synthetic workflow fixtures."""
+    if NATIVE_GIT is None:
+        raise unittest.SkipTest("requires Git for canonical fixture object IDs")
+    result = subprocess.run(
+        [NATIVE_GIT, "hash-object", "--stdin", "--no-filters"],
+        input=text.encode("utf-8"),
+        cwd=PLUGIN_ROOT,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    object_id = result.stdout.decode("ascii").strip()
+    if re.fullmatch(r"[0-9a-f]{40}", object_id) is None:
+        raise AssertionError("Git did not return a canonical SHA-1 fixture object ID")
+    return object_id
+
+
 def check_runs(
     context: str,
     app_id: int = 15368,
@@ -85,6 +111,7 @@ def check_runs(
                 "check_suite": {"id": suite_id},
                 "app": {"id": app_id},
                 "completed_at": datetime.now(timezone.utc).isoformat(),
+                "status": "completed",
                 "conclusion": "success",
             }
         ],
@@ -95,6 +122,7 @@ def preflight_args(*contexts: str, **overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "hostname": "github.com",
         "repository": f"{OWNER}/{REPOSITORY}",
+        "expected_repository_id": 42,
         "default_branch": "main",
         "pull_request": 7,
         "merge_group_sha": None,
@@ -105,6 +133,213 @@ def preflight_args(*contexts: str, **overrides: object) -> argparse.Namespace:
 
 
 class WorkflowInspectionTests(unittest.TestCase):
+    def test_root_producer_inventory_refuses_unclassifiable_paths(self) -> None:
+        valid = {
+            "path": ".github/workflows/ci.yml",
+            "type": "blob",
+            "mode": "100644",
+            "sha": git_blob_id("jobs: {}\n"),
+        }
+        unknowns: tuple[object, ...] = (
+            None,
+            {},
+            {"path": None},
+            {"path": 7},
+            {"path": ""},
+        )
+        for unknown in unknowns:
+            for first in (True, False):
+                client = mock.Mock()
+                client.raw.return_value = "jobs: {}\n"
+                client.json.return_value = {
+                    "truncated": False,
+                    "tree": [unknown, valid] if first else [valid, unknown],
+                }
+                with (
+                    self.subTest(entry=unknown, first=first),
+                    self.assertRaisesRegex(
+                        branch_protection_preflight.InspectionError, "unclassifiable"
+                    ),
+                ):
+                    branch_protection_preflight.workflow_producers(
+                        client, OWNER, REPOSITORY, HEAD_SHA, "main"
+                    )
+                client.raw.assert_not_called()
+
+    def test_root_producer_inventory_bounds_all_entries_before_classification(
+        self,
+    ) -> None:
+        client = mock.Mock()
+        client.json.return_value = {
+            "truncated": False,
+            "tree": [{"path": "README.md"}, {"path": "other.md"}],
+        }
+        with (
+            mock.patch.object(
+                branch_protection_preflight, "MAX_REMOTE_TREE_ENTRIES", 1
+            ),
+            self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError, "entry safety cap"
+            ),
+        ):
+            branch_protection_preflight.workflow_producers(
+                client, OWNER, REPOSITORY, HEAD_SHA, "main"
+            )
+        client.raw.assert_not_called()
+
+    def test_producer_refuses_wrong_git_blob_before_inspecting_jobs(self) -> None:
+        body = b"on: pull_request\njobs: {}\n"
+        blob = hashlib.sha1(
+            b"blob " + str(len(body)).encode() + b"\0" + body, usedforsecurity=False
+        ).hexdigest()
+        client = mock.Mock()
+        client.json.return_value = {
+            "truncated": False,
+            "tree": [
+                {
+                    "path": ".github/workflows/ci.yml",
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": blob,
+                }
+            ],
+        }
+        client.raw.return_value = "on: pull_request\njobs: {test: {runs-on: ubuntu-latest, steps: [{run: echo wrong}]}}\n"
+        with mock.patch.object(branch_protection_preflight, "parse_workflow") as parse:
+            with self.assertRaisesRegex(
+                branch_protection_preflight.InspectionError, "blob identity"
+            ):
+                branch_protection_preflight.workflow_producers(
+                    client, OWNER, REPOSITORY, HEAD_SHA, "main"
+                )
+        parse.assert_not_called()
+
+    def test_job_context_accepts_only_bounded_closed_pr_name_disposition(self) -> None:
+        expression = (
+            "${{ github.event_name == 'pull_request' && "
+            "github.event.pull_request.state == 'closed' && 'ci-closed-pr' || 'ci' }}"
+        )
+        cases: tuple[tuple[object, str | None], ...] = (
+            (None, None),
+            (True, None),
+            ("", None),
+            ("ci", "ci"),
+            ("${{ matrix.name }}", None),
+            ("${{" + "x" * 1024, None),
+            (expression, "ci"),
+            (expression.replace("'pull_request'", "'pull_request_target'"), "ci"),
+            (expression.replace("'closed'", "'open'"), None),
+            (expression.replace("'ci-closed-pr'", "'CI'"), None),
+            (expression.replace("'ci-closed-pr'", "'${{ matrix.name }}'"), None),
+            (expression.replace("'ci-closed-pr'", "'" + "x" * 257 + "'"), None),
+            (expression.replace(" || 'ci'", " || '" + "x" * 257 + "'"), None),
+            (expression.replace(" || 'ci'", " || '${{ matrix.name }}'"), None),
+            (expression.replace(" || 'ci'", " || 'ci\\n'"), "ci\\n"),
+            (expression.replace(" || 'ci'", " || 'ci\n'"), None),
+            (expression.replace(" || 'ci'", " || 'it''s ci'"), "it's ci"),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    branch_protection_preflight.required_event_job_context(value),
+                    expected,
+                )
+
+    def test_lifecycle_checkout_exception_rejects_unpinned_and_noncheckout_steps(
+        self,
+    ) -> None:
+        guard = "github.event_name != 'pull_request' || github.event.pull_request.state != 'closed'"
+        valid = {
+            "if": guard,
+            "uses": "actions/checkout@" + "a" * 40,
+            "with": {
+                "persist-credentials": "false",
+                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}",
+            },
+        }
+        cases = (
+            (None, False),
+            ({"run": "echo validation"}, True),
+            (valid, True),
+            ({**valid, "continue-on-error": "false"}, False),
+            ({**valid, "uses": None}, False),
+            ({**valid, "uses": "actions/checkout@main"}, False),
+            ({**valid, "uses": "other/checkout@" + "a" * 40}, False),
+            ({**valid, "run": "exit 0"}, False),
+            ({**valid, "with": None}, False),
+        )
+        for step, expected in cases:
+            with self.subTest(step=step):
+                self.assertEqual(
+                    branch_protection_preflight.step_executes_for_required_events(step),
+                    expected,
+                )
+
+    def test_shipped_commitlint_lifecycle_guard_is_executable_for_required_events(
+        self,
+    ) -> None:
+        endpoint = f"repos/{OWNER}/{REPOSITORY}/git/trees/{HEAD_SHA}?recursive=1"
+        for relative in (
+            ".github/workflows/commitlint.yml",
+            "skills/repo-scaffold/assets/workflows/commitlint.yml",
+        ):
+            workflow = (PLUGIN_ROOT / relative).read_text(encoding="utf-8")
+            guard = "github.event_name != 'pull_request' || github.event.pull_request.state != 'closed'"
+            cases = (
+                ("shipped", workflow, True),
+                ("false", workflow.replace(guard, "false"), False),
+                (
+                    "inverted",
+                    workflow.replace("state != 'closed'", "state == 'closed'"),
+                    False,
+                ),
+                (
+                    "actor-filter",
+                    workflow.replace(guard, "github.actor == 'trusted'"),
+                    False,
+                ),
+                (
+                    "wrong-ref",
+                    workflow.replace(
+                        "github.event.pull_request.head.sha",
+                        "github.event.pull_request.base.sha",
+                    ),
+                    False,
+                ),
+                (
+                    "credentials",
+                    workflow.replace(
+                        "persist-credentials: false", "persist-credentials: true"
+                    ),
+                    False,
+                ),
+            )
+            for label, text, executable in cases:
+                with self.subTest(workflow=relative, case=label):
+                    blob_sha = git_blob_id(text)
+                    FakeClient.responses = {
+                        endpoint: {
+                            "truncated": False,
+                            "tree": [
+                                {
+                                    "type": "blob",
+                                    "mode": "100644",
+                                    "path": ".github/workflows/commitlint.yml",
+                                    "sha": blob_sha,
+                                }
+                            ],
+                        },
+                        f"repos/{OWNER}/{REPOSITORY}/git/blobs/{blob_sha}": text,
+                    }
+                    producers = branch_protection_preflight.workflow_producers(
+                        FakeClient("github.com"), OWNER, REPOSITORY, HEAD_SHA, "main"
+                    )
+                    self.assertEqual(len(producers), 1)
+                    self.assertEqual(producers[0].executable, executable)
+                    self.assertTrue(producers[0].unconditional)
+                    self.assertTrue(producers[0].pull_request_coverage)
+                    self.assertTrue(producers[0].merge_group_coverage)
+
     def test_event_coverage_requires_relevant_trigger_types_without_filters(
         self,
     ) -> None:
@@ -263,9 +498,7 @@ jobs: {}
                 "truncated": False,
                 "tree": [
                     entry,
-                    None,
                     {"type": "tree", "path": ".github/workflows"},
-                    {"type": "blob", "path": 42, "sha": BLOB_SHA},
                     {
                         "type": "blob",
                         "path": ".github/workflows/nested/ci.yml",
@@ -336,11 +569,14 @@ jobs: {}
                 client, OWNER, REPOSITORY, HEAD_SHA
             )
 
-        blob_endpoint = f"repos/{OWNER}/{REPOSITORY}/git/blobs/{BLOB_SHA}"
-        FakeClient.responses = {
-            endpoint: {"truncated": False, "tree": [entry]},
-            blob_endpoint: "jobs: {}\n",
-        }
+        def install_content(text: str) -> None:
+            blob = git_blob_id(text)
+            FakeClient.responses = {
+                endpoint: {"truncated": False, "tree": [{**entry, "sha": blob}]},
+                f"repos/{OWNER}/{REPOSITORY}/git/blobs/{blob}": text,
+            }
+
+        install_content("jobs: {}\n")
         with mock.patch.object(
             branch_protection_preflight, "MAX_TOTAL_WORKFLOW_BYTES", 1
         ):
@@ -351,21 +587,21 @@ jobs: {}
                     client, OWNER, REPOSITORY, HEAD_SHA
                 )
 
-        FakeClient.responses[blob_endpoint] = "on: pull_request\n"
+        install_content("on: pull_request\n")
         with self.assertRaisesRegex(
             branch_protection_preflight.InspectionError, "no jobs"
         ):
             branch_protection_preflight.workflow_producers(
                 client, OWNER, REPOSITORY, HEAD_SHA
             )
-        FakeClient.responses[blob_endpoint] = "jobs:\n  invalid: []\n"
+        install_content("jobs:\n  invalid: []\n")
         with self.assertRaisesRegex(
             branch_protection_preflight.InspectionError, "invalid job"
         ):
             branch_protection_preflight.workflow_producers(
                 client, OWNER, REPOSITORY, HEAD_SHA
             )
-        FakeClient.responses[blob_endpoint] = """on: pull_request
+        install_content("""on: pull_request
 jobs:
   malformed:
     name: malformed
@@ -373,7 +609,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo checked
-"""
+""")
         malformed_producers = branch_protection_preflight.workflow_producers(
             client, OWNER, REPOSITORY, HEAD_SHA
         )
@@ -381,7 +617,7 @@ jobs:
             [producer.context for producer in malformed_producers], ["malformed"]
         )
         self.assertFalse(malformed_producers[0].unconditional)
-        FakeClient.responses[blob_endpoint] = """on: pull_request
+        install_content("""on: pull_request
 jobs:
   dynamic:
     name: ${{ github.job }}
@@ -391,7 +627,7 @@ jobs:
     name: non-executable
     runs-on: ubuntu-latest
     steps: []
-"""
+""")
         producers = branch_protection_preflight.workflow_producers(
             client, OWNER, REPOSITORY, HEAD_SHA
         )
@@ -403,6 +639,264 @@ jobs:
 
 
 class BranchProtectionPreflightTests(unittest.TestCase):
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_native_fresh_verdict_rejects_coerced_or_replaced_binding(self) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        identity = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert identity is not None
+        function = (
+            "function Assert-FreshRequiredCheckPreflight {"
+            + reference.split("function Assert-FreshRequiredCheckPreflight {", 1)[
+                1
+            ].split("\n```", 1)[0]
+        )
+        schema = ""
+        if "function Assert-RequiredCheckPreflightSchema {" in reference:
+            schema = (
+                "function Assert-RequiredCheckPreflightSchema {"
+                + reference.split("function Assert-RequiredCheckPreflightSchema {", 1)[
+                    1
+                ].split("\n$preflightOutput =", 1)[0]
+            )
+        valid: dict[str, Any] = {
+            "inspection_complete": True,
+            "decision": "may-configure-classic-protection",
+            "repository": "OWNER/REPO",
+            "repository_id": 42,
+            "default_branch": "main",
+            "administration_permission": True,
+            "pull_request": 7,
+            "head_sha": HEAD_SHA,
+            "test_merge_sha": MERGE_SHA,
+            "merge_queue_required": False,
+            "merge_group_sha": None,
+            "required_checks": [
+                {
+                    "context": "ci-success",
+                    "app_id": 15368,
+                    "producer": ".github/workflows/ci.yml#gate",
+                }
+            ],
+        }
+        cases = [("positive", valid, 1)]
+        for field, value in (
+            ("repository_id", 43),
+            ("repository_id", "42"),
+            ("repository_id", None),
+            ("inspection_complete", "true"),
+            ("administration_permission", False),
+            ("administration_permission", "true"),
+            ("pull_request", "7"),
+            ("head_sha", [HEAD_SHA]),
+            ("decision", "bind-repository-identity-before-mutation"),
+            (
+                "required_checks",
+                [
+                    {
+                        "context": "ci-success",
+                        "app_id": "15368",
+                        "producer": ".github/workflows/ci.yml#gate",
+                    }
+                ],
+            ),
+        ):
+            cases.append((field, {**valid, field: value}, 0))
+        prelude = r"""
+$ErrorActionPreference='Stop'
+$SELECTED_REPOSITORY_ID=42; $defaultBranch='main'
+$branchProtectionPreflight='synthetic'; $preflightArguments=@()
+$requiredCheckPreflight=Get-Content -LiteralPath $env:APPROVED -Raw | ConvertFrom-Json
+$verifiedChecks=@($requiredCheckPreflight.required_checks)
+function python { $global:LASTEXITCODE=0; Get-Content -LiteralPath $env:FIXTURE -Raw }
+"""
+        suffix = r"""
+$mutations=0; $failure=$null
+try { $result=Assert-FreshRequiredCheckPreflight; $mutations++ } catch { $failure=$_.Exception.Message }
+@{mutations=$mutations;failure=$failure} | ConvertTo-Json -Compress
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            approved = root / "approved.json"
+            approved.write_text(json.dumps(valid), encoding="utf-8")
+            script = root / "consumer.ps1"
+            script.write_bytes(
+                (prelude + identity[0] + schema + function + suffix).encode("utf-8-sig")
+            )
+            for label, fresh_verdict, mutations in cases:
+                with self.subTest(case=label):
+                    fixture = root / "fixture.json"
+                    fixture.write_text(json.dumps(fresh_verdict), encoding="utf-8")
+                    result = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(script),
+                        ],
+                        env={
+                            **os.environ,
+                            "FIXTURE": str(fixture),
+                            "APPROVED": str(approved),
+                        },
+                        capture_output=True,
+                        check=False,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    response = json.loads(
+                        result.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                    )
+                    self.assertEqual(response["mutations"], mutations, response)
+
+    def test_binding_helpers_reject_nonfinite_rules_and_preserve_typed_pr_fields(
+        self,
+    ) -> None:
+        self.assertNotEqual(
+            branch_protection_preflight.rules_binding([{"v": True}]),
+            branch_protection_preflight.rules_binding([{"v": 1}]),
+        )
+        for value in (float("nan"), object()):
+            with self.assertRaises(branch_protection_preflight.InspectionError):
+                branch_protection_preflight.rules_binding(value)
+        self.assertNotEqual(
+            branch_protection_preflight.pull_request_binding({"number": True}),
+            branch_protection_preflight.pull_request_binding({"number": 1}),
+        )
+
+    def test_approving_verdict_requires_discovery_and_pull_request_repository_ids(
+        self,
+    ) -> None:
+        self.configure()
+        endpoint = f"repos/{OWNER}/{REPOSITORY}"
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            result = branch_protection_preflight.run(preflight_args("ci-success"))
+        self.assertEqual(result.get("repository_id"), 42)
+        for number in (None, True, "7", 8):
+            self.configure()
+            pr = cast(dict[str, Any], FakeClient.responses[endpoint + "/pulls/7"])
+            pr["number"] = number
+            with (
+                self.subTest(number=number),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaisesRegex(
+                    branch_protection_preflight.InspectionError, "number"
+                ),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+        for identity in (43, None, True, "42", 0, -1, 42.5):
+            self.configure()
+            response = cast(dict[str, Any], FakeClient.responses[endpoint])
+            response["id"] = identity
+            with (
+                self.subTest(identity=identity),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaises(branch_protection_preflight.InspectionError),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+        self.configure()
+        with mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient):
+            result = branch_protection_preflight.run(
+                preflight_args("ci-success", expected_repository_id=None)
+            )
+        self.assertEqual(result["decision"], "bind-repository-identity-before-mutation")
+        self.configure()
+        pr = cast(dict[str, Any], FakeClient.responses[endpoint + "/pulls/7"])
+        pr["base"]["repo"]["id"] = 43
+        with (
+            mock.patch.object(branch_protection_preflight, "GitHubClient", FakeClient),
+            self.assertRaises(branch_protection_preflight.InspectionError),
+        ):
+            branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_verdict_rejects_mid_inspection_repository_pull_request_and_rule_drift(
+        self,
+    ) -> None:
+        endpoint = f"repos/{OWNER}/{REPOSITORY}"
+        rule_endpoint = endpoint + "/rules/branches/main?per_page=100"
+        for changes in (
+            ("repository", {"id": 43}),
+            ("repository", {"archived": True}),
+            ("repository", {"permissions": {"admin": False}}),
+            ("pull_request", {"state": "closed"}),
+            ("pull_request", {"head": {"sha": "f" * 40}}),
+            ("pull_request", {"merge_commit_sha": "f" * 40}),
+            ("rules", [{"type": "merge_queue"}]),
+        ):
+            self.configure()
+            domain, value = changes
+            original = copy.deepcopy(FakeClient.responses)
+
+            class DriftingClient(FakeClient):
+                def json(self, path: str) -> object:
+                    result = super().json(path)
+                    if "/actions/runs?check_suite_id=" in path:
+                        if domain == "rules":
+                            self.responses[rule_endpoint] = value
+                        else:
+                            changed_path = (
+                                endpoint
+                                if domain == "repository"
+                                else endpoint + "/pulls/7"
+                            )
+                            self.responses[changed_path] = {
+                                **cast(dict[str, Any], original[changed_path]),
+                                **cast(dict[str, Any], value),
+                            }
+                    return result
+
+            with (
+                self.subTest(changes=changes),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", DriftingClient
+                ),
+                self.assertRaises(branch_protection_preflight.InspectionError),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
+    def test_final_reinspection_rejects_degraded_pr_and_changed_trusted_default(
+        self,
+    ) -> None:
+        target_workflow = self.WORKFLOW.replace(
+            "  pull_request:\n", "  pull_request_target:\n    branches: [main]\n"
+        )
+        endpoint = f"repos/{OWNER}/{REPOSITORY}"
+        for domain, value in (
+            ("pull_request", None),
+            ("default_commit", None),
+            ("default_commit", {"sha": "f" * 40}),
+        ):
+            self.configure(target_workflow)
+
+            class DriftingClient(FakeClient):
+                def json(self, path: str) -> object:
+                    result = super().json(path)
+                    if "/actions/runs?check_suite_id=" in path:
+                        changed_path = endpoint + (
+                            "/pulls/7" if domain == "pull_request" else "/commits/main"
+                        )
+                        self.responses[changed_path] = value
+                    return result
+
+            with (
+                self.subTest(domain=domain, value=value),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", DriftingClient
+                ),
+                self.assertRaises(branch_protection_preflight.InspectionError),
+            ):
+                branch_protection_preflight.run(preflight_args("ci-success"))
+
     WORKFLOW = """name: CI
 on:
   pull_request:
@@ -423,22 +917,25 @@ jobs:
     ) -> None:
         workflow = self.WORKFLOW if workflow is None else workflow
         base_workflow = workflow if base_workflow is None else base_workflow
-        base_blob_sha = BLOB_SHA if base_workflow == workflow else BASE_BLOB_SHA
+        blob_sha = git_blob_id(workflow)
+        base_blob_sha = git_blob_id(base_workflow)
         tree_path = f"repos/{OWNER}/{REPOSITORY}/git/trees/{MERGE_SHA}?recursive=1"
         FakeClient.responses = {
             f"repos/{OWNER}/{REPOSITORY}": {
                 "full_name": f"{OWNER}/{REPOSITORY}",
+                "id": 42,
                 "default_branch": "main",
                 "archived": False,
                 "disabled": False,
                 "permissions": {"admin": True},
             },
             f"repos/{OWNER}/{REPOSITORY}/pulls/7": {
+                "number": 7,
                 "state": "open",
                 "base": {
                     "ref": "main",
                     "sha": BASE_SHA,
-                    "repo": {"full_name": f"{OWNER}/{REPOSITORY}"},
+                    "repo": {"full_name": f"{OWNER}/{REPOSITORY}", "id": 42},
                 },
                 "head": {"sha": HEAD_SHA},
                 "merge_commit_sha": MERGE_SHA,
@@ -453,11 +950,11 @@ jobs:
                         "type": "blob",
                         "mode": "100644",
                         "path": ".github/workflows/ci.yml",
-                        "sha": BLOB_SHA,
+                        "sha": blob_sha,
                     }
                 ],
             },
-            f"repos/{OWNER}/{REPOSITORY}/git/blobs/{BLOB_SHA}": workflow,
+            f"repos/{OWNER}/{REPOSITORY}/git/blobs/{blob_sha}": workflow,
             f"repos/{OWNER}/{REPOSITORY}/git/trees/{BASE_SHA}?recursive=1": {
                 "truncated": False,
                 "tree": [
@@ -511,9 +1008,7 @@ jobs:
             workflow if merge_group_workflow is None else merge_group_workflow
         )
         self.configure(workflow)
-        merge_group_blob_sha = (
-            BLOB_SHA if merge_group_workflow == workflow else MERGE_EXTRA_BLOB_SHA
-        )
+        merge_group_blob_sha = git_blob_id(merge_group_workflow)
         tree_path = (
             f"repos/{OWNER}/{REPOSITORY}/git/trees/{MERGE_GROUP_SHA}?recursive=1"
         )
@@ -585,11 +1080,11 @@ jobs:
                 "type": "blob",
                 "mode": "100644",
                 "path": ".github/workflows/base-ci.yml",
-                "sha": MERGE_EXTRA_BLOB_SHA,
+                "sha": git_blob_id(self.WORKFLOW),
             }
         )
         FakeClient.responses[
-            f"repos/{OWNER}/{REPOSITORY}/git/blobs/{MERGE_EXTRA_BLOB_SHA}"
+            f"repos/{OWNER}/{REPOSITORY}/git/blobs/{git_blob_id(self.WORKFLOW)}"
         ] = self.WORKFLOW
 
         with (
@@ -838,6 +1333,8 @@ jobs:
             ),
         ]
         for response, message in cases:
+            if isinstance(response, dict):
+                response = {"id": 42, **response}
             FakeClient.responses[f"repos/{OWNER}/{REPOSITORY}"] = response
             with self.subTest(response=response):
                 with mock.patch.object(
@@ -1384,6 +1881,83 @@ jobs:
             ),
         ):
             branch_protection_preflight.run(args)
+
+    def test_run_does_not_coerce_check_run_names_into_required_contexts(self) -> None:
+        cases: tuple[tuple[str, object], ...] = (
+            ("True", True),
+            ("{}", {}),
+            ("None", None),
+            ("7", 7),
+        )
+        for context, name in cases:
+            workflow = self.WORKFLOW.replace("name: ci-success", f"name: '{context}'")
+            for receipt_name, accepted in ((name, False), (context, True)):
+                self.configure(workflow)
+                endpoint = f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_SHA}/check-runs?per_page=100"
+                payload = cast(dict[str, Any], FakeClient.responses[endpoint])
+                payload["check_runs"][0]["name"] = receipt_name
+                with (
+                    self.subTest(context=context, name=receipt_name),
+                    mock.patch.object(
+                        branch_protection_preflight, "GitHubClient", FakeClient
+                    ),
+                ):
+                    if accepted:
+                        verdict = branch_protection_preflight.run(
+                            preflight_args(context)
+                        )
+                        self.assertEqual(
+                            verdict["decision"], "may-configure-classic-protection"
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            branch_protection_preflight.InspectionError,
+                            "Check Run evidence",
+                        ):
+                            branch_protection_preflight.run(preflight_args(context))
+
+    def test_run_rejects_check_run_that_is_not_completed(self) -> None:
+        statuses: tuple[object, ...] = (
+            "missing",
+            None,
+            False,
+            0,
+            [],
+            {},
+            "queued",
+            "in_progress",
+            "Completed",
+            "completed ",
+            "completed",
+        )
+        for status in statuses:
+            self.configure()
+            endpoint = f"repos/{OWNER}/{REPOSITORY}/commits/{MERGE_SHA}/check-runs?per_page=100"
+            payload = cast(dict[str, Any], FakeClient.responses[endpoint])
+            check_run = payload["check_runs"][0]
+            if status == "missing":
+                check_run.pop("status")
+            else:
+                check_run["status"] = status
+            with (
+                self.subTest(status=status),
+                mock.patch.object(
+                    branch_protection_preflight, "GitHubClient", FakeClient
+                ),
+            ):
+                if status == "completed":
+                    verdict = branch_protection_preflight.run(
+                        preflight_args("ci-success")
+                    )
+                    self.assertEqual(
+                        verdict["decision"], "may-configure-classic-protection"
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        branch_protection_preflight.InspectionError,
+                        "completed Check Run",
+                    ):
+                        branch_protection_preflight.run(preflight_args("ci-success"))
 
     def test_check_run_freshness_has_both_time_boundaries(self) -> None:
         now = datetime(2026, 9, 8, tzinfo=timezone.utc)

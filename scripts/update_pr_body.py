@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -186,11 +188,42 @@ def write_body(path: Path, body: str) -> None:
             f"generated pull-request body exceeds the {MAX_BODY_BYTES}-byte safety cap"
         )
     try:
-        path.write_bytes(payload)
+        destination = tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        )
     except OSError as error:
         raise ValueError(
             f"could not write generated pull-request body: {error}"
         ) from error
+    temporary = Path(destination.name)
+    publication_error: OSError | None = None
+    try:
+        with destination:
+            destination.write(payload)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary, path)
+    except OSError as error:
+        publication_error = error
+        raise ValueError(
+            f"could not write generated pull-request body: {error}"
+        ) from error
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as error:
+            publication_state = (
+                f"publication failed: {publication_error}"
+                if publication_error is not None
+                else "publication state may have changed"
+            )
+            raise ValueError(
+                f"body temporary cleanup failed: {error}; {publication_state}"
+            ) from error
 
 
 def main(argv: list[str] | None = None) -> int:

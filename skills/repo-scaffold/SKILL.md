@@ -136,14 +136,15 @@ enabled for Scorecard's SARIF upload. Then run the workflow-installation
 preflight for the asset's exact action pins.
 
 Before configuring classic branch protection, run the fail-closed
-`scripts/branch_protection_preflight.py` against a mergeable representative PR
+`scripts/branch_protection_preflight.py` with the discovered `--expected-repository-id` against a mergeable representative PR
 whose head contains the final workflow set. Use only its returned contexts and
 GitHub App IDs. Its producer check accepts a trusted `pull_request_target`
 workflow only when it is filtered to the verified default branch and its exact
 workflow blob is unchanged from the pull request's base commit. Merge any new or
 changed target workflow before running this check. It rejects job or step
-conditions that can skip the gate or mask its failure, including `if` and
-`continue-on-error`. It binds Check Run evidence to the exact Actions workflow
+conditions that can skip the gate or mask its failure, including arbitrary `if` and
+`continue-on-error`; the pinned, head-bound checkout's closed-PR guard is the
+only step-condition exception. It binds Check Run evidence to the exact Actions workflow
 path through `check_suite.id`, commit SHA, and an event GitHub accepts for
 required status checks; a `workflow_dispatch` result is not sufficient. Do not
 configure required checks when it is inconclusive. If an effective merge queue
@@ -158,6 +159,15 @@ Security enabled. Install the asset only when it returns
 `may-install-dependency-review-workflow`; also run the workflow-installation
 preflight before copying the asset.
 
+The bundled dependency preflight currently uses the synchronous SBOM export
+and requires GitHub CLI's reported HTTP `200` response plus the validated SPDX
+envelope. That endpoint is deprecated and will be unavailable after November
+13, 2026. The replacement `generate-report` GET creates a job; it is not a
+read-only fallback. Async report generation/fetch/download is not implemented
+by this preflight. Do not silently create a report, reuse an expired download,
+or bypass inconclusive inspection to install the workflow. Review the
+compatibility and authorization boundary in `references/github-setup.md`.
+
 For private/internal CodeQL advanced setup, dependency review, and Scorecard,
 read `security_and_analysis.code_security.status` when present. Use the legacy
 `advanced_security.status` only when `code_security` is absent. A disabled or
@@ -170,6 +180,8 @@ skip the shipped auto-merge workflows when it reports an effective merge queue.
 When it reports that repository auto-merge is disabled, enable that capability
 only with separate approval, verify the mutation, then rerun the preflight
 before installing either shipped auto-merge workflow.
+The producer rejects changes to its effective-rule/classic-gate evidence and
+rechecks numeric identity and controlling repository settings before a verdict.
 When it reports missing required status checks, configure that branch policy as
 a separate approved change, verify it, then rerun the preflight before
 installing either auto-merge workflow.
@@ -180,7 +192,10 @@ protection, or private vulnerability reporting, run the fail-closed
 set and do not mutate when it cannot prove an active target repository and
 current administration permission. Do not enable push protection unless secret
 scanning is already enabled or is in the same approved mutation. Offer private
-vulnerability reporting only for a verified public non-fork repository.
+vulnerability reporting only for a verified public repository, including a fork.
+Automated fixes require an exact no-content `204` Dependabot-alert receipt;
+multi-request inspection rechecks that prerequisite and controlling repository
+state before its final verdict. A prior-enable plan is not verified enablement.
 For private or internal repositories, verify [GitHub's Secret Protection
 eligibility](https://docs.github.com/en/code-security/concepts/secret-security/secret-scanning)
 separately before enabling secret scanning or push protection; repository-level
@@ -199,11 +214,29 @@ to the exact approved request and do not call `gh repo edit` or `gh label create
 when it cannot prove the target identity, active repository state, and
 administration permission.
 
+Retain the selected repository's positive numeric REST ID from discovery.
+Repository-settings, security-feature, merge-settings, dependency-review,
+Scorecard, release, workflow-installation, CodeQL default/advanced and branch-protection preflights
+must receive
+that original ID with `--expected-repository-id`; require their returned
+`repository_id` to match before any setting/asset mutation. Their
+`bind-repository-identity-before-mutation` decision is discovery-only, not
+approval. Do not rebind an approved plan to a different ID at the same name.
+Use the typed identity consumer in `references/github-setup.md`, including
+post-mutation repository-state checks. Other preflight surfaces still need their
+own evidence binding; this contract does not claim that named REST writes have
+an atomic ID precondition.
+
 Before installing release workflows, run the fail-closed
 `scripts/release_preflight.py` against the exact repository and default branch.
 Install provenance-attestation jobs only when it returns
-`may-install-attestation-workflows`; otherwise render the documented
-no-attestation variant. A private or internal repository needs separate
+`may-install-attestation-workflows`. Render the documented no-attestation
+variant only for an identity-bound `render-no-attestation-variant` decision,
+or `may-install-release-workflows` when attestations were not requested.
+`inconclusive`, incomplete evidence, and
+`bind-repository-identity-before-mutation` forbid every release asset mutation;
+they must not be converted into no-attestation eligibility.
+A private or internal repository needs separate
 GitHub Enterprise Cloud confirmation before that preflight can approve
 attestations. After a maintainer has created `RELEASE_PLEASE_TOKEN`, use
 `--require-release-please-token` before installing release-please or an
@@ -284,9 +317,27 @@ hard-coded repositories and overrides of that variable are rejected. The lookup
 must use the GitHub Issue Search API as a bounded GET for open Issues, with
 `is:issue`, `in:body`, the freshness marker, and `per_page=2`; it returns at most
 the first two matching issue numbers so reruns remain idempotent without an
-unbounded pagination loop. It must use `[.items[].number] | join(" ")` so the
-bounded result is one shell-safe line, exactly one lookup invocation, and no
-extra `gh api` arguments.
+unbounded pagination loop. Use the shipped checked projection: require explicit
+Boolean `incomplete_results: false`, a non-negative integer `total_count`, and
+an `items` array containing exactly `min(total_count, 2)` records with unique
+positive integer issue numbers before `[.items[].number] | join(" ")` emits one
+shell-safe line. A checked empty result emits the literal sentinel `none`;
+empty stdout is not proof of zero matches. Require the canonical empty-output
+failure guard immediately after the lookup and before initializing issue
+numbers; skip collection only for `none`. The sentinel is never an Issue
+argument. Partial, missing, malformed, or inconsistent evidence must fail
+before Issue mutation. Keep exactly one lookup invocation and no extra `gh api`
+arguments. An unconditional projection is not valid evidence. A checked
+line-oriented projection may use only its matching `mapfile` collector; `read`
+must not silently discard a second result. The installation preflight rejects
+unchecked repo-scaffold reminder searches even when no code-scanning gate is
+being installed.
+The lookup must execute in the same unconditional reconciliation path. Do not
+seed or reuse issue output/number state before it; only the marker/title setup
+and the reviewed read-only marker check may precede lookup after
+`set -euo pipefail`. A supplied workflow that declares the freshness checker
+and marker but fails lifecycle inspection is invalid, not an absent optional
+companion, and must not receive an installation authorization.
 The lookup result must be captured and flow into the Issue number passed to a
 `close` or `edit` mutation, directly or through an issue-number array; logging
 or testing the result alone is insufficient.
@@ -400,12 +451,25 @@ reordered.
 Changes to command lookup through `PATH`, `BASH_ENV`, `ENV`, or the shell's
 command hash are also rejected.
 
+Freshness may add exactly one literal `--language en` or `--language vi` audit
+argument. Render its human-facing workflow messages with the reviewed mappings
+in `references/scaffold-generation.md`; both validators accept only those
+display variants while retaining the same shell guards and output bindings.
+JSON fields, technical diagnostic text, protocol values, markers, paths, and
+the stable job name remain unchanged. Unsupported or duplicate language options
+fail closed before Issue mutation.
+
 For a `pull_request` workflow that declares any write permission, first verify
-that the repository's Actions setting **Send write tokens to workflows from pull
-requests** is enabled and permitted by its organization policy. Pass
-`--confirm-pull-request-write-tokens` only after that check. Without it,
-GitHub can reduce the token to read-only, so the preflight forbids installing
-the workflow. This applies to the shipped Dependabot auto-merge asset.
+effective token scopes for the intended event, actor and verified target under
+applicable repository, organization and enterprise policy. Pass
+`--confirm-pull-request-write-tokens` only after that review, with a genuine
+Boolean assertion. The **Send write tokens to workflows from pull requests**
+setting applies to private-repository fork PRs, not every same-repository PR.
+Do not broaden fork-token policy to make an asset pass. For the shipped
+same-repository Dependabot asset, review the limited declared scopes and
+[GitHub's automation guidance](https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions).
+Unavailable effective-permission proof means defer installation. The flag is
+an operator assertion, not automatic permission or approval-provenance evidence.
 
 ### 5. Configure GitHub
 
@@ -433,6 +497,8 @@ validation failure.
 - If the `documentation.yml` contract was installed and copied
   `scripts/validate_scaffold.py`, run
   `python scripts/validate_scaffold.py --repository-root .`.
+  Require its reviewed `.markdownlint-cli2.jsonc` companion or a separately
+  reviewed existing project policy; never infer lint success from parsing alone.
 - If the documentation or freshness contract copied `scripts/ci_toolchain.py`,
   run `python scripts/ci_toolchain.py run-markdownlint` when Node.js 22 or later
   is available. Otherwise report that check as skipped and verify
