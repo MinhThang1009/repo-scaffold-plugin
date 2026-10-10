@@ -127,5 +127,7 @@ existing paragraph. Malformed definitions remain subject to ordinary prose
 checks. Opaque definition lines cannot supply required headings/checklists,
 and destinations are parsed as data without network requests. Reference scans
 share a 4,194,304-character work budget per body; exhaustion fails closed.
+Container indentation uses four-column tab stops, but tabs in reference text
+remain literal characters when applying the 999-character label limit.
 Inline-code/comment disambiguation is bounded to 4,194,304 scanned characters
 per body or template; exceeding the budget fails validation closed.

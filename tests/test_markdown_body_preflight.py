@@ -119,6 +119,40 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(_bundled_lines(body), expected)
 
+    def test_reference_tabs_are_characters_not_expanded_block_columns(self) -> None:
+        cases = (
+            "[" + "a" * 998 + "\t]: /one\nvisible prose\n",
+            "- [" + "a" * 998 + "\t]: /one\n  visible prose\n",
+            "[a\n" + "b" * 996 + "\t]: /one\nvisible prose\n",
+            "- [a\n  " + "b" * 996 + "\t]: /one\n  visible prose\n",
+        )
+        for body in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), ())
+
+    def test_tab_indented_reference_continuations_preserve_literal_tabs(self) -> None:
+        body = "- item\n\n\t[" + "a" * 998 + "\t]: /one\n  visible prose\n"
+        self.assertEqual(_bundled_lines(body), ())
+
+    def test_reference_container_prefix_removal_preserves_content_characters(
+        self,
+    ) -> None:
+        module = _bundled_module()
+        cases = (
+            ("[a\t]: /one", None, False, "[a\t]: /one"),
+            ("-\t[a\t]: /one", 4, True, "[a\t]: /one"),
+            ("\t[a\t]: /one", 2, False, "  [a\t]: /one"),
+            (" [a\t]: /one", 2, False, " [a\t]: /one"),
+            (" ", 2, False, " "),
+            ("", 2, False, ""),
+        )
+        for line, indent, is_item, expected in cases:
+            with self.subTest(line=line, indent=indent, is_item=is_item):
+                self.assertEqual(
+                    module._reference_content_line(line, indent, is_list_item=is_item),
+                    expected,
+                )
+
     def test_reference_scan_budget_fails_closed(self) -> None:
         module = _bundled_module()
         with mock.patch.object(module, "MAX_REFERENCE_SCAN_CHARACTERS", 4):

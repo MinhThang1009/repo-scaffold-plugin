@@ -839,6 +839,22 @@ def indented_code_start_indent(
     return required_indent if leading_spaces >= required_indent else None
 
 
+def _reference_content_line(
+    line: str, list_indent: int | None, *, is_list_item: bool = False
+) -> str:
+    """Remove container columns while preserving tabs in literal reference text."""
+    if list_indent is None:
+        return line
+    column = 0
+    for index, character in enumerate(line):
+        if not is_list_item and character not in " \t":
+            return line
+        column += 4 - column % 4 if character == "\t" else 1
+        if column >= list_indent:
+            return " " * (column - list_indent) + line[index + 1 :]
+    return line
+
+
 class _ReferenceCursor:
     """Scan a reference definition without concatenating its continuation lines."""
 
@@ -879,16 +895,17 @@ class _ReferenceCursor:
             self.ended = True
             return
         text, depth = strip_blockquote_markers(self.lines[next_line])
-        text = _line_after_list_content_indent(text, self.list_indent)
-        indentation = len(text) - len(text.lstrip(" "))
+        text = _reference_content_line(text, self.list_indent)
+        expanded_text = text.expandtabs(4)
+        indentation = len(expanded_text) - len(expanded_text.lstrip(" "))
         if (
             depth > self.quote_depth
             or is_gfm_blank_line(text)
             or indentation < 4
             and (
                 next_line in self.table_lines
-                or HTML_COMMENT_START_PATTERN.match(text) is not None
-                or begins_markdown_block(text, allow_type_7=False)
+                or HTML_COMMENT_START_PATTERN.match(expanded_text) is not None
+                or begins_markdown_block(expanded_text, allow_type_7=False)
             )
         ):
             self.ended = True
@@ -1369,9 +1386,9 @@ def backtick_run_lengths_by_line(
             and not original_comment_open
             and (not line_previous_paragraph_open or is_list_item)
         ):
-            candidate_line = _line_after_list_content_indent(original_line, list_indent)
-            if is_list_item:
-                candidate_line = original_line.expandtabs(4)[list_indent:]
+            candidate_line = _reference_content_line(
+                original_line, list_indent, is_list_item=is_list_item
+            )
             consumed = reference_definition_end(
                 lines,
                 line_index,
