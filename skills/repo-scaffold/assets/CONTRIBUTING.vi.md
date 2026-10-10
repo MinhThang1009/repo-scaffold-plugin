@@ -27,6 +27,12 @@ khi yêu cầu review. Renderer phải dừng khi không thể rút gọn mà v�
 Summary phải bao quát thay đổi hành vi chính và các ranh giới an toàn của PR,
 không chỉ có tooling hoặc documentation cho PR-body.
 
+Giữ mỗi đoạn văn và mỗi bullet trong commit body trên một dòng vật lý; không
+hard-wrap ở 72 hoặc 80 ký tự. Dùng dòng trống để tách đoạn và field, đồng thời
+giữ xuống dòng có chủ đích trong code block. Quy ước này được ưu tiên hơn hướng
+dẫn wrap commit body chung. Renderer vẫn đọc được message cũ đã wrap mà không
+viết lại các commit đó.
+
 ## Kỳ vọng về mã nguồn
 
 - Tuân theo các quy ước hiện có của codebase.
