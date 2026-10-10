@@ -284,6 +284,11 @@ Verification: the focused tests or checks run
 
 Fields require a colon and may contain paragraphs or bullet lists on following
 lines. Record every material behavior change, including later fixes and reverts.
+Keep each commit-body prose paragraph and bullet item on one physical line;
+do not hard-wrap them at 72 or 80 characters. Separate paragraphs and fields
+with blank lines. Preserve intentional newlines in code blocks. This repository
+convention overrides generic commit-body wrapping advice. The renderer still
+accepts wrapped legacy messages without rewriting their commits.
 Commit subjects are not evidence of a root cause, and validation reported in a
 commit is evidence for that revision rather than a guarantee for later commits.
 

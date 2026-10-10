@@ -2939,6 +2939,9 @@ branch name and existing workflow list are unchanged. The PATCH can return `202 
   about a future repository revision. Do not forward GitHub credentials to the
   download destination or treat a generated-report acknowledgment as successful
   download/validation. No async operation is performed by the commands below.
+  Each temporary URL's expiry is set when the fetch request is made; a
+  migration must validate report and download-URL freshness separately.
+  A documentation review date does not certify that the migration is implemented.
 
   ```powershell
   $dependencyReviewPreflight = Join-Path $REPO_SCAFFOLD_SKILL_ROOT "scripts/dependency_review_preflight.py"

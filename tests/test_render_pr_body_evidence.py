@@ -255,6 +255,58 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             ],
         )
 
+    def test_render_keeps_each_commit_summary_item_on_one_physical_line(self) -> None:
+        facts = [
+            "Keep long commit paragraphs readable without inserting physical line breaks into the generated pull request body.",
+            "Commit prose was wrapped at a fixed column even when it was later displayed as reviewer-facing text.",
+            "Preserve each authored paragraph and bullet as a single physical line while retaining all of its material content.",
+            "Retain compatibility with already published wrapped messages without rewriting their commit identities.",
+            "Run focused rendering regressions and keep each generated verification note on a single physical line.",
+        ]
+        for legacy_wrapped in (False, True):
+            for newline in ("\n", "\r\n"):
+                with self.subTest(legacy_wrapped=legacy_wrapped, newline=newline):
+                    values = [
+                        value.replace(" ", newline + "  ", 1)
+                        if legacy_wrapped
+                        else value
+                        for value in facts
+                    ]
+                    message = newline.join(
+                        [
+                            "fix(pr): preserve commit summary layout",
+                            "",
+                            "Why: " + values[0],
+                            "Root cause: " + values[1],
+                            "Changes:",
+                            "- " + values[2],
+                            "- " + values[3],
+                            "Verification: " + values[4],
+                        ]
+                    )
+                    rendered = renderer.render_dynamic_body(
+                        BODY,
+                        PR,
+                        [[{"sha": HEAD, "commit": {"message": message}}]],
+                        FILES,
+                        None,
+                    )
+                    sections = rendered.split("## Purpose\n\n", 1)[1].split(
+                        "## Required checklist", 1
+                    )[0]
+                    narrative = [
+                        line
+                        for line in sections.splitlines()
+                        if line and not line.startswith(("## ", "- Current CI"))
+                    ]
+                    self.assertEqual(
+                        narrative,
+                        [
+                            f"- Author-reported at <code>{HEAD}</code>: {value}"
+                            for value in facts
+                        ],
+                    )
+
     def test_summary_overflow_fails_instead_of_discarding_a_material_change(
         self,
     ) -> None:

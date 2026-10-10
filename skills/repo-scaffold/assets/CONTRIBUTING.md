@@ -28,6 +28,12 @@ summary must cover primary behavior and safety-boundary changes, not only
 PR-body tooling or documentation. The renderer fails instead of silently
 dropping topics to shorten the body.
 
+Keep each commit-body prose paragraph and bullet item on one physical line;
+do not hard-wrap them at 72 or 80 characters. Separate paragraphs and fields
+with blank lines and preserve intentional code-block newlines. This convention
+overrides generic commit-body wrapping advice. The renderer still accepts
+wrapped legacy messages without rewriting their commits.
+
 ## Code expectations
 
 - Follow the existing conventions of the codebase.
