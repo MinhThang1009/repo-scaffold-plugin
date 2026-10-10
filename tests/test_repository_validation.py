@@ -21,8 +21,8 @@ from unittest import mock
 import yaml
 
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "validate_repository.py"
+MODULE_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_PATH = MODULE_ROOT / "scripts" / "validate_repository.py"
 SPEC = importlib.util.spec_from_file_location(
     "scripts.validate_repository", SCRIPT_PATH
 )
@@ -32,7 +32,7 @@ validate_repository = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = validate_repository
 SPEC.loader.exec_module(validate_repository)
 
-WORKFLOW_SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "validate_workflows.py"
+WORKFLOW_SCRIPT_PATH = MODULE_ROOT / "scripts" / "validate_workflows.py"
 WORKFLOW_SPEC = importlib.util.spec_from_file_location(
     "scripts.validate_workflows", WORKFLOW_SCRIPT_PATH
 )
@@ -41,6 +41,9 @@ if WORKFLOW_SPEC is None or WORKFLOW_SPEC.loader is None:
 validate_workflows = importlib.util.module_from_spec(WORKFLOW_SPEC)
 sys.modules[WORKFLOW_SPEC.name] = validate_workflows
 WORKFLOW_SPEC.loader.exec_module(validate_workflows)
+
+
+PLUGIN_ROOT = validate_repository.release_archive_source_root(MODULE_ROOT)
 
 
 def repository_entrypoint_path(repository_root: Path) -> Path:
@@ -4065,6 +4068,16 @@ class MarkdownLinkValidationTests(unittest.TestCase):
 
 
 class ScaffoldAndArchiveValidationTests(unittest.TestCase):
+    def test_metadata_fixture_root_does_not_rebind_code_under_test(self) -> None:
+        self.assertEqual(
+            (SCRIPT_PATH, WORKFLOW_SCRIPT_PATH, PLUGIN_ROOT),
+            (
+                MODULE_ROOT / "scripts" / "validate_repository.py",
+                MODULE_ROOT / "scripts" / "validate_workflows.py",
+                validate_repository.release_archive_source_root(MODULE_ROOT),
+            ),
+        )
+
     def test_release_archive_uses_only_the_matching_mutation_source_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source_root = Path(directory).resolve()
