@@ -372,11 +372,18 @@ def snapshot_project(repository_root: Path) -> ProjectSnapshot:
     source_hashes: dict[str, str] = {}
     test_sources: dict[str, str] = {}
     control_hashes: dict[str, str] = {}
+    total_bytes = 0
     for relative, path in _project_files(repository_root):
         posix_path = PurePosixPath(relative)
-        content = _read_bounded_bytes(
-            path, MAX_FILE_BYTES, f"project file {relative!r} exceeds the size limit"
+        remaining_bytes = MAX_TOTAL_BYTES - total_bytes
+        read_limit = min(MAX_FILE_BYTES, remaining_bytes)
+        error_message = (
+            f"project file {relative!r} exceeds the size limit"
+            if MAX_FILE_BYTES <= remaining_bytes
+            else "project inventory exceeds the cache preparation limits"
         )
+        content = _read_bounded_bytes(path, read_limit, error_message)
+        total_bytes += len(content)
         if posix_path.suffix == ".py" and any(
             _is_within(posix_path, root) for root in SOURCE_ROOTS
         ):
