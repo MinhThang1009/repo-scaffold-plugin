@@ -121,5 +121,11 @@ code spans, autolinks, inline and block HTML, comments, headings, tables, block
 quotes, and nested lists while rejecting hard-wrapped prose. A table is
 recognized when a matching delimiter row confirms its header, including when
 the table starts inside an open paragraph without a separating blank line.
+Valid link reference definitions are non-rendering metadata, not prose. They
+may be adjacent or contain multiline labels/titles, but cannot interrupt an
+existing paragraph. Malformed definitions remain subject to ordinary prose
+checks. Opaque definition lines cannot supply required headings/checklists,
+and destinations are parsed as data without network requests. Reference scans
+share a 4,194,304-character work budget per body; exhaustion fails closed.
 Inline-code/comment disambiguation is bounded to 4,194,304 scanned characters
 per body or template; exceeding the budget fails validation closed.

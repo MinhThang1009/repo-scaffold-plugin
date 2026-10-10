@@ -8,6 +8,7 @@ from bisect import bisect_right
 import re
 import stat
 import sys
+import unicodedata
 from collections import Counter
 from pathlib import Path
 
@@ -54,6 +55,7 @@ GFM_TABLE_DELIMITER_CELL_PATTERN = re.compile(r":?-+:?")
 SETEXT_HEADING_UNDERLINE_PATTERN = re.compile(r"^ {0,3}(?:=+[ \t]*|-+[ \t]*)$")
 MAX_BODY_FILE_BYTES = 1024 * 1024
 MAX_INLINE_CODE_LOOKAHEAD_CHARACTERS = 4 * MAX_BODY_FILE_BYTES
+MAX_REFERENCE_SCAN_CHARACTERS = 4 * MAX_BODY_FILE_BYTES
 GFM_LINE_ENDING_PATTERN = re.compile(r"\r\n|\r|\n")
 
 
@@ -522,7 +524,9 @@ def gfm_table_line_indexes(lines: list[str]) -> set[int]:
     return table_lines
 
 
-def setext_heading_line_indexes(lines: list[str]) -> set[int]:
+def setext_heading_line_indexes(
+    lines: list[str], *, excluded_line_indexes: set[int] | None = None
+) -> set[int]:
     """Index paragraph lines that form a setext heading with a following underline."""
     heading_lines: set[int] = set()
     paragraph_lines: list[int] = []
@@ -530,7 +534,12 @@ def setext_heading_line_indexes(lines: list[str]) -> set[int]:
     table_lines = gfm_table_line_indexes(lines)
     for line_index, raw_line in enumerate(lines):
         line, quote_depth = strip_blockquote_markers(raw_line)
-        if is_gfm_blank_line(line) or line_index in table_lines:
+        if (
+            is_gfm_blank_line(line)
+            or line_index in table_lines
+            or excluded_line_indexes is not None
+            and line_index in excluded_line_indexes
+        ):
             paragraph_lines.clear()
             paragraph_quote_depth = None
             continue
@@ -830,11 +839,189 @@ def indented_code_start_indent(
     return required_indent if leading_spaces >= required_indent else None
 
 
+class _ReferenceCursor:
+    """Scan a reference definition without concatenating its continuation lines."""
+
+    def __init__(
+        self,
+        lines: list[str],
+        start: int,
+        first_line: str,
+        quote_depth: int,
+        list_indent: int | None,
+        work_budget: list[int],
+        table_lines: set[int],
+    ) -> None:
+        self.lines = lines
+        self.line = start
+        self.column = 0
+        self.text = first_line.lstrip(" \t")
+        self.quote_depth = quote_depth
+        self.list_indent = list_indent
+        self.work_budget = work_budget
+        self.table_lines = table_lines
+        self.ended = False
+
+    def peek(self) -> str | None:
+        if self.ended:
+            return None
+        return self.text[self.column] if self.column < len(self.text) else "\n"
+
+    def step(self) -> None:
+        self.work_budget[0] -= 1
+        if self.work_budget[0] < 0:
+            raise ValueError("link-reference scan exceeds the safety work budget")
+        if self.column < len(self.text):
+            self.column += 1
+            return
+        next_line = self.line + 1
+        if next_line >= len(self.lines):
+            self.ended = True
+            return
+        text, depth = strip_blockquote_markers(self.lines[next_line])
+        text = _line_after_list_content_indent(text, self.list_indent)
+        indentation = len(text) - len(text.lstrip(" "))
+        if (
+            depth > self.quote_depth
+            or is_gfm_blank_line(text)
+            or indentation < 4
+            and (
+                next_line in self.table_lines
+                or HTML_COMMENT_START_PATTERN.match(text) is not None
+                or begins_markdown_block(text, allow_type_7=False)
+            )
+        ):
+            self.ended = True
+            return
+        self.line = next_line
+        self.column = 0
+        self.text = text.lstrip(" \t")
+
+    def position(self) -> tuple[int, int, str, bool]:
+        return self.line, self.column, self.text, self.ended
+
+    def restore(self, position: tuple[int, int, str, bool]) -> None:
+        self.line, self.column, self.text, self.ended = position
+
+    def horizontal_space(self) -> None:
+        while self.peek() in (" ", "\t"):
+            self.step()
+
+
+def _reference_destination(cursor: _ReferenceCursor) -> bool:
+    """Read angle-enclosed or balanced bare destinations as syntax, not URLs."""
+    if cursor.peek() == "<":
+        cursor.step()
+        while cursor.peek() != ">":
+            if cursor.peek() in (None, "\n", "<"):
+                return False
+            if cursor.peek() == "\\":
+                cursor.step()
+                if cursor.peek() in (None, "\n"):
+                    return False
+            cursor.step()
+        cursor.step()
+        return True
+    depth = 0
+    size = 0
+    while (
+        (character := cursor.peek()) is not None
+        and ord(character) > 32
+        and ord(character) != 127
+    ):
+        if character == ")" and depth == 0:
+            break
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif character == "\\":
+            cursor.step()
+            size += 1
+            if cursor.peek() in (None, "\n", " ", "\t"):
+                break
+        cursor.step()
+        size += 1
+    return size > 0 and depth == 0
+
+
+def reference_definition_end(
+    lines: list[str],
+    start: int,
+    first_line: str,
+    quote_depth: int,
+    list_indent: int | None,
+    work_budget: list[int],
+    table_lines: set[int],
+) -> int | None:
+    """Return the last consumed GFM reference line, or retain ordinary prose."""
+    if not first_line.lstrip(" \t").startswith("["):
+        return None
+    cursor = _ReferenceCursor(
+        lines, start, first_line, quote_depth, list_indent, work_budget, table_lines
+    )
+    cursor.step()
+    label_size = 0
+    label_content = False
+    while cursor.peek() != "]":
+        character = cursor.peek()
+        if character in (None, "["):
+            return None
+        label_content |= (
+            character not in " \t\r\n\f" and unicodedata.category(character) != "Zs"
+        )
+        cursor.step()
+        label_size += 1
+        if character == "\\" and cursor.peek() is not None:
+            cursor.step()
+            label_size += 1
+        if label_size > 999:
+            return None
+    if not label_content:
+        return None
+    cursor.step()
+    if cursor.peek() != ":":
+        return None
+    cursor.step()
+    cursor.horizontal_space()
+    if cursor.peek() == "\n":
+        cursor.step()
+        cursor.horizontal_space()
+    if not _reference_destination(cursor):
+        return None
+    destination_end = cursor.position()
+    destination_line = cursor.line
+    separator = cursor.peek() in (" ", "\t", "\n")
+    cursor.horizontal_space()
+    if cursor.peek() == "\n":
+        cursor.step()
+        cursor.horizontal_space()
+    delimiter = cursor.peek()
+    if separator and delimiter in ('"', "'", "("):
+        closing = ")" if delimiter == "(" else delimiter
+        cursor.step()
+        while cursor.peek() not in (None, closing):
+            if delimiter == "(" and cursor.peek() == "(":
+                break
+            if cursor.peek() == "\\":
+                cursor.step()
+            cursor.step()
+        if cursor.peek() == closing:
+            cursor.step()
+            cursor.horizontal_space()
+            if cursor.peek() in (None, "\n"):
+                return cursor.line
+    cursor.restore(destination_end)
+    cursor.horizontal_space()
+    return destination_line if cursor.peek() in (None, "\n") else None
+
+
 def backtick_run_lengths_by_line(
     lines: list[str],
     html_tag_spans_by_line: list[list[tuple[int, int]]] | None = None,
     *,
     excluded_line_indexes: set[int] | None = None,
+    reference_line_indexes: set[int] | None = None,
 ) -> tuple[list[tuple[int, ...]], list[int]]:
     """Index inline-code delimiters while excluding comments and block code."""
     if html_tag_spans_by_line is None:
@@ -863,6 +1050,8 @@ def backtick_run_lengths_by_line(
     ] = {}
     lookahead_work_budget = [MAX_INLINE_CODE_LOOKAHEAD_CHARACTERS]
     table_lines = gfm_table_line_indexes(lines)
+    reference_end = -1
+    reference_work_budget = [MAX_REFERENCE_SCAN_CHARACTERS]
 
     def exclude_line(line_index: int) -> None:
         if excluded_line_indexes is not None:
@@ -871,6 +1060,17 @@ def backtick_run_lengths_by_line(
     for line_index, raw_line in enumerate(lines):
         line = raw_line.rstrip("\r\n")
         line, quote_depth = strip_blockquote_markers(line)
+        if line_index <= reference_end:
+            exclude_line(line_index)
+            indexed.append(())
+            group_ids.append(group_id)
+            previous_is_prose = False
+            previous_is_list_item = False
+            previous_paragraph_open = False
+            previous_quote_depth = quote_depth
+            continue
+        original_line = line
+        original_comment_open = comment_open
         html_tag_spans = html_tag_spans_by_line[line_index]
         active_code_closer = active_inline_code_closers.get(group_id)
         expanded_line = line.expandtabs(4)
@@ -1164,6 +1364,37 @@ def backtick_run_lengths_by_line(
             previous_is_list_item = False
             previous_paragraph_open = False
             continue
+        if (
+            line_index not in table_lines
+            and not original_comment_open
+            and (not line_previous_paragraph_open or is_list_item)
+        ):
+            candidate_line = _line_after_list_content_indent(original_line, list_indent)
+            if is_list_item:
+                candidate_line = original_line.expandtabs(4)[list_indent:]
+            consumed = reference_definition_end(
+                lines,
+                line_index,
+                candidate_line,
+                effective_quote_depth,
+                list_indent,
+                reference_work_budget,
+                table_lines,
+            )
+            if consumed is not None:
+                reference_end = consumed
+                if reference_line_indexes is not None:
+                    reference_line_indexes.update(range(line_index, consumed + 1))
+                exclude_line(line_index)
+                group_id += 1
+                indexed.append(())
+                group_ids.append(group_id)
+                comment_open = False
+                previous_is_prose = False
+                previous_is_list_item = False
+                previous_paragraph_open = False
+                previous_quote_depth = effective_quote_depth
+                continue
         if line_index in table_lines:
             group_id += 1
             indexed.append(
@@ -1269,19 +1500,30 @@ def hard_wrapped_prose_lines(
         html_tag_continuations_by_line,
     ) = html_inline_tag_spans_by_line(raw_lines)
     raw_block_line_indexes: set[int] = set()
+    reference_line_indexes: set[int] = set()
     run_lengths_by_line, group_ids = backtick_run_lengths_by_line(
         raw_lines,
         html_tag_spans_by_line,
         excluded_line_indexes=raw_block_line_indexes,
+        reference_line_indexes=reference_line_indexes,
     )
     table_lines = gfm_table_line_indexes(raw_lines)
-    setext_heading_lines = setext_heading_line_indexes(raw_lines)
+    setext_heading_lines = setext_heading_line_indexes(
+        raw_lines, excluded_line_indexes=reference_line_indexes
+    )
     future_run_counts: dict[int, Counter[int]] = {}
     for group_id, run_lengths in zip(group_ids, run_lengths_by_line, strict=True):
         future_run_counts.setdefault(group_id, Counter()).update(run_lengths)
     active_group: int | None = None
     inline_html_tag_pending = False
     for line_index, raw_line in enumerate(raw_lines):
+        if line_index in reference_line_indexes:
+            previous_is_prose = False
+            previous_is_list_item = False
+            previous_paragraph_open = False
+            inline_code_length = None
+            comment_open = False
+            continue
         inline_html_tag_continuation = (
             inline_html_tag_pending and html_tag_continuations_by_line[line_index]
         )
