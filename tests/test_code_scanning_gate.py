@@ -1166,9 +1166,20 @@ class CodeScanningGateTests(unittest.TestCase):
                 gate,
                 "api_json",
                 side_effect=[
-                    {"mergeable": None},
-                    {"mergeable": True},
+                    {
+                        "state": "open",
+                        "base": {"sha": "b" * 40},
+                        "head": {"sha": "c" * 40},
+                        "mergeable": None,
+                    },
+                    {
+                        "state": "open",
+                        "base": {"sha": "b" * 40},
+                        "head": {"sha": "c" * 40},
+                        "mergeable": True,
+                    },
                     {"object": {"sha": "a" * 40}},
+                    {"parents": [{"sha": "b" * 40}, {"sha": "c" * 40}]},
                 ],
             ),
             mock.patch.object(gate, "analyses_ready", return_value=True) as ready,
@@ -1356,6 +1367,9 @@ class CodeScanningGateTests(unittest.TestCase):
                     return_value=("refs/pull/42/merge", "a" * 40),
                 ) as wait,
                 mock.patch.object(gate, "wait_for_open_alerts", return_value=()),
+                mock.patch.object(
+                    gate, "pull_request_merge_sha", return_value="c" * 40
+                ) as revalidate,
             ):
                 self.assertEqual(gate.main(arguments), 0)
             wait.assert_called_once_with(
@@ -1367,12 +1381,146 @@ class CodeScanningGateTests(unittest.TestCase):
                 frozenset({"/language:python"}),
                 ("a" * 40, "b" * 40),
             )
+            revalidate.assert_called_once_with(
+                "owner/repo", "42", "token", ("a" * 40, "b" * 40)
+            )
 
             arguments[arguments.index("42")] = "0"
             self.assertEqual(gate.main(arguments), 2)
             arguments[arguments.index("0")] = "42"
             arguments[arguments.index("a" * 40)] = "invalid"
             self.assertEqual(gate.main(arguments), 2)
+
+    def test_bound_pr_reads_reject_drift_and_missing_identity_before_merge_ref(
+        self,
+    ) -> None:
+        current = {
+            "state": "open",
+            "base": {"sha": "b" * 40},
+            "head": {"sha": "c" * 40},
+            "mergeable": True,
+        }
+        malformed: tuple[dict[str, object], ...] = (
+            {**current, "state": "closed"},
+            {**current, "state": None},
+            {**current, "base": {"sha": "d" * 40}},
+            {**current, "head": {"sha": "d" * 40}},
+            {**current, "base": None},
+            {**current, "head": None},
+            {**current, "base": {}},
+            {**current, "head": {}},
+            {},
+        )
+        for document in malformed:
+            with (
+                self.subTest(document=document),
+                mock.patch.object(gate, "api_json", return_value=document) as api,
+                self.assertRaisesRegex(gate.GateError, "changed from the event"),
+            ):
+                gate.pull_request_merge_sha(
+                    "owner/repo", "42", "token", ("b" * 40, "c" * 40)
+                )
+            api.assert_called_once()
+
+    def test_bound_pr_reads_reject_merge_ref_parent_drift(self) -> None:
+        with (
+            mock.patch.object(
+                gate,
+                "api_json",
+                side_effect=[
+                    {
+                        "state": "open",
+                        "base": {"sha": "b" * 40},
+                        "head": {"sha": "c" * 40},
+                        "mergeable": True,
+                    },
+                    {"object": {"sha": "a" * 40}},
+                    {"parents": [{"sha": "b" * 40}, {"sha": "d" * 40}]},
+                ],
+            ),
+            self.assertRaisesRegex(gate.GateError, "merge ref changed"),
+        ):
+            gate.pull_request_merge_sha(
+                "owner/repo", "42", "token", ("b" * 40, "c" * 40)
+            )
+
+    def test_stale_event_cannot_use_historical_analysis_for_current_pr_ref(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(
+                gate,
+                "api_json",
+                return_value={
+                    "state": "open",
+                    "mergeable": True,
+                    "base": {"sha": "b" * 40},
+                    "head": {"sha": "d" * 40},
+                },
+            ),
+            mock.patch.object(gate, "analyses_ready", return_value=True) as analyses,
+            self.assertRaisesRegex(gate.GateError, "changed from the event"),
+        ):
+            gate.wait_for_pull_request_analyses(
+                "owner/repo",
+                "42",
+                "token",
+                1,
+                0,
+                frozenset({"/language:python"}),
+                ("b" * 40, "c" * 40),
+            )
+        analyses.assert_not_called()
+
+    def test_pr_drift_after_alert_read_cannot_publish_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            allowlist = self.write_allowlist(Path(directory), [])
+            arguments = [
+                "--repository",
+                "owner/repo",
+                "--pull-request",
+                "42",
+                "--base-sha",
+                "b" * 40,
+                "--head-sha",
+                "c" * 40,
+                "--token",
+                "synthetic",
+                "--allowlist",
+                str(allowlist),
+                "--expected-codeql-category",
+                "/language:python",
+            ]
+            for outcome in (
+                None,
+                gate.GateError("changed"),
+                gate.TransientGateError("unavailable"),
+            ):
+                with (
+                    self.subTest(outcome=outcome),
+                    mock.patch.object(
+                        gate,
+                        "wait_for_pull_request_analyses",
+                        return_value=("refs/pull/42/merge", "a" * 40),
+                    ),
+                    mock.patch.object(
+                        gate, "wait_for_open_alerts", return_value=()
+                    ) as alerts,
+                    mock.patch.object(
+                        gate, "pull_request_merge_sha", side_effect=[outcome]
+                    ) as revalidate,
+                    mock.patch.object(
+                        gate, "unapproved_alerts", return_value=[]
+                    ) as dispositions,
+                    redirect_stdout(StringIO()),
+                    redirect_stderr(StringIO()),
+                ):
+                    self.assertEqual(gate.main(arguments), 2)
+                alerts.assert_called_once()
+                revalidate.assert_called_once_with(
+                    "owner/repo", "42", "synthetic", ("b" * 40, "c" * 40)
+                )
+                dispositions.assert_not_called()
 
     def test_main_treats_empty_pull_request_context_as_merge_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

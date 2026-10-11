@@ -180,6 +180,13 @@ healthy uploads cannot mask a degraded replacement, including across API pages.
 This admission rule applies to exact SHAs and equivalent event merge commits.
 An unavailable category fails before alert dispositions can admit the ref.
 
+For PR admission, the gate binds the live open PR's base/head and its test-merge
+parents to the triggering event before consuming analyses. It revalidates that
+binding after reading alerts and before returning a verdict. Changed, closed,
+malformed or unavailable state cannot reuse an earlier successful analysis.
+These sequential reads do not make GitHub state atomic after the final read;
+merge authorization still requires fresh checks on the controlling SHA.
+
 Run these commands from the repository root:
 
 ```powershell

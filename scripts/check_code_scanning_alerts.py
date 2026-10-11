@@ -458,11 +458,26 @@ def analyses_ready(
     )
 
 
-def pull_request_merge_sha(repository: str, number: str, token: str) -> str | None:
+def pull_request_merge_sha(
+    repository: str,
+    number: str,
+    token: str,
+    expected_parents: tuple[str, str] | None = None,
+) -> str | None:
     """Return the current test-merge ref SHA, or ``None`` while GitHub computes it."""
     document = api_json(f"{API_ROOT}/repos/{repository}/pulls/{number}", token)
     if not isinstance(document, dict):
         raise GateError("GitHub pull request response must be an object")
+    if expected_parents is not None:
+        base = document.get("base")
+        head = document.get("head")
+        if (
+            document.get("state") != "open"
+            or not isinstance(base, dict)
+            or not isinstance(head, dict)
+            or (base.get("sha"), head.get("sha")) != expected_parents
+        ):
+            raise GateError("pull request state or base/head changed from the event")
     mergeable = document.get("mergeable")
     if mergeable is None:
         return None
@@ -477,6 +492,10 @@ def pull_request_merge_sha(repository: str, number: str, token: str) -> str | No
     sha = merge_object.get("sha") if isinstance(merge_object, dict) else None
     if not isinstance(sha, str) or COMMIT_SHA.fullmatch(sha) is None:
         return None
+    if expected_parents is not None and not merge_commit_has_parents(
+        repository, sha, token, expected_parents
+    ):
+        raise GateError("pull request merge ref changed from the event base/head")
     return sha
 
 
@@ -544,7 +563,7 @@ def wait_for_pull_request_analyses(
     ref = f"refs/pull/{number}/merge"
     for attempt in range(attempts):
         try:
-            sha = pull_request_merge_sha(repository, number, token)
+            sha = pull_request_merge_sha(repository, number, token, expected_parents)
             if sha is not None and analyses_ready(
                 repository, ref, sha, token, expected_categories, expected_parents
             ):
@@ -694,10 +713,18 @@ def _run_gate(argv: list[str] | None = None) -> int:
             args.delay_seconds,
             expected_categories,
         )
-    unexpected = unapproved_alerts(
-        wait_for_open_alerts(repository, ref, token, args.attempts, args.delay_seconds),
-        selectors,
+    alerts = wait_for_open_alerts(
+        repository, ref, token, args.attempts, args.delay_seconds
     )
+    if (
+        args.pull_request is not None
+        and pull_request_merge_sha(repository, number, token, (base_sha, head_sha))
+        is None
+    ):
+        raise GateError(
+            "pull request test-merge state is indeterminate after alert reads"
+        )
+    unexpected = unapproved_alerts(alerts, selectors)
     if unexpected:
         for alert in unexpected:
             print(
