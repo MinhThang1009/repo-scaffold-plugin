@@ -153,6 +153,67 @@ class ShardMutmut(FakeMutmut):
 
 
 class MutationRunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._reviewed_mutmut_loader = run_mutation_testing.load_mutmut
+        reviewed_import = run_mutation_testing.importlib.import_module
+
+        def guard_mutmut_import(name: str, package: str | None = None) -> object:
+            if name == "mutmut" or name.startswith("mutmut."):
+                raise AssertionError("Unit tests must not import real mutmut")
+            return reviewed_import(name, package)
+
+        loader_guard = mock.patch.object(
+            run_mutation_testing,
+            "load_mutmut",
+            side_effect=AssertionError("Unit tests must not load real mutmut"),
+        )
+        loader_guard.start()
+        self.addCleanup(loader_guard.stop)
+        import_guard = mock.patch.object(
+            run_mutation_testing.importlib,
+            "import_module",
+            side_effect=guard_mutmut_import,
+        )
+        import_guard.start()
+        self.addCleanup(import_guard.stop)
+
+    def test_unit_test_guards_deny_real_backend_loading(self) -> None:
+        for loader in (run_mutation_testing.load_mutmut, self._reviewed_mutmut_loader):
+            with (
+                self.subTest(loader=loader),
+                mock.patch.object(
+                    run_mutation_testing.importlib.metadata,
+                    "version",
+                    return_value=run_mutation_testing.MUTMUT_VERSION,
+                ),
+                self.assertRaisesRegex(AssertionError, "real mutmut"),
+            ):
+                loader()
+
+    def test_runner_default_loads_only_the_explicit_test_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            implementation = FakeMutmut()
+            with mock.patch.object(
+                run_mutation_testing, "load_mutmut", return_value=implementation
+            ) as loader:
+                run_mutation_testing.run_mutation_testing(
+                    Path(directory), max_children=1
+                )
+            self.assertEqual(implementation.arguments, ([], 1))
+            loader.assert_called_once_with()
+
+    def test_planner_default_loads_only_the_explicit_test_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            implementation = PlanningMutmut()
+            with mock.patch.object(
+                run_mutation_testing, "load_mutmut", return_value=implementation
+            ) as loader:
+                path = run_mutation_testing.prepare_mutation_shards(
+                    Path(directory), max_children=1, shard_count=2
+                )
+            self.assertTrue(path.is_file())
+            loader.assert_called_once_with()
+
     def test_json_constant_rejection_is_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "non-standard JSON constant"):
             run_mutation_testing.reject_json_constant("NaN")
@@ -677,7 +738,7 @@ class MutationRunnerTests(unittest.TestCase):
                 return_value=implementation,
             ) as importer,
         ):
-            self.assertIs(run_mutation_testing.load_mutmut(), implementation)
+            self.assertIs(self._reviewed_mutmut_loader(), implementation)
         importer.assert_called_once_with("mutmut.__main__")
 
         with (
@@ -688,7 +749,7 @@ class MutationRunnerTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(ValueError, "requires mutmut"),
         ):
-            run_mutation_testing.load_mutmut()
+            self._reviewed_mutmut_loader()
 
         with (
             mock.patch.object(
@@ -698,7 +759,7 @@ class MutationRunnerTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(ValueError, "but it is not installed"),
         ):
-            run_mutation_testing.load_mutmut()
+            self._reviewed_mutmut_loader()
 
         with (
             mock.patch.object(
@@ -713,7 +774,7 @@ class MutationRunnerTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(ValueError, "could not import mutmut"),
         ):
-            run_mutation_testing.load_mutmut()
+            self._reviewed_mutmut_loader()
 
     def test_marker_loader_rejects_linked_mutants_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
