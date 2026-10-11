@@ -5121,11 +5121,14 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         "python scripts/run_mutation_testing.py --max-children 4 --shard-index "
         '"$SHARD_INDEX"'
     )
+    diagnostic_shard_run = 'bash .github/scripts/run_mutation_shard.sh "$SHARD_INDEX"'
     raw_shard_steps = shards.get("steps")
     shard_run_steps = [
         step
         for step in (raw_shard_steps if isinstance(raw_shard_steps, list) else [])
-        if isinstance(step, dict) and step.get("run") == expected_shard_run
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and step.get("run") in {expected_shard_run, diagnostic_shard_run}
     ]
     if len(shard_run_steps) != 1 or shard_run_steps[0].get("env") != {
         "SHARD_INDEX": "${{ matrix.shard }}",
@@ -5165,7 +5168,7 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
     }
     required = {
         expected_plan_run,
-        expected_shard_run,
+        shard_run_steps[0]["run"],
         "python scripts/prepare_mutation_cache.py prepare",
         "python scripts/prepare_mutation_cache.py record",
         "python scripts/merge_mutation_shards.py",

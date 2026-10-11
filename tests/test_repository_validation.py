@@ -2761,6 +2761,36 @@ class MutationTestingContractTests(unittest.TestCase):
                     )
                 )
 
+    def test_diagnostic_shard_wrapper_keeps_strict_command_and_source_binding(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github/workflows/mutation-testing.yml"
+        )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(workflow), []
+        )
+        commands: tuple[object, ...] = (
+            'bash .github/scripts/run_mutation_shard.sh "$SHARD_INDEX" || true',
+            'bash .github/scripts/run_mutation_shard.sh "$SHARD_INDEX"; exit 0',
+            "bash .github/scripts/run_mutation_shard.sh 0",
+            [],
+            {},
+            None,
+        )
+        for command in commands:
+            candidate = copy.deepcopy(workflow)
+            step = next(
+                step
+                for step in candidate["jobs"]["mutation-shards"]["steps"]
+                if step.get("name") == "Run exact mutation shard"
+            )
+            step["run"] = command
+            with self.subTest(command=command):
+                self.assertTrue(
+                    validate_repository.validate_sharded_mutation_workflow(candidate)
+                )
+
     def test_sharded_workflow_cache_is_bound_and_preserves_reuse_marker(self) -> None:
         workflow = validate_repository.load_yaml(
             PLUGIN_ROOT / ".github" / "workflows" / "mutation-testing.yml"

@@ -28,6 +28,31 @@ def child_test_environment() -> dict[str, str]:
 
 
 class MarkdownBodyPreflightTests(unittest.TestCase):
+    def test_bundled_main_executes_under_the_mutation_namespace(self) -> None:
+        module = _bundled_module()
+        with tempfile.TemporaryDirectory() as directory:
+            body_file = Path(directory) / "body.md"
+            for payload, expected in (
+                (b"A complete paragraph.\n", 0),
+                (b"First line\ncontinued prose\n", 1),
+                (b"\xff", 1),
+            ):
+                body_file.write_bytes(payload)
+                with (
+                    self.subTest(payload=payload),
+                    redirect_stdout(StringIO()),
+                    redirect_stderr(StringIO()),
+                ):
+                    self.assertEqual(
+                        module.main(["--body-file", str(body_file)]), expected
+                    )
+            with (
+                redirect_stderr(StringIO()),
+                self.assertRaises(SystemExit) as missing,
+            ):
+                module.main([])
+            self.assertEqual(missing.exception.code, 2)
+
     def run_preflight(
         self, script: Path, body_text: str
     ) -> subprocess.CompletedProcess[str]:

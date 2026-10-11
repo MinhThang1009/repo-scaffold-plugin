@@ -236,6 +236,16 @@ non-overlapping assignment before it applies the gate. Mutmut requires
 operating-system `fork` support, so run it on Linux or macOS, or in WSL on
 Windows:
 
+Hosted shards use a read-only diagnostic sampler around the unchanged engine
+command. It records bounded system/cgroup memory counters and only exact mutant
+keys assigned to the shard, never environment values or arbitrary command lines.
+Sampling checks process start times, caps process scans, records at most 360
+samples at 30-second intervals, and emits at most 2 MiB. Missing counters and
+partial scans remain explicit; cgroup OOM counters alone do not identify the
+victim or establish why the runner stopped. The sampler cannot admit a verdict:
+the wrapper preserves the engine exit status and stops its observer on exit.
+CI/workflow validation and complete mutation aggregation remain required.
+
 If the lock resolves LibCST to a source distribution because no compatible wheel
 is available, provision a compatible Rust toolchain and platform native build tools
 in an isolated build environment first. Derive compiler requirements from the

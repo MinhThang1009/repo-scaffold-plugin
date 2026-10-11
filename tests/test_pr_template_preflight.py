@@ -167,6 +167,39 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
         self.assertIn("template_catalog", module)
         self.assertIn("validate_body_structure", module)
 
+    def test_root_wrapper_executes_structure_validation_under_its_namespace(
+        self,
+    ) -> None:
+        module = runpy.run_path(
+            str(ROOT_ENTRYPOINT), run_name="scripts.pr_template_preflight"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            template = (
+                "<!-- repo-scaffold:pr-template=bugfix -->\n\n## Purpose\n\n"
+                "## Required checklist\n\n"
+                "<!-- repo-scaffold:required-checklist:start -->\n"
+                "- [ ] Explain the scope\n"
+                "<!-- repo-scaffold:required-checklist:end -->\n"
+            )
+            (root / ".github/PULL_REQUEST_TEMPLATE/bugfix.md").write_text(
+                template, encoding="utf-8"
+            )
+            self.assertIsNone(
+                module["validate_body_structure"](
+                    root, "chore: wrapper", template, requested_template="bugfix"
+                )
+            )
+            with self.assertRaises(ValueError):
+                module["validate_body_structure"](
+                    root, "fix: wrapper", template.replace("## Purpose", "## Other")
+                )
+            with self.assertRaises(ValueError):
+                module["validate_body_structure"](
+                    root, "docs: wrapper", template, requested_template="bugfix"
+                )
+
     def test_ambiguous_checklist_protocol_fails_before_body_publication(self) -> None:
         template = (
             "<!-- repo-scaffold:pr-template=bugfix -->\n\n## Purpose\n\n"
