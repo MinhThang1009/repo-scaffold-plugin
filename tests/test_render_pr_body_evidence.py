@@ -24,6 +24,18 @@ renderer = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = renderer
 SPEC.loader.exec_module(renderer)
 
+DISTRIBUTED_SCRIPT_PATH = (
+    REPOSITORY_ROOT / "skills/repo-scaffold/scripts/render_pr_body_evidence.py"
+)
+DISTRIBUTED_SPEC = importlib.util.spec_from_file_location(
+    "skills.repo-scaffold.scripts.render_pr_body_evidence", DISTRIBUTED_SCRIPT_PATH
+)
+if DISTRIBUTED_SPEC is None or DISTRIBUTED_SPEC.loader is None:
+    raise RuntimeError("Could not load distributed render_pr_body_evidence.py")
+distributed_renderer = importlib.util.module_from_spec(DISTRIBUTED_SPEC)
+sys.modules[DISTRIBUTED_SPEC.name] = distributed_renderer
+DISTRIBUTED_SPEC.loader.exec_module(distributed_renderer)
+
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -89,6 +101,8 @@ CHECKS = [
 
 
 class RenderPullRequestBodyTests(unittest.TestCase):
+    renderer_namespace = "scripts.render_pr_body_evidence"
+
     @staticmethod
     def install_cli_template(root: Path) -> None:
         path = root / ".github/PULL_REQUEST_TEMPLATE/bugfix.md"
@@ -97,7 +111,7 @@ class RenderPullRequestBodyTests(unittest.TestCase):
 
     def test_renderer_uses_the_mutation_plans_canonical_module_namespace(self) -> None:
         self.assertEqual(
-            renderer.render_dynamic_body.__module__, "scripts.render_pr_body_evidence"
+            renderer.render_dynamic_body.__module__, self.renderer_namespace
         )
 
     def test_render_binds_head_and_replaces_every_narrative_section(self) -> None:
@@ -1107,6 +1121,18 @@ class RenderPullRequestBodyTests(unittest.TestCase):
             finally:
                 sys.argv = old_argv
             self.assertEqual(raised.exception.code, 0)
+
+
+class DistributedRenderPullRequestBodyTests(RenderPullRequestBodyTests):
+    renderer_namespace = "skills.repo-scaffold.scripts.render_pr_body_evidence"
+
+    def setUp(self) -> None:
+        bindings = mock.patch.dict(
+            globals(),
+            {"renderer": distributed_renderer, "SCRIPT_PATH": DISTRIBUTED_SCRIPT_PATH},
+        )
+        bindings.start()
+        self.addCleanup(bindings.stop)
 
 
 if __name__ == "__main__":
