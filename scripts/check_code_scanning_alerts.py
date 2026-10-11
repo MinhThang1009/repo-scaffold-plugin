@@ -411,8 +411,9 @@ def analyses_ready(
     expected_categories: frozenset[str],
     expected_parents: tuple[str, str] | None = None,
 ) -> bool:
-    """Return whether every configured CodeQL category is uploaded for this commit."""
+    """Require the latest matching analyses to have explicit empty diagnostics."""
     categories_by_sha: dict[str, set[str]] = {}
+    seen: set[tuple[str, str]] = set()
     for page in range(1, MAX_ANALYSIS_PAGES + 1):
         url = (
             f"{API_ROOT}/repos/{repository}/code-scanning/analyses?"
@@ -432,6 +433,14 @@ def analyses_ready(
                 or COMMIT_SHA.fullmatch(analysis_sha) is None
                 or not isinstance(category, str)
             ):
+                continue
+            # The API lists newest analyses first. A failed replacement must
+            # not be masked by an older healthy upload for the same category.
+            identity = (analysis_sha, category)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if item.get("error") != "" or item.get("warning") != "":
                 continue
             categories_by_sha.setdefault(analysis_sha, set()).add(category)
         if len(document) < 100:

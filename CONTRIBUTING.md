@@ -173,6 +173,13 @@ Commitlint checks out the event's exact head SHA rather than an implicit ref.
 This lifecycle handling does not change failed historical checks or attest that
 a closed PR passed validation.
 
+The code-scanning gate requires explicit empty `error` and `warning` fields in
+the latest CodeQL analysis for each candidate commit/category. Missing,
+malformed or non-empty diagnostics leave that category unavailable; older
+healthy uploads cannot mask a degraded replacement, including across API pages.
+This admission rule applies to exact SHAs and equivalent event merge commits.
+An unavailable category fails before alert dispositions can admit the ref.
+
 Run these commands from the repository root:
 
 ```powershell

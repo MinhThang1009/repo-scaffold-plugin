@@ -6,6 +6,7 @@ import runpy
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from contextvars import Context
 from email.message import Message
 from io import BytesIO, StringIO
@@ -668,11 +669,15 @@ class CodeScanningGateTests(unittest.TestCase):
                         "commit_sha": "a" * 40,
                         "tool": {"name": "CodeQL"},
                         "category": "/language:python",
+                        "error": "",
+                        "warning": "",
                     },
                     {
                         "commit_sha": "a" * 40,
                         "tool": {"name": "Scorecard"},
                         "category": "/language:actions",
+                        "error": "",
+                        "warning": "",
                     },
                     {"commit_sha": "different"},
                 ],
@@ -681,11 +686,15 @@ class CodeScanningGateTests(unittest.TestCase):
                         "commit_sha": "a" * 40,
                         "tool": {"name": "CodeQL"},
                         "category": "/language:actions",
+                        "error": "",
+                        "warning": "",
                     },
                     {
                         "commit_sha": "a" * 40,
                         "tool": {"name": "CodeQL"},
                         "category": "/language:python",
+                        "error": "",
+                        "warning": "",
                     },
                 ],
                 {"unexpected": "mapping"},
@@ -763,21 +772,29 @@ class CodeScanningGateTests(unittest.TestCase):
                 "commit_sha": "a" * 40,
                 "tool": {"name": "CodeQL"},
                 "category": "/language:actions",
+                "error": "",
+                "warning": "",
             },
             {
                 "commit_sha": "a" * 40,
                 "tool": {"name": "CodeQL"},
                 "category": "/language:python",
+                "error": "",
+                "warning": "",
             },
             {
                 "commit_sha": "b" * 40,
                 "tool": {"name": "CodeQL"},
                 "category": "/language:actions",
+                "error": "",
+                "warning": "",
             },
             {
                 "commit_sha": "b" * 40,
                 "tool": {"name": "CodeQL"},
                 "category": "/language:python",
+                "error": "",
+                "warning": "",
             },
         ]
         with (
@@ -798,12 +815,196 @@ class CodeScanningGateTests(unittest.TestCase):
             )
         self.assertEqual(matches.call_count, 2)
 
+    def test_analyses_require_explicit_empty_diagnostics(self) -> None:
+        healthy = {
+            "commit_sha": "a" * 40,
+            "tool": {"name": "CodeQL"},
+            "category": "/language:python",
+            "error": "",
+            "warning": "",
+        }
+        diagnostic_values: tuple[object, ...] = (
+            None,
+            False,
+            0,
+            [],
+            {},
+            "Synthetic incomplete analysis",
+        )
+        for field in ("error", "warning"):
+            for value in diagnostic_values:
+                for parents in (None, ("b" * 40, "c" * 40)):
+                    with (
+                        self.subTest(field=field, value=value, parents=parents),
+                        mock.patch.object(
+                            gate, "api_json", return_value=[{**healthy, field: value}]
+                        ),
+                        mock.patch.object(
+                            gate, "merge_commit_has_parents", return_value=True
+                        ),
+                    ):
+                        self.assertFalse(
+                            gate.analyses_ready(
+                                "owner/repo",
+                                "refs/pull/1/merge",
+                                "a" * 40,
+                                "synthetic",
+                                frozenset({"/language:python"}),
+                                parents,
+                            )
+                        )
+            incomplete = {key: value for key, value in healthy.items() if key != field}
+            with (
+                self.subTest(missing=field),
+                mock.patch.object(gate, "api_json", return_value=[incomplete]),
+            ):
+                self.assertFalse(
+                    gate.analyses_ready(
+                        "owner/repo",
+                        "refs/heads/main",
+                        "a" * 40,
+                        "synthetic",
+                        frozenset({"/language:python"}),
+                    )
+                )
+        with mock.patch.object(gate, "api_json", return_value=[healthy]):
+            self.assertTrue(
+                gate.analyses_ready(
+                    "owner/repo",
+                    "refs/heads/main",
+                    "a" * 40,
+                    "synthetic",
+                    frozenset({"/language:python"}),
+                )
+            )
+
+    def test_latest_analysis_diagnostics_control_each_commit_category(self) -> None:
+        healthy = {
+            "commit_sha": "a" * 40,
+            "tool": {"name": "CodeQL"},
+            "category": "/language:python",
+            "error": "",
+            "warning": "",
+        }
+        for field in ("error", "warning"):
+            failed = {**healthy, field: "Synthetic incomplete analysis"}
+            for latest, previous, expected in (
+                (failed, healthy, False),
+                (healthy, failed, True),
+            ):
+                with (
+                    self.subTest(field=field, expected=expected),
+                    mock.patch.object(
+                        gate, "api_json", return_value=[latest, previous]
+                    ),
+                ):
+                    self.assertEqual(
+                        gate.analyses_ready(
+                            "owner/repo",
+                            "refs/heads/main",
+                            "a" * 40,
+                            "synthetic",
+                            frozenset({"/language:python"}),
+                        ),
+                        expected,
+                    )
+
+    def test_degraded_analysis_prevents_alert_admission_for_both_gate_paths(
+        self,
+    ) -> None:
+        degraded = {
+            "commit_sha": "a" * 40,
+            "tool": {"name": "CodeQL"},
+            "category": "/language:python",
+            "error": "Synthetic failed extraction",
+            "warning": "",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            allowlist = Path(directory) / "allowlist.json"
+            allowlist.write_text(
+                '{"schema-version": 3, "allowlist": []}', encoding="utf-8"
+            )
+            for context in (
+                ["--ref", "refs/heads/main", "--sha", "a" * 40],
+                ["--pull-request", "1", "--base-sha", "b" * 40, "--head-sha", "c" * 40],
+            ):
+                with (
+                    self.subTest(context=context),
+                    mock.patch.object(gate, "api_json", return_value=[degraded]),
+                    mock.patch.object(
+                        gate, "pull_request_merge_sha", return_value="a" * 40
+                    ),
+                    mock.patch.object(
+                        gate, "merge_commit_has_parents", return_value=True
+                    ),
+                    mock.patch.object(gate, "open_alerts", return_value=()) as alerts,
+                    redirect_stderr(StringIO()),
+                    redirect_stdout(StringIO()),
+                ):
+                    self.assertEqual(
+                        gate.main(
+                            [
+                                "--repository",
+                                "owner/repo",
+                                "--token",
+                                "synthetic",
+                                "--allowlist",
+                                str(allowlist),
+                                "--attempts",
+                                "1",
+                                "--delay-seconds",
+                                "0",
+                                "--expected-codeql-category",
+                                "/language:python",
+                                *context,
+                            ]
+                        ),
+                        2,
+                    )
+                alerts.assert_not_called()
+
+    def test_analysis_diagnostic_freshness_survives_pagination(self) -> None:
+        healthy = {
+            "commit_sha": "a" * 40,
+            "tool": {"name": "CodeQL"},
+            "category": "/language:python",
+            "error": "",
+            "warning": "",
+        }
+        first_page = [
+            {**healthy, "error": "Synthetic failed replacement"},
+            *[{**healthy, "commit_sha": f"{index:040x}"} for index in range(99)],
+        ]
+        for last_page, expected in (
+            ([healthy], False),
+            ([healthy, {**healthy, "category": "/language:actions"}], False),
+            ([healthy, {**healthy, "commit_sha": "b" * 40}], False),
+        ):
+            with (
+                self.subTest(last_page=last_page),
+                mock.patch.object(
+                    gate, "api_json", side_effect=[first_page, last_page]
+                ),
+            ):
+                self.assertEqual(
+                    gate.analyses_ready(
+                        "owner/repo",
+                        "refs/heads/main",
+                        "a" * 40,
+                        "synthetic",
+                        frozenset({"/language:python"}),
+                    ),
+                    expected,
+                )
+
     def test_analyses_paginates_before_declaring_a_commit_unavailable(self) -> None:
         first_page = [
             {
                 "commit_sha": f"{index:040x}",
                 "tool": {"name": "CodeQL"},
                 "category": "/language:python",
+                "error": "",
+                "warning": "",
             }
             for index in range(100)
         ]
@@ -813,6 +1014,8 @@ class CodeScanningGateTests(unittest.TestCase):
                 "commit_sha": target,
                 "tool": {"name": "CodeQL"},
                 "category": "/language:python",
+                "error": "",
+                "warning": "",
             }
         ]
         with mock.patch.object(
@@ -837,6 +1040,8 @@ class CodeScanningGateTests(unittest.TestCase):
                 "commit_sha": f"{index:040x}",
                 "tool": {"name": "CodeQL"},
                 "category": "/language:python",
+                "error": "",
+                "warning": "",
             }
             for index in range(100)
         ]
