@@ -153,7 +153,8 @@ class MutationDiagnosticsTests(unittest.TestCase):
             engine = target / "scripts/run_mutation_testing.py"
             for status in (0, 7, 143):
                 engine.write_text(
-                    "import sys\n"
+                    "import os, sys\n"
+                    "assert os.environ.get('REPO_SCAFFOLD_MUTATION_DIAGNOSTICS') == '1'\n"
                     "assert sys.argv[1:] == ['--max-children', '4', '--shard-index', '0']\n"
                     f"raise SystemExit({status})\n",
                     encoding="utf-8",
@@ -210,6 +211,17 @@ class MutationDiagnosticsTests(unittest.TestCase):
             self.assertLessEqual(len(output.getvalue().encode()), output_limit)
             self.assertEqual(wait.call_count, 2 if output_limit == 4096 else 0)
             close.assert_called_once_with(42)
+
+    def test_resource_and_worker_diagnostics_share_the_two_mebibyte_budget(
+        self,
+    ) -> None:
+        namespace = sampler()
+        from scripts import run_mutation_testing
+
+        self.assertEqual(
+            namespace["MAX_OUTPUT"] + run_mutation_testing.MAX_WORKER_DIAGNOSTIC_BYTES,
+            2 * 1024 * 1024,
+        )
 
 
 if __name__ == "__main__":

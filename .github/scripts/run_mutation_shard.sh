@@ -7,7 +7,7 @@ if [[ ! "$shard_index" =~ ^([0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$ ]]; then
   exit 2
 fi
 
-python scripts/run_mutation_testing.py --max-children 4 --shard-index "$shard_index" &
+REPO_SCAFFOLD_MUTATION_DIAGNOSTICS=1 python scripts/run_mutation_testing.py --max-children 4 --shard-index "$shard_index" &
 mutation_pid=$!
 python -u - "$mutation_pid" "$shard_index" <<'PY' &
 import json
@@ -21,7 +21,7 @@ MAX_READ = 65536
 MAX_PROCESSES = 4096
 MAX_WORKERS = 16
 MAX_SAMPLES = 360
-MAX_OUTPUT = 2 * 1024 * 1024
+MAX_OUTPUT = 1024 * 1024
 INTERVAL = 30
 
 

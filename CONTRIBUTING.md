@@ -70,6 +70,14 @@ The pytest session-finish hook collects unreachable temporary module cycles
 before an in-process runner can freeze them into its inherited heap. It does
 not unfreeze live inherited objects, change GC thresholds or enabled state,
 rewrite an exit status, or change mutation workers, exclusions or score floors.
+The shard wrapper opts into bounded runner-submission/completion diagnostics.
+They emit only assigned mutant keys and a PID when the pinned backend exposes an
+unambiguous match, independently of process-title sampling. Unknown identities
+are not authorization or verdict evidence. Resource samples and runner events
+each receive a 1 MiB budget, retaining the combined 2 MiB diagnostic limit;
+exhaustion is explicit. Runner arguments, returned results, exceptions and the
+original factory are preserved. The real Linux shard fixture checks these events
+against the assigned mutant inventory.
 
 Workflow-blob fixtures use `git hash-object --stdin --no-filters` as an
 independent object-format oracle. Up to 128 fixture IDs are memoized by exact

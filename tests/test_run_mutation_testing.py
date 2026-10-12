@@ -152,7 +152,7 @@ class ShardMutmut(FakeMutmut):
         )
 
 
-class MutationRunnerTests(unittest.TestCase):
+class UnitMutmutBackendGuard(unittest.TestCase):
     def setUp(self) -> None:
         self._reviewed_mutmut_loader = run_mutation_testing.load_mutmut
         reviewed_import = run_mutation_testing.importlib.import_module
@@ -177,6 +177,210 @@ class MutationRunnerTests(unittest.TestCase):
         import_guard.start()
         self.addCleanup(import_guard.stop)
 
+
+class WorkerDiagnosticsTests(UnitMutmutBackendGuard):
+    KEY = "scripts.example.x_decision__mutmut_1"
+
+    def runner(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            _running={123: SimpleNamespace(mutant_name=self.KEY)},
+            submit=mock.Mock(return_value=object()),
+            wait_for_result=mock.Mock(
+                return_value=SimpleNamespace(mutant_name=self.KEY, exit_code=1)
+            ),
+        )
+
+    def test_diagnostics_preserve_runner_arguments_and_result_identity(self) -> None:
+        runner = self.runner()
+        original_submit, original_wait = runner.submit, runner.wait_for_result
+        factory = mock.Mock(return_value=runner)
+        output = StringIO()
+        with redirect_stdout(output):
+            wrapped = run_mutation_testing.diagnostic_runner_factory(
+                factory, frozenset({self.KEY})
+            )(4, debug=False)
+            self.assertIs(wrapped, runner)
+            self.assertIs(
+                wrapped.submit(self.KEY, ["test"], 17, 2.5),
+                original_submit.return_value,
+            )
+            self.assertIs(
+                wrapped.wait_for_result(timeout=0.5), original_wait.return_value
+            )
+        factory.assert_called_once_with(4, debug=False)
+        original_submit.assert_called_once_with(self.KEY, ["test"], 17, 2.5)
+        original_wait.assert_called_once_with(timeout=0.5)
+        events = [
+            json.loads(line.split(" ", 1)[1]) for line in output.getvalue().splitlines()
+        ]
+        self.assertEqual(
+            events,
+            [
+                {"phase": "submitted", "mutant": self.KEY, "pid": 123},
+                {"phase": "completed", "mutant": self.KEY, "pid": None},
+            ],
+        )
+
+    def test_unknown_names_and_nontext_results_are_never_logged(self) -> None:
+        runner = self.runner()
+        runner.wait_for_result.return_value = SimpleNamespace(mutant_name=[])
+        output = StringIO()
+        with redirect_stdout(output):
+            wrapped = run_mutation_testing.diagnostic_runner_factory(
+                mock.Mock(return_value=runner), frozenset({self.KEY})
+            )()
+            wrapped.submit("synthetic-private-argument", [], 1, 0.0)
+            wrapped.wait_for_result()
+        self.assertEqual(output.getvalue(), "")
+
+    def test_ambiguous_or_unsupported_pid_maps_report_unknown_pid(self) -> None:
+        cases: tuple[dict[int, SimpleNamespace] | None, ...] = (
+            None,
+            {},
+            {index: SimpleNamespace(mutant_name=self.KEY) for index in range(33)},
+            {
+                1: SimpleNamespace(mutant_name=self.KEY),
+                2: SimpleNamespace(mutant_name=self.KEY),
+            },
+            {1: SimpleNamespace(mutant_name="other")},
+            {True: SimpleNamespace(mutant_name=self.KEY)},
+            {-1: SimpleNamespace(mutant_name=self.KEY)},
+        )
+        for running in cases:
+            runner = self.runner()
+            runner._running = running
+            output = StringIO()
+            with self.subTest(running=running), redirect_stdout(output):
+                wrapped = run_mutation_testing.diagnostic_runner_factory(
+                    mock.Mock(return_value=runner), frozenset({self.KEY})
+                )()
+                wrapped.submit(self.KEY, [], 1, 0.0)
+            event = json.loads(output.getvalue().split(" ", 1)[1])
+            self.assertIsNone(event["pid"])
+
+    def test_output_limits_and_broken_output_do_not_replace_engine_results(
+        self,
+    ) -> None:
+        for limit in (0, 128):
+            runner = self.runner()
+            verdict = runner.wait_for_result.return_value
+            output = StringIO()
+            with (
+                self.subTest(limit=limit),
+                mock.patch.object(
+                    run_mutation_testing, "MAX_WORKER_DIAGNOSTIC_BYTES", limit
+                ),
+                redirect_stdout(output),
+            ):
+                wrapped = run_mutation_testing.diagnostic_runner_factory(
+                    mock.Mock(return_value=runner), frozenset({self.KEY})
+                )()
+                for _ in range(3):
+                    wrapped.submit(self.KEY, [], 1, 0.0)
+                    self.assertIs(wrapped.wait_for_result(), verdict)
+            self.assertLessEqual(len(output.getvalue().encode()), limit)
+        runner = self.runner()
+        verdict = runner.wait_for_result.return_value
+        with mock.patch(
+            "builtins.print", side_effect=BrokenPipeError
+        ) as output_failure:
+            wrapped = run_mutation_testing.diagnostic_runner_factory(
+                mock.Mock(return_value=runner), frozenset({self.KEY})
+            )()
+            wrapped.submit(self.KEY, [], 1, 0.0)
+            self.assertIs(wrapped.wait_for_result(), verdict)
+        output_failure.assert_called_once()
+
+    def test_engine_exception_is_preserved_by_the_diagnostic_wrapper(self) -> None:
+        runner = self.runner()
+        failure = OSError("synthetic engine failure")
+        runner.submit.side_effect = failure
+        wrapped = run_mutation_testing.diagnostic_runner_factory(
+            mock.Mock(return_value=runner), frozenset({self.KEY})
+        )()
+        with self.assertRaises(OSError) as raised:
+            wrapped.submit(self.KEY, [], 1, 0.0)
+        self.assertIs(raised.exception, failure)
+
+    def test_opt_in_factory_hook_restores_state_even_on_engine_failure(self) -> None:
+        original_name = self.KEY.replace("scripts.", "scripts.__init__.")
+        for fail in (False, True):
+            runner = self.runner()
+            factory = mock.Mock(return_value=runner)
+
+            def run(names: list[str], children: int) -> None:
+                self.assertEqual(names, [original_name])
+                self.assertEqual(children, 4)
+                created = implementation.get_mutant_runner(children)
+                created.submit(self.KEY, ["test"], 17, 2.5)
+                created.wait_for_result()
+                if fail:
+                    raise OSError("synthetic engine failure")
+
+            implementation = SimpleNamespace(
+                create_mutants_for_file=mock.Mock(),
+                get_mutant_runner=factory,
+                _run=run,
+            )
+            previous = Path.cwd()
+            output = StringIO()
+            with (
+                self.subTest(fail=fail),
+                tempfile.TemporaryDirectory() as directory,
+                mock.patch.dict(
+                    os.environ, {"REPO_SCAFFOLD_MUTATION_DIAGNOSTICS": "1"}
+                ),
+                redirect_stdout(output),
+            ):
+                if fail:
+                    with self.assertRaisesRegex(OSError, "synthetic engine failure"):
+                        run_mutation_testing.run_mutation_testing(
+                            Path(directory),
+                            max_children=4,
+                            mutant_names=[original_name],
+                            mutmut_main=implementation,
+                        )
+                else:
+                    run_mutation_testing.run_mutation_testing(
+                        Path(directory),
+                        max_children=4,
+                        mutant_names=[original_name],
+                        mutmut_main=implementation,
+                    )
+            self.assertIs(implementation.get_mutant_runner, factory)
+            self.assertEqual(Path.cwd(), previous)
+            self.assertIn(self.KEY, output.getvalue())
+
+    def test_diagnostics_do_not_change_unsharded_or_unsupported_backends(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            for flag, names in (("0", [self.KEY]), ("1", None), ("1", [self.KEY])):
+                implementation = FakeMutmut()
+                output = StringIO()
+                with (
+                    self.subTest(flag=flag, names=names),
+                    mock.patch.dict(
+                        os.environ, {"REPO_SCAFFOLD_MUTATION_DIAGNOSTICS": flag}
+                    ),
+                    redirect_stdout(output),
+                ):
+                    run_mutation_testing.run_mutation_testing(
+                        Path(directory),
+                        max_children=4,
+                        mutant_names=names,
+                        mutmut_main=implementation,
+                    )
+                self.assertEqual(implementation.arguments, (names or [], 4))
+                self.assertEqual(output.getvalue(), "")
+
+    def test_diagnostic_unit_fixtures_refuse_real_backend_loading(self) -> None:
+        self.assertIsInstance(run_mutation_testing.load_mutmut, mock.Mock)
+        with self.assertRaisesRegex(AssertionError, "real mutmut"):
+            run_mutation_testing.load_mutmut()
+        with self.assertRaisesRegex(AssertionError, "real mutmut"):
+            run_mutation_testing.importlib.import_module("mutmut.__main__")
+
+
+class MutationRunnerTests(UnitMutmutBackendGuard):
     def test_unit_test_guards_deny_real_backend_loading(self) -> None:
         for loader in (run_mutation_testing.load_mutmut, self._reviewed_mutmut_loader):
             with (

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -224,8 +225,40 @@ class LinuxMutationRunnerIntegrationTests(unittest.TestCase):
                 shutil.copytree(
                     root, worker, ignore=shutil.ignore_patterns("mutation-shards")
                 )
-                self.run_command(
-                    worker, runner, "--max-children", "1", "--shard-index", str(index)
+                with mock.patch.dict(
+                    os.environ, {"REPO_SCAFFOLD_MUTATION_DIAGNOSTICS": "1"}
+                ):
+                    result = self.run_command(
+                        worker,
+                        runner,
+                        "--max-children",
+                        "1",
+                        "--shard-index",
+                        str(index),
+                    )
+                events = [
+                    json.loads(line.split("mutation-worker-diagnostic ", 1)[1])
+                    for line in result.stdout.splitlines()
+                    if "mutation-worker-diagnostic " in line
+                ]
+                planned = json.loads(
+                    (worker / "mutants/mutation-shards.json").read_bytes()
+                )["shards"][index]
+                for phase in ("submitted", "completed"):
+                    self.assertEqual(
+                        {
+                            event["mutant"]
+                            for event in events
+                            if event["phase"] == phase
+                        },
+                        set(planned),
+                    )
+                self.assertTrue(
+                    all(
+                        type(event["pid"]) is int and event["pid"] > 0
+                        for event in events
+                        if event["phase"] == "submitted"
+                    )
                 )
                 output = root / "mutation-shards" / f"mutation-shard-{index}"
                 for metadata in (worker / "mutants").rglob("*.meta"):
