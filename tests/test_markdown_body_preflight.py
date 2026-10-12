@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from functools import lru_cache
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -28,6 +29,21 @@ def child_test_environment() -> dict[str, str]:
 
 
 class MarkdownBodyPreflightTests(unittest.TestCase):
+    def test_root_heading_calls_reuse_code_but_revalidate_each_body(self) -> None:
+        module = runpy.run_path(
+            str(ROOT_PREFLIGHT), run_name="scripts.markdown_body_preflight"
+        )
+        with mock.patch.object(
+            runpy, "run_path", side_effect=AssertionError("must not reload code")
+        ):
+            self.assertEqual(module["visible_body_heading_lines"]("## First\n"), {1})
+            self.assertEqual(
+                module["visible_body_heading_lines"]("```\n## Hidden\n```\n"), set()
+            )
+            self.assertEqual(
+                module["visible_body_heading_lines"]("Paragraph.\n\n## Next\n"), {3}
+            )
+
     def test_bundled_main_executes_under_the_mutation_namespace(self) -> None:
         module = _bundled_module()
         with tempfile.TemporaryDirectory() as directory:
@@ -1519,8 +1535,9 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
                 self.assertEqual(_bundled_lines(body), expected)
 
 
+@lru_cache(maxsize=1)
 def _bundled_module():
-    """Load the bundled parser for focused semantic cases."""
+    """Load one process-local parser; instrumented calls still select each mutant."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(

@@ -101,6 +101,53 @@ class LinuxMutationRunnerIntegrationTests(unittest.TestCase):
             self.assertEqual(metadata.read_bytes(), metadata_before)
             self.assertFalse(marker.exists())
 
+    def test_process_cached_bundled_code_does_not_mask_real_mutants(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {
+                "pyproject.toml": (
+                    "[tool.mutmut]\n"
+                    'source_paths = ["scripts", "skills/repo-scaffold/scripts"]\n'
+                    'pytest_add_cli_args_test_selection = ["tests"]\n'
+                    'pytest_add_cli_args = ["-p", "no:cacheprovider"]\n'
+                ),
+                "skills/repo-scaffold/scripts/decision.py": (
+                    "def is_positive(value):\n    return value > 0\n"
+                ),
+                "scripts/decision.py": (
+                    "import runpy\nfrom pathlib import Path\n"
+                    "BUNDLED = runpy.run_path(\n"
+                    "    str(Path(__file__).resolve().parents[1] / "
+                    "'skills/repo-scaffold/scripts/decision.py'),\n"
+                    "    run_name='skills.repo-scaffold.scripts.decision',\n)\n"
+                    "def is_positive(value):\n"
+                    "    return BUNDLED['is_positive'](value)\n"
+                ),
+                "tests/test_decision.py": (
+                    "from scripts.decision import is_positive\n"
+                    "def test_boundary():\n"
+                    "    assert is_positive(1)\n"
+                    "    assert not is_positive(0)\n"
+                    "    assert not is_positive(-1)\n"
+                ),
+            }
+            for relative, content in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            self.run_command(
+                root,
+                str(PLUGIN_ROOT / "scripts/run_mutation_testing.py"),
+                "--max-children",
+                "1",
+            )
+            metadata = list((root / "mutants").rglob("*.meta"))
+            self.assertEqual(len(metadata), 2)
+            for path in metadata:
+                codes = json.loads(path.read_bytes())["exit_code_by_key"]
+                self.assertTrue(codes, path)
+                self.assertTrue(set(codes.values()).issubset({1, 3}), codes)
+
     def test_real_shards_merge_with_only_metadata_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repository"

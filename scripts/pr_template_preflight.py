@@ -25,10 +25,7 @@ def validate_body_structure(
     requested_template: str | None = None,
 ) -> None:
     """Delegate structure validation to the same bundled template contract."""
-    module = runpy.run_path(
-        str(SKILL_SCRIPT), run_name="skills.repo-scaffold.scripts.pr_template_preflight"
-    )
-    module["validate_body_structure"](
+    _shared["validate_body_structure"](
         repository_root, title, body, requested_template=requested_template
     )
 

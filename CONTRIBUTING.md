@@ -54,6 +54,17 @@ isolate GitHub CLI configuration, and never require real credentials or write
 to GitHub. When either tool is absent, report the corresponding applicability
 skip rather than claiming the integration passed.
 
+Imported preflight wrappers reuse the bundled code loaded at import, while
+validating each new body and rereading the current target template. This caches
+code, not target evidence or verdicts. The focused bundled-parser test helper
+also keeps one process-local module; mutmut's trampolines still select the
+active mutant on each call. The Linux integration fixture checks that behavior
+with the real backend.
+The pytest session-finish hook collects unreachable temporary module cycles
+before an in-process runner can freeze them into its inherited heap. It does
+not unfreeze live inherited objects, change GC thresholds or enabled state,
+rewrite an exit status, or change mutation workers, exclusions or score floors.
+
 Workflow-blob fixtures use `git hash-object --stdin --no-filters` as an
 independent object-format oracle. Up to 128 fixture IDs are memoized by exact
 text; this is deterministic object-format data, not cached GitHub evidence or

@@ -18,11 +18,7 @@ SKILL_SCRIPT = (
 
 def visible_body_heading_lines(markdown: str) -> set[int]:
     """Use the bundled Markdown parser when imported by repository tooling."""
-    module = runpy.run_path(
-        str(SKILL_SCRIPT),
-        run_name="skills.repo-scaffold.scripts.markdown_body_preflight",
-    )
-    headings: set[int] = module["visible_body_heading_lines"](markdown)
+    headings: set[int] = _shared["visible_body_heading_lines"](markdown)
     return headings
 
 

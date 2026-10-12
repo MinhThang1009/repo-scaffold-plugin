@@ -200,6 +200,34 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
                     root, "docs: wrapper", template, requested_template="bugfix"
                 )
 
+    def test_root_validation_reuses_code_but_rereads_changed_template(self) -> None:
+        module = runpy.run_path(
+            str(ROOT_ENTRYPOINT), run_name="scripts.pr_template_preflight"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            path = root / ".github/PULL_REQUEST_TEMPLATE/bugfix.md"
+            template = (
+                "<!-- repo-scaffold:pr-template=bugfix -->\n\n## Purpose\n\n"
+                "## Required checklist\n\n"
+                "<!-- repo-scaffold:required-checklist:start -->\n"
+                "- [ ] Explain the scope\n"
+                "<!-- repo-scaffold:required-checklist:end -->\n"
+            )
+            path.write_text(template, encoding="utf-8")
+            with mock.patch.object(
+                runpy, "run_path", side_effect=AssertionError("must not reload code")
+            ):
+                self.assertIsNone(
+                    module["validate_body_structure"](root, "fix: current", template)
+                )
+                path.write_text(
+                    template.replace("## Purpose", "## Changed"), encoding="utf-8"
+                )
+                with self.assertRaises(ValueError):
+                    module["validate_body_structure"](root, "fix: current", template)
+
     def test_ambiguous_checklist_protocol_fails_before_body_publication(self) -> None:
         template = (
             "<!-- repo-scaffold:pr-template=bugfix -->\n\n## Purpose\n\n"
