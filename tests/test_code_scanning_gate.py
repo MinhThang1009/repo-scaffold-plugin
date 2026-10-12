@@ -222,6 +222,33 @@ class CodeScanningGateTests(unittest.TestCase):
             )
         self.assertEqual(opener.call_count, 1)
 
+    def test_api_request_budget_counts_each_attempt_before_open(self) -> None:
+        responses: list[FakeResponse] = []
+
+        def response(*args: object, **kwargs: object) -> FakeResponse:
+            del args, kwargs
+            stream = FakeResponse(b"[]")
+            responses.append(stream)
+            return stream
+
+        with (
+            mock.patch.object(gate, "MAX_GATE_API_REQUESTS", 3),
+            mock.patch.object(gate, "monotonic", return_value=0),
+            mock.patch.object(
+                gate.GITHUB_API_OPENER, "open", side_effect=response
+            ) as opener,
+            gate.inspection_budget() as budget,
+        ):
+            for _ in range(3):
+                self.assertEqual(
+                    gate.api_json("https://api.github.com/example", "synthetic"), []
+                )
+            self.assertEqual(budget.requests, 3)
+            with self.assertRaisesRegex(gate.GateError, "request budget"):
+                gate.api_json("https://api.github.com/example", "synthetic")
+            self.assertEqual(opener.call_count, 3)
+        self.assertTrue(all(stream.closed for stream in responses))
+
     def test_api_payloads_in_one_poll_cannot_reset_the_aggregate_byte_budget(
         self,
     ) -> None:

@@ -237,8 +237,11 @@ operating-system `fork` support, so run it on Linux or macOS, or in WSL on
 Windows:
 
 Hosted shards use a read-only diagnostic sampler around the unchanged engine
-command. It records bounded system/cgroup memory counters and only exact mutant
-keys assigned to the shard, never environment values or arbitrary command lines.
+command. It records bounded system/cgroup and engine/owned-process memory
+counters and only exact mutant keys assigned to the shard, never environment
+values or arbitrary command lines. An empty worker-name list has unavailable
+identity, not proof that no mutants are running. Descendant memory is bounded
+to 16 processes and remains observable when titles cannot bind a mutant key.
 Sampling checks process start times, caps process scans, records at most 360
 samples at 30-second intervals, and emits at most 2 MiB. Missing counters and
 partial scans remain explicit; cgroup OOM counters alone do not identify the

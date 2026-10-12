@@ -76,6 +76,28 @@ class MutationDiagnosticsTests(unittest.TestCase):
         )
         self.assertNotIn("synthetic-secret", str(result))
 
+    def test_owned_process_memory_does_not_claim_unknown_mutant_identity(self) -> None:
+        namespace = sampler()
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self.write_process(proc, 10, 1, 100, b"engine\0")
+            self.write_process(proc, 11, 10, 101, b"synthetic-private-argument\0")
+            self.write_process(proc, 12, 1, 102, b"unrelated\0")
+            (proc / "11/comm").write_bytes(b"python\n")
+            result = namespace["sample"](proc, proc, 10, 100, set())
+            self.assertEqual(result["worker_identity_status"], "unavailable")
+            self.assertEqual(result["workers"], [])
+            self.assertEqual(result["engine_memory_kib"], {"VmRSS": 123, "VmHWM": 456})
+            self.assertEqual(
+                result["processes"],
+                [{"pid": 11, "memory_kib": {"VmRSS": 123, "VmHWM": 456}}],
+            )
+            self.assertNotIn("synthetic-private-argument", str(result))
+            namespace["MAX_WORKERS"] = 0
+            limited = namespace["sample"](proc, proc, 10, 100, set())
+            self.assertTrue(limited["scan_partial"])
+            self.assertEqual(limited["processes"], [])
+
     def test_missing_oversized_and_changed_process_inputs_remain_unavailable(
         self,
     ) -> None:

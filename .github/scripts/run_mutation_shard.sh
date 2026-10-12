@@ -84,10 +84,17 @@ def sample(proc, cgroups, pid, birth, names):
             break
         owned = expanded
     workers = []
-    for child in sorted(owned - {pid}):
-        if len(workers) >= MAX_WORKERS:
+    processes = []
+    engine_memory = counters(proc / str(pid) / "status", {"VmRSS", "VmHWM"})
+    for count, child in enumerate(sorted(owned - {pid})):
+        if count >= MAX_WORKERS:
             partial = True
             break
+        memory = counters(proc / str(child) / "status", {"VmRSS", "VmHWM"})
+        if process(proc, child) != parents[child]:
+            partial = True
+            continue
+        processes.append({"pid": child, "memory_kib": memory})
         comm = read(proc / str(child) / "comm", 64)
         if comm is None or not comm.startswith(b"mutmut: "):
             continue
@@ -96,7 +103,6 @@ def sample(proc, cgroups, pid, birth, names):
             continue
         key = title.split(b"\0", 1)[0].decode("utf-8", errors="replace").removeprefix("mutmut: ")
         # Never emit arbitrary command lines: only exact keys assigned to this shard.
-        memory = counters(proc / str(child) / "status", {"VmRSS", "VmHWM"})
         if key in names and process(proc, child) == parents[child]:
             workers.append({"pid": child, "mutant": key, "memory_kib": memory})
     cg = None
@@ -112,7 +118,7 @@ def sample(proc, cgroups, pid, birth, names):
                     cg = {"memory_bytes": number(memory_current.decode("ascii", errors="replace").strip()) if memory_current else None, "events": counters(root / "memory.events", {"oom", "oom_kill", "high", "max"})}
     if process(proc, pid) != parent_identity:
         return None
-    return {"scan_partial": partial, "system_memory_kib": counters(proc / "meminfo", {"MemAvailable", "MemTotal"}), "cgroup": cg, "workers": workers}
+    return {"scan_partial": partial, "system_memory_kib": counters(proc / "meminfo", {"MemAvailable", "MemTotal"}), "cgroup": cg, "engine_memory_kib": engine_memory, "processes": processes, "worker_identity_status": "observed" if workers else "unavailable", "workers": workers}
 
 
 def main():

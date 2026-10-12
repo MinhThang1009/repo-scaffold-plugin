@@ -604,6 +604,25 @@ class MutationRunnerTests(unittest.TestCase):
                 ],
             )
 
+    def test_planning_is_idempotent_with_an_existing_mutant_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "mutants").mkdir()
+            preserved = root / "mutants" / "synthetic-owned.txt"
+            preserved.write_bytes(b"prior content")
+            implementation = PlanningMutmut()
+            path = run_mutation_testing.prepare_mutation_shards(
+                root, max_children=4, shard_count=2, mutmut_main=implementation
+            )
+            original = path.read_bytes()
+            repeated = run_mutation_testing.prepare_mutation_shards(
+                root, max_children=4, shard_count=2, mutmut_main=implementation
+            )
+            self.assertEqual(repeated, path)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(preserved.read_bytes(), b"prior content")
+            self.assertEqual(implementation.arguments, ([], 4))
+
     def test_planning_supports_current_mutmut_config_api(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
