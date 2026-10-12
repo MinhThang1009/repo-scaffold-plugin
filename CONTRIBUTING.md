@@ -119,6 +119,11 @@ digest.
 
 PSScriptAnalyzer is recommended when a change adds PowerShell snippets.
 
+On Windows, CI sets PyYAML's optional libyaml extension to pure-Python mode
+during dependency installation. This keeps the hash-locked PyYAML source build
+usable on newly supported Windows Python releases without installing a
+compiler or changing the dependency pin.
+
 Install the fully resolved, hash-verified development toolchain from the
 repository root:
 

@@ -69,7 +69,7 @@ class DocumentationPolicyGateTests(unittest.TestCase):
             )
 
     def test_documentation_guard_accepts_valid_successful_policy(self) -> None:
-        for runtime in ("3.x", "3.10", "3.14"):
+        for runtime in ("3.x", "3.10", "3.14", "3.15"):
             with self.subTest(runtime=runtime):
                 self.assertEqual(self.run_guard("success", runtime).returncode, 0)
 
@@ -89,6 +89,18 @@ class DocumentationPolicyGateTests(unittest.TestCase):
 
 
 class PullRequestLifecycleWorkflowTests(unittest.TestCase):
+    def test_windows_matrix_install_uses_pyyaml_without_optional_compiler(self) -> None:
+        job = workflow_job(ROOT / ".github/workflows", "ci.yml", "test")
+        install = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Install development dependencies"
+        )
+        self.assertEqual(
+            install["env"],
+            {"PYYAML_FORCE_LIBYAML": "${{ runner.os == 'Windows' && '0' || '' }}"},
+        )
+
     def test_closed_pr_noop_uses_a_distinct_nonrequired_context(self) -> None:
         for root in WORKFLOW_ROOTS:
             for file_name, job_id, event, context in (
