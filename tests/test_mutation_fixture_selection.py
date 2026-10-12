@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ast
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -11,6 +12,47 @@ from tests import test_mutation_runner_linux as linux_fixtures
 
 
 class MutationFixtureSelectionTests(unittest.TestCase):
+    def test_http_fixture_checks_methods_after_leading_options_and_urls(self) -> None:
+        case = linux_fixtures.LinuxMutationRunnerIntegrationTests(
+            "test_token_read_budget_kills_real_index_reset_mutants"
+        )
+
+        class FixtureInspected(Exception):
+            pass
+
+        def inspect_inputs(root: Path, *arguments: str) -> None:
+            del arguments
+            fixture = ast.parse(
+                (root / "tests/test_decision.py").read_text(encoding="utf-8")
+            )
+            inputs = [
+                ast.literal_eval(node.args[0])
+                for node in ast.walk(fixture)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "network"
+                and node.args
+                and isinstance(node.args[0], ast.List)
+            ]
+            for prefix in ("--silent", "https://example.test"):
+                for method in ("GET", "POST"):
+                    self.assertTrue(
+                        any(
+                            tokens[:2] == ["curl", prefix]
+                            and tokens[2:4] == ["-X", method]
+                            for tokens in inputs
+                        ),
+                        f"fixture omits {method} after {prefix}",
+                    )
+            raise FixtureInspected
+
+        with (
+            mock.patch.object(case, "source_definitions", return_value=""),
+            mock.patch.object(case, "run_command", side_effect=inspect_inputs),
+            self.assertRaises(FixtureInspected),
+        ):
+            case.test_token_read_budget_kills_real_index_reset_mutants()
+
     def test_text_fixture_selects_all_eight_nonadvancing_fault_shapes(self) -> None:
         case = linux_fixtures.LinuxMutationRunnerIntegrationTests(
             "test_text_work_budget_kills_real_nonadvancing_comment_and_line_mutants"

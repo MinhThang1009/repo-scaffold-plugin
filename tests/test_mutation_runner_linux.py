@@ -257,6 +257,10 @@ class LinuxMutationRunnerIntegrationTests(unittest.TestCase):
                     "    assert not network(['curl', '--head', 'https://example.test'])\n"
                     "    assert network(['curl', '-X', 'POST', 'https://example.test'])\n"
                     "    assert not network(['curl', '-X', 'GET', 'https://example.test'])\n"
+                    "    assert not network(['curl', '--silent', '-X', 'GET', 'https://example.test'])\n"
+                    "    assert network(['curl', '--silent', '-X', 'POST', 'https://example.test'])\n"
+                    "    assert not network(['curl', 'https://example.test', '-X', 'GET'])\n"
+                    "    assert network(['curl', 'https://example.test', '-X', 'POST'])\n"
                 ),
             }
             for relative, content in files.items():
