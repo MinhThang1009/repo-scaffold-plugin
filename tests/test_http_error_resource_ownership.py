@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from email.message import Message
+from functools import lru_cache
 from http.client import HTTPException, HTTPMessage, HTTPResponse
 import importlib.util
+import json
 from io import BytesIO
 from pathlib import Path
 import sys
+import tempfile
 from types import ModuleType
 import unittest
 from unittest import mock
@@ -18,6 +21,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_source(relative: str, *, root: Path = ROOT) -> ModuleType:
+    """Reuse immutable repository code, never temporary target state or verdicts."""
+    if root == ROOT:
+        return repository_source(relative)
+    return load_uncached_source(relative, root=root)
+
+
+@lru_cache(maxsize=16)
+def repository_source(relative: str) -> ModuleType:
+    """Keep expanded mutation code alive once per process and source namespace."""
+    return load_uncached_source(relative, root=ROOT)
+
+
+def load_uncached_source(relative: str, *, root: Path) -> ModuleType:
     name = relative.removesuffix(".py").replace("/", ".")
     spec = importlib.util.spec_from_file_location(name, root / relative)
     if spec is None or spec.loader is None:
@@ -372,6 +388,50 @@ class HttpFramingCompletenessTests(unittest.TestCase):
 
 
 class HttpErrorResourceOwnershipTests(unittest.TestCase):
+    def test_repository_source_loading_reuses_code_without_reusing_responses(
+        self,
+    ) -> None:
+        relative = "scripts/sync_action_pins.py"
+        module = load_source(relative)
+        with mock.patch.object(
+            importlib.util,
+            "module_from_spec",
+            side_effect=AssertionError("must not allocate another source module"),
+        ):
+            self.assertIs(load_source(relative), module)
+            for body in (b'{"first":true}', b'{"second":false}'):
+                response = native_response(
+                    body, f"Content-Length: {len(body)}\r\n".encode()
+                )
+                try:
+                    self.assertEqual(
+                        invoke_response(module, "action-pins", response),
+                        json.loads(body),
+                    )
+                finally:
+                    response.close()
+
+    def test_temporary_source_loading_rereads_changes_and_restores_module_state(
+        self,
+    ) -> None:
+        relative = "scripts/example.py"
+        name = "scripts.example"
+        sentinel = ModuleType(name)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / relative
+            source.parent.mkdir()
+            source.write_text("value = 1\n", encoding="utf-8")
+            with mock.patch.dict(sys.modules, {name: sentinel}):
+                first = load_source(relative, root=root)
+                self.assertIs(sys.modules[name], sentinel)
+                source.write_text("value = 200\n", encoding="utf-8")
+                second = load_source(relative, root=root)
+                self.assertIs(sys.modules[name], sentinel)
+            self.assertEqual(first.value, 1)
+            self.assertEqual(second.value, 200)
+            self.assertIsNot(first, second)
+
     def test_source_loading_restores_modules_and_binds_the_actual_sibling(self) -> None:
         for relative, kind in BOUNDARIES:
             with self.subTest(source=relative, kind=kind):

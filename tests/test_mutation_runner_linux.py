@@ -148,6 +148,49 @@ class LinuxMutationRunnerIntegrationTests(unittest.TestCase):
                 self.assertTrue(codes, path)
                 self.assertTrue(set(codes.values()).issubset({1, 3}), codes)
 
+    def test_http_source_cache_does_not_mask_real_mutants(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {
+                "pyproject.toml": (
+                    "[tool.mutmut]\n"
+                    'source_paths = ["scripts"]\n'
+                    'pytest_add_cli_args_test_selection = ["tests"]\n'
+                    'pytest_add_cli_args = ["-p", "no:cacheprovider"]\n'
+                ),
+                "scripts/decision.py": (
+                    "def is_positive(value):\n    return value > 0\n"
+                ),
+                "tests/http_loader.py": (
+                    PLUGIN_ROOT / "tests/test_http_error_resource_ownership.py"
+                ).read_text(encoding="utf-8"),
+                "tests/test_decision.py": (
+                    "from http_loader import load_source\n"
+                    "decision = load_source('scripts/decision.py')\n"
+                    "def test_boundary():\n"
+                    "    assert load_source('scripts/decision.py') is decision\n"
+                    "    assert decision.is_positive(1)\n"
+                    "    assert not decision.is_positive(0)\n"
+                    "    assert not decision.is_positive(-1)\n"
+                ),
+            }
+            for relative, content in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            self.run_command(
+                root,
+                str(PLUGIN_ROOT / "scripts/run_mutation_testing.py"),
+                "--max-children",
+                "1",
+            )
+            metadata = json.loads(
+                (root / "mutants/scripts/decision.py.meta").read_bytes()
+            )
+            codes = metadata["exit_code_by_key"]
+            self.assertTrue(codes)
+            self.assertTrue(set(codes.values()).issubset({1, 3}), codes)
+
     def test_real_shards_merge_with_only_metadata_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repository"

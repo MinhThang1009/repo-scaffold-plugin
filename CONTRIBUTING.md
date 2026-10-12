@@ -60,6 +60,12 @@ code, not target evidence or verdicts. The focused bundled-parser test helper
 also keeps one process-local module; mutmut's trampolines still select the
 active mutant on each call. The Linux integration fixture checks that behavior
 with the real backend.
+The HTTP response regression helper also reuses at most 16 immutable repository
+modules instead of loading expanded code for each framing or redirect case.
+Temporary target repositories are deliberately uncached, and every response is
+still read and validated independently. The helper restores module aliases after
+loading and retains each source's canonical mutation namespace. A separate Linux
+fixture runs this actual helper against real mutants to check verdict isolation.
 The pytest session-finish hook collects unreachable temporary module cycles
 before an in-process runner can freeze them into its inherited heap. It does
 not unfreeze live inherited objects, change GC thresholds or enabled state,
