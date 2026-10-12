@@ -91,15 +91,23 @@ class DocumentationPolicyGateTests(unittest.TestCase):
 class PullRequestLifecycleWorkflowTests(unittest.TestCase):
     def test_windows_matrix_install_uses_pyyaml_without_optional_compiler(self) -> None:
         job = workflow_job(ROOT / ".github/workflows", "ci.yml", "test")
+        select = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Select pure-Python PyYAML on Windows"
+        )
+        self.assertEqual(select["if"], "runner.os == 'Windows'")
+        self.assertEqual(select["shell"], "bash")
+        self.assertEqual(
+            select["run"],
+            "printf 'PYYAML_FORCE_LIBYAML=0\\n' >> \"$GITHUB_ENV\"",
+        )
         install = next(
             step
             for step in job["steps"]
             if step.get("name") == "Install development dependencies"
         )
-        self.assertEqual(
-            install["env"],
-            {"PYYAML_FORCE_LIBYAML": "${{ runner.os == 'Windows' && '0' || '' }}"},
-        )
+        self.assertNotIn("env", install)
 
     def test_closed_pr_noop_uses_a_distinct_nonrequired_context(self) -> None:
         for root in WORKFLOW_ROOTS:
