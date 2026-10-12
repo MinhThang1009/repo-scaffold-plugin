@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shutil
@@ -20,6 +21,22 @@ RUN_INTEGRATION = os.environ.get("REPO_SCAFFOLD_MUTMUT_INTEGRATION") == "1"
     "requires the Linux mutation integration job",
 )
 class LinuxMutationRunnerIntegrationTests(unittest.TestCase):
+    def source_definitions(self, path: Path, names: set[str]) -> str:
+        """Copy bounded checked-in definitions, never downloaded generated code."""
+        self.assertLess(path.stat().st_size, 2 * 1024 * 1024)
+        source = path.read_text(encoding="utf-8")
+        selected = {}
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.FunctionDef) and node.name in names:
+                selected[node.name] = ast.get_source_segment(source, node)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in names:
+                        selected[target.id] = ast.get_source_segment(source, node)
+        self.assertEqual(set(selected), names)
+        self.assertTrue(all(value is not None for value in selected.values()))
+        return "\n\n".join(str(selected[name]) for name in sorted(names)) + "\n"
+
     def run_command(
         self, root: Path, *arguments: str
     ) -> subprocess.CompletedProcess[str]:
@@ -191,6 +208,263 @@ class LinuxMutationRunnerIntegrationTests(unittest.TestCase):
             codes = metadata["exit_code_by_key"]
             self.assertTrue(codes)
             self.assertTrue(set(codes.values()).issubset({1, 3}), codes)
+
+    def test_token_read_budget_kills_real_index_reset_mutants(self) -> None:
+        classifiers = self.source_definitions(
+            PLUGIN_ROOT / "scripts/validate_repository.py",
+            {
+                "github_api_is_mutation",
+                "GITHUB_API_METHOD_OPTIONS",
+                "GITHUB_API_BODY_OPTIONS",
+                "GITHUB_API_READ_ONLY_METHODS",
+            },
+        ) + self.source_definitions(
+            PLUGIN_ROOT
+            / "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+            {
+                "network_client_is_mutation",
+                "executable_basename",
+                "UNSAFE_NETWORK_EXECUTORS",
+                "NETWORK_METHOD_OPTIONS",
+                "NETWORK_BODY_OPTIONS",
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {
+                "pyproject.toml": (
+                    "[tool.mutmut]\n"
+                    'source_paths = ["scripts"]\n'
+                    'pytest_add_cli_args_test_selection = ["tests"]\n'
+                    'pytest_add_cli_args = ["-p", "no:cacheprovider"]\n'
+                ),
+                "scripts/decision.py": ("import re\n\n" + classifiers),
+                "tests/budget_helper.py": (
+                    PLUGIN_ROOT / "tests/token_walk_budget.py"
+                ).read_text(encoding="utf-8"),
+                "tests/test_decision.py": (
+                    "from scripts.decision import github_api_is_mutation, network_client_is_mutation\n"
+                    "from budget_helper import guard_token_reads\n"
+                    "classify = guard_token_reads(github_api_is_mutation)\n"
+                    "def test_http_methods():\n"
+                    "    assert not classify(['gh', 'api', 'endpoint', '-X', 'HEAD'], 0)\n"
+                    "    assert classify(['gh', 'api', 'endpoint', '-X', 'POST'], 0)\n"
+                    "    assert classify(['gh', 'api', 'endpoint', '--method'], 0)\n"
+                    "    assert classify(['gh', 'api', 'endpoint', '-f', 'x=1'], 0)\n"
+                    "    assert not classify(['gh', 'api', 'endpoint', '-f', 'x=1', '-X', 'GET'], 0)\n"
+                    "def test_network_methods():\n"
+                    "    network = guard_token_reads(network_client_is_mutation)\n"
+                    "    assert not network(['curl', '--head', 'https://example.test'])\n"
+                    "    assert network(['curl', '-X', 'POST', 'https://example.test'])\n"
+                    "    assert not network(['curl', '-X', 'GET', 'https://example.test'])\n"
+                ),
+            }
+            for relative, content in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            self.run_command(
+                root,
+                str(PLUGIN_ROOT / "scripts/run_mutation_testing.py"),
+                "--max-children",
+                "1",
+            )
+            generated = root / "mutants/scripts/decision.py"
+            self.assertLess(generated.stat().st_size, 4 * 1024 * 1024)
+            module = ast.parse(generated.read_text(encoding="utf-8"))
+            resets = set()
+            for function in module.body:
+                if (
+                    not isinstance(function, ast.FunctionDef)
+                    or "__mutmut_" not in function.name
+                ):
+                    continue
+                for loop in ast.walk(function):
+                    if not isinstance(loop, ast.While):
+                        continue
+                    if any(
+                        (
+                            isinstance(statement, ast.Assign)
+                            and any(
+                                isinstance(target, ast.Name) and target.id == "index"
+                                for target in statement.targets
+                            )
+                            and isinstance(statement.value, ast.Constant)
+                            and statement.value.value == 1
+                        )
+                        or (
+                            isinstance(statement, ast.AugAssign)
+                            and isinstance(statement.target, ast.Name)
+                            and statement.target.id == "index"
+                            and isinstance(statement.op, ast.Sub)
+                        )
+                        for statement in ast.walk(loop)
+                    ):
+                        resets.add(function.name)
+            self.assertTrue(resets)
+            metadata = json.loads(
+                (root / "mutants/scripts/decision.py.meta").read_bytes()
+            )
+            codes = metadata["exit_code_by_key"]
+            selected = {
+                key: code
+                for key, code in codes.items()
+                if key.rsplit(".", 1)[-1] in resets
+            }
+            self.assertEqual(len(selected), len(resets))
+            self.assertTrue(all(code in {1, 3} for code in selected.values()), selected)
+
+    def test_text_work_budget_kills_real_nonadvancing_comment_and_line_mutants(
+        self,
+    ) -> None:
+        definitions = self.source_definitions(
+            PLUGIN_ROOT / "scripts/validate_repository.py",
+            {
+                "freshness_issue_lookup_substitution_is_safe",
+                "shell_command_segments",
+                "SHELL_CONTROL_CHARACTERS",
+            },
+        ) + self.source_definitions(
+            PLUGIN_ROOT / "skills/repo-scaffold/scripts/markdown_body_preflight.py",
+            {
+                "html_comment_start",
+                "preceded_by_odd_backslashes",
+                "strip_html_comments",
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {
+                "pyproject.toml": (
+                    "[tool.mutmut]\n"
+                    'source_paths = ["scripts"]\n'
+                    'pytest_add_cli_args_test_selection = ["tests"]\n'
+                    'pytest_add_cli_args = ["-p", "no:cacheprovider"]\n'
+                ),
+                "scripts/decision.py": "import re\nimport shlex\n\n" + definitions,
+                "tests/budget_helper.py": (
+                    PLUGIN_ROOT / "tests/parser_work_budget.py"
+                ).read_text(encoding="utf-8"),
+                "tests/test_decision.py": (
+                    "from scripts import decision\n"
+                    "from budget_helper import guard_text_work\n"
+                    "decision.html_comment_start = guard_text_work(decision.html_comment_start, input_name='line')\n"
+                    "decision.strip_html_comments = guard_text_work(decision.strip_html_comments, input_name='line')\n"
+                    "lookup = guard_text_work(decision.freshness_issue_lookup_substitution_is_safe, input_name='text')\n"
+                    "def test_lookup_continuation():\n"
+                    "    text = 'issue_numbers_output=$(\\ngh api endpoint ' + chr(92) + '\\n --method HEAD\\n)'\n"
+                    "    assert lookup(text)\n"
+                    "    assert not lookup('issue_numbers_output=$(\\nprintf extra\\ngh api endpoint\\n)')\n"
+                    "def test_comment_offsets_and_removal():\n"
+                    "    text = '<!--first--><!--second-->'\n"
+                    "    assert decision.html_comment_start(text, 12, []) == 12\n"
+                    "    assert decision.html_comment_start(text, 24, []) is None\n"
+                    "    assert decision.html_comment_start(chr(92) + '<!--escaped-->', 0, []) is None\n"
+                    "    assert decision.strip_html_comments(text, False, []) == ('', False, [])\n"
+                    "    visible = '<!--first-->visible<!--second-->tail'\n"
+                    "    assert decision.strip_html_comments(visible, False, []) == ('visibletail', False, [])\n"
+                ),
+            }
+            for relative, content in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            self.run_command(
+                root,
+                str(PLUGIN_ROOT / "scripts/run_mutation_testing.py"),
+                "--max-children",
+                "1",
+            )
+            generated = root / "mutants/scripts/decision.py"
+            self.assertLess(generated.stat().st_size, 8 * 1024 * 1024)
+            functions = ast.parse(generated.read_text(encoding="utf-8")).body
+            selected_names = set()
+            for function in functions:
+                if (
+                    not isinstance(function, ast.FunctionDef)
+                    or "__mutmut_" not in function.name
+                    or function.name.endswith("__mutmut_orig")
+                ):
+                    continue
+                statements = list(ast.walk(function))
+                missing_find_offset = any(
+                    name in function.name
+                    for name in ("html_comment_start", "strip_html_comments")
+                ) and any(
+                    isinstance(statement, ast.Call)
+                    and isinstance(statement.func, ast.Attribute)
+                    and statement.func.attr == "find"
+                    and (
+                        len(statement.args) < 2
+                        or (
+                            isinstance(statement.args[1], ast.Constant)
+                            and statement.args[1].value is None
+                        )
+                    )
+                    for statement in statements
+                )
+                backward_line_cursor = (
+                    "freshness_issue_lookup_substitution_is_safe" in function.name
+                    and any(
+                        (
+                            isinstance(statement, ast.AugAssign)
+                            and isinstance(statement.target, ast.Name)
+                            and statement.target.id == "cursor"
+                            and isinstance(statement.op, ast.Sub)
+                        )
+                        or (
+                            isinstance(statement, ast.Assign)
+                            and any(
+                                isinstance(target, ast.Name) and target.id == "cursor"
+                                for target in statement.targets
+                            )
+                            and isinstance(statement.value, ast.Constant)
+                            and statement.value.value == 1
+                        )
+                        or (
+                            isinstance(statement, ast.Assign)
+                            and any(
+                                isinstance(target, ast.Name) and target.id == "index"
+                                for target in statement.targets
+                            )
+                            and isinstance(statement.value, ast.BinOp)
+                            and isinstance(statement.value.op, ast.Sub)
+                        )
+                        for statement in statements
+                    )
+                )
+                backward_comment_cursor = (
+                    "strip_html_comments" in function.name
+                    and any(
+                        isinstance(statement, ast.Assign)
+                        and any(
+                            isinstance(target, ast.Name) and target.id == "cursor"
+                            for target in statement.targets
+                        )
+                        and isinstance(statement.value, ast.BinOp)
+                        and isinstance(statement.value.left, ast.Name)
+                        and statement.value.left.id == "next_comment_start"
+                        and isinstance(statement.value.op, ast.Sub)
+                        for statement in statements
+                    )
+                )
+                if (
+                    missing_find_offset
+                    or backward_line_cursor
+                    or backward_comment_cursor
+                ):
+                    selected_names.add(function.name)
+            self.assertGreaterEqual(len(selected_names), 8)
+            metadata = json.loads(
+                (root / "mutants/scripts/decision.py.meta").read_bytes()
+            )
+            selected = {
+                key: code
+                for key, code in metadata["exit_code_by_key"].items()
+                if key.rsplit(".", 1)[-1] in selected_names
+            }
+            self.assertEqual(len(selected), len(selected_names))
+            self.assertTrue(all(code in {1, 3} for code in selected.values()), selected)
 
     def test_real_shards_merge_with_only_metadata_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

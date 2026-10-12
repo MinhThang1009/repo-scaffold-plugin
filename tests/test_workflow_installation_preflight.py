@@ -14,6 +14,10 @@ import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from contextlib import ExitStack
+
+from tests.parser_work_budget import guard_text_work
+from tests.token_walk_budget import guard_token_reads
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +55,43 @@ workflow_installation_preflight = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = workflow_installation_preflight
 SPEC.loader.exec_module(workflow_installation_preflight)
 
+_PARSER_PATCHES: ExitStack | None = None
+
+
+def setUpModule() -> None:
+    """Keep direct and transitive parser mutations within test work budgets."""
+    global _PARSER_PATCHES
+    if _PARSER_PATCHES is not None:
+        raise RuntimeError("module parser guards are already active")
+    with ExitStack() as patches:
+        for name in ("github_api_is_mutation", "network_client_is_mutation"):
+            patches.enter_context(
+                mock.patch.object(
+                    workflow_installation_preflight,
+                    name,
+                    guard_token_reads(getattr(workflow_installation_preflight, name)),
+                )
+            )
+        name = "freshness_issue_lookup_substitution_is_safe"
+        patches.enter_context(
+            mock.patch.object(
+                workflow_installation_preflight,
+                name,
+                guard_text_work(
+                    getattr(workflow_installation_preflight, name), input_name="text"
+                ),
+            )
+        )
+        _PARSER_PATCHES = patches.pop_all()
+
+
+def tearDownModule() -> None:
+    """Restore source functions before another test module or runner session."""
+    global _PARSER_PATCHES
+    if _PARSER_PATCHES is not None:
+        _PARSER_PATCHES.close()
+        _PARSER_PATCHES = None
+
 
 class FakeClient:
     responses: dict[str, object] = {}
@@ -85,6 +126,58 @@ def arguments(**overrides: object) -> argparse.Namespace:
 
 
 class WorkflowInstallationPreflightTests(unittest.TestCase):
+    def test_parser_module_hooks_restore_source_and_reject_duplicate_setup(
+        self,
+    ) -> None:
+        current = workflow_installation_preflight.network_client_is_mutation
+        with self.assertRaisesRegex(RuntimeError, "already active"):
+            setUpModule()
+        self.assertIs(
+            workflow_installation_preflight.network_client_is_mutation, current
+        )
+        try:
+            tearDownModule()
+            self.assertIs(
+                workflow_installation_preflight.network_client_is_mutation,
+                current.__wrapped__,
+            )
+        finally:
+            setUpModule()
+        self.assertFalse(
+            workflow_installation_preflight.network_client_is_mutation(
+                ["curl", "--head", "https://example.test"]
+            )
+        )
+
+    def test_network_parser_fixture_bounds_index_reset_fault(self) -> None:
+        retained: list[str] = []
+
+        def reset_index(tokens: list[str]) -> bool:
+            index = 1
+            while index < len(tokens):
+                retained.append(tokens[index])
+                index = 1
+            return False
+
+        try:
+            tearDownModule()
+            with mock.patch.object(
+                workflow_installation_preflight,
+                "network_client_is_mutation",
+                reset_index,
+            ):
+                setUpModule()
+                with self.assertRaisesRegex(AssertionError, "linear read budget"):
+                    workflow_installation_preflight.network_client_is_mutation(
+                        ["curl", "--head"]
+                    )
+                tearDownModule()
+        finally:
+            if _PARSER_PATCHES is not None:
+                tearDownModule()
+            setUpModule()
+        self.assertLessEqual(len(retained), 16)
+
     def test_caller_controls_require_real_booleans_before_inspection(self) -> None:
         values: tuple[object, ...] = (None, "false", "true", 0, 1, [], {}, [True])
         for name in (

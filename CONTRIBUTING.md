@@ -78,6 +78,26 @@ each receive a 1 MiB budget, retaining the combined 2 MiB diagnostic limit;
 exhaustion is explicit. Runner arguments, returned results, exceptions and the
 original factory are preserved. The real Linux shard fixture checks these events
 against the assigned mutant inventory.
+Repository-validator and workflow-preflight tests give the original HTTP
+token classifiers a linear
+token-read allowance, shared across slices and fresh for each call. A parser
+mutation that resets its index must raise a test assertion before its method
+list grows without bound. The module fixture covers direct and higher-level
+calls and restores the source functions afterward. It does not substitute a
+classification verdict, execute generated artifact code, or change production
+limits, mutation workers, timeouts, exclusions or quality floors.
+Text-parser fixtures also bound call events for shell continuation folding and
+HTML comment search/removal. This catches non-advancing internal scans and
+repeated output allocation without replacing parser inputs or results. Each
+call gets a fresh allowance proportional to its text length. The current-thread
+profile callback forwards any previous profiler and restores it even after a
+test assertion or parser exception; it does not replace the coverage trace
+hook. A non-callable native profiler is rejected without replacing it. These
+test assertions are not a sandbox or a production resource limit.
+The Linux fixtures copy the actual checked-in classifiers and comment/line
+parsers into isolated repositories, then verify that real index-reset,
+index-decrement and omitted-search-offset mutants receive killed verdicts.
+Fault selection examines syntax rather than relying on historical mutant IDs.
 
 Workflow-blob fixtures use `git hash-object --stdin --no-filters` as an
 independent object-format oracle. Up to 128 fixture IDs are memoized by exact

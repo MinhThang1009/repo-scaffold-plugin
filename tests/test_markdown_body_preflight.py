@@ -6,11 +6,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from functools import lru_cache
 from io import StringIO
 from pathlib import Path
 from unittest import mock
+
+from tests.parser_work_budget import guard_text_work
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +20,35 @@ ROOT_PREFLIGHT = PLUGIN_ROOT / "scripts" / "markdown_body_preflight.py"
 SKILL_PREFLIGHT = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "markdown_body_preflight.py"
 )
+
+_PARSER_PATCHES: ExitStack | None = None
+
+
+def setUpModule() -> None:
+    """Budget both the comment search and its output-building consumer."""
+    global _PARSER_PATCHES
+    if _PARSER_PATCHES is not None:
+        raise RuntimeError("module parser guards are already active")
+    module = _bundled_module()
+    with ExitStack() as patches:
+        for name in ("html_comment_start", "strip_html_comments"):
+            patches.enter_context(
+                mock.patch.object(
+                    module,
+                    name,
+                    guard_text_work(getattr(module, name), input_name="line"),
+                )
+            )
+        _PARSER_PATCHES = patches.pop_all()
+
+
+def tearDownModule() -> None:
+    """Restore originals and discard the session-local loaded module."""
+    global _PARSER_PATCHES
+    if _PARSER_PATCHES is not None:
+        _PARSER_PATCHES.close()
+        _PARSER_PATCHES = None
+    _bundled_module.cache_clear()
 
 
 def child_test_environment() -> dict[str, str]:
@@ -29,6 +60,44 @@ def child_test_environment() -> dict[str, str]:
 
 
 class MarkdownBodyPreflightTests(unittest.TestCase):
+    def test_comment_search_respects_the_requested_start_offset(self) -> None:
+        line = "<!--first--><!--second-->"
+        module = _bundled_module()
+        self.assertEqual(module.html_comment_start(line, 12, []), 12)
+        self.assertIsNone(module.html_comment_start(line, 24, []))
+        self.assertIsNone(module.html_comment_start("\\<!--escaped-->", 0, []))
+
+    def test_comment_consumer_fixture_bounds_a_backward_search_result(self) -> None:
+        module = _bundled_module()
+        calls = 0
+
+        def backward_search(line: str, start: int, spans: list[tuple[int, int]]) -> int:
+            nonlocal calls
+            calls += 1
+            return 0
+
+        with mock.patch.object(module, "html_comment_start", backward_search):
+            with self.assertRaisesRegex(AssertionError, "linear call budget"):
+                module.strip_html_comments("<!--first--><!--second-->", False, [])
+        self.assertLessEqual(calls, 64 * 24 + 128)
+
+    def test_comment_fixture_restores_functions_and_discards_loaded_state(self) -> None:
+        module = _bundled_module()
+        originals = {
+            name: getattr(module, name).__wrapped__
+            for name in ("html_comment_start", "strip_html_comments")
+        }
+        with self.assertRaisesRegex(RuntimeError, "already active"):
+            setUpModule()
+        try:
+            tearDownModule()
+            for name, original in originals.items():
+                self.assertIs(getattr(module, name), original)
+            self.assertEqual(_bundled_module.cache_info().currsize, 0)
+        finally:
+            setUpModule()
+        self.assertIsNot(_bundled_module(), module)
+
     def test_root_heading_calls_reuse_code_but_revalidate_each_body(self) -> None:
         module = runpy.run_path(
             str(ROOT_PREFLIGHT), run_name="scripts.markdown_body_preflight"

@@ -20,6 +20,9 @@ from unittest import mock
 
 import yaml
 
+from tests.token_walk_budget import guard_token_reads
+from tests.parser_work_budget import guard_text_work
+
 
 MODULE_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = MODULE_ROOT / "scripts" / "validate_repository.py"
@@ -44,6 +47,40 @@ WORKFLOW_SPEC.loader.exec_module(validate_workflows)
 
 
 PLUGIN_ROOT = validate_repository.release_archive_source_root(MODULE_ROOT)
+_TOKEN_WALK_PATCHES: ExitStack | None = None
+
+
+def setUpModule() -> None:
+    """Guard every classifier call, including calls through higher-level validators."""
+    global _TOKEN_WALK_PATCHES
+    if _TOKEN_WALK_PATCHES is not None:
+        raise RuntimeError("module token-walk guards are already active")
+    with ExitStack() as patches:
+        for name in ("github_api_is_mutation", "network_client_is_mutation"):
+            patches.enter_context(
+                mock.patch.object(
+                    validate_repository,
+                    name,
+                    guard_token_reads(getattr(validate_repository, name)),
+                )
+            )
+        name = "freshness_issue_lookup_substitution_is_safe"
+        patches.enter_context(
+            mock.patch.object(
+                validate_repository,
+                name,
+                guard_text_work(getattr(validate_repository, name), input_name="text"),
+            )
+        )
+        _TOKEN_WALK_PATCHES = patches.pop_all()
+
+
+def tearDownModule() -> None:
+    """Restore the actual source functions before other test modules run."""
+    global _TOKEN_WALK_PATCHES
+    if _TOKEN_WALK_PATCHES is not None:
+        _TOKEN_WALK_PATCHES.close()
+        _TOKEN_WALK_PATCHES = None
 
 
 def repository_entrypoint_path(repository_root: Path) -> Path:
@@ -68,6 +105,104 @@ def run_test_subprocess(
 
 
 class SerializedFileValidationTests(unittest.TestCase):
+    def test_issue_lookup_fixture_preserves_continuation_semantics(self) -> None:
+        self.assertTrue(
+            validate_repository.freshness_issue_lookup_substitution_is_safe(
+                "issue_numbers_output=$(\ngh api endpoint \\\n --method HEAD\n)"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_lookup_substitution_is_safe(
+                "issue_numbers_output=$(\nprintf extra\ngh api endpoint\n)"
+            )
+        )
+
+    def test_issue_lookup_fixture_bounds_repeated_output_and_restores_source(
+        self,
+    ) -> None:
+        retained: list[str] = []
+
+        def repeat_line(text: str) -> bool:
+            while text:
+                retained.append(text.strip())
+            return False
+
+        name = "freshness_issue_lookup_substitution_is_safe"
+        original = getattr(validate_repository, name).__wrapped__
+        try:
+            tearDownModule()
+            self.assertIs(getattr(validate_repository, name), original)
+            with mock.patch.object(validate_repository, name, repeat_line):
+                setUpModule()
+                with self.assertRaisesRegex(AssertionError, "linear call budget"):
+                    getattr(validate_repository, name)("x")
+                tearDownModule()
+        finally:
+            if _TOKEN_WALK_PATCHES is not None:
+                tearDownModule()
+            setUpModule()
+        self.assertLessEqual(len(retained), 192)
+
+    def test_http_token_classifier_module_hook_rejects_duplicate_setup(self) -> None:
+        current = validate_repository.github_api_is_mutation
+        with self.assertRaisesRegex(RuntimeError, "already active"):
+            setUpModule()
+        self.assertIs(validate_repository.github_api_is_mutation, current)
+
+    def test_http_token_classifier_module_hooks_delegate_and_restore_source(
+        self,
+    ) -> None:
+        wrapped = validate_repository.github_api_is_mutation
+        original = wrapped.__wrapped__
+        self.assertIsNot(wrapped, original)
+        try:
+            tearDownModule()
+            self.assertIs(validate_repository.github_api_is_mutation, original)
+            setUpModule()
+            self.assertIs(
+                validate_repository.github_api_is_mutation.__wrapped__, original
+            )
+            self.assertFalse(
+                validate_repository.github_api_is_mutation(
+                    ["gh", "api", "endpoint", "-X", "HEAD"], 0
+                )
+            )
+        finally:
+            if _TOKEN_WALK_PATCHES is None:
+                setUpModule()
+
+    def test_http_token_classifier_fixture_rejects_nonprogress_in_nested_calls(
+        self,
+    ) -> None:
+        methods = []
+
+        def reset_index(tokens: list[str], position: int) -> bool:
+            selected = tokens[position:]
+            index = 2
+            while index < len(selected):
+                if selected[index] == "-X":
+                    methods.append(selected[index + 1])
+                    index = 1
+                index += 1
+            return bool(methods)
+
+        try:
+            tearDownModule()
+            with mock.patch.object(
+                validate_repository, "github_api_is_mutation", reset_index
+            ):
+                setUpModule()
+                with self.assertRaisesRegex(AssertionError, "linear read budget"):
+                    validate_repository.reminder_issue_mutation_blocks(
+                        "gh api endpoint -X HEAD"
+                    )
+                tearDownModule()
+        finally:
+            if _TOKEN_WALK_PATCHES is not None:
+                tearDownModule()
+            setUpModule()
+        self.assertLessEqual(len(methods), 28)
+
     def test_test_subprocess_environment_does_not_inherit_mutmut_runtime_flags(
         self,
     ) -> None:
