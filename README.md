@@ -327,6 +327,10 @@ python scripts/validate_workflows.py
 python scripts/validate_repository.py
 ```
 
+On Windows, CI uses PyYAML's pure-Python build path for dependency
+installation, so the supported Python matrix does not require a local C
+compiler for the optional libyaml extension.
+
 Workflow validation runs actionlint and then runs the reviewed ShellCheck binary
 separately against extracted Bash blocks from installed and templated workflows.
 Markdownlint covers every project-owned Markdown file.
