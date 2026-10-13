@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import gc
 import importlib
 import importlib.metadata
 import json
@@ -490,6 +492,39 @@ def diagnostic_runner_factory(
     return create
 
 
+def release_pre_fork_memory() -> None:
+    """Release post-pytest garbage and free allocator pages before GC is frozen."""
+    gc.collect()
+    if sys.platform != "linux":
+        return
+    try:
+        trim = ctypes.CDLL(None).malloc_trim
+    except (OSError, AttributeError):
+        # Non-glibc platforms may have no trimming API; keep the engine verdict.
+        return
+    trim.argtypes = [ctypes.c_size_t]
+    trim.restype = ctypes.c_int
+    trim(0)
+
+
+def pre_fork_runner_factory(factory: Callable[..., Any]) -> Callable[..., Any]:
+    """Collect after pytest teardown, immediately before the runner's freeze."""
+
+    def create(*args: Any, **kwargs: Any) -> Any:
+        runner = factory(*args, **kwargs)
+        startup = getattr(runner, "startup", None)
+        if callable(startup):
+
+            def start(*args: Any, **kwargs: Any) -> Any:
+                release_pre_fork_memory()
+                return startup(*args, **kwargs)
+
+            runner.startup = start
+        return runner
+
+    return create
+
+
 def run_mutation_testing(
     repository_root: Path,
     *,
@@ -518,14 +553,18 @@ def run_mutation_testing(
             return
     original = implementation.create_mutants_for_file
     original_factory = getattr(implementation, "get_mutant_runner", None)
-    diagnostic_factory = None
+    runner_factory = (
+        pre_fork_runner_factory(original_factory)
+        if callable(original_factory)
+        else None
+    )
     if (
         os.environ.get("REPO_SCAFFOLD_MUTATION_DIAGNOSTICS") == "1"
         and mutant_names
-        and callable(original_factory)
+        and runner_factory is not None
     ):
-        diagnostic_factory = diagnostic_runner_factory(
-            original_factory,
+        runner_factory = diagnostic_runner_factory(
+            runner_factory,
             frozenset(name.replace("__init__.", "") for name in mutant_names),
         )
     previous_cwd = Path.cwd()
@@ -535,12 +574,12 @@ def run_mutation_testing(
     implementation.create_mutants_for_file = _create_or_reuse_mutants
     try:
         os.chdir(root)
-        if diagnostic_factory is not None:
-            implementation.get_mutant_runner = diagnostic_factory
+        if runner_factory is not None:
+            implementation.get_mutant_runner = runner_factory
         implementation._run(mutant_names or [], max_children)
     finally:
         os.chdir(previous_cwd)
-        if diagnostic_factory is not None:
+        if runner_factory is not None:
             implementation.get_mutant_runner = original_factory
         implementation.create_mutants_for_file = original
         _MUTMUT_MAIN = None

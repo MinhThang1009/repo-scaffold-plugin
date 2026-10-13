@@ -341,6 +341,16 @@ victim or establish why the runner stopped. The sampler cannot admit a verdict:
 the wrapper preserves the engine exit status and stops its observer on exit.
 CI/workflow validation and complete mutation aggregation remain required.
 
+The runner collects unreachable post-pytest cycles immediately before upstream
+startup freezes GC for forking. On Linux with `malloc_trim` available in the
+process allocator, it also returns already-free heap pages to the operating
+system. Other allocators skip that optional trim. Live modules, associations,
+verdicts, GC enabled/disabled state, worker count and upstream startup behavior
+remain unchanged. This reduces retained baseline allocations; it does not bound
+live worker memory or prove why a hosted runner received a shutdown signal.
+The native Linux integration check verifies heap reclamation and live-state
+preservation; only a completed exact-commit run can establish shard success.
+
 If the lock resolves LibCST to a source distribution because no compatible wheel
 is available, provision a compatible Rust toolchain and platform native build tools
 in an isolated build environment first. Derive compiler requirements from the

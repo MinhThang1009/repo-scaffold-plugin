@@ -21,6 +21,64 @@ RUN_INTEGRATION = os.environ.get("REPO_SCAFFOLD_MUTMUT_INTEGRATION") == "1"
     "requires the Linux mutation integration job",
 )
 class LinuxMutationRunnerIntegrationTests(unittest.TestCase):
+    def test_pre_fork_cleanup_releases_native_heap_without_changing_live_state(
+        self,
+    ) -> None:
+        driver = """
+import ctypes
+import gc
+import os
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+sys.path.insert(0, sys.argv[1])
+from scripts.run_mutation_testing import pre_fork_runner_factory
+libc = ctypes.CDLL(None)
+libc.malloc.argtypes = [ctypes.c_size_t]
+libc.malloc.restype = ctypes.c_void_p
+libc.free.argtypes = [ctypes.c_void_p]
+libc.free.restype = None
+blocks = []
+try:
+    for _ in range(1024):
+        block = libc.malloc(65536)
+        assert block, 'native allocation failed'
+        blocks.append(block)
+        ctypes.memset(block, 1, 65536)
+    live = blocks.pop()
+    for block in blocks:
+        libc.free(block)
+    blocks.clear()
+    def rss():
+        fields = Path('/proc/self/statm').read_text(encoding='ascii').split()
+        return int(fields[1]) * os.sysconf('SC_PAGE_SIZE')
+    before = rss()
+    sentinel = {'verdict': 1}
+    def freeze():
+        gc.freeze()
+        return sentinel
+    runner = pre_fork_runner_factory(lambda: SimpleNamespace(startup=freeze))()
+    assert runner.startup() is sentinel
+    after = rss()
+    assert before - after >= 32 * 1024 * 1024, (before, after)
+    assert ctypes.string_at(live, 4) == b'\\x01' * 4
+    child = os.fork()
+    if child == 0:
+        os._exit(sentinel['verdict'])
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 1
+    print('pre-fork reclaimed bytes:', before - after)
+finally:
+    gc.unfreeze()
+    for block in blocks:
+        libc.free(block)
+    if 'live' in locals():
+        libc.free(live)
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_command(Path(directory), "-c", driver, str(PLUGIN_ROOT))
+            self.assertIn("pre-fork reclaimed bytes:", result.stdout)
+
     def source_definitions(self, path: Path, names: set[str]) -> str:
         """Copy bounded checked-in definitions, never downloaded generated code."""
         self.assertLess(path.stat().st_size, 2 * 1024 * 1024)
