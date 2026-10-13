@@ -246,8 +246,13 @@ python scripts/run_tests.py focused tests/test_pr_template_preflight.py --source
 ```
 
 `--source` enforces the existing coverage floor for the selected Python file;
-repeat it for additional files. This is focused feedback, not a full-repository
-verdict. Every measured run uses a fresh, isolated coverage data file and cleans
+repeat it for additional files. If it selects one of the three verified omitted
+copies, its report identity is the byte-identical canonical root script.
+Selecting both paths measures that
+canonical identity once. This remapping follows copy-byte admission and does not
+hide missing canonical coverage when other selected files are fully covered.
+This is focused feedback, not a full-repository verdict. Every measured run
+uses a fresh, isolated coverage data file and cleans
 it afterward, so concurrent checks cannot overwrite the normal `.coverage`
 file or combine earlier results with new code.
 
@@ -301,6 +306,16 @@ Temporary outputs should stay outside the first-party input trees. Root-level
 dependency/build caches retain their existing exclusions, and mutation-cache
 snapshot selection is unchanged. Bytecode caches are runtime state, not source
 attestation; the trusted-interpreter/import boundary described above still applies.
+
+Guarded child runs (`full`, `suite` and focused with `--source`) use a unique,
+owned `PYTHONPYCACHEPREFIX` instead of repository or inherited bytecode caches.
+Timestamp/size collisions and unchecked-hash bytecode cannot substitute old code
+for current source. The run and report share that private prefix; it is removed
+on success, failure or interruption without clearing existing caches or changing
+the caller's environment. This incurs cold-import work during final verification.
+Focused feedback without measurement retains its normal cache behavior. This
+does not attest the parent interpreter's already-loaded modules, custom importers
+or executable startup hooks, and inputs must still remain immutable during a run.
 
 First-party verification inputs must be directories or regular files. FIFO,
 socket, device and other nonregular entries are rejected before reading content

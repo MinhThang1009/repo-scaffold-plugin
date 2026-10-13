@@ -300,6 +300,40 @@ class RunTestsTests(unittest.TestCase):
             ["--include", "skills/repo-scaffold/scripts/pr_template_preflight.py"],
         )
 
+    def test_focused_copy_selections_report_verified_canonical_sources_once(
+        self,
+    ) -> None:
+        for copy in sorted(run_tests.COVERAGE_OMITTED_COPIES):
+            canonical = (Path("scripts") / Path(copy).name).as_posix()
+            with (
+                self.subTest(copy=copy),
+                mock.patch.object(
+                    run_tests.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as execute,
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(
+                    run_tests.main(
+                        [
+                            "focused",
+                            "tests/test_run_tests.py",
+                            "--source",
+                            "scripts/run_tests.py",
+                            "--source",
+                            copy,
+                            "--source",
+                            canonical,
+                        ]
+                    ),
+                    0,
+                )
+            self.assertEqual(
+                execute.call_args.args[0][-2:],
+                ["--include", "scripts/run_tests.py," + canonical],
+            )
+
     def test_failed_tests_skip_report_and_clean_their_owned_data_directory(
         self,
     ) -> None:
@@ -410,6 +444,9 @@ class RunTestsTests(unittest.TestCase):
         self.assertFalse(
             Path(command[command.index("--data-file") + 1]).parent.exists()
         )
+        self.assertFalse(
+            Path(execute.call_args.kwargs["env"]["PYTHONPYCACHEPREFIX"]).parent.exists()
+        )
 
     def test_nonregular_input_admission_failure_never_starts_pytest_or_coverage(
         self,
@@ -433,6 +470,50 @@ class RunTestsTests(unittest.TestCase):
                 self.assertEqual(run_tests.main(arguments), 1)
                 self.assertIn("nonregular verification input", errors.getvalue())
                 execute.assert_not_called()
+
+    def test_guarded_bytecode_directories_are_fresh_owned_and_cleaned_on_failure(
+        self,
+    ) -> None:
+        prefixes = []
+        for mode in ("full", "suite", "focused"):
+            for status in (0, 1):
+                arguments = (
+                    [mode]
+                    if mode != "focused"
+                    else [
+                        "focused",
+                        "tests/test_run_tests.py",
+                        "--source",
+                        "scripts/run_tests.py",
+                    ]
+                )
+                with (
+                    self.subTest(mode=mode, status=status),
+                    mock.patch.dict(
+                        os.environ, {"PYTHONPYCACHEPREFIX": "unrelated-cache"}
+                    ),
+                    mock.patch.object(
+                        run_tests.subprocess,
+                        "run",
+                        return_value=subprocess.CompletedProcess([], status),
+                    ) as execute,
+                    redirect_stdout(StringIO()),
+                ):
+                    self.assertEqual(run_tests.main(arguments), status)
+                    prefix = execute.call_args.kwargs["env"]["PYTHONPYCACHEPREFIX"]
+                    self.assertNotEqual(prefix, "unrelated-cache")
+                    self.assertEqual(
+                        os.environ["PYTHONPYCACHEPREFIX"], "unrelated-cache"
+                    )
+                    self.assertTrue(
+                        all(
+                            call.kwargs["env"]["PYTHONPYCACHEPREFIX"] == prefix
+                            for call in execute.call_args_list
+                        )
+                    )
+                self.assertFalse(Path(prefix).parent.exists())
+                prefixes.append(prefix)
+        self.assertEqual(len(set(prefixes)), len(prefixes))
 
     def test_configuration_errors_fail_before_test_execution(self) -> None:
         for payload, message in (

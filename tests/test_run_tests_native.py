@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import os
+import py_compile
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,91 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_guarded_runs_do_not_execute_stale_source_bytecode(self) -> None:
+        for mode in ("suite", "full", "focused"):
+            for invalidation in (
+                py_compile.PycInvalidationMode.TIMESTAMP,
+                py_compile.PycInvalidationMode.UNCHECKED_HASH,
+            ):
+                with (
+                    self.subTest(mode=mode, invalidation=invalidation),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    source = root / "scripts/decision.py"
+                    before = source.stat()
+                    shared = root / ".pytest_cache/old-bytecode"
+                    with mock.patch.object(sys, "pycache_prefix", str(shared)):
+                        cache_name = py_compile.compile(
+                            str(source), doraise=True, invalidation_mode=invalidation
+                        )
+                    assert cache_name is not None
+                    cached = Path(cache_name)
+                    cached_bytes = cached.read_bytes()
+                    source.write_text("def value():\n    return 2\n", encoding="utf-8")
+                    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+                    self.assertEqual(source.stat().st_size, before.st_size)
+                    arguments = (
+                        ["tests/test_good.py", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+                    result = self.run_runner(
+                        root,
+                        mode,
+                        arguments=arguments,
+                        coverage_environment={"PYTHONPYCACHEPREFIX": str(shared)},
+                    )
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertIn("test_good", result.stdout)
+                    self.assertEqual(cached.read_bytes(), cached_bytes)
+
+    def test_focused_omitted_copy_uses_canonical_coverage_in_every_requested_scope(
+        self,
+    ) -> None:
+        for covered in (False, True):
+            for selected in (
+                "scripts/audit_freshness.py",
+                "skills/repo-scaffold/scripts/audit_freshness.py",
+            ):
+                with (
+                    self.subTest(covered=covered, selected=selected),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    for relative in (
+                        "scripts/audit_freshness.py",
+                        "skills/repo-scaffold/scripts/audit_freshness.py",
+                    ):
+                        (root / relative).write_text(
+                            "def extra():\n    return 2\n", encoding="utf-8"
+                        )
+                    if covered:
+                        (root / "tests/test_good.py").write_text(
+                            "from scripts.decision import value\nfrom scripts.audit_freshness import extra\ndef test_good():\n    assert value() == 1\n    assert extra() == 2\n",
+                            encoding="utf-8",
+                        )
+                    result = self.run_runner(
+                        root,
+                        "focused",
+                        arguments=[
+                            "tests/test_good.py",
+                            "--source",
+                            "scripts/decision.py",
+                            "--source",
+                            selected,
+                        ],
+                    )
+                    self.assertEqual(
+                        result.returncode,
+                        0 if covered else 2,
+                        result.stdout + result.stderr,
+                    )
+
     def test_omitted_copy_requires_matching_canonical_bytes(self) -> None:
         for kind in ("matching", "drift", "missing-source"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
@@ -122,6 +209,7 @@ class NativeRunTestsTests(unittest.TestCase):
         addopts: str = "",
         plugins: str = "",
         coverage_environment: dict[str, str] | None = None,
+        arguments: list[str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment["PYTEST_ADDOPTS"] = addopts
@@ -132,7 +220,15 @@ class NativeRunTestsTests(unittest.TestCase):
         for name in ("GH_TOKEN", "GITHUB_TOKEN"):
             environment.pop(name, None)
         return subprocess.run(
-            [sys.executable, "-c", DRIVER, str(ROOT), str(root), mode],
+            [
+                sys.executable,
+                "-c",
+                DRIVER,
+                str(ROOT),
+                str(root),
+                mode,
+                *(arguments or []),
+            ],
             cwd=root,
             env=environment,
             capture_output=True,

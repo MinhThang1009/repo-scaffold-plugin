@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 
 if __name__ == "__main__":
@@ -136,6 +137,14 @@ def run_coverage(
     if policy_errors:
         raise ValueError("; ".join(policy_errors))
     validate_omitted_copies(REPOSITORY_ROOT)
+    report_sources = list(
+        dict.fromkeys(
+            (Path("scripts") / Path(source).name).as_posix()
+            if source in COVERAGE_OMITTED_COPIES
+            else source
+            for source in sources
+        )
+    )
     with tempfile.TemporaryDirectory(prefix="repo-scaffold-coverage-") as directory:
         data_file = str(Path(directory) / ".coverage")
         frozen_configuration = Path(directory) / ".coveragerc"
@@ -156,7 +165,7 @@ def run_coverage(
         assert_inputs_current(fingerprint, "the run")
         report = [*common, "report", *settings]
         if sources:
-            report.extend(["--include", ",".join(sources)])
+            report.extend(["--include", ",".join(report_sources)])
         result = subprocess.run(report, cwd=REPOSITORY_ROOT, env=environment)
         if result.returncode:
             return result.returncode
@@ -207,17 +216,25 @@ def main(argv: list[str] | None = None) -> int:
             pytest_errors = pytest_policy_errors(read_configuration("pyproject.toml"))
             if pytest_errors:
                 raise ValueError("; ".join(pytest_errors))
-        if arguments.mode == "full" or sources:
-            return run_coverage(pytest, sources, environment, fingerprint)
-        result = subprocess.run(
-            [sys.executable, *pytest],
-            cwd=REPOSITORY_ROOT,
-            env=environment,
+        runtime = (
+            tempfile.TemporaryDirectory(prefix="repo-scaffold-test-runtime-")
+            if fingerprint is not None
+            else nullcontext()
         )
-        if result.returncode:
-            return result.returncode
-        assert_inputs_current(fingerprint, "the run")
-        return 0
+        with runtime as directory:
+            if directory is not None:
+                environment["PYTHONPYCACHEPREFIX"] = str(Path(directory) / "bytecode")
+            if arguments.mode == "full" or sources:
+                return run_coverage(pytest, sources, environment, fingerprint)
+            result = subprocess.run(
+                [sys.executable, *pytest],
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+            )
+            if result.returncode:
+                return result.returncode
+            assert_inputs_current(fingerprint, "the run")
+            return 0
     except (OSError, UnicodeError, ValueError) as error:
         print(f"error: could not run test checks: {error}", file=sys.stderr)
         return 1
