@@ -16,6 +16,13 @@ from scripts import run_tests
 
 
 class RunTestsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch.object(
+            run_tests, "project_input_fingerprint", return_value="unchanged"
+        )
+        self.fingerprint = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_focused_selection_executes_only_requested_tests_and_propagates_failure(
         self,
     ) -> None:
@@ -57,7 +64,14 @@ class RunTestsTests(unittest.TestCase):
 
     def test_full_run_does_not_inherit_environment_test_selection(self) -> None:
         with (
-            mock.patch.dict(os.environ, {"PYTEST_ADDOPTS": "--lf -k previous"}),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PYTEST_ADDOPTS": "--lf -k previous",
+                    "PYTEST_PLUGINS": "selection_plugin",
+                    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "0",
+                },
+            ),
             mock.patch.object(
                 run_tests.subprocess,
                 "run",
@@ -67,7 +81,15 @@ class RunTestsTests(unittest.TestCase):
         ):
             self.assertEqual(run_tests.main(["full"]), 0)
             self.assertNotIn("PYTEST_ADDOPTS", execute.call_args_list[0].kwargs["env"])
+            self.assertNotIn("PYTEST_PLUGINS", execute.call_args_list[0].kwargs["env"])
+            self.assertEqual(
+                execute.call_args_list[0].kwargs["env"][
+                    "PYTEST_DISABLE_PLUGIN_AUTOLOAD"
+                ],
+                "1",
+            )
             self.assertEqual(os.environ["PYTEST_ADDOPTS"], "--lf -k previous")
+            self.assertEqual(os.environ["PYTEST_PLUGINS"], "selection_plugin")
 
     def test_focused_inputs_cannot_inject_pytest_options_or_coverage_globs(
         self,
@@ -106,17 +128,32 @@ class RunTestsTests(unittest.TestCase):
                     commands[0][:4], [sys.executable, "-m", "coverage", "run"]
                 )
                 self.assertEqual(
-                    commands[0][-5:], ["-m", "pytest", "-q", "--durations=20", "tests"]
+                    commands[0][-9:],
+                    [
+                        "-m",
+                        "pytest",
+                        "-c",
+                        str(run_tests.REPOSITORY_ROOT / "pyproject.toml"),
+                        "-o",
+                        "addopts=",
+                        "-q",
+                        "--durations=20",
+                        "tests",
+                    ],
                 )
                 self.assertEqual(
                     commands[1][:4], [sys.executable, "-m", "coverage", "report"]
                 )
                 self.assertNotIn("--include", commands[1])
                 for command in commands:
-                    self.assertEqual(
+                    self.assertNotEqual(
                         command[command.index("--rcfile") + 1],
                         str(run_tests.REPOSITORY_ROOT / ".coveragerc"),
                     )
+                self.assertEqual(
+                    commands[0][commands[0].index("--rcfile") + 1],
+                    commands[1][commands[1].index("--rcfile") + 1],
+                )
                 data_file = commands[0][commands[0].index("--data-file") + 1]
                 self.assertEqual(
                     commands[1][commands[1].index("--data-file") + 1], data_file
@@ -130,6 +167,9 @@ class RunTestsTests(unittest.TestCase):
         self,
     ) -> None:
         with (
+            mock.patch.object(
+                sys, "path", [str(run_tests.REPOSITORY_ROOT / "scripts"), *sys.path]
+            ),
             mock.patch.object(
                 run_tests.subprocess,
                 "run",
@@ -187,6 +227,9 @@ class RunTestsTests(unittest.TestCase):
     def test_entrypoint_preserves_pytest_exit_status(self) -> None:
         with (
             mock.patch.object(
+                sys, "path", [str(run_tests.REPOSITORY_ROOT / "scripts"), *sys.path]
+            ),
+            mock.patch.object(
                 sys, "argv", ["run_tests.py", "focused", "tests/test_run_tests.py"]
             ),
             mock.patch.object(
@@ -200,3 +243,135 @@ class RunTestsTests(unittest.TestCase):
                 run_name="__main__",
             )
         self.assertEqual(result.exception.code, 5)
+
+    def test_changed_inputs_reject_success_before_and_after_reporting(self) -> None:
+        for values, expected_calls in (
+            (["before", "after"], 1),
+            (["before", "before", "after"], 2),
+        ):
+            with (
+                self.subTest(values=values),
+                mock.patch.object(
+                    run_tests, "project_input_fingerprint", side_effect=values
+                ),
+                mock.patch.object(
+                    run_tests.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as execute,
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()) as errors,
+            ):
+                self.assertEqual(run_tests.main(["full"]), 1)
+                self.assertIn("inputs changed", errors.getvalue())
+                self.assertEqual(execute.call_count, expected_calls)
+
+    def test_suite_runs_the_requested_scope_and_rejects_stale_inputs(self) -> None:
+        with (
+            mock.patch.object(
+                run_tests.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ) as execute,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_tests.main(["suite", "tests/test_run_tests.py"]), 0)
+        self.assertIn("addopts=", execute.call_args.args[0])
+        self.fingerprint.side_effect = ["before", "after"]
+        with (
+            mock.patch.object(
+                run_tests.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ),
+            redirect_stdout(StringIO()),
+            redirect_stderr(StringIO()),
+        ):
+            self.assertEqual(run_tests.main(["suite"]), 1)
+
+    def test_interrupted_measurement_never_reports_or_retains_temporary_data(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(
+                run_tests.subprocess, "run", side_effect=KeyboardInterrupt
+            ) as execute,
+            redirect_stdout(StringIO()),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            run_tests.main(["full"])
+        self.assertEqual(execute.call_count, 1)
+        command = execute.call_args.args[0]
+        self.assertFalse(
+            Path(command[command.index("--data-file") + 1]).parent.exists()
+        )
+
+    def test_configuration_errors_fail_before_test_execution(self) -> None:
+        for payload, message in (
+            (b"x" * 65537, "65536-byte"),
+            (b"\xff", "could not run"),
+            (b"[report]\ninclude = scripts/*.py\n", "coverage policy"),
+        ):
+            with (
+                self.subTest(message=message),
+                mock.patch.object(Path, "open", mock.mock_open(read_data=payload)),
+                mock.patch.object(run_tests.subprocess, "run") as execute,
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()) as errors,
+            ):
+                self.assertEqual(
+                    run_tests.main(
+                        [
+                            "focused",
+                            "tests/test_run_tests.py",
+                            "--source",
+                            "scripts/run_tests.py",
+                        ]
+                    ),
+                    1,
+                )
+                self.assertIn(message, errors.getvalue())
+                execute.assert_not_called()
+
+    def test_pytest_policy_failure_stops_before_collection(self) -> None:
+        with (
+            mock.patch.object(
+                run_tests, "pytest_policy_errors", return_value=["unsafe pytest policy"]
+            ),
+            mock.patch.object(run_tests.subprocess, "run") as execute,
+            redirect_stdout(StringIO()),
+            redirect_stderr(StringIO()) as errors,
+        ):
+            self.assertEqual(run_tests.main(["full"]), 1)
+            self.assertIn("unsafe pytest policy", errors.getvalue())
+            execute.assert_not_called()
+
+    def test_configuration_cannot_cross_a_link_boundary_or_be_a_directory(self) -> None:
+        with (
+            mock.patch.object(
+                run_tests,
+                "_assert_safe_project_path",
+                side_effect=ValueError("linked config"),
+            ),
+            redirect_stdout(StringIO()),
+            redirect_stderr(StringIO()) as errors,
+        ):
+            self.assertEqual(
+                run_tests.main(
+                    [
+                        "focused",
+                        "tests/test_run_tests.py",
+                        "--source",
+                        "scripts/run_tests.py",
+                    ]
+                ),
+                1,
+            )
+            self.assertIn("linked config", errors.getvalue())
+        with (
+            mock.patch.object(Path, "is_file", return_value=False),
+            redirect_stdout(StringIO()),
+            redirect_stderr(StringIO()) as errors,
+        ):
+            self.assertEqual(run_tests.main(["full"]), 1)
+            self.assertIn("regular repository file", errors.getvalue())

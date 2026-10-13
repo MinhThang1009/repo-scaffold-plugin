@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import ast
-import configparser
 import importlib
 import json
 import os
@@ -29,6 +28,11 @@ from markdown_it.rules_inline.backticks import backtick as parse_backtick
 from markdown_it.rules_inline.state_inline import StateInline
 from markdown_it.token import Token
 
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.coverage_policy import coverage_policy_errors, pytest_policy_errors
+
 tomllib = importlib.import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
 
@@ -49,7 +53,6 @@ CACHE_DIRECTORIES = {
     "venv",
     ".venv",
 }
-COVERAGE_FAIL_UNDER = 100
 MUTATION_PLAN_TIMEOUT_MINUTES = "360"
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
@@ -3794,7 +3797,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             isinstance(step, dict)
             and step.get("env") == {"REPO_SCAFFOLD_MUTMUT_INTEGRATION": "1"}
             and step.get("run")
-            == "python -m pytest -q tests/test_mutation_runner_linux.py"
+            == "python scripts/run_tests.py suite tests/test_mutation_runner_linux.py"
             for step in mutation_integration_steps
         )
         if (
@@ -3830,7 +3833,8 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             for step in canary_steps
         )
         canary_tests = isinstance(canary_steps, list) and any(
-            isinstance(step, dict) and step.get("run") == "python -m pytest -q"
+            isinstance(step, dict)
+            and step.get("run") == "python scripts/run_tests.py suite"
             for step in canary_steps
         )
         triggers = workflow.get("on") if isinstance(workflow, dict) else None
@@ -4899,11 +4903,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
 
     quality = jobs.get("quality") if isinstance(jobs, dict) else None
     quality_steps = quality.get("steps") if isinstance(quality, dict) else None
-    expected_coverage = (
-        "python -m coverage erase\n"
-        "python -m coverage run -m pytest -q\n"
-        "python -m coverage report"
-    )
+    expected_coverage = "python scripts/run_tests.py full"
     if not isinstance(quality_steps, list) or not any(
         isinstance(step, dict)
         and isinstance(step.get("run"), str)
@@ -4965,41 +4965,18 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
                 )
 
     coverage_path = repository_root / ".coveragerc"
-    coverage_config = configparser.ConfigParser()
     try:
-        coverage_config.read_string(read_bounded_text(coverage_path))
-        branch = coverage_config.getboolean("run", "branch")
-        sources = {
-            line.strip().replace("\\", "/")
-            for line in coverage_config.get("run", "source").splitlines()
-            if line.strip()
-        }
-        omitted = {
-            line.strip().replace("\\", "/")
-            for line in coverage_config.get("run", "omit").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        }
-        fail_under = coverage_config.getfloat("report", "fail_under")
-    except (OSError, UnicodeError, configparser.Error, ValueError) as error:
+        pytest_text = read_bounded_text(repository_root / "pyproject.toml")
+    except (OSError, UnicodeError, ValueError) as error:
+        problems.append(f"pyproject.toml: could not verify pytest policy: {error}")
+    else:
+        problems.extend(pytest_policy_errors(pytest_text))
+    try:
+        coverage_text = read_bounded_text(coverage_path)
+    except (OSError, UnicodeError, ValueError) as error:
         problems.append(f".coveragerc: could not verify coverage policy: {error}")
     else:
-        expected_sources = {"scripts", "skills/repo-scaffold/scripts"}
-        expected_omitted = {
-            "skills/repo-scaffold/scripts/audit_freshness.py",
-            "skills/repo-scaffold/scripts/render_pr_body_evidence.py",
-            "skills/repo-scaffold/scripts/sync_action_pins.py",
-        }
-        if (
-            not branch
-            or sources != expected_sources
-            or omitted != expected_omitted
-            or fail_under < COVERAGE_FAIL_UNDER
-        ):
-            problems.append(
-                ".coveragerc: require branch coverage for both script trees, only "
-                "verified byte-for-byte script copies omitted, and a fail-under "
-                f"floor of at least {COVERAGE_FAIL_UNDER}"
-            )
+        problems.extend(coverage_policy_errors(coverage_text))
 
     for relative in ("README.md", "CONTRIBUTING.md"):
         path = repository_root / relative
@@ -5012,8 +4989,8 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
             continue
         for required in (
             "requirements-dev.txt",
-            "python -m coverage run -m pytest -q",
-            "python -m coverage report",
+            "python scripts/run_tests.py full",
+            "python scripts/run_tests.py suite",
         ):
             if required not in text:
                 problems.append(

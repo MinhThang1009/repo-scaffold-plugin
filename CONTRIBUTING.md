@@ -254,25 +254,40 @@ file or combine earlier results with new code.
 Once the change is complete, run `python scripts/run_tests.py full`. It runs the
 entire suite once under Coverage.py, then checks the unchanged `.coveragerc`
 branch-coverage floor. A separate full pytest invocation would repeat the same
-tests. Full mode also clears inherited `PYTEST_ADDOPTS` in the child process so
-local selection flags cannot narrow that run. Keep the source and tests
-unchanged during the run. On failure, correct
+tests. Full mode clears inherited `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, disables
+third-party plugin auto-loading, overrides config-file `addopts`, and selects
+the checked-in `pyproject.toml` explicitly. Repository `conftest.py` hooks remain
+active. Discovery overrides that omit first-party tests are rejected. It rejects
+coverage measurement/report overrides that hide missing coverage and uses a
+frozen copy of the admitted policy for both commands. Input fingerprints are
+compared after pytest and after reporting in measured and suite runs; changed source, tests or metadata
+invalidate the result. These comparisons cannot detect an edit that is restored
+between reads, so keep inputs unchanged throughout the run. On failure, correct
 the relevant group with focused checks before starting another full run.
+
+The shared input inventory admits directory entries before retaining and sorting
+them. Its 10,000-entry limit includes directories, ignored names and ordinary
+files; empty directory trees cannot bypass it. Directory iterators close on
+overflow or read failure. Per-file and aggregate byte limits still apply to
+actual bytes read, and link/reparse-point boundaries are rejected.
 
 For a quick retry of failures already recorded in pytest's local cache, use
 `python -m pytest --lf --last-failed-no-failures none -q`. An empty cache runs
 no tests, so it supplies no verification evidence. The cache tracks test
 selection, not whether changed code is correct.
 
-The equivalent manual full-coverage commands and other repository checks are:
+Runtime-only checks use `python scripts/run_tests.py suite`, or append explicit
+test paths for a declared subset such as Linux mutation integration. Suite mode
+also rejects inherited selection flags and changed inputs. CI's runtime,
+coverage, canary and integration consumers use these guarded entrypoints.
+
+Run the final full-coverage gate and other repository checks with:
 
 ```powershell
-python -m coverage erase
-python -m coverage run -m pytest -q
-python -m coverage report
+python scripts/run_tests.py full
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_tests.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/coverage_policy.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_tests.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py

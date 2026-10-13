@@ -2139,6 +2139,7 @@ class MirroredDependencyMetadataTests(unittest.TestCase):
 class DevelopmentDependencyContractTests(unittest.TestCase):
     CONTRACT_FILES = (
         ".coveragerc",
+        "pyproject.toml",
         ".gitattributes",
         ".gitignore",
         ".github/workflows/ci.yml",
@@ -2423,6 +2424,57 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 ".gitignore: ignore coverage data files without ignoring .coveragerc",
                 problems,
             )
+
+    def test_report_filters_and_nonfinite_coverage_floors_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            coverage_path = root / ".coveragerc"
+            original = coverage_path.read_text(encoding="utf-8")
+            for text in (
+                original.replace("[report]", "[report]\ninclude = scripts/*.py"),
+                original.replace("[report]", "[report]\nomit = scripts/*.py"),
+                original.replace("fail_under = 100", "fail_under = nan"),
+                original.replace("fail_under = 100", "fail_under = inf"),
+            ):
+                with self.subTest(text=text):
+                    coverage_path.write_text(text, encoding="utf-8")
+                    errors = (
+                        validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+                    )
+                    self.assertTrue(any(".coveragerc:" in error for error in errors))
+
+    def test_unreadable_verification_configs_fail_closed_in_the_repository_validator(
+        self,
+    ) -> None:
+        for name, purpose in (
+            ("pyproject.toml", "pytest"),
+            (".coveragerc", "coverage"),
+        ):
+            for unreadable in ("missing", "invalid-utf8"):
+                with (
+                    self.subTest(name=name, unreadable=unreadable),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    if unreadable == "missing":
+                        (root / name).unlink()
+                    else:
+                        (root / name).write_bytes(b"\xff")
+                    errors = (
+                        validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+                    )
+                    self.assertTrue(
+                        any(
+                            f"{name}: could not verify {purpose} policy" in error
+                            for error in errors
+                        )
+                    )
 
     def test_missing_direct_and_lock_files_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

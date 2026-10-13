@@ -26,6 +26,43 @@ SPEC.loader.exec_module(prepare_mutation_cache)
 
 
 class MutationCacheTests(unittest.TestCase):
+    def test_test_run_fingerprint_includes_metadata_and_detects_content_changes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = root / "policy.yml"
+            metadata.write_text("value: old\n", encoding="utf-8")
+            before = prepare_mutation_cache.project_input_fingerprint(root)
+            (root / ".coverage").write_bytes(b"irrelevant runtime data")
+            (root / ".pytest_cache").mkdir()
+            (root / ".pytest_cache" / "state").write_bytes(b"irrelevant")
+            self.assertEqual(
+                prepare_mutation_cache.project_input_fingerprint(root), before
+            )
+            metadata.write_text("value: new\n", encoding="utf-8")
+            self.assertNotEqual(
+                prepare_mutation_cache.project_input_fingerprint(root), before
+            )
+
+    def test_test_run_fingerprint_bounds_actual_bytes_after_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.txt"
+            second = root / "second.txt"
+            first.write_bytes(b"123")
+            second.write_bytes(b"456")
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_TOTAL_BYTES", 5),
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_project_files",
+                    return_value=[("first.txt", first), ("second.txt", second)],
+                ),
+                self.assertRaisesRegex(ValueError, "test input inventory"),
+            ):
+                prepare_mutation_cache.project_input_fingerprint(root)
+
     def test_cache_writer_reports_cleanup_failure_without_claiming_rollback(
         self,
     ) -> None:
@@ -683,18 +720,82 @@ class MutationCacheTests(unittest.TestCase):
                 prepare_mutation_cache._project_files(root)
 
     def test_project_inventory_propagates_walk_errors(self) -> None:
-        def failing_walk(*_args: object, **kwargs: object) -> object:
-            callback = kwargs["onerror"]
-            assert callable(callback)
-            callback(OSError("denied"))
-            return iter(())
-
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch.object(
-                prepare_mutation_cache.os, "walk", side_effect=failing_walk
+                prepare_mutation_cache.os, "scandir", side_effect=OSError("denied")
             ):
                 with self.assertRaisesRegex(OSError, "denied"):
                     prepare_mutation_cache._project_files(Path(directory))
+
+    def test_project_inventory_bounds_empty_directory_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("first", "second", "third"):
+                (root / name).mkdir()
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_PROJECT_FILES", 2),
+                self.assertRaisesRegex(ValueError, "inventory exceeds"),
+            ):
+                prepare_mutation_cache._project_files(root)
+
+    def test_project_inventory_rejects_aggregate_file_bytes_before_snapshot_reads(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "first.txt").write_bytes(b"123")
+            (root / "second.txt").write_bytes(b"456")
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_TOTAL_BYTES", 5),
+                self.assertRaisesRegex(ValueError, "inventory exceeds"),
+            ):
+                prepare_mutation_cache._project_files(root)
+
+    def test_project_inventory_closes_the_iterator_when_the_entry_budget_is_exceeded(
+        self,
+    ) -> None:
+        stream = mock.MagicMock()
+        stream.__enter__.return_value = stream
+        yielded = []
+
+        def entries():
+            for value in (object(), object(), object()):
+                yielded.append(value)
+                yield value
+
+        stream.__iter__.side_effect = entries
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                prepare_mutation_cache.os, "scandir", return_value=stream
+            ),
+            mock.patch.object(prepare_mutation_cache, "MAX_PROJECT_FILES", 1),
+            self.assertRaisesRegex(ValueError, "inventory exceeds"),
+        ):
+            prepare_mutation_cache._project_files(Path(directory))
+        self.assertEqual(len(yielded), 2)
+        stream.__exit__.assert_called_once()
+
+    def test_ignored_directory_names_do_not_hide_regular_input_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file = root / "vendor"
+            file.write_bytes(b"regular metadata")
+            self.assertEqual(
+                prepare_mutation_cache._project_files(root), [("vendor", file)]
+            )
+            entry = mock.Mock(name="ignored-link")
+            entry.name = "vendor"
+            entry.path = str(file)
+            entry.is_dir.return_value = False
+            entry.is_symlink.return_value = True
+            stream = mock.MagicMock()
+            stream.__enter__.return_value = stream
+            stream.__iter__.return_value = iter([entry])
+            with mock.patch.object(
+                prepare_mutation_cache.os, "scandir", return_value=stream
+            ):
+                self.assertEqual(prepare_mutation_cache._project_files(root), [])
 
     def test_project_inventory_skips_dependency_and_build_trees(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

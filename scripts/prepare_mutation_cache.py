@@ -321,36 +321,35 @@ def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
     _assert_safe_project_path(repository_root, repository_root)
     files: list[tuple[str, Path]] = []
     total_bytes = 0
-
-    def fail_on_walk_error(error: OSError) -> None:
-        raise error
-
-    for directory, child_directories, filenames in os.walk(
-        repository_root,
-        topdown=True,
-        followlinks=False,
-        onerror=fail_on_walk_error,
-    ):
-        current = Path(directory)
+    visited_entries = 0
+    pending = [repository_root]
+    while pending:
+        current = pending.pop()
         _assert_safe_project_path(repository_root, current)
-        safe_children: list[str] = []
-        for name in sorted(child_directories):
-            child = current / name
-            relative = child.relative_to(repository_root)
-            if set(relative.parts) & IGNORED_DIRECTORIES:
-                continue
-            _assert_safe_project_path(repository_root, child)
-            safe_children.append(name)
-        child_directories[:] = safe_children
-
-        for name in sorted(filenames):
-            path = current / name
+        entries: list[os.DirEntry[str]] = []
+        with os.scandir(current) as stream:
+            for entry in stream:
+                visited_entries += 1
+                if visited_entries > MAX_PROJECT_FILES:
+                    raise ValueError(
+                        "project inventory exceeds the cache preparation limits"
+                    )
+                entries.append(entry)
+        for entry in sorted(entries, key=lambda item: item.name):
+            path = Path(entry.path)
             relative = path.relative_to(repository_root)
+            if path.name in IGNORED_DIRECTORIES and (
+                entry.is_dir(follow_symlinks=False) or entry.is_symlink()
+            ):
+                continue
             if relative.name in IGNORED_FILE_NAMES or relative.name.startswith(
                 IGNORED_FILE_PREFIXES
             ):
                 continue
             _assert_safe_project_path(repository_root, path)
+            if path.is_dir():
+                pending.append(path)
+                continue
             if not path.is_file():
                 continue
             size = path.stat().st_size
@@ -359,7 +358,7 @@ def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
                     f"project file {relative.as_posix()!r} exceeds the size limit"
                 )
             total_bytes += size
-            if len(files) >= MAX_PROJECT_FILES or total_bytes > MAX_TOTAL_BYTES:
+            if total_bytes > MAX_TOTAL_BYTES:
                 raise ValueError(
                     "project inventory exceeds the cache preparation limits"
                 )
@@ -398,6 +397,24 @@ def snapshot_project(repository_root: Path) -> ProjectSnapshot:
         elif posix_path in CACHE_CONTROL_FILES:
             control_hashes[relative] = _sha256(content)
     return ProjectSnapshot(source_hashes, test_sources, control_hashes)
+
+
+def project_input_fingerprint(repository_root: Path) -> str:
+    """Hash all inventoried input bytes for a fresh local test run, not cache reuse."""
+    hashes: dict[str, str] = {}
+    total_bytes = 0
+    for relative, path in _project_files(repository_root):
+        _assert_safe_project_path(repository_root, path)
+        content = _read_bounded_bytes(
+            path,
+            min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - total_bytes),
+            "test input inventory exceeds the size limits",
+        )
+        total_bytes += len(content)
+        hashes[relative] = _sha256(content)
+    return _sha256(
+        json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
 
 
 def manifest_document(snapshot: ProjectSnapshot) -> dict[str, Any]:
