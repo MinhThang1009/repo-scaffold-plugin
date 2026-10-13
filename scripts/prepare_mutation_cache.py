@@ -316,7 +316,9 @@ def _assert_safe_project_path(repository_root: Path, path: Path) -> None:
             break
 
 
-def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
+def _project_files(
+    repository_root: Path, *, verification: bool = False
+) -> list[tuple[str, Path]]:
     repository_root = Path(os.path.abspath(repository_root))
     _assert_safe_project_path(repository_root, repository_root)
     files: list[tuple[str, Path]] = []
@@ -338,12 +340,25 @@ def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
         for entry in sorted(entries, key=lambda item: item.name):
             path = Path(entry.path)
             relative = path.relative_to(repository_root)
-            if path.name in IGNORED_DIRECTORIES and (
-                entry.is_dir(follow_symlinks=False) or entry.is_symlink()
+            first_party = verification and any(
+                _is_within(PurePosixPath(relative.as_posix()), root)
+                for root in (*SOURCE_ROOTS, PurePosixPath("tests"))
+            )
+            if (
+                not first_party
+                and path.name in IGNORED_DIRECTORIES
+                and (entry.is_dir(follow_symlinks=False) or entry.is_symlink())
             ):
                 continue
-            if relative.name in IGNORED_FILE_NAMES or relative.name.startswith(
-                IGNORED_FILE_PREFIXES
+            if (
+                first_party
+                and path.suffix in {".pyc", ".pyo"}
+                and entry.is_file(follow_symlinks=False)
+            ):
+                continue
+            if not first_party and (
+                relative.name in IGNORED_FILE_NAMES
+                or relative.name.startswith(IGNORED_FILE_PREFIXES)
             ):
                 continue
             _assert_safe_project_path(repository_root, path)
@@ -403,7 +418,7 @@ def project_input_fingerprint(repository_root: Path) -> str:
     """Hash all inventoried input bytes for a fresh local test run, not cache reuse."""
     hashes: dict[str, str] = {}
     total_bytes = 0
-    for relative, path in _project_files(repository_root):
+    for relative, path in _project_files(repository_root, verification=True):
         _assert_safe_project_path(repository_root, path)
         content = _read_bounded_bytes(
             path,

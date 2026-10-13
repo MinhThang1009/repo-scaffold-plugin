@@ -282,6 +282,16 @@ files; empty directory trees cannot bypass it. Directory iterators close on
 overflow or read failure. Per-file and aggregate byte limits still apply to
 actual bytes read, and link/reparse-point boundaries are rejected.
 
+Verification inventories traverse every directory inside `tests/` and both
+first-party script trees, even names such as `vendor`, `build` and `__pycache__`.
+Source and fixture files there cannot disappear behind mutation-cache ignore
+rules. Only regular `.pyc`/`.pyo` runtime bytecode files are omitted inside those
+trees; a directory with that suffix or a `.coverage.*` fixture is still inventoried.
+Temporary outputs should stay outside the first-party input trees. Root-level
+dependency/build caches retain their existing exclusions, and mutation-cache
+snapshot selection is unchanged. Bytecode caches are runtime state, not source
+attestation; the trusted-interpreter/import boundary described above still applies.
+
 For a quick retry of failures already recorded in pytest's local cache, use
 `python -m pytest --lf --last-failed-no-failures none -q`. An empty cache runs
 no tests, so it supplies no verification evidence. The cache tracks test

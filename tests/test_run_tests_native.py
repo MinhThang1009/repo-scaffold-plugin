@@ -177,6 +177,48 @@ class NativeRunTestsTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("inputs changed", result.stderr)
 
+    def test_ignored_directory_names_cannot_hide_first_party_changes(self) -> None:
+        for mode in ("suite", "full"):
+            for location in (
+                "scripts/vendor/input.py",
+                "scripts/build/input.py",
+                "tests/vendor/input.json",
+            ):
+                with (
+                    self.subTest(mode=mode, location=location),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    path = root / location
+                    path.parent.mkdir(parents=True)
+                    is_source = path.suffix == ".py"
+                    path.write_text(
+                        "value = 1\n" if is_source else "{}\n", encoding="utf-8"
+                    )
+                    imported = (
+                        "from "
+                        + location.removesuffix(".py").replace("/", ".")
+                        + " import value as extra\n"
+                        if is_source
+                        else ""
+                    )
+                    asserted = "    assert extra == 1\n" if is_source else ""
+                    changed = "value = 2\n" if is_source else '{"changed":true}\n'
+                    (root / "tests/test_good.py").write_text(
+                        "from pathlib import Path\nfrom scripts.decision import value\n"
+                        + imported
+                        + "def test_good():\n    assert value() == 1\n"
+                        + asserted
+                        + f"    Path({location!r}).write_text({changed!r}, encoding='utf-8')\n",
+                        encoding="utf-8",
+                    )
+                    result = self.run_runner(root, mode)
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertIn("inputs changed", result.stderr)
+
     def test_concurrent_successful_runs_use_fresh_data_and_preserve_existing_coverage(
         self,
     ) -> None:

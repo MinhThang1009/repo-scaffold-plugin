@@ -26,6 +26,95 @@ SPEC.loader.exec_module(prepare_mutation_cache)
 
 
 class MutationCacheTests(unittest.TestCase):
+    def test_verification_bytecode_exclusion_is_not_a_directory_or_fixture_exclusion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "scripts/__pycache__/module.pyc"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"bytecode")
+            before = prepare_mutation_cache.project_input_fingerprint(root)
+            source.write_bytes(b"changed bytecode")
+            self.assertEqual(
+                prepare_mutation_cache.project_input_fingerprint(root), before
+            )
+            for name in (
+                "scripts/cache.pyc/input.py",
+                "tests/.coverage.fixture",
+                "tests/build/input.json",
+            ):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"before")
+                original = prepare_mutation_cache.project_input_fingerprint(root)
+                path.write_bytes(b"after")
+                self.assertNotEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), original
+                )
+
+    def test_verification_inventory_keeps_entry_and_byte_limits_inside_ignored_names(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "scripts/vendor/input.py"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"input")
+            for setting, limit in (
+                ("MAX_PROJECT_FILES", 2),
+                ("MAX_FILE_BYTES", 4),
+                ("MAX_TOTAL_BYTES", 4),
+            ):
+                with (
+                    self.subTest(setting=setting),
+                    mock.patch.object(prepare_mutation_cache, setting, limit),
+                    self.assertRaisesRegex(ValueError, "exceeds"),
+                ):
+                    prepare_mutation_cache.project_input_fingerprint(root)
+
+    def test_verification_inventory_rejects_links_under_normally_ignored_names(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "scripts/vendor/input.py"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"input")
+            with (
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_is_link_or_reparse",
+                    side_effect=lambda candidate: candidate == path.parent,
+                ),
+                self.assertRaisesRegex(ValueError, "symlink or reparse"),
+            ):
+                prepare_mutation_cache.project_input_fingerprint(root)
+
+    def test_verification_inventory_includes_ignored_names_inside_first_party_trees(
+        self,
+    ) -> None:
+        for location in (
+            "scripts/vendor/input.py",
+            "skills/repo-scaffold/scripts/build/input.py",
+            "tests/vendor/input.json",
+            "scripts/__pycache__/input.py",
+        ):
+            with (
+                self.subTest(location=location),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                path = root / location
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"before")
+                original = prepare_mutation_cache.project_input_fingerprint(root)
+                self.assertEqual(prepare_mutation_cache._project_files(root), [])
+                path.write_bytes(b"after")
+                self.assertNotEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), original
+                )
+
     def test_test_run_fingerprint_includes_metadata_and_detects_content_changes(
         self,
     ) -> None:
