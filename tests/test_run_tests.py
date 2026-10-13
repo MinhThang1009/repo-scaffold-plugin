@@ -23,6 +23,9 @@ class RunTestsTests(unittest.TestCase):
         )
         self.fingerprint = patcher.start()
         self.addCleanup(patcher.stop)
+        copies = mock.patch.object(run_tests, "validate_omitted_copies")
+        copies.start()
+        self.addCleanup(copies.stop)
 
     def test_focused_selection_executes_only_requested_tests_and_propagates_failure(
         self,
@@ -481,3 +484,57 @@ class RunTestsTests(unittest.TestCase):
         ):
             self.assertEqual(run_tests.main(["full"]), 1)
             self.assertIn("regular repository file", errors.getvalue())
+
+
+class CoverageCopyAdmissionTests(unittest.TestCase):
+    def test_present_omitted_copies_are_verified_with_bounded_actual_bytes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_tests.validate_omitted_copies(root)
+            copied = root / "skills/repo-scaffold/scripts/audit_freshness.py"
+            canonical = root / "scripts/audit_freshness.py"
+            for path in (copied, canonical):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"same")
+            run_tests.validate_omitted_copies(root)
+            canonical.write_bytes(b"drift")
+            with self.assertRaisesRegex(ValueError, "differs from canonical"):
+                run_tests.validate_omitted_copies(root)
+            canonical.write_bytes(b"same")
+            with (
+                mock.patch.object(run_tests, "MAX_FILE_BYTES", 3),
+                self.assertRaisesRegex(ValueError, "source size limit"),
+            ):
+                run_tests.validate_omitted_copies(root)
+
+    def test_missing_nonregular_or_linked_omitted_copy_inputs_fail_closed(self) -> None:
+        for kind in ("missing-source", "source-directory", "copy-directory", "linked"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                copied = root / "skills/repo-scaffold/scripts/audit_freshness.py"
+                canonical = root / "scripts/audit_freshness.py"
+                copied.parent.mkdir(parents=True)
+                canonical.parent.mkdir()
+                if kind == "copy-directory":
+                    copied.mkdir()
+                else:
+                    copied.write_bytes(b"same")
+                if kind == "source-directory":
+                    canonical.mkdir()
+                elif kind != "missing-source":
+                    canonical.write_bytes(b"same")
+                if kind == "linked":
+                    with (
+                        mock.patch.object(
+                            run_tests,
+                            "_assert_safe_project_path",
+                            side_effect=ValueError("linked input"),
+                        ),
+                        self.assertRaisesRegex(ValueError, "linked input"),
+                    ):
+                        run_tests.validate_omitted_copies(root)
+                else:
+                    with self.assertRaisesRegex(ValueError, "regular source/copy"):
+                        run_tests.validate_omitted_copies(root)

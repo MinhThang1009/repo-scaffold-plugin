@@ -39,6 +39,7 @@ PYTEST_DISCOVERY_OVERRIDES = {
     "collect_imported_tests",
     "consider_namespace_packages",
 }
+PYTEST_OUTPUT_OVERRIDES = {"log_file", "cache_dir"}
 
 
 def pytest_policy_errors(text: str) -> list[str]:
@@ -64,10 +65,15 @@ def pytest_policy_errors(text: str) -> list[str]:
         return [
             "pyproject.toml: full checks require testpaths=['tests'] and pythonpath=['.']"
         ]
-    return [
+    problems = [
         f"pyproject.toml: {key} cannot replace canonical test discovery"
         for key in sorted(PYTEST_DISCOVERY_OVERRIDES & options.keys())
     ]
+    problems.extend(
+        f"pyproject.toml: {key} cannot redirect guarded pytest output"
+        for key in sorted(PYTEST_OUTPUT_OVERRIDES & options.keys())
+    )
+    return problems
 
 
 def coverage_policy_errors(text: str) -> list[str]:
@@ -111,6 +117,10 @@ def coverage_policy_errors(text: str) -> list[str]:
     if config.has_section("paths"):
         problems.append(
             ".coveragerc: path aliases cannot merge the repository coverage denominator"
+        )
+    if config.has_option("run", "debug_file"):
+        problems.append(
+            ".coveragerc: debug_file cannot redirect guarded coverage output"
         )
     for section, options in UNSAFE_COVERAGE_OPTIONS.items():
         for option in sorted(options):

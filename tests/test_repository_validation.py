@@ -2437,6 +2437,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 original.replace("fail_under = 100", "fail_under = nan"),
                 original.replace("fail_under = 100", "fail_under = inf"),
                 original.replace("[report]", "[report]\npartial_also = .*"),
+                original.replace("[run]", "[run]\ndebug_file = outside.log"),
                 original + "\n[paths]\nalias = scripts\n",
                 original.replace(
                     "include_namespace_packages = True",
@@ -2451,6 +2452,31 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                         )
                     )
                     self.assertTrue(any(".coveragerc:" in error for error in errors))
+
+    def test_pytest_config_output_redirects_are_rejected_by_the_repository_validator(
+        self,
+    ) -> None:
+        for option in ("log_file", "cache_dir"):
+            with (
+                self.subTest(option=option),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                config = root / "pyproject.toml"
+                config.write_text(
+                    config.read_text(encoding="utf-8") + f'{option} = "outside"\n',
+                    encoding="utf-8",
+                )
+                errors = validate_repository.validate_development_dependency_contract(
+                    root
+                )
+                self.assertTrue(
+                    any(
+                        "cannot redirect guarded pytest output" in error
+                        for error in errors
+                    )
+                )
 
     def test_unreadable_verification_configs_fail_closed_in_the_repository_validator(
         self,

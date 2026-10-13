@@ -14,10 +14,12 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.coverage_policy import coverage_policy_errors, pytest_policy_errors
-from scripts.coverage_policy import COVERAGE_SOURCE_ROOTS
+from scripts.coverage_policy import COVERAGE_SOURCE_ROOTS, COVERAGE_OMITTED_COPIES
 from scripts.prepare_mutation_cache import (
     _assert_safe_project_path,
     project_input_fingerprint,
+    _read_bounded_bytes,
+    MAX_FILE_BYTES,
 )
 
 
@@ -96,6 +98,32 @@ def read_configuration(name: str) -> str:
     return payload.decode("utf-8")
 
 
+def validate_omitted_copies(repository_root: Path) -> None:
+    """Admit a present omission only when its canonical source has identical bytes."""
+    for relative in sorted(COVERAGE_OMITTED_COPIES):
+        copied = repository_root / relative
+        _assert_safe_project_path(repository_root, copied)
+        if not copied.exists():
+            continue
+        canonical = repository_root / "scripts" / copied.name
+        contents = []
+        for path in (copied, canonical):
+            _assert_safe_project_path(repository_root, path)
+            if not path.is_file():
+                raise ValueError(
+                    f"coverage omission requires a regular source/copy: {path}"
+                )
+            contents.append(
+                _read_bounded_bytes(
+                    path, MAX_FILE_BYTES, "coverage copy exceeds the source size limit"
+                )
+            )
+        if contents[0] != contents[1]:
+            raise ValueError(
+                f"coverage omitted copy differs from canonical source: {relative}"
+            )
+
+
 def run_coverage(
     pytest: list[str],
     sources: list[str],
@@ -107,6 +135,7 @@ def run_coverage(
     policy_errors = coverage_policy_errors(configuration_text)
     if policy_errors:
         raise ValueError("; ".join(policy_errors))
+    validate_omitted_copies(REPOSITORY_ROOT)
     with tempfile.TemporaryDirectory(prefix="repo-scaffold-coverage-") as directory:
         data_file = str(Path(directory) / ".coverage")
         frozen_configuration = Path(directory) / ".coveragerc"

@@ -23,6 +23,72 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_omitted_copy_requires_matching_canonical_bytes(self) -> None:
+        for kind in ("matching", "drift", "missing-source"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.project(root)
+                (root / "skills/repo-scaffold/scripts/audit_freshness.py").write_text(
+                    "value = 1\n" if kind == "matching" else "value = 2\n",
+                    encoding="utf-8",
+                )
+                if kind != "missing-source":
+                    (root / "scripts/audit_freshness.py").write_text(
+                        "value = 1\n", encoding="utf-8"
+                    )
+                    (root / "tests/test_good.py").write_text(
+                        "from scripts.decision import value\nfrom scripts.audit_freshness import value as checked\ndef test_good():\n    assert value() == checked == 1\n",
+                        encoding="utf-8",
+                    )
+                result = self.run_runner(root)
+                self.assertEqual(
+                    result.returncode,
+                    0 if kind == "matching" else 1,
+                    result.stdout + result.stderr,
+                )
+
+    def test_config_output_sinks_cannot_mutate_unrelated_paths(self) -> None:
+        for kind in ("coverage-debug", "pytest-log", "pytest-cache"):
+            with (
+                self.subTest(kind=kind),
+                tempfile.TemporaryDirectory() as directory,
+                tempfile.TemporaryDirectory() as output_directory,
+            ):
+                root = Path(directory)
+                self.project(root)
+                output = Path(output_directory) / "unrelated.log"
+                output.write_bytes(b"preserve-existing\n")
+                if kind == "coverage-debug":
+                    (root / ".coveragerc").write_text(
+                        POLICY.replace(
+                            "[run]",
+                            "[run]\ndebug = config\ndebug_file = " + str(output),
+                        ),
+                        encoding="utf-8",
+                    )
+                else:
+                    config = root / "pyproject.toml"
+                    key, value = (
+                        ("log_file", str(output))
+                        if kind == "pytest-log"
+                        else ("cache_dir", output_directory)
+                    )
+                    config.write_text(
+                        config.read_text(encoding="utf-8")
+                        + key
+                        + " = "
+                        + repr(value.replace("\\", "/"))
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                result = self.run_runner(root)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertEqual(output.read_bytes(), b"preserve-existing\n")
+                self.assertEqual(
+                    [item.name for item in Path(output_directory).iterdir()],
+                    ["unrelated.log"],
+                )
+
     def project(self, root: Path, *, addopts: str = "", failing: bool = False) -> None:
         (root / "scripts").mkdir()
         (root / "tests").mkdir()

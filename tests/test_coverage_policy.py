@@ -100,3 +100,24 @@ class CoveragePolicyTests(unittest.TestCase):
                         POLICY.replace("[report]", f"[report]\nignore_errors = {value}")
                     )
                 )
+
+    def test_guarded_configs_cannot_redirect_coverage_or_pytest_outputs(self) -> None:
+        for value in ("outside.log", ""):
+            self.assertTrue(
+                coverage_policy_errors(
+                    POLICY.replace("[run]", f"[run]\ndebug_file = {value}")
+                )
+            )
+        canonical = (
+            '[tool.pytest.ini_options]\ntestpaths = ["tests"]\npythonpath = ["."]\n'
+        )
+        for option in ("log_file", "cache_dir"):
+            for value in ("outside", ""):
+                with self.subTest(option=option, value=value):
+                    errors = pytest_policy_errors(canonical + f'{option} = "{value}"\n')
+                    self.assertTrue(
+                        any(
+                            "redirect guarded pytest output" in error
+                            for error in errors
+                        )
+                    )
