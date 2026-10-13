@@ -39,3 +39,5 @@ List the exact commands, environments, and results used to verify the feature.
 ## Related issue
 
 Link the issue when applicable.
+
+<!-- If applicable, use a standalone closing line: Fixes #<issue>, Closes #<issue>, or Resolves #<issue>. -->

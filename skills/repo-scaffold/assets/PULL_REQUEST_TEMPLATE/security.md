@@ -32,4 +32,4 @@
 - [ ] Updated regression tests, security analysis, advisory, documentation, release, disclosure, migration, rollback, or compatibility guidance
 <!-- repo-scaffold:optional-checklist:end -->
 
-<!-- Closes #<issue> if applicable -->
+<!-- If applicable, use a standalone closing line: Fixes #<issue>, Closes #<issue>, or Resolves #<issue>. -->

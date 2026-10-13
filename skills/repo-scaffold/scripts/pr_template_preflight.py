@@ -36,6 +36,26 @@ TEMPLATE_MARKER_PATTERN = re.compile(
     r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",
     re.MULTILINE,
 )
+CLOSING_KEYWORD_PATTERN = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+ISSUE_REFERENCE_PATTERN = (
+    r"(?:#[1-9][0-9]*|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)"
+)
+CLOSING_DIRECTIVE_PATTERN = re.compile(
+    rf"^[ \t]*(?:(?:[-+*]|[0-9]{{1,9}}[.)])[ \t]+)?"
+    rf"{CLOSING_KEYWORD_PATTERN}(?:[ \t]*:[ \t]*|[ \t]+)"
+    rf"{ISSUE_REFERENCE_PATTERN}"
+    rf"(?:[ \t]*,[ \t]*{CLOSING_KEYWORD_PATTERN}"
+    rf"(?:[ \t]*:[ \t]*|[ \t]+){ISSUE_REFERENCE_PATTERN})*"
+    rf"[ \t]*$",
+    re.IGNORECASE,
+)
+CLOSING_KEYWORD_PREFIX_PATTERN = re.compile(
+    rf"^[ \t]*(?:(?:[-+*]|[0-9]{{1,9}}[.)])[ \t]+)?"
+    rf"{CLOSING_KEYWORD_PATTERN}\b(?P<tail>.*)$",
+    re.IGNORECASE,
+)
+CLOSING_FENCE_START_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})")
+CLOSING_FENCE_END_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})[ \t]*$")
 
 
 def is_link_or_reparse(path: Path) -> bool:
@@ -240,6 +260,49 @@ def _visible_structure(markdown: str) -> str:
     return "\n".join(visible)
 
 
+def validate_closing_keyword_syntax(markdown: str) -> tuple[str, ...]:
+    """Validate optional GitHub closing-keyword directives in a PR body."""
+    if not isinstance(markdown, str):
+        raise ValueError("body must be text")
+    visible = _visible_structure(markdown)
+    errors: list[str] = []
+    fence_character: str | None = None
+    fence_length = 0
+    for line_number, line in enumerate(split_gfm_lines(visible), start=1):
+        if fence_character is not None:
+            fence_end = CLOSING_FENCE_END_PATTERN.match(line)
+            if (
+                fence_end is not None
+                and fence_end.group("marker")[0] == fence_character
+                and len(fence_end.group("marker")) >= fence_length
+            ):
+                fence_character = None
+                fence_length = 0
+            continue
+        fence_start = CLOSING_FENCE_START_PATTERN.match(line)
+        if fence_start is not None:
+            fence_character = fence_start.group("marker")[0]
+            fence_length = len(fence_start.group("marker"))
+            continue
+
+        candidate = CLOSING_KEYWORD_PREFIX_PATTERN.match(line)
+        if candidate is None:
+            continue
+        tail = candidate.group("tail")
+        stripped_tail = tail.lstrip()
+        if stripped_tail and not (
+            stripped_tail.startswith(("#", ":"))
+            or re.match(r"[A-Za-z0-9_.-]+/", stripped_tail) is not None
+        ):
+            continue
+        if CLOSING_DIRECTIVE_PATTERN.fullmatch(line) is None:
+            errors.append(
+                f"line {line_number}: closing keyword must use a valid issue "
+                'reference such as "Fixes #123"'
+            )
+    return tuple(errors)
+
+
 def validate_body_structure(
     repository_root: Path,
     title: str,
@@ -255,6 +318,11 @@ def validate_body_structure(
         or len(body.encode("utf-8")) > MAX_BODY_FILE_BYTES
     ):
         raise ValueError(f"body exceeds the {MAX_BODY_FILE_BYTES}-byte safety cap")
+    closing_keyword_errors = validate_closing_keyword_syntax(body)
+    if closing_keyword_errors:
+        raise ValueError(
+            "invalid closing keyword syntax: " + "; ".join(closing_keyword_errors)
+        )
     visible = _visible_structure(body)
     markers = TEMPLATE_MARKER_PATTERN.findall(visible)
     if len(markers) != 1:
@@ -355,6 +423,12 @@ def main(argv: list[str] | None = None) -> int:
                 lines = ", ".join(str(line) for line in wrapped_lines)
                 raise ValueError(
                     f"body file contains hard-wrapped prose at line(s): {lines}"
+                )
+            closing_keyword_errors = validate_closing_keyword_syntax(body)
+            if closing_keyword_errors:
+                raise ValueError(
+                    "invalid closing keyword syntax: "
+                    + "; ".join(closing_keyword_errors)
                 )
             if arguments.require_structure:
                 validate_body_structure(

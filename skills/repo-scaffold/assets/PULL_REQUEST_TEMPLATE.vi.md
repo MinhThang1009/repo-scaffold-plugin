@@ -30,4 +30,4 @@
 - [ ] Đã xem xét yêu cầu bên ngoài, compatibility, migration, rollback, performance hoặc release
 <!-- repo-scaffold:optional-checklist:end -->
 
-<!-- Đóng #<issue> nếu phù hợp -->
+<!-- Nếu phù hợp, hãy dùng một dòng đóng issue riêng: Fixes #<issue>, Closes #<issue>, hoặc Resolves #<issue>. -->

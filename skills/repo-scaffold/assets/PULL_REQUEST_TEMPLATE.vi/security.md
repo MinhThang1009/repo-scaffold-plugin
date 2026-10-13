@@ -33,3 +33,4 @@
 <!-- repo-scaffold:optional-checklist:end -->
 
 <!-- Chỉ liên kết issue công khai khi disclosure là phù hợp -->
+<!-- Nếu phù hợp, hãy dùng một dòng đóng issue riêng: Fixes #<issue>, Closes #<issue>, hoặc Resolves #<issue>. -->

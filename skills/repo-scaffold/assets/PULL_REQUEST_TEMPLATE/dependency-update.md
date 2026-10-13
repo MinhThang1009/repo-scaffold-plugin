@@ -37,3 +37,5 @@ List the exact install, dependency-review, test, and build or runtime checks run
 ## Related issue
 
 Link the issue or advisory when applicable.
+
+<!-- If applicable, use a standalone closing line: Fixes #<issue>, Closes #<issue>, or Resolves #<issue>. -->

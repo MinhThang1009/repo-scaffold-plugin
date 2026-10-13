@@ -61,6 +61,59 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
             with self.subTest(title=title):
                 self.assertEqual(pr_template_preflight.select_template(title), expected)
 
+    def test_closing_keyword_syntax_is_optional_but_validates_directives(self) -> None:
+        valid_bodies = (
+            "",
+            "No linked issue is needed for this change.\n",
+            "Fixes #123\n",
+            "- closes: #7\n",
+            "RESOLVED owner/repo#42\n",
+            "Fixes #1, resolves owner/repo#2\n",
+            "<!-- Closes #<issue> if applicable -->\n",
+            "```text\nFixes #not-an-issue\n```\n",
+        )
+        for body in valid_bodies:
+            with self.subTest(body=body):
+                self.assertEqual(
+                    pr_template_preflight.validate_closing_keyword_syntax(body), ()
+                )
+
+        invalid_bodies = (
+            "Fixes #\n",
+            "Closes #0\n",
+            "Resolves #not-an-issue\n",
+            "Fixes #123 extra text\n",
+            "Fixes #123, closes #\n",
+        )
+        for body in invalid_bodies:
+            with self.subTest(body=body):
+                errors = pr_template_preflight.validate_closing_keyword_syntax(body)
+                self.assertEqual(len(errors), 1)
+                self.assertIn("valid issue reference", errors[0])
+
+    def test_body_file_preflight_rejects_malformed_closing_keyword_without_structure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_templates(root)
+            body = root / "body.md"
+            body.write_text("Fixes #not-an-issue\n", encoding="utf-8")
+            errors = StringIO()
+            with redirect_stderr(errors):
+                result = pr_template_preflight.main(
+                    [
+                        "--title",
+                        "chore: optional issue",
+                        "--repository-root",
+                        str(root),
+                        "--body-file",
+                        str(body),
+                    ]
+                )
+            self.assertEqual(result, 1)
+            self.assertIn("invalid closing keyword syntax", errors.getvalue())
+
     def test_complete_draft_body_is_accepted_and_partial_bodies_fail_closed(
         self,
     ) -> None:
@@ -166,6 +219,7 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
         )
         self.assertIn("template_catalog", module)
         self.assertIn("validate_body_structure", module)
+        self.assertIn("validate_closing_keyword_syntax", module)
 
     def test_root_wrapper_executes_structure_validation_under_its_namespace(
         self,

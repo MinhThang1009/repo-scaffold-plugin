@@ -348,6 +348,9 @@ After preparing the UTF-8 body file, rerun the preflight with `--body-file <path
 add `--require-structure` so it also verifies the selected template's required
 headings and checklist items before the GitHub mutation. Draft items may remain
 unchecked; readiness checks are enforced separately by the template gate.
+If this PR should close an issue after merge, add a standalone `Fixes #123`,
+`Closes #123`, or `Resolves #123` line. The preflight validates that syntax when
+present, but does not require every PR to reference an issue.
 
 When a commit changes behavior or policy, include structured summary fields in
 the commit body so the generated PR can preserve the review context:
