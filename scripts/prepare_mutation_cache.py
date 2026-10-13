@@ -317,8 +317,12 @@ def _assert_safe_project_path(repository_root: Path, path: Path) -> None:
 
 
 def _project_files(
-    repository_root: Path, *, verification: bool = False
+    repository_root: Path,
+    *,
+    verification: bool = False,
+    directory_paths: list[str] | None = None,
 ) -> list[tuple[str, Path]]:
+    """Enumerate admitted files and optionally retain directory identities."""
     repository_root = Path(os.path.abspath(repository_root))
     _assert_safe_project_path(repository_root, repository_root)
     files: list[tuple[str, Path]] = []
@@ -363,6 +367,8 @@ def _project_files(
                 continue
             _assert_safe_project_path(repository_root, path)
             if path.is_dir():
+                if directory_paths is not None:
+                    directory_paths.append(relative.as_posix())
                 pending.append(path)
                 continue
             if not path.is_file():
@@ -419,10 +425,13 @@ def snapshot_project(repository_root: Path) -> ProjectSnapshot:
 
 
 def project_input_fingerprint(repository_root: Path) -> str:
-    """Hash all inventoried input bytes for a fresh local test run, not cache reuse."""
+    """Bind input file bytes and directory identities for a fresh local test run."""
     hashes: dict[str, str] = {}
+    directories: list[str] = []
     total_bytes = 0
-    for relative, path in _project_files(repository_root, verification=True):
+    for relative, path in _project_files(
+        repository_root, verification=True, directory_paths=directories
+    ):
         _assert_safe_project_path(repository_root, path)
         content = _read_bounded_bytes(
             path,
@@ -432,7 +441,11 @@ def project_input_fingerprint(repository_root: Path) -> str:
         total_bytes += len(content)
         hashes[relative] = _sha256(content)
     return _sha256(
-        json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            {"files": hashes, "directories": sorted(directories)},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     )
 
 

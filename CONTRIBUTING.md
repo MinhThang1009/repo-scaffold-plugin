@@ -266,9 +266,14 @@ the checked-in `pyproject.toml` explicitly. Repository `conftest.py` hooks remai
 active. Discovery overrides that omit first-party tests are rejected. It rejects
 coverage measurement/report overrides that hide missing coverage and uses a
 frozen copy of the admitted policy for both commands. Input fingerprints are
-compared after pytest and after reporting in measured and suite runs; changed source, tests or metadata
-invalidate the result. These comparisons cannot detect an edit that is restored
-between reads, so keep inputs unchanged throughout the run. On failure, correct
+compared after pytest and after reporting in measured and suite runs; changed
+source, tests or metadata invalidate the result. Fingerprints bind admitted
+directory identities as well as file bytes, so adding, removing or renaming an
+empty fixture directory also invalidates a guarded result. Both are collected
+in the same bounded traversal; root runtime-cache exclusions and mutation-cache
+fingerprints are unchanged. Put test-created directories in owned temporary
+state, not in the repository input tree. These comparisons cannot detect an edit
+that is restored between reads, so keep inputs unchanged throughout the run. On failure, correct
 the relevant group with focused checks before starting another full run.
 
 Measured runs and suite mode clear inherited `COVERAGE_*` controls in the child

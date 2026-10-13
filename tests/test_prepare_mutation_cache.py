@@ -26,6 +26,52 @@ SPEC.loader.exec_module(prepare_mutation_cache)
 
 
 class MutationCacheTests(unittest.TestCase):
+    def test_verification_fingerprint_binds_empty_directory_state(self) -> None:
+        for location in (
+            "scripts/vendor/empty",
+            "skills/repo-scaffold/scripts/build/empty",
+            "tests/fixtures/empty",
+            "skills/repo-scaffold/assets/empty",
+        ):
+            with (
+                self.subTest(location=location),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                empty = root / location
+                empty.parent.mkdir(parents=True)
+                before = prepare_mutation_cache.project_input_fingerprint(root)
+                mutation_before = prepare_mutation_cache.mutation_input_fingerprint(
+                    root
+                )
+                empty.mkdir()
+                added = prepare_mutation_cache.project_input_fingerprint(root)
+                self.assertNotEqual(added, before)
+                renamed = empty.with_name("renamed")
+                empty.rename(renamed)
+                self.assertNotEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), added
+                )
+                self.assertEqual(
+                    prepare_mutation_cache.mutation_input_fingerprint(root),
+                    mutation_before,
+                )
+                renamed.rmdir()
+                self.assertEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), before
+                )
+
+    def test_directory_binding_preserves_root_runtime_cache_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = prepare_mutation_cache.project_input_fingerprint(root)
+            for name in (".pytest_cache", ".mypy_cache", "build", "mutants", "vendor"):
+                cache = root / name / "empty"
+                cache.mkdir(parents=True)
+                self.assertEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), before
+                )
+
     def test_verification_root_casing_follows_the_native_filesystem_contract(
         self,
     ) -> None:

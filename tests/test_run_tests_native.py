@@ -747,6 +747,44 @@ class NativeRunTestsTests(unittest.TestCase):
                     )
                     self.assertIn("denominator", rejected.stderr)
 
+    def test_empty_fixture_directory_changes_invalidate_guarded_results(self) -> None:
+        for mode in ("suite", "full", "focused"):
+            for operation in ("add", "remove", "rename", "unchanged"):
+                with (
+                    self.subTest(mode=mode, operation=operation),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    empty = root / "tests/fixtures/empty"
+                    empty.mkdir(parents=True)
+                    changes = {
+                        "add": "    empty.with_name('added').mkdir()\n",
+                        "remove": "    empty.rmdir()\n",
+                        "rename": "    empty.rename(empty.with_name('renamed'))\n",
+                        "unchanged": "",
+                    }
+                    (root / "tests/test_good.py").write_text(
+                        "from pathlib import Path\nfrom scripts.decision import value\n"
+                        "def test_good():\n    assert value() == 1\n"
+                        "    empty = Path('tests/fixtures/empty')\n"
+                        "    assert empty.is_dir()\n" + changes[operation],
+                        encoding="utf-8",
+                    )
+                    arguments = (
+                        ["tests/test_good.py", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+                    result = self.run_runner(root, mode, arguments=arguments)
+                    self.assertEqual(
+                        result.returncode,
+                        0 if operation == "unchanged" else 1,
+                        result.stdout + result.stderr,
+                    )
+                    if operation != "unchanged":
+                        self.assertIn("inputs changed", result.stderr)
+
     def test_source_changes_during_passing_tests_reject_the_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
