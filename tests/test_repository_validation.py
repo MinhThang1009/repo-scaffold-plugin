@@ -551,6 +551,40 @@ class SerializedFileValidationTests(unittest.TestCase):
             self.assertEqual(result, str(outside_tool.resolve()))
 
 
+class RequiredCIExecutionTests(unittest.TestCase):
+    def test_required_execution_rejects_unsafe_controls_but_accepts_fatal_defaults(
+        self,
+    ) -> None:
+        invalid_configurations: tuple[object, ...] = (
+            None,
+            [],
+            "invalid",
+            {"if": "false"},
+            {"continue-on-error": "true"},
+            {"continue-on-error": []},
+        )
+        for configuration in invalid_configurations:
+            with self.subTest(configuration=configuration):
+                self.assertFalse(
+                    validate_repository.required_ci_execution_is_safe(configuration)
+                )
+        for control in ("background", "parallel", "wait", "wait-all", "cancel"):
+            with self.subTest(control=control):
+                self.assertFalse(
+                    validate_repository.required_ci_execution_is_safe({control: "true"})
+                )
+        for configuration in ({}, {"continue-on-error": "false"}):
+            with self.subTest(configuration=configuration):
+                self.assertTrue(
+                    validate_repository.required_ci_execution_is_safe(configuration)
+                )
+        self.assertTrue(
+            validate_repository.required_ci_execution_is_safe(
+                {"if": "${{ always() }}"}, condition="${{ always() }}"
+            )
+        )
+
+
 class PythonSupportContractValidationTests(unittest.TestCase):
     CONTRACT_FILES = (
         ".github/python-support.json",
@@ -577,6 +611,59 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             validate_repository.validate_python_support_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_required_ci_execution_controls_cannot_skip_or_tolerate_failures(
+        self,
+    ) -> None:
+        for marker, indent in (
+            ("  test:\n", "    "),
+            ("      - name: Run tests\n", "        "),
+            ("  mutation-cache-integration:\n", "    "),
+            ("      - name: Exercise real fork-based incremental reuse\n", "        "),
+            ("      - name: Verify required jobs passed\n", "        "),
+        ):
+            for control in ("if: false", "continue-on-error: true"):
+                with (
+                    self.subTest(marker=marker, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    self.assertEqual(original.count(marker), 1)
+                    workflow.write_text(
+                        original.replace(marker, marker + indent + control + "\n", 1),
+                        encoding="utf-8",
+                    )
+                    errors = validate_repository.validate_python_support_contract(root)
+                    self.assertTrue(any("ci.yml:" in error for error in errors), errors)
+
+    def test_ci_success_job_must_report_even_when_producers_fail(self) -> None:
+        for control in ("if: false", "continue-on-error: true"):
+            with (
+                self.subTest(control=control),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                workflow = root / ".github/workflows/ci.yml"
+                original = workflow.read_text(encoding="utf-8")
+                modified = (
+                    original.replace("    if: ${{ always() }}\n", "    if: false\n", 1)
+                    if control == "if: false"
+                    else original.replace(
+                        "  ci-success:\n",
+                        "  ci-success:\n    continue-on-error: true\n",
+                        1,
+                    )
+                )
+                self.assertNotEqual(modified, original)
+                workflow.write_text(modified, encoding="utf-8")
+                errors = validate_repository.validate_python_support_contract(root)
+                self.assertTrue(
+                    any("ci-success must require" in error for error in errors), errors
+                )
 
     def test_hardcoded_workflow_version_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2175,6 +2262,55 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             validate_repository.validate_development_dependency_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_coverage_job_and_step_cannot_be_optional_or_failure_tolerant(self) -> None:
+        for marker, indent in (
+            ("  quality:\n", "    "),
+            ("      - name: Enforce test coverage baseline\n", "        "),
+        ):
+            for control in ("if: false", "continue-on-error: true"):
+                with (
+                    self.subTest(marker=marker, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    self.assertEqual(original.count(marker), 1)
+                    workflow.write_text(
+                        original.replace(marker, marker + indent + control + "\n", 1),
+                        encoding="utf-8",
+                    )
+                    errors = (
+                        validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+                    )
+                    self.assertIn(
+                        ".github/workflows/ci.yml: quality must enforce the repository coverage gate",
+                        errors,
+                    )
+
+    def test_explicit_false_failure_tolerance_does_not_weaken_coverage_gate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/ci.yml"
+            original = workflow.read_text(encoding="utf-8")
+            modified = original.replace(
+                "  quality:\n", "  quality:\n    continue-on-error: false\n", 1
+            ).replace(
+                "      - name: Enforce test coverage baseline\n",
+                "      - name: Enforce test coverage baseline\n        continue-on-error: false\n",
+                1,
+            )
+            workflow.write_text(modified, encoding="utf-8")
+            self.assertEqual(
+                validate_repository.validate_development_dependency_contract(root), []
+            )
 
     def test_direct_dependency_version_drift_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

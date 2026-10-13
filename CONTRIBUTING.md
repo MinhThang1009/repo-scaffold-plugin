@@ -260,7 +260,13 @@ file or combine earlier results with new code.
 Once the change is complete, run `python scripts/run_tests.py full`. It runs the
 entire suite once under Coverage.py, then checks the unchanged `.coveragerc`
 branch-coverage floor. A separate full pytest invocation would repeat the same
-tests. Full mode clears inherited `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, disables
+tests. Repository workflow validation checks execution controls as well as command
+text: required runtime, coverage and integration checks, and the `ci-success`
+verdict step, must remain foreground, mandatory and failure-propagating. The
+verdict job must retain `always()` so failed or skipped producers are evaluated.
+Conditional platform bootstrap and scheduled canary jobs remain applicable-only;
+they do not make required test/gate steps optional or error-tolerant. Full mode
+clears inherited `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, disables
 third-party plugin auto-loading, overrides config-file `addopts`, and selects
 the checked-in `pyproject.toml` explicitly. Repository `conftest.py` hooks remain
 active. Discovery overrides that omit first-party tests are rejected. It rejects

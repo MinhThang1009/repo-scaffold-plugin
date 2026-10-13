@@ -3635,6 +3635,21 @@ def validate_serialized_files(repository_root: Path) -> list[str]:
     return problems
 
 
+def required_ci_execution_is_safe(
+    configuration: object, *, condition: str | None = None
+) -> bool:
+    """Keep required CI producers and verdict checks fatal and foreground."""
+    return (
+        isinstance(configuration, dict)
+        and configuration.get("if") == condition
+        and configuration.get("continue-on-error") in (None, "false")
+        and not any(
+            control in configuration
+            for control in ("background", "parallel", "wait", "wait-all", "cancel")
+        )
+    )
+
+
 def validate_python_support_contract(repository_root: Path) -> list[str]:
     """Validate the centralized Python policy and every repository consumer."""
     script = repository_root / "scripts" / "python_support.py"
@@ -3742,8 +3757,16 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
                 ".github/workflows/ci.yml: prepare_ci must load the centralized policy"
             )
         expected_matrix = "${{ fromJSON(needs.prepare_ci.outputs.matrix) }}"
+        test_steps = test.get("steps") if isinstance(test, dict) else None
+        test_run = isinstance(test_steps, list) and any(
+            required_ci_execution_is_safe(step)
+            and step.get("run") == "python scripts/run_tests.py suite"
+            for step in test_steps
+        )
         if (
             not isinstance(test, dict)
+            or not required_ci_execution_is_safe(test)
+            or not test_run
             or test.get("needs") != "prepare_ci"
             or test.get("runs-on") != "${{ matrix.os }}"
             or not isinstance(test.get("strategy"), dict)
@@ -3795,7 +3818,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             for step in mutation_integration_steps
         )
         mutation_integration_run = isinstance(mutation_integration_steps, list) and any(
-            isinstance(step, dict)
+            required_ci_execution_is_safe(step)
             and step.get("env") == {"REPO_SCAFFOLD_MUTMUT_INTEGRATION": "1"}
             and step.get("run")
             == "python scripts/run_tests.py suite tests/test_mutation_runner_linux.py"
@@ -3803,6 +3826,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         )
         if (
             not isinstance(mutation_integration, dict)
+            or not required_ci_execution_is_safe(mutation_integration)
             or mutation_integration.get("needs") != "prepare_ci"
             or not mutation_integration_setup
             or not mutation_integration_install
@@ -3834,7 +3858,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             for step in canary_steps
         )
         canary_tests = isinstance(canary_steps, list) and any(
-            isinstance(step, dict)
+            required_ci_execution_is_safe(step)
             and step.get("run") == "python scripts/run_tests.py suite"
             for step in canary_steps
         )
@@ -3868,7 +3892,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             "QUALITY_RESULT": "${{ needs.quality.result }}",
         }
         ci_success_checks_results = isinstance(ci_success_steps, list) and any(
-            isinstance(step, dict)
+            required_ci_execution_is_safe(step)
             and step.get("env") == required_result_environment
             and isinstance(step.get("run"), str)
             and '"$MUTATION_CACHE_INTEGRATION_RESULT" != "success"' in step["run"]
@@ -3881,6 +3905,9 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             or not all(isinstance(need, str) for need in ci_success_needs)
             or set(ci_success_needs)
             != {"test", "quality", "mutation-cache-integration"}
+            or not required_ci_execution_is_safe(
+                ci_success, condition="${{ always() }}"
+            )
             or not ci_success_checks_results
         ):
             problems.append(
@@ -4905,11 +4932,15 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
     quality = jobs.get("quality") if isinstance(jobs, dict) else None
     quality_steps = quality.get("steps") if isinstance(quality, dict) else None
     expected_coverage = "python scripts/run_tests.py full"
-    if not isinstance(quality_steps, list) or not any(
-        isinstance(step, dict)
-        and isinstance(step.get("run"), str)
-        and step["run"].rstrip("\n") == expected_coverage
-        for step in quality_steps
+    if (
+        not required_ci_execution_is_safe(quality)
+        or not isinstance(quality_steps, list)
+        or not any(
+            required_ci_execution_is_safe(step)
+            and isinstance(step.get("run"), str)
+            and step["run"].rstrip("\n") == expected_coverage
+            for step in quality_steps
+        )
     ):
         problems.append(
             ".github/workflows/ci.yml: quality must enforce the repository coverage gate"
