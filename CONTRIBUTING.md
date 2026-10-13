@@ -265,7 +265,11 @@ third-party plugin auto-loading, overrides config-file `addopts`, and selects
 the checked-in `pyproject.toml` explicitly. Repository `conftest.py` hooks remain
 active. Discovery overrides that omit first-party tests are rejected. It rejects
 coverage measurement/report overrides that hide missing coverage and uses a
-frozen copy of the admitted policy for both commands. Input fingerprints are
+frozen copy of the admitted policy for both commands. Guarded coverage and the
+repository validator require unprefixed `.coveragerc` sections. They reject every
+`coverage:`-prefixed section because Coverage.py gives that dialect precedence
+even inside `.coveragerc`; otherwise its effective run/report/path policy could
+differ from the settings that were validated. Input fingerprints are
 compared after pytest and after reporting in measured and suite runs; changed
 source, tests or metadata invalidate the result. Fingerprints bind admitted
 directory identities as well as file bytes, so adding, removing or renaming an
@@ -288,6 +292,13 @@ Explicit report paths use the inventoried spelling and native separators, so
 Windows case-insensitive selections and verified omitted copies retain the
 correct data identity. Ambiguous inventory identities or selected files absent
 from that inventory fail admission before either coverage child starts.
+Every source in the report scope must also compile as Python before either child
+starts, with per-file and actual aggregate reads bounded by the existing inventory
+budgets. This check creates no bytecode files and does
+not execute source. It honors Python encoding declarations and rejects invalid
+syntax regardless of suffix casing, rather than letting Coverage.py silently
+drop an unparseable `.PY`/`.PYW` file as non-Python. Full mode checks its complete
+inventory; measured-focused mode checks only selected canonical sources.
 The coverage denominator includes unimported Python files inside namespace-package
 directories. Both the runner
 and repository validator reject `partial_also` and `[paths]` aliases that would

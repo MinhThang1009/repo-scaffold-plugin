@@ -25,6 +25,85 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_unparseable_admitted_sources_cannot_disappear_from_the_denominator(
+        self,
+    ) -> None:
+        for mode in ("full", "focused"):
+            for suffix in (".py", ".pyw", ".PY", ".PYW"):
+                for source in ("def broken(:\n", "return 1\n"):
+                    with (
+                        self.subTest(mode=mode, suffix=suffix, source=source),
+                        tempfile.TemporaryDirectory() as directory,
+                    ):
+                        root = Path(directory)
+                        self.project(root)
+                        relative = "scripts/unparseable" + suffix
+                        (root / relative).write_text(source, encoding="utf-8")
+                        arguments = (
+                            [
+                                "tests/test_good.py",
+                                "--source",
+                                "scripts/decision.py",
+                                "--source",
+                                relative,
+                            ]
+                            if mode == "focused"
+                            else []
+                        )
+                        result = self.run_runner(root, mode, arguments=arguments)
+                        self.assertEqual(
+                            result.returncode, 1, result.stdout + result.stderr
+                        )
+                        self.assertIn(
+                            "coverage source cannot be compiled", result.stderr
+                        )
+                        self.assertNotIn("1 passed", result.stdout)
+
+    def test_valid_uppercase_suffix_sources_stay_in_full_reports(self) -> None:
+        for suffix in (".PY", ".PYW"):
+            for covered in (False, True):
+                with (
+                    self.subTest(suffix=suffix, covered=covered),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    relative = "scripts/extra" + suffix
+                    (root / relative).write_text(
+                        "def extra():\n    return 2\n", encoding="utf-8"
+                    )
+                    if covered:
+                        (root / "tests/test_good.py").write_text(
+                            "import runpy\nfrom scripts.decision import value\n"
+                            "def test_good():\n    assert value() == 1\n"
+                            f"    assert runpy.run_path({relative!r})['extra']() == 2\n",
+                            encoding="utf-8",
+                        )
+                    result = self.run_runner(root)
+                    self.assertEqual(
+                        result.returncode,
+                        0 if covered else 2,
+                        result.stdout + result.stderr,
+                    )
+
+    def test_unselected_unparseable_source_does_not_expand_focused_or_suite_scope(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.project(root)
+            (root / "scripts/unparseable.PY").write_text(
+                "def broken(:\n", encoding="utf-8"
+            )
+            for mode in ("suite", "focused"):
+                arguments = (
+                    ["tests/test_good.py", "--source", "scripts/decision.py"]
+                    if mode == "focused"
+                    else []
+                )
+                result = self.run_runner(root, mode, arguments=arguments)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_native_runner_fixtures_type_check_on_supported_platforms(self) -> None:
         for platform in ("linux", "darwin", "win32"):
             with (
@@ -723,6 +802,49 @@ class NativeRunTestsTests(unittest.TestCase):
             result = self.run_runner(root, plugins="selection_plugin")
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("test_bad", result.stdout)
+
+    def test_prefixed_coverage_sections_cannot_override_native_gate_results(
+        self,
+    ) -> None:
+        for mode in ("full", "focused"):
+            for settings in (
+                "[coverage:report]\nfail_under = 0\n",
+                "[coverage:report]\ninclude = scripts/decision.py\n",
+                "[coverage:run]\nbranch = false\n",
+                "[coverage:paths]\nalias = scripts\n",
+            ):
+                with (
+                    self.subTest(mode=mode, settings=settings),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    (root / "scripts/decision.py").write_text(
+                        "def value(flag=True):\n    result = 1\n"
+                        "    if flag:\n        result = 1\n    return result\n",
+                        encoding="utf-8",
+                    )
+                    (root / "scripts/uncovered.py").write_text(
+                        "def unused():\n    return 2\n", encoding="utf-8"
+                    )
+                    arguments = (
+                        ["tests/test_good.py", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+                    control = self.run_runner(root, mode, arguments=arguments)
+                    self.assertEqual(
+                        control.returncode, 2, control.stdout + control.stderr
+                    )
+                    (root / ".coveragerc").write_text(
+                        POLICY + "\n" + settings, encoding="utf-8"
+                    )
+                    result = self.run_runner(root, mode, arguments=arguments)
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertIn("prefixed sections", result.stderr)
+                    self.assertNotIn("1 passed", result.stdout)
 
     def test_uncovered_source_cannot_be_hidden_with_a_report_filter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

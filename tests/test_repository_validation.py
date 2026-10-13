@@ -2439,6 +2439,10 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 original.replace("[report]", "[report]\npartial_also = .*"),
                 original.replace("[run]", "[run]\ndebug_file = outside.log"),
                 original + "\n[paths]\nalias = scripts\n",
+                original
+                + "\n[coverage:report]\nfail_under = 0\ninclude = scripts/*.py\n",
+                original + "\n[coverage:run]\nbranch = false\n",
+                original + "\n[coverage:paths]\nalias = scripts\n",
                 original.replace(
                     "include_namespace_packages = True",
                     "include_namespace_packages = False",

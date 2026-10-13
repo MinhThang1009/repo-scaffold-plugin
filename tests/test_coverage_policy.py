@@ -15,6 +15,25 @@ POLICY = (Path(__file__).resolve().parents[1] / ".coveragerc").read_text(
 
 
 class CoveragePolicyTests(unittest.TestCase):
+    def test_prefixed_sections_cannot_shadow_the_admitted_coverage_policy(self) -> None:
+        for section, settings in (
+            ("run", "branch = false\ndebug_file = outside.log\n"),
+            ("report", "fail_under = 0\ninclude = scripts/decision.py\n"),
+            ("paths", "alias = scripts\n"),
+            ("html", "directory = outside\n"),
+        ):
+            for text in (
+                POLICY + f"\n[coverage:{section}]\n{settings}",
+                POLICY.replace(f"[{section}]", f"[coverage:{section}]")
+                if section in {"run", "report"}
+                else POLICY + f"\n[coverage:{section}]\n",
+            ):
+                with self.subTest(section=section, text=text):
+                    errors = coverage_policy_errors(text)
+                    self.assertTrue(
+                        any("prefixed sections" in error for error in errors)
+                    )
+
     def test_configuration_byte_limits_apply_before_parsing(self) -> None:
         for checker in (coverage_policy_errors, pytest_policy_errors):
             with self.subTest(checker=checker.__name__):

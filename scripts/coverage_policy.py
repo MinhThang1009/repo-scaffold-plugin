@@ -83,6 +83,13 @@ def coverage_policy_errors(text: str) -> list[str]:
     config = configparser.ConfigParser(interpolation=None)
     try:
         config.read_string(text)
+        # Coverage.py prefers coverage:-prefixed sections, even in .coveragerc.
+        # Admit one dialect so its effective policy matches this validation.
+        if any(section.startswith("coverage:") for section in config.sections()):
+            return [
+                ".coveragerc: coverage:-prefixed sections are not allowed; "
+                "use canonical unprefixed sections"
+            ]
         branch = config.getboolean("run", "branch")
         sources = {
             line.strip().replace("\\", "/")

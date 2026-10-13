@@ -805,6 +805,91 @@ class RunTestsTests(unittest.TestCase):
 
 
 class CoverageInventoryTests(unittest.TestCase):
+    def test_report_source_compilation_preserves_encodings_without_execution(
+        self,
+    ) -> None:
+        for content in (
+            b"raise RuntimeError('must not execute')\n",
+            b"# coding: latin-1\nvalue = '\xe9'\n",
+            b"\xef\xbb\xbfvalue = 1\n",
+        ):
+            with (
+                self.subTest(content=content),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                relative = "source.PYW"
+                (root / relative).write_bytes(content)
+                run_tests.validate_report_source_syntax(root, [relative])
+                self.assertEqual((root / relative).read_bytes(), content)
+
+    def test_report_source_compilation_is_bounded_and_rejects_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "source.py"
+            path.write_bytes(b"x=1\n")
+            with mock.patch.object(run_tests, "MAX_FILE_BYTES", 4):
+                run_tests.validate_report_source_syntax(root, [path.name])
+                self.assertEqual(path.read_bytes(), b"x=1\n")
+                path.write_bytes(b"x=1\n#")
+                with self.assertRaisesRegex(ValueError, "size limits"):
+                    run_tests.validate_report_source_syntax(root, [path.name])
+            with (
+                mock.patch.object(
+                    run_tests,
+                    "_assert_safe_project_path",
+                    side_effect=ValueError("unsafe source"),
+                ),
+                mock.patch.object(run_tests, "_read_bounded_bytes") as read,
+                self.assertRaisesRegex(ValueError, "unsafe source"),
+            ):
+                run_tests.validate_report_source_syntax(root, [path.name])
+            read.assert_not_called()
+
+    def test_report_source_compilation_debits_actual_aggregate_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = ["first.py", "second.py"]
+            for relative in sources:
+                (root / relative).write_bytes(b"x=1\n")
+            with (
+                mock.patch.object(run_tests, "MAX_FILE_BYTES", 4),
+                mock.patch.object(run_tests, "MAX_TOTAL_BYTES", 7),
+                mock.patch.object(
+                    run_tests, "compile", create=True, wraps=compile
+                ) as compiler,
+                self.assertRaisesRegex(ValueError, "size limits"),
+            ):
+                run_tests.validate_report_source_syntax(root, sources)
+            compiler.assert_called_once_with(
+                b"x=1\n", "first.py", "exec", dont_inherit=True
+            )
+
+    def test_report_source_compilation_rejects_invalid_syntax_and_parser_recursion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relative = "source.PY"
+            (root / relative).write_bytes(b"return 1\n")
+            with self.assertRaisesRegex(
+                ValueError, "coverage source cannot be compiled"
+            ):
+                run_tests.validate_report_source_syntax(root, [relative])
+            (root / relative).write_bytes(b"value = 1\n")
+            with (
+                mock.patch.object(
+                    run_tests, "compile", create=True, side_effect=RecursionError
+                ) as compiler,
+                self.assertRaisesRegex(
+                    ValueError, "coverage source cannot be compiled"
+                ),
+            ):
+                run_tests.validate_report_source_syntax(root, [relative])
+            compiler.assert_called_once_with(
+                b"value = 1\n", relative, "exec", dont_inherit=True
+            )
+
     def test_source_selection_accepts_python_window_files_not_bytecode_or_text(
         self,
     ) -> None:

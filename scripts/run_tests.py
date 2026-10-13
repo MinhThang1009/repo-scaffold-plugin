@@ -22,6 +22,7 @@ from scripts.prepare_mutation_cache import (
     project_input_fingerprint,
     _read_bounded_bytes,
     MAX_FILE_BYTES,
+    MAX_TOTAL_BYTES,
 )
 
 
@@ -152,6 +153,26 @@ def coverage_source_inventory(repository_root: Path) -> list[str]:
     return sources
 
 
+def validate_report_source_syntax(repository_root: Path, sources: list[str]) -> None:
+    """Reject unparseable morfs that Coverage may silently treat as non-Python."""
+    total_bytes = 0
+    for relative in sources:
+        path = repository_root / relative
+        _assert_safe_project_path(repository_root, path)
+        content = _read_bounded_bytes(
+            path,
+            min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - total_bytes),
+            "coverage source inventory exceeds the size limits",
+        )
+        total_bytes += len(content)
+        try:
+            compile(content, relative, "exec", dont_inherit=True)
+        except (SyntaxError, RecursionError) as error:
+            raise ValueError(
+                f"coverage source cannot be compiled as Python: {relative}"
+            ) from error
+
+
 def run_coverage(
     pytest: list[str],
     sources: list[str],
@@ -181,6 +202,7 @@ def run_coverage(
             )
         if canonical_source not in report_sources:
             report_sources.append(canonical_source)
+    validate_report_source_syntax(REPOSITORY_ROOT, report_sources or inventory)
     with tempfile.TemporaryDirectory(prefix="repo-scaffold-coverage-") as directory:
         data_file = str(Path(directory) / ".coverage")
         frozen_configuration = Path(directory) / ".coveragerc"
