@@ -18,6 +18,7 @@ from scripts.coverage_policy import coverage_policy_errors, pytest_policy_errors
 from scripts.coverage_policy import COVERAGE_SOURCE_ROOTS, COVERAGE_OMITTED_COPIES
 from scripts.prepare_mutation_cache import (
     _assert_safe_project_path,
+    _project_files,
     project_input_fingerprint,
     _read_bounded_bytes,
     MAX_FILE_BYTES,
@@ -73,6 +74,10 @@ def repository_selection(value: str, *, source: bool) -> str:
         )
     absolute = path if path.is_absolute() else REPOSITORY_ROOT / path
     relative = absolute.relative_to(REPOSITORY_ROOT)
+    if any(":" in part for part in relative.parts):
+        raise ValueError(
+            "selection cannot name colon-delimited paths or alternate data streams"
+        )
     roots = COVERAGE_SOURCE_ROOTS if source else {"tests"}
     if not any(
         relative == Path(root) or Path(root) in relative.parents for root in roots
@@ -81,7 +86,7 @@ def repository_selection(value: str, *, source: bool) -> str:
             "selection is outside the declared repository test/source scope"
         )
     _assert_safe_project_path(REPOSITORY_ROOT, absolute)
-    if source and (path.suffix != ".py" or not absolute.is_file()):
+    if source and (path.suffix.lower() != ".py" or not absolute.is_file()):
         raise ValueError("--source requires an existing literal Python file")
     return relative.as_posix() + separator + node
 
@@ -125,6 +130,26 @@ def validate_omitted_copies(repository_root: Path) -> None:
             )
 
 
+def coverage_source_inventory(repository_root: Path) -> list[str]:
+    """Bind both source directories and enumerate even undiscovered Python files."""
+    for relative in sorted(COVERAGE_SOURCE_ROOTS):
+        root = repository_root / relative
+        _assert_safe_project_path(repository_root, root)
+        if not root.is_dir():
+            raise ValueError(f"coverage source root must be a directory: {relative}")
+    omitted = {Path(copied) for copied in COVERAGE_OMITTED_COPIES}
+    sources = [
+        relative
+        for relative, path in _project_files(repository_root, verification=True)
+        if path.suffix.lower() in {".py", ".pyw"}
+        and any(Path(root) in Path(relative).parents for root in COVERAGE_SOURCE_ROOTS)
+        and Path(relative) not in omitted
+    ]
+    if not sources:
+        raise ValueError("coverage source inventory contains no Python files")
+    return sources
+
+
 def run_coverage(
     pytest: list[str],
     sources: list[str],
@@ -137,14 +162,23 @@ def run_coverage(
     if policy_errors:
         raise ValueError("; ".join(policy_errors))
     validate_omitted_copies(REPOSITORY_ROOT)
-    report_sources = list(
-        dict.fromkeys(
-            (Path("scripts") / Path(source).name).as_posix()
-            if source in COVERAGE_OMITTED_COPIES
-            else source
-            for source in sources
-        )
-    )
+    inventory = coverage_source_inventory(REPOSITORY_ROOT)
+    identities = {Path(relative): relative for relative in inventory}
+    if len(identities) != len(inventory):
+        raise ValueError("coverage inventory contains ambiguous path identities")
+    for copied in COVERAGE_OMITTED_COPIES:
+        canonical = Path("scripts") / Path(copied).name
+        if canonical in identities:
+            identities[Path(copied)] = identities[canonical]
+    report_sources = []
+    for source in sources:
+        canonical_source = identities.get(Path(source))
+        if canonical_source is None:
+            raise ValueError(
+                f"selected coverage source is outside the admitted inventory: {source}"
+            )
+        if canonical_source not in report_sources:
+            report_sources.append(canonical_source)
     with tempfile.TemporaryDirectory(prefix="repo-scaffold-coverage-") as directory:
         data_file = str(Path(directory) / ".coverage")
         frozen_configuration = Path(directory) / ".coveragerc"
@@ -163,9 +197,12 @@ def run_coverage(
         if result.returncode:
             return result.returncode
         assert_inputs_current(fingerprint, "the run")
-        report = [*common, "report", *settings]
-        if sources:
-            report.extend(["--include", ",".join(report_sources)])
+        report = [
+            *common,
+            "report",
+            *settings,
+            *(str(Path(source)) for source in (report_sources or inventory)),
+        ]
         result = subprocess.run(report, cwd=REPOSITORY_ROOT, env=environment)
         if result.returncode:
             return result.returncode

@@ -26,6 +26,35 @@ SPEC.loader.exec_module(prepare_mutation_cache)
 
 
 class MutationCacheTests(unittest.TestCase):
+    def test_verification_root_casing_follows_the_native_filesystem_contract(
+        self,
+    ) -> None:
+        for relative in (
+            "Scripts/vendor/input.py",
+            "Skills/Repo-Scaffold/Scripts/vendor/input.py",
+            "Tests/vendor/input.json",
+        ):
+            with (
+                self.subTest(relative=relative),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = root / relative
+                source.parent.mkdir(parents=True)
+                source.write_bytes(b"before")
+                before = prepare_mutation_cache.project_input_fingerprint(root)
+                inventory = prepare_mutation_cache._project_files(
+                    root, verification=True
+                )
+                self.assertEqual(
+                    [name for name, _ in inventory],
+                    [relative] if os.name == "nt" else [],
+                )
+                self.assertEqual(prepare_mutation_cache._project_files(root), [])
+                source.write_bytes(b"after")
+                after = prepare_mutation_cache.project_input_fingerprint(root)
+                self.assertEqual(before != after, os.name == "nt")
+
     def test_verification_inventory_rejects_nonregular_first_party_inputs_before_reading(
         self,
     ) -> None:

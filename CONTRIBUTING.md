@@ -272,14 +272,32 @@ the relevant group with focused checks before starting another full run.
 
 Measured runs and suite mode clear inherited `COVERAGE_*` controls in the child
 environment, including force-config, process-start and debug-output settings;
-the caller's environment remains unchanged. The coverage denominator includes
-unimported Python files inside namespace-package directories. Both the runner
+the caller's environment remains unchanged. Measured checks require both declared
+source roots to be safe directories. Full reports explicitly enumerate `.py` and
+`.pyw` files from the bounded verification inventory, including dotfiles that
+Coverage.py's automatic discovery skips. Focused reports explicitly name every
+selected canonical source, so an undiscovered file cannot disappear from a mixed
+report. Neither mode uses a data-only include filter as its denominator.
+Explicit report paths use the inventoried spelling and native separators, so
+Windows case-insensitive selections and verified omitted copies retain the
+correct data identity. Ambiguous inventory identities or selected files absent
+from that inventory fail admission before either coverage child starts.
+The coverage denominator includes unimported Python files inside namespace-package
+directories. Both the runner
 and repository validator reject `partial_also` and `[paths]` aliases that would
 hide missing branches or merge distinct source identities. Explicit test paths
 must stay under `tests/`, and measured source files under the two script trees;
 absolute in-repository paths are normalized, while traversal and link boundaries
 are rejected before subprocess execution. These checks do not sandbox trusted
 tests, conftest hooks, interpreter startup or arbitrary Python imports.
+Selection filenames use portable path components: colon-delimited names and
+Windows alternate data streams are rejected because stream bytes are not part of
+the directory inventory. A drive prefix in an absolute Windows path and colons
+inside the separate pytest node ID remain valid.
+Verification inventory uses native path semantics when binding first-party roots,
+including Windows case-insensitive spellings. Ignored dependency/cache names
+inside those roots still contain verification inputs. Default mutation-cache
+snapshot selection is unchanged.
 
 Every measured run verifies any present file in the three admitted copy omissions
 against its canonical `scripts/` source before running coverage. Missing canonical

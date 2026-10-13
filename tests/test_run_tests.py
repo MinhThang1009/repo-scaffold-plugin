@@ -75,6 +75,41 @@ class RunTestsTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertEqual(run_tests.parse_args(["suite"]).tests, ["tests"])
 
+    def test_command_help_distinguishes_feedback_from_final_verification(self) -> None:
+        expected_arguments = {
+            "": "positional arguments: {focused,full,suite} "
+            "focused Run explicit pytest files or node IDs "
+            "full Run all tests once with the repository coverage floor "
+            "suite Run pytest without coverage for runtime checks",
+            "focused": "positional arguments: tests Test files or pytest node IDs",
+            "suite": "positional arguments: tests Explicit test paths, or all tests by default",
+        }
+        for mode, expected in expected_arguments.items():
+            with (
+                self.subTest(mode=mode),
+                redirect_stdout(StringIO()) as output,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                run_tests.parse_args([mode, "--help"] if mode else ["--help"])
+            self.assertEqual(raised.exception.code, 0)
+            blocks = output.getvalue().split("\n\n")
+            arguments = next(
+                block for block in blocks if block.startswith("positional arguments:")
+            )
+            self.assertEqual(" ".join(arguments.split()), expected)
+            if not mode:
+                self.assertEqual(
+                    " ".join(blocks[1].split()),
+                    "Run focused feedback or the full test and coverage gate in one invocation.",
+                )
+            elif mode == "focused":
+                options = blocks[-1].split("\n", 1)[1]
+                self.assertEqual(
+                    " ".join(options.split()),
+                    "-h, --help show this help message and exit "
+                    "--source SOURCE Python file to report coverage for",
+                )
+
     def test_configuration_read_is_bounded_and_accepts_the_exact_byte_limit(
         self,
     ) -> None:
@@ -188,6 +223,13 @@ class RunTestsTests(unittest.TestCase):
             ["focused", "tests/test_run_tests.py", "--source", "scripts/*py"],
             ["focused", "tests/test_run_tests.py", "--source", "scripts/missing.py"],
             ["focused", "tests/test_run_tests.py", "--source", "scripts"],
+            [
+                "focused",
+                "tests/test_run_tests.py",
+                "--source",
+                "scripts/decision.py:alternate.py",
+            ],
+            ["suite", "tests/test_run_tests.py:alternate.py"],
         ):
             with (
                 self.subTest(arguments=arguments),
@@ -293,8 +335,45 @@ class RunTestsTests(unittest.TestCase):
             "tests/test_run_tests.py::RunTestsTests", execute.call_args_list[0].args[0]
         )
         self.assertEqual(
-            execute.call_args.args[0][-2:], ["--include", "scripts/run_tests.py"]
+            execute.call_args.args[0][-1:], [str(Path("scripts/run_tests.py"))]
         )
+
+    def test_node_id_colons_do_not_name_filesystem_streams(self) -> None:
+        selected = "tests/test_run_tests.py::RunTestsTests::case[x:y]"
+        self.assertEqual(
+            run_tests.repository_selection(selected, source=False), selected
+        )
+
+    def test_report_sources_require_unique_admitted_inventory_identities(self) -> None:
+        for inventory, expected in (
+            (
+                ["scripts/run_tests.py", "scripts/run_tests.py"],
+                "ambiguous path identities",
+            ),
+            (["scripts/python_support.py"], "outside the admitted inventory"),
+        ):
+            with (
+                self.subTest(inventory=inventory),
+                mock.patch.object(
+                    run_tests, "coverage_source_inventory", return_value=inventory
+                ),
+                mock.patch.object(run_tests.subprocess, "run") as execute,
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()) as errors,
+            ):
+                self.assertEqual(
+                    run_tests.main(
+                        [
+                            "focused",
+                            "tests/test_run_tests.py",
+                            "--source",
+                            "scripts/run_tests.py",
+                        ]
+                    ),
+                    1,
+                )
+                self.assertIn(expected, errors.getvalue())
+                execute.assert_not_called()
 
     def test_fresh_full_coverage_runs_pytest_once_and_keeps_required_configuration(
         self,
@@ -379,8 +458,8 @@ class RunTestsTests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertIn("Focused feedback only", output.getvalue())
         self.assertEqual(
-            execute.call_args.args[0][-2:],
-            ["--include", "skills/repo-scaffold/scripts/pr_template_preflight.py"],
+            execute.call_args.args[0][-1:],
+            [str(Path("skills/repo-scaffold/scripts/pr_template_preflight.py"))],
         )
 
     def test_focused_copy_selections_report_verified_canonical_sources_once(
@@ -414,7 +493,7 @@ class RunTestsTests(unittest.TestCase):
                 )
             self.assertEqual(
                 execute.call_args.args[0][-2:],
-                ["--include", "scripts/run_tests.py," + canonical],
+                [str(Path("scripts/run_tests.py")), str(Path(canonical))],
             )
 
     def test_failed_tests_skip_report_and_clean_their_owned_data_directory(
@@ -671,6 +750,72 @@ class RunTestsTests(unittest.TestCase):
         ):
             self.assertEqual(run_tests.main(["full"]), 1)
             self.assertIn("regular repository file", errors.getvalue())
+
+
+class CoverageInventoryTests(unittest.TestCase):
+    def test_missing_or_non_directory_source_root_is_not_optional(self) -> None:
+        for kind in ("missing", "file"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "scripts").mkdir()
+                source = root / "skills/repo-scaffold/scripts"
+                source.parent.mkdir(parents=True)
+                if kind == "file":
+                    source.write_bytes(b"not a directory")
+                with self.assertRaisesRegex(
+                    ValueError, "source root must be a directory"
+                ):
+                    run_tests.coverage_source_inventory(root)
+
+    def test_full_inventory_includes_hidden_and_namespace_sources_not_tests_or_copies(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in run_tests.COVERAGE_SOURCE_ROOTS:
+                (root / relative).mkdir(parents=True)
+            expected = [
+                "scripts/.hidden.py",
+                "scripts/audit_freshness.py",
+                "skills/repo-scaffold/scripts/nested/window.pyw",
+            ]
+            for relative in (
+                *expected,
+                "tests/test_example.py",
+                "scripts/notes.txt",
+                "skills/repo-scaffold/scripts/audit_freshness.py",
+            ):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("value = 1\n", encoding="utf-8")
+            self.assertEqual(run_tests.coverage_source_inventory(root), expected)
+
+    def test_empty_source_inventory_and_unsafe_roots_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in run_tests.COVERAGE_SOURCE_ROOTS:
+                (root / relative).mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "contains no Python files"):
+                run_tests.coverage_source_inventory(root)
+            with (
+                mock.patch.object(
+                    run_tests,
+                    "_assert_safe_project_path",
+                    side_effect=ValueError("unsafe root"),
+                ),
+                self.assertRaisesRegex(ValueError, "unsafe root"),
+            ):
+                run_tests.coverage_source_inventory(root)
+            with (
+                mock.patch.object(
+                    run_tests,
+                    "_project_files",
+                    side_effect=ValueError("inventory limit"),
+                ) as inventory,
+                self.assertRaisesRegex(ValueError, "inventory limit"),
+            ):
+                run_tests.coverage_source_inventory(root)
+            inventory.assert_called_once_with(root, verification=True)
 
 
 class CoverageCopyAdmissionTests(unittest.TestCase):

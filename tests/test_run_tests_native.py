@@ -25,6 +25,190 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "requires Windows case-insensitive paths")
+    def test_full_report_omits_only_verified_copies_with_native_casing(self) -> None:
+        for covered in (False, True):
+            with (
+                self.subTest(covered=covered),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.project(root)
+                for relative in (
+                    "scripts/audit_freshness.py",
+                    "skills/repo-scaffold/scripts/AUDIT_FRESHNESS.PY",
+                ):
+                    (root / relative).write_text(
+                        "def extra():\n    return 2\n", encoding="utf-8"
+                    )
+                if covered:
+                    (root / "tests/test_good.py").write_text(
+                        "from scripts.decision import value\nfrom scripts.audit_freshness import extra\n"
+                        "def test_good():\n    assert value() == 1\n    assert extra() == 2\n",
+                        encoding="utf-8",
+                    )
+                result = self.run_runner(root)
+                self.assertEqual(
+                    result.returncode,
+                    0 if covered else 2,
+                    result.stdout + result.stderr,
+                )
+                self.assertNotIn("AUDIT_FRESHNESS.PY", result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows case-insensitive paths")
+    def test_case_insensitive_roots_cannot_hide_fixture_changes(self) -> None:
+        for mode in ("suite", "full"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.project(root)
+                (root / "scripts").rename(root / "Scripts")
+                fixture = root / "Scripts/vendor/state.txt"
+                fixture.parent.mkdir()
+                fixture.write_text("before", encoding="utf-8")
+                (root / "tests/test_good.py").write_text(
+                    "import runpy\nfrom pathlib import Path\ndef test_good():\n"
+                    "    assert runpy.run_path('Scripts/decision.py')['value']() == 1\n"
+                    "    Path('Scripts/vendor/state.txt').write_text('after', encoding='utf-8')\n",
+                    encoding="utf-8",
+                )
+                result = self.run_runner(root, mode)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("inputs changed", result.stderr)
+
+    def test_full_inventory_reports_undiscovered_pywindow_source(self) -> None:
+        for covered in (False, True):
+            with (
+                self.subTest(covered=covered),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.project(root)
+                relative = "skills/repo-scaffold/scripts/nested/.hidden.pyw"
+                source = root / relative
+                source.parent.mkdir()
+                source.write_text("def extra():\n    return 2\n", encoding="utf-8")
+                if covered:
+                    (root / "tests/test_good.py").write_text(
+                        "import runpy\nfrom scripts.decision import value\n"
+                        "def test_good():\n    assert value() == 1\n"
+                        f"    assert runpy.run_path({relative!r})['extra']() == 2\n",
+                        encoding="utf-8",
+                    )
+                result = self.run_runner(root)
+                self.assertEqual(
+                    result.returncode,
+                    0 if covered else 2,
+                    result.stdout + result.stderr,
+                )
+                if not covered:
+                    self.assertIn(".hidden.pyw", result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows case-insensitive paths")
+    def test_windows_source_casing_reports_the_admitted_canonical_identity(
+        self,
+    ) -> None:
+        for selected in (
+            "Scripts/Decision.PY",
+            "Skills/Repo-Scaffold/Scripts/Audit_Freshness.PY",
+        ):
+            with (
+                self.subTest(selected=selected),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.project(root)
+                for name in (
+                    "scripts/audit_freshness.py",
+                    "skills/repo-scaffold/scripts/audit_freshness.py",
+                ):
+                    (root / name).write_text(
+                        "def extra():\n    return 2\n", encoding="utf-8"
+                    )
+                (root / "tests/test_good.py").write_text(
+                    "from scripts.decision import value\nfrom scripts.audit_freshness import extra\n"
+                    "def test_good():\n    assert value() == 1\n    assert extra() == 2\n",
+                    encoding="utf-8",
+                )
+                result = self.run_runner(
+                    root,
+                    "focused",
+                    arguments=["tests/test_good.py", "--source", selected],
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("100%", result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows alternate data streams")
+    def test_alternate_data_stream_source_is_rejected_before_measured_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.project(root)
+            alternate = "scripts/decision.py:alternate.py"
+            (root / alternate).write_text(
+                "def value():\n    return 2\n", encoding="utf-8"
+            )
+            result = self.run_runner(
+                root,
+                "focused",
+                arguments=["tests/test_good.py", "--source", alternate],
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("alternate data streams", result.stderr)
+            self.assertNotIn("1 passed", result.stdout)
+
+    def test_measured_checks_reject_missing_or_non_directory_source_roots(self) -> None:
+        for kind in ("missing", "file"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.project(root)
+                source = root / "skills/repo-scaffold/scripts"
+                source.rmdir()
+                if kind == "file":
+                    source.write_text("not a source directory", encoding="utf-8")
+                result = self.run_runner(root)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("coverage source root must be a directory", result.stderr)
+                self.assertNotIn("1 passed", result.stdout)
+
+    def test_undiscovered_python_files_remain_in_full_and_focused_reports(self) -> None:
+        for mode in ("full", "focused"):
+            for covered in (False, True):
+                with (
+                    self.subTest(mode=mode, covered=covered),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    hidden = root / "scripts/.hidden.py"
+                    hidden.write_text("def extra():\n    return 2\n", encoding="utf-8")
+                    if covered:
+                        (root / "tests/test_good.py").write_text(
+                            "import runpy\nfrom scripts.decision import value\n"
+                            "def test_good():\n    assert value() == 1\n"
+                            "    assert runpy.run_path('scripts/.hidden.py')['extra']() == 2\n",
+                            encoding="utf-8",
+                        )
+                    arguments = (
+                        [
+                            "tests/test_good.py",
+                            "--source",
+                            "scripts/decision.py",
+                            "--source",
+                            "scripts/.hidden.py",
+                        ]
+                        if mode == "focused"
+                        else []
+                    )
+                    result = self.run_runner(root, mode, arguments=arguments)
+                    self.assertEqual(
+                        result.returncode,
+                        0 if covered else 2,
+                        result.stdout + result.stderr,
+                    )
+                    if not covered:
+                        self.assertIn(".hidden.py", result.stdout)
+
     def test_guarded_runs_do_not_execute_stale_source_bytecode(self) -> None:
         for mode in ("suite", "full", "focused"):
             for invalidation in (

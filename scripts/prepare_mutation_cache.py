@@ -341,7 +341,7 @@ def _project_files(
             path = Path(entry.path)
             relative = path.relative_to(repository_root)
             first_party = verification and any(
-                _is_within(PurePosixPath(relative.as_posix()), root)
+                relative == Path(*root.parts) or Path(*root.parts) in relative.parents
                 for root in (*SOURCE_ROOTS, PurePosixPath("tests"))
             )
             if (

@@ -323,6 +323,11 @@ overrides/inherited plugins and reject changed input
 fingerprints. Measured runs use isolated, fresh data and a frozen coverage
 policy; report filters that hide uncovered files are rejected. All modes report
 slow test phases.
+Measured checks require both declared source directories. Full reports use the
+bounded inventory's Python files, including dotfiles; focused reports explicitly
+name each selected canonical file rather than filtering discovered data alone.
+Selection filenames reject alternate data streams and colon-delimited components;
+absolute Windows drive paths and separate pytest node IDs remain supported.
 The full denominator includes unimported namespace-package files; environment
 coverage overrides, branch exemptions and source-identity aliases cannot weaken
 the gate. Explicit test/source selections remain inside their repository trees.
