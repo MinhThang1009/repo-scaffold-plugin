@@ -27,6 +27,89 @@ class RunTestsTests(unittest.TestCase):
         copies.start()
         self.addCleanup(copies.stop)
 
+    def test_unmeasured_feedback_does_not_require_a_full_input_inventory(self) -> None:
+        with (
+            mock.patch.object(
+                run_tests.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ),
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_tests.main(["focused", "tests/test_run_tests.py"]), 0)
+        self.fingerprint.assert_not_called()
+
+    def test_suite_selection_and_child_execution_stay_bound_to_the_repository(
+        self,
+    ) -> None:
+        selections = ["tests/test_run_tests.py", "tests/test_python_support.py"]
+        for arguments in (["suite", *selections], ["full"]):
+            with (
+                self.subTest(mode=arguments[0]),
+                mock.patch.object(
+                    run_tests.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as execute,
+                redirect_stdout(StringIO()) as output,
+            ):
+                self.assertEqual(run_tests.main(arguments), 0)
+                for call in execute.call_args_list:
+                    self.assertEqual(call.kwargs["cwd"], run_tests.REPOSITORY_ROOT)
+                    self.assertIsInstance(call.kwargs["env"], dict)
+                    self.assertEqual(call.args[0][0], sys.executable)
+                if arguments[0] == "suite":
+                    self.assertEqual(execute.call_args.args[0][-2:], selections)
+                    self.assertEqual(
+                        output.getvalue(),
+                        "Pytest suite: " + ", ".join(selections) + "\n",
+                    )
+                else:
+                    self.assertEqual(output.getvalue(), "Full repository gate\n")
+        for call in self.fingerprint.call_args_list:
+            self.assertEqual(call.args, (run_tests.REPOSITORY_ROOT,))
+
+    def test_missing_mode_and_default_suite_scope_are_explicit(self) -> None:
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
+            run_tests.parse_args([])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(run_tests.parse_args(["suite"]).tests, ["tests"])
+
+    def test_configuration_read_is_bounded_and_accepts_the_exact_byte_limit(
+        self,
+    ) -> None:
+        for size in (65536, 65537):
+            with (
+                self.subTest(size=size),
+                mock.patch.object(
+                    Path, "open", mock.mock_open(read_data=b" " * size)
+                ) as opened,
+            ):
+                if size == 65536:
+                    self.assertEqual(
+                        run_tests.read_configuration(".coveragerc"), " " * size
+                    )
+                else:
+                    with self.assertRaisesRegex(ValueError, "65536-byte limit"):
+                        run_tests.read_configuration(".coveragerc")
+                opened.return_value.read.assert_called_once_with(65537)
+
+    def test_stale_results_identify_the_exact_failed_phase(self) -> None:
+        for phase in ("the run", "report generation"):
+            with (
+                self.subTest(phase=phase),
+                mock.patch.object(
+                    run_tests, "project_input_fingerprint", return_value="after"
+                ) as fingerprint,
+                self.assertRaises(ValueError) as raised,
+            ):
+                run_tests.assert_inputs_current("before", phase)
+            fingerprint.assert_called_once_with(run_tests.REPOSITORY_ROOT)
+            self.assertEqual(
+                str(raised.exception),
+                f"test inputs changed during {phase}; result is not current",
+            )
+
     def test_focused_selection_executes_only_requested_tests_and_propagates_failure(
         self,
     ) -> None:

@@ -33,6 +33,43 @@ def policy_document() -> dict[str, object]:
 
 
 class PythonSupportPolicyTests(unittest.TestCase):
+    def test_string_list_admission_includes_the_exact_item_budget(self) -> None:
+        values = [f"3.{minor}" for minor in range(10, 42)]
+        self.assertEqual(
+            python_support.require_string_list(
+                {"versions": values}, "versions", max_items=32
+            ),
+            tuple(values),
+        )
+
+    def test_policy_loader_uses_a_bounded_read_at_the_exact_byte_limit(self) -> None:
+        encoded = json.dumps(policy_document()).encode("utf-8")
+        for size in (
+            python_support.MAX_POLICY_BYTES,
+            python_support.MAX_POLICY_BYTES + 1,
+        ):
+            with (
+                self.subTest(size=size),
+                mock.patch.object(
+                    Path,
+                    "open",
+                    mock.mock_open(read_data=encoded + b" " * (size - len(encoded))),
+                ) as opened,
+            ):
+                if size == python_support.MAX_POLICY_BYTES:
+                    self.assertEqual(
+                        python_support.load_policy(Path("policy.json")),
+                        python_support.parse_policy(policy_document()),
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        python_support.PolicyError, "size limit"
+                    ):
+                        python_support.load_policy(Path("policy.json"))
+                opened.return_value.read.assert_called_once_with(
+                    python_support.MAX_POLICY_BYTES + 1
+                )
+
     def test_contiguity_validation_never_enumerates_numeric_version_span(
         self,
     ) -> None:
