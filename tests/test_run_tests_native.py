@@ -25,6 +25,106 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_guarded_pytest_temp_and_cache_outputs_are_private_and_preserved(
+        self,
+    ) -> None:
+        for mode in ("suite", "full", "focused"):
+            for failing in (False, True):
+                with (
+                    self.subTest(mode=mode, failing=failing),
+                    tempfile.TemporaryDirectory() as directory,
+                    tempfile.TemporaryDirectory() as outside,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    external = Path(outside)
+                    (external / "preserve.txt").write_bytes(b"unrelated")
+                    saved = root / ".pytest_cache/v/cache/lastfailed"
+                    saved.parent.mkdir(parents=True)
+                    saved.write_bytes(b'{"unrelated::test": true}')
+                    receipt = external / "receipt.txt"
+                    (root / "tests/test_good.py").write_text(
+                        "from pathlib import Path\nfrom scripts.decision import value\n"
+                        "def test_good(tmp_path, request):\n    assert value() == 1\n"
+                        "    (tmp_path / 'created.txt').write_text('owned')\n"
+                        "    request.config.cache.set('synthetic/ownership', 'owned')\n"
+                        f"    Path({str(receipt)!r}).write_text(str(tmp_path) + '\\n' + str(request.config.cache._cachedir), encoding='utf-8')\n"
+                        f"    assert {not failing!r}\n",
+                        encoding="utf-8",
+                    )
+                    arguments = (
+                        ["tests/test_good.py", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+                    results = self.run_runner(
+                        root,
+                        mode,
+                        arguments=arguments,
+                        addopts=(
+                            "--basetemp "
+                            + repr(outside.replace("\\", "/"))
+                            + " -o "
+                            + repr("cache_dir=" + outside.replace("\\", "/"))
+                            + " --cache-clear"
+                        )
+                        if mode == "focused"
+                        else "",
+                        coverage_environment={
+                            "PYTEST_DEBUG_TEMPROOT": outside,
+                            "TOX_ENV_DIR": outside,
+                        },
+                    )
+                    self.assertEqual(
+                        results.returncode,
+                        1 if failing else 0,
+                        results.stdout + results.stderr,
+                    )
+                    temporary, cache = map(
+                        Path, receipt.read_text(encoding="utf-8").splitlines()
+                    )
+                    self.assertEqual(temporary.parent.parent, cache.parent)
+                    self.assertFalse(cache.parent.exists())
+                    self.assertEqual(saved.read_bytes(), b'{"unrelated::test": true}')
+                    self.assertEqual(
+                        (external / "preserve.txt").read_bytes(), b"unrelated"
+                    )
+                    self.assertEqual(
+                        sorted(item.name for item in external.iterdir()),
+                        ["preserve.txt", "receipt.txt"],
+                    )
+
+    def test_concurrent_guarded_pytest_outputs_use_distinct_owned_roots(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory() as output_directory,
+        ):
+            root = Path(directory)
+            self.project(root)
+            receipts = Path(output_directory)
+            (root / "tests/test_good.py").write_text(
+                "import os\nfrom pathlib import Path\nfrom scripts.decision import value\n"
+                "def test_good(tmp_path, request):\n    assert value() == 1\n"
+                "    request.config.cache.set('synthetic/ownership', 'owned')\n"
+                f"    (Path({str(receipts)!r}) / str(os.getpid())).write_text(str(tmp_path.parent) + '\\n' + str(request.config.cache._cachedir), encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(lambda _: self.run_runner(root), range(2)))
+            for result in results:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            records = [
+                path.read_text(encoding="utf-8").splitlines()
+                for path in receipts.iterdir()
+            ]
+            self.assertEqual(len(records), 2)
+            roots = [Path(temporary).parent for temporary, _ in records]
+            self.assertEqual(len(set(roots)), 2)
+            for (temporary, cache), runtime_root in zip(records, roots):
+                self.assertEqual(Path(cache).parent, runtime_root)
+                self.assertFalse(Path(temporary).exists())
+                self.assertFalse(runtime_root.exists())
+
     @unittest.skipUnless(os.name == "nt", "requires Windows case-insensitive paths")
     def test_full_report_omits_only_verified_copies_with_native_casing(self) -> None:
         for covered in (False, True):

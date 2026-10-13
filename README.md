@@ -339,6 +339,8 @@ redirect pytest log/cache or coverage debug output to unrelated paths.
 Nonregular entries in first-party input trees are rejected before execution.
 Guarded child runs use fresh private bytecode caches, preserving existing caches
 while preventing stale code reuse from weakening current-source evidence.
+Pytest cache and fixture temp directories are also bound to that run's owned
+runtime root, preserving shared state and ignoring inherited output redirects.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the feedback loop and cache limits.
 
 The plugin has no compilation step. Its validation tests require a CPython release from the [Python support policy](.github/python-support.json) and the hash-locked development toolchain, including Coverage.py, markdown-it-py for CommonMark parsing, PyYAML, and pytest. Run the repository checks from its root:

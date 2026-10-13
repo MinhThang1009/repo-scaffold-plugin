@@ -327,6 +327,13 @@ attestation; the trusted-interpreter/import boundary described above still appli
 
 Guarded child runs (`full`, `suite` and focused with `--source`) use a unique,
 owned `PYTHONPYCACHEPREFIX` instead of repository or inherited bytecode caches.
+They also bind pytest's `--basetemp` and `cache_dir` to distinct child directories
+inside the owned runtime root, clearing inherited `PYTEST_DEBUG_TEMPROOT` only
+in the child environment. Existing repository/tox caches and shared pytest temp
+sessions are not used or cleaned by these guarded checks. The runtime root is
+removed on success, failure or interruption. Measured-focused checks therefore
+cannot use a previous cache's `--lf` selection; use unmeasured feedback for that
+workflow. This isolation does not sandbox arbitrary test/plugin writes.
 Timestamp/size collisions and unchecked-hash bytecode cannot substitute old code
 for current source. The run and report share that private prefix; it is removed
 on success, failure or interruption without clearing existing caches or changing

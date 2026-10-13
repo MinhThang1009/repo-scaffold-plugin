@@ -161,8 +161,8 @@ def run_coverage(
     policy_errors = coverage_policy_errors(configuration_text)
     if policy_errors:
         raise ValueError("; ".join(policy_errors))
-    validate_omitted_copies(REPOSITORY_ROOT)
     inventory = coverage_source_inventory(REPOSITORY_ROOT)
+    validate_omitted_copies(REPOSITORY_ROOT)
     identities = {Path(relative): relative for relative in inventory}
     if len(identities) != len(inventory):
         raise ValueError("coverage inventory contains ambiguous path identities")
@@ -261,6 +261,13 @@ def main(argv: list[str] | None = None) -> int:
         with runtime as directory:
             if directory is not None:
                 environment["PYTHONPYCACHEPREFIX"] = str(Path(directory) / "bytecode")
+                environment.pop("PYTEST_DEBUG_TEMPROOT", None)
+                pytest[2:2] = [
+                    "--basetemp",
+                    str(Path(directory) / "pytest-temp"),
+                    "-o",
+                    "cache_dir=" + str(Path(directory) / "pytest-cache"),
+                ]
             if arguments.mode == "full" or sources:
                 return run_coverage(pytest, sources, environment, fingerprint)
             result = subprocess.run(

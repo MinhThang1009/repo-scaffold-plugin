@@ -39,6 +39,34 @@ class RunTestsTests(unittest.TestCase):
             self.assertEqual(run_tests.main(["focused", "tests/test_run_tests.py"]), 0)
         self.fingerprint.assert_not_called()
 
+    def test_unmeasured_feedback_preserves_pytest_cache_and_temp_selection(
+        self,
+    ) -> None:
+        controls = {
+            "PYTEST_DEBUG_TEMPROOT": "feedback-temp",
+            "TOX_ENV_DIR": "feedback-tox",
+            "PYTEST_ADDOPTS": "--lf",
+        }
+        with (
+            mock.patch.dict(os.environ, controls),
+            mock.patch.object(
+                run_tests.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ) as execute,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_tests.main(["focused", "tests/test_run_tests.py"]), 0)
+            self.assertNotIn("--basetemp", execute.call_args.args[0])
+            self.assertFalse(
+                any(
+                    argument.startswith("cache_dir=")
+                    for argument in execute.call_args.args[0]
+                )
+            )
+            for name, value in controls.items():
+                self.assertEqual(execute.call_args.kwargs["env"][name], value)
+
     def test_suite_selection_and_child_execution_stay_bound_to_the_repository(
         self,
     ) -> None:
@@ -395,7 +423,7 @@ class RunTestsTests(unittest.TestCase):
                     commands[0][:4], [sys.executable, "-m", "coverage", "run"]
                 )
                 self.assertEqual(
-                    commands[0][-9:],
+                    [*commands[0][-13:-11], *commands[0][-7:]],
                     [
                         "-m",
                         "pytest",
@@ -412,6 +440,7 @@ class RunTestsTests(unittest.TestCase):
                     commands[1][:4], [sys.executable, "-m", "coverage", "report"]
                 )
                 self.assertNotIn("--include", commands[1])
+                self.assertNotIn("--basetemp", commands[1])
                 for command in commands:
                     self.assertNotEqual(
                         command[command.index("--rcfile") + 1],
@@ -652,7 +681,12 @@ class RunTestsTests(unittest.TestCase):
                 with (
                     self.subTest(mode=mode, status=status),
                     mock.patch.dict(
-                        os.environ, {"PYTHONPYCACHEPREFIX": "unrelated-cache"}
+                        os.environ,
+                        {
+                            "PYTHONPYCACHEPREFIX": "unrelated-cache",
+                            "PYTEST_DEBUG_TEMPROOT": "unrelated-temp",
+                            "TOX_ENV_DIR": "unrelated-tox",
+                        },
                     ),
                     mock.patch.object(
                         run_tests.subprocess,
@@ -666,6 +700,24 @@ class RunTestsTests(unittest.TestCase):
                     self.assertNotEqual(prefix, "unrelated-cache")
                     self.assertEqual(
                         os.environ["PYTHONPYCACHEPREFIX"], "unrelated-cache"
+                    )
+                    first = execute.call_args_list[0]
+                    command = first.args[0]
+                    basetemp = Path(command[command.index("--basetemp") + 1])
+                    cache = next(
+                        argument.removeprefix("cache_dir=")
+                        for argument in command
+                        if argument.startswith("cache_dir=")
+                    )
+                    self.assertEqual(basetemp.parent, Path(prefix).parent)
+                    self.assertEqual(Path(cache).parent, Path(prefix).parent)
+                    self.assertNotEqual(basetemp, Path(cache))
+                    self.assertNotIn("PYTEST_DEBUG_TEMPROOT", first.kwargs["env"])
+                    self.assertEqual(
+                        os.environ["PYTEST_DEBUG_TEMPROOT"], "unrelated-temp"
+                    )
+                    self.assertEqual(
+                        first.kwargs["env"]["TOX_ENV_DIR"], "unrelated-tox"
                     )
                     self.assertTrue(
                         all(
@@ -753,6 +805,34 @@ class RunTestsTests(unittest.TestCase):
 
 
 class CoverageInventoryTests(unittest.TestCase):
+    def test_root_admission_precedes_nested_copy_path_access_and_execution(
+        self,
+    ) -> None:
+        for arguments in (
+            ["full"],
+            ["focused", "tests/test_run_tests.py", "--source", "scripts/run_tests.py"],
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                mock.patch.object(
+                    run_tests,
+                    "coverage_source_inventory",
+                    side_effect=ValueError("coverage source root must be a directory"),
+                ),
+                mock.patch.object(
+                    run_tests,
+                    "validate_omitted_copies",
+                    side_effect=NotADirectoryError("nested path below file"),
+                ) as copies,
+                mock.patch.object(run_tests.subprocess, "run") as execute,
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()) as errors,
+            ):
+                self.assertEqual(run_tests.main(arguments), 1)
+                self.assertIn("source root must be a directory", errors.getvalue())
+                copies.assert_not_called()
+                execute.assert_not_called()
+
     def test_missing_or_non_directory_source_root_is_not_optional(self) -> None:
         for kind in ("missing", "file"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
