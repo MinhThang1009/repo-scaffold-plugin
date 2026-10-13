@@ -65,12 +65,15 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
         valid_bodies = (
             "",
             "No linked issue is needed for this change.\n",
+            "Fixes are discussed in the release notes.\n",
             "Fixes #123\n",
             "- closes: #7\n",
             "RESOLVED owner/repo#42\n",
             "Fixes #1, resolves owner/repo#2\n",
             "<!-- Closes #<issue> if applicable -->\n",
             "```text\nFixes #not-an-issue\n```\n",
+            "````text\nFixes #still-inside\n```\n````\n",
+            "```text\nFixes #still-inside\n~~~\nFixes #still-inside\n```\n",
         )
         for body in valid_bodies:
             with self.subTest(body=body):
@@ -90,6 +93,9 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
                 errors = pr_template_preflight.validate_closing_keyword_syntax(body)
                 self.assertEqual(len(errors), 1)
                 self.assertIn("valid issue reference", errors[0])
+
+        with self.assertRaisesRegex(ValueError, "body must be text"):
+            pr_template_preflight.validate_closing_keyword_syntax(None)
 
     def test_body_file_preflight_rejects_malformed_closing_keyword_without_structure(
         self,
@@ -130,6 +136,10 @@ class PullRequestTemplatePreflightTests(unittest.TestCase):
                 template.encode("utf-8")
             )
             pr_template_preflight.validate_body_structure(root, "fix: draft", template)
+            with self.assertRaisesRegex(ValueError, "invalid closing keyword syntax"):
+                pr_template_preflight.validate_body_structure(
+                    root, "fix: draft", template + "\nFixes #not-an-issue\n"
+                )
             body_path = root / "body.md"
             body_path.write_bytes(template.encode("utf-8"))
             with redirect_stdout(StringIO()):

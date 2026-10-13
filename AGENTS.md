@@ -11,6 +11,11 @@ assets compatible with their documented host contracts.
 - Read the relevant source and its matching test before editing. Keep source
   scripts, generated assets, and their documented contracts synchronized.
 - Run `python -m pytest -q` for behavior changes.
+- During implementation, use `python scripts/run_tests.py focused <test-path>`;
+  add `--source <python-file>` when checking coverage for that file. After all
+  edits, `python scripts/run_tests.py full` satisfies the full pytest requirement
+  and the coverage gate in one run. Keep inputs unchanged until it completes;
+  focused results and pytest's cache are not full-suite evidence.
 - Run `python scripts/validate_repository.py` and
   `python skills/repo-scaffold/scripts/validate_scaffold.py --repository-root . --template-root skills/repo-scaffold/assets`.
 - Run `python scripts/validate_workflows.py` after workflow changes, and

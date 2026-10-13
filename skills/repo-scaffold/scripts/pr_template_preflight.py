@@ -54,8 +54,6 @@ CLOSING_KEYWORD_PREFIX_PATTERN = re.compile(
     rf"{CLOSING_KEYWORD_PATTERN}\b(?P<tail>.*)$",
     re.IGNORECASE,
 )
-CLOSING_FENCE_START_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})")
-CLOSING_FENCE_END_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})[ \t]*$")
 
 
 def is_link_or_reparse(path: Path) -> bool:
@@ -266,25 +264,7 @@ def validate_closing_keyword_syntax(markdown: str) -> tuple[str, ...]:
         raise ValueError("body must be text")
     visible = _visible_structure(markdown)
     errors: list[str] = []
-    fence_character: str | None = None
-    fence_length = 0
     for line_number, line in enumerate(split_gfm_lines(visible), start=1):
-        if fence_character is not None:
-            fence_end = CLOSING_FENCE_END_PATTERN.match(line)
-            if (
-                fence_end is not None
-                and fence_end.group("marker")[0] == fence_character
-                and len(fence_end.group("marker")) >= fence_length
-            ):
-                fence_character = None
-                fence_length = 0
-            continue
-        fence_start = CLOSING_FENCE_START_PATTERN.match(line)
-        if fence_start is not None:
-            fence_character = fence_start.group("marker")[0]
-            fence_length = len(fence_start.group("marker"))
-            continue
-
         candidate = CLOSING_KEYWORD_PREFIX_PATTERN.match(line)
         if candidate is None:
             continue

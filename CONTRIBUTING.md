@@ -237,7 +237,34 @@ malformed or unavailable state cannot reuse an earlier successful analysis.
 These sequential reads do not make GitHub state atomic after the final read;
 merge authorization still requires fresh checks on the controlling SHA.
 
-Run these commands from the repository root:
+During implementation, select the relevant test files or pytest node IDs for
+fast feedback. The local runner reports the 20 slowest test phases:
+
+```powershell
+python scripts/run_tests.py focused tests/test_pr_template_preflight.py
+python scripts/run_tests.py focused tests/test_pr_template_preflight.py --source skills/repo-scaffold/scripts/pr_template_preflight.py
+```
+
+`--source` enforces the existing coverage floor for the selected Python file;
+repeat it for additional files. This is focused feedback, not a full-repository
+verdict. Every measured run uses a fresh, isolated coverage data file and cleans
+it afterward, so concurrent checks cannot overwrite the normal `.coverage`
+file or combine earlier results with new code.
+
+Once the change is complete, run `python scripts/run_tests.py full`. It runs the
+entire suite once under Coverage.py, then checks the unchanged `.coveragerc`
+branch-coverage floor. A separate full pytest invocation would repeat the same
+tests. Full mode also clears inherited `PYTEST_ADDOPTS` in the child process so
+local selection flags cannot narrow that run. Keep the source and tests
+unchanged during the run. On failure, correct
+the relevant group with focused checks before starting another full run.
+
+For a quick retry of failures already recorded in pytest's local cache, use
+`python -m pytest --lf --last-failed-no-failures none -q`. An empty cache runs
+no tests, so it supplies no verification evidence. The cache tracks test
+selection, not whether changed code is correct.
+
+The equivalent manual full-coverage commands and other repository checks are:
 
 ```powershell
 python -m coverage erase
@@ -245,7 +272,7 @@ python -m coverage run -m pytest -q
 python -m coverage report
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_tests.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
