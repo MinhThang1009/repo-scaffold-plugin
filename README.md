@@ -314,7 +314,8 @@ SKILL.md → Resources identifies the shipped resource groups and their purpose.
 ## 10. Development validation
 
 For fast local feedback, run `python scripts/run_tests.py focused <test-path>`.
-Add `--source <python-file>` for a coverage check limited to that file. Finish
+Add `--source <python-file>` for a coverage check limited to a `.py` or `.pyw`
+source file. Finish
 the change with `python scripts/run_tests.py full`, which runs all tests and
 enforces the repository coverage floor in one invocation. For runtime-only
 verification, use `python scripts/run_tests.py suite`. Full/suite checks bind

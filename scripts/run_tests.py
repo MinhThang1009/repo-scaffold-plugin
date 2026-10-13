@@ -86,7 +86,9 @@ def repository_selection(value: str, *, source: bool) -> str:
             "selection is outside the declared repository test/source scope"
         )
     _assert_safe_project_path(REPOSITORY_ROOT, absolute)
-    if source and (path.suffix.lower() != ".py" or not absolute.is_file()):
+    if source and (
+        path.suffix.lower() not in {".py", ".pyw"} or not absolute.is_file()
+    ):
         raise ValueError("--source requires an existing literal Python file")
     return relative.as_posix() + separator + node
 

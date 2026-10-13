@@ -48,7 +48,7 @@ class NativeRunTestsTests(unittest.TestCase):
                         "def test_good(tmp_path, request):\n    assert value() == 1\n"
                         "    (tmp_path / 'created.txt').write_text('owned')\n"
                         "    request.config.cache.set('synthetic/ownership', 'owned')\n"
-                        f"    Path({str(receipt)!r}).write_text(str(tmp_path) + '\\n' + str(request.config.cache._cachedir), encoding='utf-8')\n"
+                        f"    Path({str(receipt)!r}).write_text(str(tmp_path.resolve()) + '\\n' + str(request.config.cache._cachedir.resolve()), encoding='utf-8')\n"
                         f"    assert {not failing!r}\n",
                         encoding="utf-8",
                     )
@@ -106,7 +106,7 @@ class NativeRunTestsTests(unittest.TestCase):
                 "import os\nfrom pathlib import Path\nfrom scripts.decision import value\n"
                 "def test_good(tmp_path, request):\n    assert value() == 1\n"
                 "    request.config.cache.set('synthetic/ownership', 'owned')\n"
-                f"    (Path({str(receipts)!r}) / str(os.getpid())).write_text(str(tmp_path.parent) + '\\n' + str(request.config.cache._cachedir), encoding='utf-8')\n",
+                f"    (Path({str(receipts)!r}) / str(os.getpid())).write_text(str(tmp_path.parent.resolve()) + '\\n' + str(request.config.cache._cachedir.resolve()), encoding='utf-8')\n",
                 encoding="utf-8",
             )
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -124,6 +124,78 @@ class NativeRunTestsTests(unittest.TestCase):
                 self.assertEqual(Path(cache).parent, runtime_root)
                 self.assertFalse(Path(temporary).exists())
                 self.assertFalse(runtime_root.exists())
+
+    def test_owned_pytest_outputs_use_one_physical_root_through_temp_aliases(
+        self,
+    ) -> None:
+        for mode in ("suite", "full", "focused"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                root = base / "project"
+                root.mkdir()
+                self.project(root)
+                actual = base / "actual-temp"
+                actual.mkdir()
+                alias = base / "alias-temp"
+                if os.name == "nt":
+                    powershell = (
+                        Path(os.environ["SystemRoot"])
+                        / "System32/WindowsPowerShell/v1.0/powershell.exe"
+                    )
+                    created = subprocess.run(
+                        [
+                            str(powershell),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-Command",
+                            "New-Item -ItemType Junction -Path $env:REPO_TEST_TEMP_ALIAS -Value $env:REPO_TEST_TEMP_TARGET -ErrorAction Stop | Out-Null",
+                        ],
+                        env={
+                            **os.environ,
+                            "REPO_TEST_TEMP_ALIAS": str(alias),
+                            "REPO_TEST_TEMP_TARGET": str(actual),
+                        },
+                        capture_output=True,
+                        text=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                        timeout=15,
+                        check=False,
+                    )
+                    self.assertEqual(created.returncode, 0, created.stderr)
+                else:
+                    alias.symlink_to(actual, target_is_directory=True)
+                receipt = base / "receipt.txt"
+                (root / "tests/test_good.py").write_text(
+                    "import sys\nfrom pathlib import Path\nfrom scripts.decision import value\n"
+                    "def test_good(tmp_path, request):\n    assert value() == 1\n"
+                    "    request.config.cache.set('synthetic/ownership', 'owned')\n"
+                    f"    Path({str(receipt)!r}).write_text(str(tmp_path.parent.resolve()) + '\\n' + str(request.config.cache._cachedir.resolve()) + '\\n' + str(Path(sys.pycache_prefix).parent.resolve()), encoding='utf-8')\n",
+                    encoding="utf-8",
+                )
+                arguments = (
+                    ["tests/test_good.py", "--source", "scripts/decision.py"]
+                    if mode == "focused"
+                    else []
+                )
+                result = self.run_runner(
+                    root,
+                    mode,
+                    arguments=arguments,
+                    coverage_environment={
+                        "TMP": str(alias),
+                        "TEMP": str(alias),
+                        "TMPDIR": str(alias),
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                temporary, cache, runtime = map(
+                    Path, receipt.read_text(encoding="utf-8").splitlines()
+                )
+                self.assertEqual(temporary.parent, runtime)
+                self.assertEqual(cache.parent, runtime)
+                self.assertFalse(runtime.exists())
+                self.assertTrue(alias.exists())
+                self.assertEqual(list(actual.iterdir()), [])
 
     @unittest.skipUnless(os.name == "nt", "requires Windows case-insensitive paths")
     def test_full_report_omits_only_verified_copies_with_native_casing(self) -> None:
@@ -200,6 +272,45 @@ class NativeRunTestsTests(unittest.TestCase):
                     0 if covered else 2,
                     result.stdout + result.stderr,
                 )
+                if not covered:
+                    self.assertIn(".hidden.pyw", result.stdout)
+
+    def test_focused_pywindow_sources_follow_the_full_coverage_contract(self) -> None:
+        for covered in (False, True):
+            with (
+                self.subTest(covered=covered),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.project(root)
+                relative = "skills/repo-scaffold/scripts/.hidden.pyw"
+                (root / relative).write_text(
+                    "def extra():\n    return 2\n", encoding="utf-8"
+                )
+                if covered:
+                    (root / "tests/test_good.py").write_text(
+                        "import runpy\nfrom scripts.decision import value\ndef test_good():\n"
+                        "    assert value() == 1\n"
+                        f"    assert runpy.run_path({relative!r})['extra']() == 2\n",
+                        encoding="utf-8",
+                    )
+                result = self.run_runner(
+                    root,
+                    "focused",
+                    arguments=[
+                        "tests/test_good.py",
+                        "--source",
+                        "scripts/decision.py",
+                        "--source",
+                        relative,
+                    ],
+                )
+                self.assertEqual(
+                    result.returncode,
+                    0 if covered else 2,
+                    result.stdout + result.stderr,
+                )
+                self.assertNotIn("invalid test/source selection", result.stderr)
                 if not covered:
                     self.assertIn(".hidden.pyw", result.stdout)
 

@@ -246,7 +246,8 @@ python scripts/run_tests.py focused tests/test_pr_template_preflight.py --source
 ```
 
 `--source` enforces the existing coverage floor for the selected Python file;
-repeat it for additional files. If it selects one of the three verified omitted
+both `.py` and `.pyw` source files are accepted, matching the full inventory.
+Repeat it for additional files. If it selects one of the three verified omitted
 copies, its report identity is the byte-identical canonical root script.
 Selecting both paths measures that
 canonical identity once. This remapping follows copy-byte admission and does not
@@ -334,6 +335,9 @@ sessions are not used or cleaned by these guarded checks. The runtime root is
 removed on success, failure or interruption. Measured-focused checks therefore
 cannot use a previous cache's `--lf` selection; use unmeasured feedback for that
 workflow. This isolation does not sandbox arbitrary test/plugin writes.
+Ownership regressions record canonical runtime paths while the directories exist;
+system temp aliases (such as macOS `/var` and `/private/var`) must not create a
+false failure. Alias tests preserve the temp alias and verify owned-child cleanup.
 Timestamp/size collisions and unchecked-hash bytecode cannot substitute old code
 for current source. The run and report share that private prefix; it is removed
 on success, failure or interruption without clearing existing caches or changing

@@ -805,6 +805,30 @@ class RunTestsTests(unittest.TestCase):
 
 
 class CoverageInventoryTests(unittest.TestCase):
+    def test_source_selection_accepts_python_window_files_not_bytecode_or_text(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir()
+            for suffix in (".py", ".pyw", ".pyc", ".pyo", ".txt"):
+                relative = "scripts/selected" + suffix
+                (root / relative).write_bytes(b"value = 1\n")
+                with (
+                    self.subTest(suffix=suffix),
+                    mock.patch.object(run_tests, "REPOSITORY_ROOT", root),
+                ):
+                    if suffix in {".py", ".pyw"}:
+                        self.assertEqual(
+                            run_tests.repository_selection(relative, source=True),
+                            relative,
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            ValueError, "existing literal Python file"
+                        ):
+                            run_tests.repository_selection(relative, source=True)
+
     def test_root_admission_precedes_nested_copy_path_access_and_execution(
         self,
     ) -> None:
