@@ -25,6 +25,33 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_native_runner_fixtures_type_check_on_supported_platforms(self) -> None:
+        for platform in ("linux", "darwin", "win32"):
+            with (
+                self.subTest(platform=platform),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "mypy",
+                        "--platform",
+                        platform,
+                        "--explicit-package-bases",
+                        "--cache-dir",
+                        directory,
+                        str(Path(__file__).resolve()),
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=45,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_guarded_pytest_temp_and_cache_outputs_are_private_and_preserved(
         self,
     ) -> None:
@@ -137,7 +164,7 @@ class NativeRunTestsTests(unittest.TestCase):
                 actual = base / "actual-temp"
                 actual.mkdir()
                 alias = base / "alias-temp"
-                if os.name == "nt":
+                if sys.platform == "win32":
                     powershell = (
                         Path(os.environ["SystemRoot"])
                         / "System32/WindowsPowerShell/v1.0/powershell.exe"
