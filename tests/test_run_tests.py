@@ -411,6 +411,29 @@ class RunTestsTests(unittest.TestCase):
             Path(command[command.index("--data-file") + 1]).parent.exists()
         )
 
+    def test_nonregular_input_admission_failure_never_starts_pytest_or_coverage(
+        self,
+    ) -> None:
+        for arguments in (
+            ["suite"],
+            ["full"],
+            ["focused", "tests/test_run_tests.py", "--source", "scripts/run_tests.py"],
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                mock.patch.object(
+                    run_tests,
+                    "project_input_fingerprint",
+                    side_effect=ValueError("nonregular verification input"),
+                ),
+                mock.patch.object(run_tests.subprocess, "run") as execute,
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()) as errors,
+            ):
+                self.assertEqual(run_tests.main(arguments), 1)
+                self.assertIn("nonregular verification input", errors.getvalue())
+                execute.assert_not_called()
+
     def test_configuration_errors_fail_before_test_execution(self) -> None:
         for payload, message in (
             (b"x" * 65537, "65536-byte"),

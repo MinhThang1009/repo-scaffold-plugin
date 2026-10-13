@@ -366,6 +366,10 @@ def _project_files(
                 pending.append(path)
                 continue
             if not path.is_file():
+                if first_party:
+                    raise ValueError(
+                        f"nonregular verification input: {relative.as_posix()!r}"
+                    )
                 continue
             size = path.stat().st_size
             if size > MAX_FILE_BYTES:

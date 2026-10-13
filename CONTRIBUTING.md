@@ -302,6 +302,13 @@ dependency/build caches retain their existing exclusions, and mutation-cache
 snapshot selection is unchanged. Bytecode caches are runtime state, not source
 attestation; the trusted-interpreter/import boundary described above still applies.
 
+First-party verification inputs must be directories or regular files. FIFO,
+socket, device and other nonregular entries are rejected before reading content
+or starting pytest/coverage; silently omitting them would leave the inventory
+incomplete and could let later source readers block on a special file. Tests
+include a native POSIX FIFO case, marked not applicable on Windows. This is input
+admission, not a process sandbox or an atomic guarantee against filesystem races.
+
 For a quick retry of failures already recorded in pytest's local cache, use
 `python -m pytest --lf --last-failed-no-failures none -q`. An empty cache runs
 no tests, so it supplies no verification evidence. The cache tracks test

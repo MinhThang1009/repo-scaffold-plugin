@@ -330,6 +330,7 @@ Freshness checks include source and fixtures inside those trees even when a
 subdirectory has a dependency/cache name such as `vendor` or `build`.
 Measured runs admit omitted copies only after byte comparison; guarded config
 cannot redirect pytest log/cache or coverage debug output to unrelated paths.
+Nonregular entries in first-party input trees are rejected before execution.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the feedback loop and cache limits.
 
 The plugin has no compilation step. Its validation tests require a CPython release from the [Python support policy](.github/python-support.json) and the hash-locked development toolchain, including Coverage.py, markdown-it-py for CommonMark parsing, PyYAML, and pytest. Run the repository checks from its root:

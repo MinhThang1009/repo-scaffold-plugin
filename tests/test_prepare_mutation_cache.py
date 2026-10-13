@@ -26,6 +26,60 @@ SPEC.loader.exec_module(prepare_mutation_cache)
 
 
 class MutationCacheTests(unittest.TestCase):
+    def test_verification_inventory_rejects_nonregular_first_party_inputs_before_reading(
+        self,
+    ) -> None:
+        for location in (
+            "scripts/input.py",
+            "skills/repo-scaffold/scripts/input.py",
+            "tests/input.json",
+        ):
+            with (
+                self.subTest(location=location),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                path = root / location
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"synthetic-special-file-state")
+                is_file = Path.is_file
+                with (
+                    mock.patch.object(
+                        Path,
+                        "is_file",
+                        autospec=True,
+                        side_effect=lambda candidate: (
+                            False if candidate == path else is_file(candidate)
+                        ),
+                    ),
+                    mock.patch.object(
+                        prepare_mutation_cache, "_read_bounded_bytes"
+                    ) as read,
+                ):
+                    self.assertEqual(prepare_mutation_cache._project_files(root), [])
+                    with self.assertRaisesRegex(
+                        ValueError, "nonregular verification input"
+                    ):
+                        prepare_mutation_cache.project_input_fingerprint(root)
+                    read.assert_not_called()
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires native POSIX FIFOs")
+    def test_native_fifo_cannot_be_silently_omitted_from_verification_inventory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "scripts/unexecuted.py"
+            path.parent.mkdir()
+            if sys.platform != "win32":
+                os.mkfifo(path)
+            else:
+                self.skipTest("requires native POSIX FIFOs")
+            self.assertFalse(path.is_file())
+            self.assertFalse(path.is_dir())
+            with self.assertRaisesRegex(ValueError, "nonregular verification input"):
+                prepare_mutation_cache.project_input_fingerprint(root)
+
     def test_verification_bytecode_exclusion_is_not_a_directory_or_fixture_exclusion(
         self,
     ) -> None:
