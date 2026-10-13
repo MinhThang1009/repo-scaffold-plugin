@@ -2436,6 +2436,12 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 original.replace("[report]", "[report]\nomit = scripts/*.py"),
                 original.replace("fail_under = 100", "fail_under = nan"),
                 original.replace("fail_under = 100", "fail_under = inf"),
+                original.replace("[report]", "[report]\npartial_also = .*"),
+                original + "\n[paths]\nalias = scripts\n",
+                original.replace(
+                    "include_namespace_packages = True",
+                    "include_namespace_packages = False",
+                ),
             ):
                 with self.subTest(text=text):
                     coverage_path.write_text(text, encoding="utf-8")
@@ -5487,7 +5493,8 @@ class MultiAgentPluginContractTests(unittest.TestCase):
     def write_valid_contract(root: Path) -> None:
         (root / "AGENTS.md").write_text(
             "## Repository purpose\n"
-            "python -m pytest -q\n"
+            "python scripts/run_tests.py full\n"
+            "python scripts/run_tests.py suite\n"
             "python scripts/validate_repository.py\n"
             "python skills/repo-scaffold/scripts/validate_scaffold.py\n"
             "claude plugin validate --strict .\n"
@@ -5639,7 +5646,7 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             problems = validate_repository.validate_maintainer_agent_instructions(root)
 
         self.assertIn(
-            "AGENTS.md: missing maintainer instruction 'python -m pytest -q'",
+            "AGENTS.md: missing maintainer instruction 'python scripts/run_tests.py full'",
             problems,
         )
         self.assertIn(
@@ -5647,6 +5654,26 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "maintainers share one instruction source",
             problems,
         )
+
+    def test_bare_pytest_guidance_cannot_replace_guarded_full_and_suite_checks(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            agents = root / "AGENTS.md"
+            agents.write_text(
+                agents.read_text(encoding="utf-8")
+                .replace("python scripts/run_tests.py full", "python -m pytest -q")
+                .replace("python scripts/run_tests.py suite", "python -m pytest -q"),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_maintainer_agent_instructions(root)
+            for mode in ("full", "suite"):
+                self.assertIn(
+                    f"AGENTS.md: missing maintainer instruction 'python scripts/run_tests.py {mode}'",
+                    problems,
+                )
 
     def test_reports_unreadable_maintainer_agent_instructions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

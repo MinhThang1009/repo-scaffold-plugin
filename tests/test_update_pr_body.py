@@ -56,6 +56,8 @@ class UpdatePullRequestBodyTests(unittest.TestCase):
 
         self.assertIn("legacy template-based body-sync", rendered)
         self.assertIn("API-evidence body-sync does not read it", rendered)
+        self.assertIn("python scripts/run_tests.py full", rendered)
+        self.assertNotIn("python -m pytest -q", rendered)
         self.assertIn(HEAD_SHA.lower(), rendered)
         self.assertIn(HEAD_REPOSITORY, rendered)
         self.assertNotIn("{{HEAD_", rendered)

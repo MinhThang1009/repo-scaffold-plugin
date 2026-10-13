@@ -14,6 +14,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.coverage_policy import coverage_policy_errors, pytest_policy_errors
+from scripts.coverage_policy import COVERAGE_SOURCE_ROOTS
 from scripts.prepare_mutation_cache import (
     _assert_safe_project_path,
     project_input_fingerprint,
@@ -57,6 +58,29 @@ def assert_inputs_current(fingerprint: str | None, phase: str) -> None:
         and project_input_fingerprint(REPOSITORY_ROOT) != fingerprint
     ):
         raise ValueError(f"test inputs changed during {phase}; result is not current")
+
+
+def repository_selection(value: str, *, source: bool) -> str:
+    """Bind a literal test/source path before invoking pytest or report filters."""
+    filename, separator, node = value.partition("::") if not source else (value, "", "")
+    path = Path(filename)
+    if ".." in path.parts or any(character in filename for character in ",*?["):
+        raise ValueError(
+            "selection must be a literal repository path without traversal"
+        )
+    absolute = path if path.is_absolute() else REPOSITORY_ROOT / path
+    relative = absolute.relative_to(REPOSITORY_ROOT)
+    roots = COVERAGE_SOURCE_ROOTS if source else {"tests"}
+    if not any(
+        relative == Path(root) or Path(root) in relative.parents for root in roots
+    ):
+        raise ValueError(
+            "selection is outside the declared repository test/source scope"
+        )
+    _assert_safe_project_path(REPOSITORY_ROOT, absolute)
+    if source and (path.suffix != ".py" or not absolute.is_file()):
+        raise ValueError("--source requires an existing literal Python file")
+    return relative.as_posix() + separator + node
 
 
 def read_configuration(name: str) -> str:
@@ -121,18 +145,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     sources = arguments.source if arguments.mode == "focused" else []
-    for source in sources:
-        path = Path(source)
-        if (
-            path.suffix != ".py"
-            or not (REPOSITORY_ROOT / path).is_file()
-            or any(character in source for character in ",*?[")
-        ):
-            print(
-                "error: --source requires an existing literal Python file",
-                file=sys.stderr,
-            )
-            return 2
+    try:
+        tests = [repository_selection(test, source=False) for test in tests]
+        sources = [repository_selection(source, source=True) for source in sources]
+    except (OSError, ValueError) as error:
+        print(f"error: invalid test/source selection: {error}", file=sys.stderr)
+        return 2
     pytest = ["-m", "pytest", "-q", "--durations=20", *tests]
     scope = {
         "full": "Full repository gate",
@@ -141,6 +159,10 @@ def main(argv: list[str] | None = None) -> int:
     }[arguments.mode]
     print(scope, flush=True)
     environment = os.environ.copy()
+    if arguments.mode != "focused" or sources:
+        for name in list(environment):
+            if name.upper().startswith("COVERAGE_"):
+                environment.pop(name)
     if arguments.mode != "focused":
         for name in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
             environment.pop(name, None)

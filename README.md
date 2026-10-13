@@ -323,6 +323,9 @@ overrides/inherited plugins and reject changed input
 fingerprints. Measured runs use isolated, fresh data and a frozen coverage
 policy; report filters that hide uncovered files are rejected. All modes report
 slow test phases.
+The full denominator includes unimported namespace-package files; environment
+coverage overrides, branch exemptions and source-identity aliases cannot weaken
+the gate. Explicit test/source selections remain inside their repository trees.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the feedback loop and cache limits.
 
 The plugin has no compilation step. Its validation tests require a CPython release from the [Python support policy](.github/python-support.json) and the hash-locked development toolchain, including Coverage.py, markdown-it-py for CommonMark parsing, PyYAML, and pytest. Run the repository checks from its root:

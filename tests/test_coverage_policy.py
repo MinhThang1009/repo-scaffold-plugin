@@ -66,6 +66,16 @@ class CoveragePolicyTests(unittest.TestCase):
             POLICY.replace("fail_under = 100", "fail_under = inf"),
             POLICY.replace("fail_under = 100", "fail_under = 101"),
             POLICY.replace("fail_under = 100", "fail_under = invalid"),
+            POLICY.replace(
+                "include_namespace_packages = True",
+                "include_namespace_packages = False",
+            ),
+            POLICY.replace(
+                "include_namespace_packages = True",
+                "include_namespace_packages = invalid",
+            ),
+            POLICY.replace("include_namespace_packages = True", ""),
+            POLICY + "\n[paths]\nalias = scripts\n",
         ):
             with self.subTest(text=text):
                 self.assertTrue(coverage_policy_errors(text))

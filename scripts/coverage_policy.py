@@ -25,6 +25,7 @@ UNSAFE_COVERAGE_OPTIONS = {
         "exclude_also",
         "partial_branches",
         "partial_branches_always",
+        "partial_also",
         "contexts",
     },
 }
@@ -88,6 +89,7 @@ def coverage_policy_errors(text: str) -> list[str]:
             if line.strip() and not line.lstrip().startswith("#")
         }
         floor = config.getfloat("report", "fail_under")
+        namespace_packages = config.getboolean("report", "include_namespace_packages")
     except (configparser.Error, ValueError) as error:
         return [f".coveragerc: could not verify coverage policy: {error}"]
     problems: list[str] = []
@@ -101,6 +103,14 @@ def coverage_policy_errors(text: str) -> list[str]:
             ".coveragerc: require branch coverage for both script trees, only "
             "verified byte-for-byte script copies omitted, and a fail-under "
             "floor of at least 100"
+        )
+    if not namespace_packages:
+        problems.append(
+            ".coveragerc: unimported namespace packages must remain in the denominator"
+        )
+    if config.has_section("paths"):
+        problems.append(
+            ".coveragerc: path aliases cannot merge the repository coverage denominator"
         )
     for section, options in UNSAFE_COVERAGE_OPTIONS.items():
         for option in sorted(options):

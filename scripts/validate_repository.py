@@ -688,7 +688,8 @@ MAINTAINER_AGENT_INSTRUCTION_PATHS = (
 )
 MAINTAINER_AGENT_REQUIRED_FRAGMENTS = (
     "## Repository purpose",
-    "python -m pytest -q",
+    "python scripts/run_tests.py full",
+    "python scripts/run_tests.py suite",
     "python scripts/validate_repository.py",
     "python skills/repo-scaffold/scripts/validate_scaffold.py",
     "claude plugin validate --strict .",

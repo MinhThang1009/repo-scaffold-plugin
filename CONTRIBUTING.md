@@ -265,6 +265,17 @@ invalidate the result. These comparisons cannot detect an edit that is restored
 between reads, so keep inputs unchanged throughout the run. On failure, correct
 the relevant group with focused checks before starting another full run.
 
+Measured runs and suite mode clear inherited `COVERAGE_*` controls in the child
+environment, including force-config, process-start and debug-output settings;
+the caller's environment remains unchanged. The coverage denominator includes
+unimported Python files inside namespace-package directories. Both the runner
+and repository validator reject `partial_also` and `[paths]` aliases that would
+hide missing branches or merge distinct source identities. Explicit test paths
+must stay under `tests/`, and measured source files under the two script trees;
+absolute in-repository paths are normalized, while traversal and link boundaries
+are rejected before subprocess execution. These checks do not sandbox trusted
+tests, conftest hooks, interpreter startup or arbitrary Python imports.
+
 The shared input inventory admits directory entries before retaining and sorting
 them. Its 10,000-entry limit includes directories, ignored names and ordinary
 files; empty directory trees cannot bypass it. Directory iterators close on

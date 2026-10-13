@@ -6,6 +6,7 @@ import os
 import runpy
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -99,6 +100,8 @@ class RunTestsTests(unittest.TestCase):
             ["focused", "tests/test_run_tests.py", "--source", "missing.py"],
             ["focused", "tests/test_run_tests.py", "--source", "AGENTS.md"],
             ["focused", "tests/test_run_tests.py", "--source", "scripts/*py"],
+            ["focused", "tests/test_run_tests.py", "--source", "scripts/missing.py"],
+            ["focused", "tests/test_run_tests.py", "--source", "scripts"],
         ):
             with (
                 self.subTest(arguments=arguments),
@@ -107,6 +110,105 @@ class RunTestsTests(unittest.TestCase):
             ):
                 self.assertEqual(run_tests.main(arguments), 2)
                 execute.assert_not_called()
+
+    def test_coverage_controls_are_cleared_only_in_child_verification_environment(
+        self,
+    ) -> None:
+        controls = {
+            "COVERAGE_FORCE_CONFIG": "outside.ini",
+            "COVERAGE_PROCESS_START": "outside.ini",
+            "COVERAGE_PROCESS_CONFIG": "outside",
+            "COVERAGE_DEBUG_FILE": "outside.log",
+            "COVERAGE_FILE": "outside.coverage",
+        }
+        for mode in ("full", "suite", "focused"):
+            arguments = (
+                [mode]
+                if mode != "focused"
+                else [
+                    "focused",
+                    "tests/test_run_tests.py",
+                    "--source",
+                    "scripts/run_tests.py",
+                ]
+            )
+            with (
+                self.subTest(mode=mode),
+                mock.patch.dict(os.environ, controls),
+                mock.patch.object(
+                    run_tests.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as execute,
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(run_tests.main(arguments), 0)
+                for call in execute.call_args_list:
+                    self.assertFalse(
+                        any(
+                            name.upper().startswith("COVERAGE_")
+                            for name in call.kwargs["env"]
+                        )
+                    )
+                self.assertEqual({key: os.environ[key] for key in controls}, controls)
+
+    def test_declared_test_and_source_scope_cannot_escape_the_bound_repository(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outside = Path(directory) / "test_outside.py"
+            outside.write_text("def test_outside(): pass\n", encoding="utf-8")
+            for arguments in (
+                ["suite", str(outside)],
+                ["suite", "tests/../tests/test_run_tests.py"],
+                ["focused", "tests/test_run_tests.py", "--source", str(outside)],
+                [
+                    "focused",
+                    "tests/test_run_tests.py",
+                    "--source",
+                    "tests/test_run_tests.py",
+                ],
+            ):
+                with (
+                    self.subTest(arguments=arguments),
+                    redirect_stderr(StringIO()),
+                    redirect_stdout(StringIO()),
+                    mock.patch.object(
+                        run_tests.subprocess,
+                        "run",
+                        return_value=subprocess.CompletedProcess([], 0),
+                    ) as execute,
+                ):
+                    self.assertEqual(run_tests.main(arguments), 2)
+                    execute.assert_not_called()
+
+    def test_literal_absolute_paths_inside_the_repository_are_normalized(self) -> None:
+        with (
+            mock.patch.object(
+                run_tests.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ) as execute,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(
+                run_tests.main(
+                    [
+                        "focused",
+                        str(run_tests.REPOSITORY_ROOT / "tests/test_run_tests.py")
+                        + "::RunTestsTests",
+                        "--source",
+                        str(run_tests.REPOSITORY_ROOT / "scripts/run_tests.py"),
+                    ]
+                ),
+                0,
+            )
+        self.assertIn(
+            "tests/test_run_tests.py::RunTestsTests", execute.call_args_list[0].args[0]
+        )
+        self.assertEqual(
+            execute.call_args.args[0][-2:], ["--include", "scripts/run_tests.py"]
+        )
 
     def test_fresh_full_coverage_runs_pytest_once_and_keeps_required_configuration(
         self,
@@ -347,11 +449,15 @@ class RunTestsTests(unittest.TestCase):
             execute.assert_not_called()
 
     def test_configuration_cannot_cross_a_link_boundary_or_be_a_directory(self) -> None:
+        def admit_selection_reject_config(root: Path, path: Path) -> None:
+            if path.name == ".coveragerc":
+                raise ValueError("linked config")
+
         with (
             mock.patch.object(
                 run_tests,
                 "_assert_safe_project_path",
-                side_effect=ValueError("linked config"),
+                side_effect=admit_selection_reject_config,
             ),
             redirect_stdout(StringIO()),
             redirect_stderr(StringIO()) as errors,

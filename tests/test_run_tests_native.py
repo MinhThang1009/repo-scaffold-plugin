@@ -49,13 +49,20 @@ class NativeRunTestsTests(unittest.TestCase):
             )
 
     def run_runner(
-        self, root: Path, mode: str = "full", *, addopts: str = "", plugins: str = ""
+        self,
+        root: Path,
+        mode: str = "full",
+        *,
+        addopts: str = "",
+        plugins: str = "",
+        coverage_environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment["PYTEST_ADDOPTS"] = addopts
         environment["PYTEST_PLUGINS"] = plugins
         environment["MUTANT_UNDER_TEST"] = ""
         environment["MUTMUT_DEPENDENCY_DEPTH"] = "-1"
+        environment.update(coverage_environment or {})
         for name in ("GH_TOKEN", "GITHUB_TOKEN"):
             environment.pop(name, None)
         return subprocess.run(
@@ -185,3 +192,73 @@ class NativeRunTestsTests(unittest.TestCase):
             self.assertEqual(
                 (root / ".coverage").read_bytes(), b"unrelated-existing-data"
             )
+
+    def test_coverage_environment_cannot_override_frozen_policy_or_write_external_data(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.project(root)
+            (root / "scripts/uncovered.py").write_text(
+                "def hidden():\n    return 2\n", encoding="utf-8"
+            )
+            override = root / "override.ini"
+            override.write_text(
+                "[report]\ninclude = scripts/decision.py\n", encoding="utf-8"
+            )
+            outside = root / "unrelated.coverage"
+            outside.write_bytes(b"preserve-existing")
+            result = self.run_runner(
+                root,
+                coverage_environment={
+                    "COVERAGE_FORCE_CONFIG": str(override),
+                    "COVERAGE_FILE": str(outside),
+                    "COVERAGE_DEBUG": "config",
+                    "COVERAGE_DEBUG_FILE": str(root / "unrelated.log"),
+                },
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertEqual(outside.read_bytes(), b"preserve-existing")
+            self.assertFalse((root / "unrelated.log").exists())
+
+    def test_unimported_namespace_source_is_in_the_full_denominator(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.project(root)
+            (root / "scripts/nested").mkdir()
+            (root / "scripts/nested/uncovered.py").write_text(
+                "def hidden():\n    return 2\n", encoding="utf-8"
+            )
+            result = self.run_runner(root)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("uncovered.py", result.stdout)
+
+    def test_partial_branch_override_and_alias_cannot_hide_uncovered_code(self) -> None:
+        for kind in ("partial_also", "paths"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.project(root)
+                if kind == "partial_also":
+                    (root / "scripts/decision.py").write_text(
+                        "def value(flag=True):\n    if flag:\n        result = 1\n    return result\n",
+                        encoding="utf-8",
+                    )
+                    config = POLICY.replace(
+                        "[report]", "[report]\npartial_also = if flag:"
+                    )
+                else:
+                    (root / "skills/repo-scaffold/scripts/decision.py").write_text(
+                        "def value():\n    return 1\n", encoding="utf-8"
+                    )
+                    config = (
+                        POLICY
+                        + "\n[paths]\nalias =\n    scripts\n    skills/repo-scaffold/scripts\n"
+                    )
+                control = self.run_runner(root)
+                self.assertEqual(control.returncode, 2, control.stdout + control.stderr)
+                (root / ".coveragerc").write_text(config, encoding="utf-8")
+                rejected = self.run_runner(root)
+                self.assertEqual(
+                    rejected.returncode, 1, rejected.stdout + rejected.stderr
+                )
+                self.assertIn("denominator", rejected.stderr)
