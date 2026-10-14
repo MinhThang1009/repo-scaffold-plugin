@@ -327,7 +327,8 @@ Guarded runs also require a fresh, bounded completion receipt in owned temporary
 state, not only process status zero. A bootstrap invokes pytest's public API and
 tracks collection and each test-finish event, preserving duplicate node counts.
 An abrupt zero exit, missing receipt or incomplete session fails before accepting
-runtime evidence or reporting coverage. Nonzero pytest statuses still propagate.
+runtime evidence or reporting coverage. Nonzero pytest statuses still propagate
+when owned-output cleanup succeeds.
 Ordinary skips and xfails remain supported; unmeasured focused feedback is unchanged.
 This detects incomplete execution, not tampering by arbitrary trusted test/plugin code.
 
@@ -411,7 +412,12 @@ They also bind pytest's `--basetemp` and `cache_dir` to distinct child directori
 inside the owned runtime root, clearing inherited `PYTEST_DEBUG_TEMPROOT` only
 in the child environment. Existing repository/tox caches and shared pytest temp
 sessions are not used or cleaned by these guarded checks. The runtime root is
-removed on success, failure or interruption. Measured-focused checks therefore
+removed on success, failure or interruption when cleanup succeeds. Cleanup never
+resets file permissions or attributes, since an entry can share an inode with
+an unrelated read-only file through a hardlink. If the platform refuses deletion,
+the runner fails closed and identifies the retained owned directory for inspection;
+it does not clear read-only flags or silently ignore cleanup failure.
+Measured-focused checks therefore
 cannot use a previous cache's `--lf` selection; use unmeasured feedback for that
 workflow. This isolation does not sandbox arbitrary test/plugin writes.
 Ownership regressions record canonical runtime paths while the directories exist;
@@ -419,8 +425,8 @@ system temp aliases (such as macOS `/var` and `/private/var`) must not create a
 false failure. Alias tests preserve the temp alias and verify owned-child cleanup.
 Timestamp/size collisions and unchecked-hash bytecode cannot substitute old code
 for current source. The run and report share that private prefix; it is removed
-on success, failure or interruption without clearing existing caches or changing
-the caller's environment. This incurs cold-import work during final verification.
+on success, failure or interruption when cleanup succeeds, without clearing existing
+caches or changing the caller's environment. This incurs cold-import work during final verification.
 Focused feedback without measurement retains its normal cache behavior. This
 does not attest the parent interpreter's already-loaded modules, custom importers
 or executable startup hooks, and inputs must still remain immutable during a run.

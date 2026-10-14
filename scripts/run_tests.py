@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 if __name__ == "__main__":
@@ -29,6 +31,23 @@ from scripts.prepare_mutation_cache import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+@contextmanager
+def owned_temporary_directory(prefix: str) -> Iterator[str]:
+    """Remove owned state without resetting shared inode permissions/attributes."""
+    directory = os.path.abspath(tempfile.mkdtemp(prefix=prefix))
+    try:
+        yield directory
+    finally:
+        try:
+            shutil.rmtree(directory)
+        except OSError as error:
+            raise OSError(
+                f"owned temporary cleanup failed; inspect retained directory: {directory}"
+            ) from error
+
+
 PYTEST_BOOTSTRAP = '''"""Record completion using pytest's public session hooks."""
 from __future__ import annotations
 from collections import Counter
@@ -273,7 +292,7 @@ def run_coverage(
         if canonical_source not in report_sources:
             report_sources.append(canonical_source)
     validate_report_source_syntax(REPOSITORY_ROOT, report_sources or inventory)
-    with tempfile.TemporaryDirectory(prefix="repo-scaffold-coverage-") as directory:
+    with owned_temporary_directory(prefix="repo-scaffold-coverage-") as directory:
         data_file = str(Path(directory) / ".coverage")
         frozen_configuration = Path(directory) / ".coveragerc"
         frozen_configuration.write_text(configuration_text, encoding="utf-8")
@@ -366,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
             if pytest_errors:
                 raise ValueError("; ".join(pytest_errors))
         runtime = (
-            tempfile.TemporaryDirectory(prefix="repo-scaffold-test-runtime-")
+            owned_temporary_directory(prefix="repo-scaffold-test-runtime-")
             if fingerprint is not None
             else nullcontext()
         )

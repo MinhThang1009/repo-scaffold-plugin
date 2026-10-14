@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 import py_compile
 import shutil
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -26,6 +27,52 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_guarded_cleanup_preserves_readonly_outside_hardlink_attributes(
+        self,
+    ) -> None:
+        for mode in ("suite", "full"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                container = Path(directory)
+                root = container / "target"
+                root.mkdir()
+                self.project(root)
+                bucket = container / "runtime"
+                bucket.mkdir()
+                sentinel = container / "outside.dat"
+                sentinel.write_bytes(b"immutable outside fixture")
+                os.chmod(sentinel, stat.S_IREAD)
+                before = sentinel.stat()
+                (root / "tests/test_good.py").write_text(
+                    "import os\nfrom scripts.decision import value\n"
+                    "def test_good(tmp_path):\n    assert value()==1\n"
+                    f"    os.link({str(sentinel)!r}, tmp_path / 'readonly-link')\n",
+                    encoding="utf-8",
+                )
+                try:
+                    result = self.run_runner(
+                        root,
+                        mode,
+                        coverage_environment={
+                            name: str(bucket) for name in ("TMPDIR", "TEMP", "TMP")
+                        },
+                    )
+                    self.assertEqual(
+                        sentinel.stat().st_mode,
+                        before.st_mode,
+                        result.stdout + result.stderr,
+                    )
+                    self.assertEqual(
+                        sentinel.read_bytes(), b"immutable outside fixture"
+                    )
+                    self.assertEqual(
+                        result.returncode, 1 if sys.platform == "win32" else 0
+                    )
+                    if sys.platform == "win32":
+                        self.assertIn("cleanup", result.stderr)
+                        self.assertEqual(len(list(bucket.iterdir())), 1)
+                finally:
+                    os.chmod(sentinel, stat.S_IREAD | stat.S_IWRITE)
+
     def test_complete_sessions_preserve_skips_xfails_and_duplicate_nodeids(
         self,
     ) -> None:

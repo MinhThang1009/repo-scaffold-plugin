@@ -911,6 +911,53 @@ class RunTestsTests(unittest.TestCase):
             self.assertIn("regular repository file", errors.getvalue())
 
 
+class OwnedTemporaryDirectoryTests(unittest.TestCase):
+    def test_owned_temporary_state_is_removed_on_success_and_body_failure(self) -> None:
+        for failing in (False, True):
+            with self.subTest(failing=failing):
+                owned = None
+                try:
+                    with run_tests.owned_temporary_directory(
+                        "repo-scaffold-unit-"
+                    ) as directory:
+                        owned = Path(directory)
+                        self.assertTrue(owned.is_absolute())
+                        (owned / "owned.dat").write_bytes(b"private runtime state")
+                        if failing:
+                            raise ValueError("body failure")
+                except ValueError as error:
+                    self.assertEqual(str(error), "body failure")
+                assert owned is not None
+                self.assertFalse(owned.exists())
+
+    def test_cleanup_failure_retains_state_and_chains_the_original_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            owned = Path(directory) / "owned"
+            owned.mkdir()
+            marker = owned / "preserve.dat"
+            marker.write_bytes(b"retained")
+            cleanup = PermissionError("deletion refused")
+            with (
+                mock.patch.object(
+                    run_tests.tempfile, "mkdtemp", return_value=str(owned)
+                ),
+                mock.patch.object(
+                    run_tests.shutil, "rmtree", side_effect=cleanup
+                ) as remove,
+                mock.patch.object(os, "chmod") as chmod,
+                self.assertRaisesRegex(
+                    OSError, "owned temporary cleanup failed"
+                ) as raised,
+            ):
+                with run_tests.owned_temporary_directory("repo-scaffold-unit-"):
+                    raise ValueError("body failure")
+            remove.assert_called_once_with(str(owned))
+            chmod.assert_not_called()
+            self.assertIs(raised.exception.__cause__, cleanup)
+            self.assertIsInstance(cleanup.__context__, ValueError)
+            self.assertEqual(marker.read_bytes(), b"retained")
+
+
 class PytestCompletionTests(unittest.TestCase):
     def test_bootstrap_and_receipt_are_fresh_owned_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
