@@ -3670,7 +3670,7 @@ def required_ci_command_context_is_safe(
             or any(
                 not isinstance(name, str)
                 or not isinstance(value, str)
-                or name.upper() in {"BASH_ENV", "SHELLOPTS"}
+                or name.upper() in {"BASH_ENV", "SHELLOPTS", "PYTHONINSPECT"}
                 for name, value in environment.items()
             )
         ):

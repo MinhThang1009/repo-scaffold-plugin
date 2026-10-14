@@ -234,6 +234,20 @@ def run_coverage(
         return 0
 
 
+def reject_cli_inspection() -> None:
+    """Reject a REPL that can suppress SystemExit before creating owned outputs."""
+    if sys.flags.inspect:
+        try:
+            print(
+                "error: run test checks without Python inspection (-i/PYTHONINSPECT)",
+                file=sys.stderr,
+                flush=True,
+            )
+        finally:
+            # SystemExit returns to the REPL; no runner-owned resources exist yet.
+            os._exit(2)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Use fresh coverage data and preserve pytest and coverage failure statuses."""
     arguments = parse_args(argv)
@@ -258,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     }[arguments.mode]
     print(scope, flush=True)
     environment = os.environ.copy()
+    environment.pop("PYTHONINSPECT", None)
     if arguments.mode != "focused" or sources:
         for name in list(environment):
             if name.upper().startswith("COVERAGE_"):
@@ -309,4 +324,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    reject_cli_inspection()
     raise SystemExit(main())

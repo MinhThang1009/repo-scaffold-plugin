@@ -859,6 +859,7 @@ class RequiredCIExecutionTests(unittest.TestCase):
                 {"BASH_ENV": ""},
                 {"bash_env": "startup.sh"},
                 {"SHELLOPTS": "noexec"},
+                {"PYTHONINSPECT": "1"},
             ):
                 scopes: list[dict[str, object]] = [{}, {}, {}]
                 scopes[index]["env"] = environment
@@ -956,7 +957,7 @@ class PythonSupportContractValidationTests(unittest.TestCase):
 
     def test_runtime_consumers_bind_inherited_shell_and_startup_controls(self) -> None:
         for job in ("test", "mutation-cache-integration", "python-latest-canary"):
-            for control in ("shell", "BASH_ENV", "SHELLOPTS"):
+            for control in ("shell", "BASH_ENV", "SHELLOPTS", "PYTHONINSPECT"):
                 with (
                     self.subTest(job=job, control=control),
                     tempfile.TemporaryDirectory() as directory,
@@ -980,7 +981,11 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                             1,
                         )
                     else:
-                        value = "startup.sh" if control == "BASH_ENV" else "noexec"
+                        value = {
+                            "BASH_ENV": "startup.sh",
+                            "SHELLOPTS": "noexec",
+                            "PYTHONINSPECT": "1",
+                        }[control]
                         modified = original.replace(
                             marker, marker + f"    env:\n      {control}: {value}\n", 1
                         )
@@ -2736,7 +2741,13 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
 
     def test_coverage_consumer_binds_shell_directory_and_startup_controls(self) -> None:
         for scope in ("step", "job"):
-            for control in ("shell", "working-directory", "BASH_ENV", "SHELLOPTS"):
+            for control in (
+                "shell",
+                "working-directory",
+                "BASH_ENV",
+                "SHELLOPTS",
+                "PYTHONINSPECT",
+            ):
                 with (
                     self.subTest(scope=scope, control=control),
                     tempfile.TemporaryDirectory() as directory,
@@ -2759,7 +2770,11 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                             else f"    defaults:\n      run:\n        {control}: {value}\n"
                         )
                     else:
-                        value = "startup.sh" if control == "BASH_ENV" else "noexec"
+                        value = {
+                            "BASH_ENV": "startup.sh",
+                            "SHELLOPTS": "noexec",
+                            "PYTHONINSPECT": "1",
+                        }[control]
                         body = f"{indent}env:\n{indent}  {control}: {value}\n"
                     workflow.write_text(
                         original.replace(marker, marker + body, 1), encoding="utf-8"

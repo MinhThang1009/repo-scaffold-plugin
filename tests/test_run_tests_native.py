@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import os
 import py_compile
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -25,6 +26,51 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_cli_inspection_cannot_turn_failing_tests_into_success(self) -> None:
+        for inspection in ("environment", "command-line"):
+            for arguments in (
+                ["full"],
+                ["suite"],
+                ["focused", "tests/test_bad.py"],
+                ["focused", "tests/test_bad.py", "--source", "scripts/decision.py"],
+            ):
+                with (
+                    self.subTest(inspection=inspection, arguments=arguments),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root, failing=True)
+                    for filename in (
+                        "run_tests.py",
+                        "coverage_policy.py",
+                        "prepare_mutation_cache.py",
+                    ):
+                        shutil.copy2(
+                            ROOT / "scripts" / filename, root / "scripts" / filename
+                        )
+                    environment = os.environ.copy()
+                    for name in ("GH_TOKEN", "GITHUB_TOKEN", "PYTHONINSPECT"):
+                        environment.pop(name, None)
+                    if inspection == "environment":
+                        environment["PYTHONINSPECT"] = "1"
+                    flags = ["-i"] if inspection == "command-line" else []
+                    result = subprocess.run(
+                        [sys.executable, *flags, "scripts/run_tests.py", *arguments],
+                        cwd=root,
+                        env=environment,
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=30,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        result.returncode, 2, result.stdout + result.stderr
+                    )
+                    self.assertIn("inspection", result.stderr)
+                    self.assertNotIn("Full repository gate", result.stdout)
+
     def test_unparseable_admitted_sources_cannot_disappear_from_the_denominator(
         self,
     ) -> None:

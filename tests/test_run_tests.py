@@ -39,6 +39,58 @@ class RunTestsTests(unittest.TestCase):
             self.assertEqual(run_tests.main(["focused", "tests/test_run_tests.py"]), 0)
         self.fingerprint.assert_not_called()
 
+    def test_inspection_is_cleared_in_every_child_without_mutating_parent_environment(
+        self,
+    ) -> None:
+        for arguments in (
+            ["full"],
+            ["suite"],
+            ["focused", "tests/test_run_tests.py"],
+            ["focused", "tests/test_run_tests.py", "--source", "scripts/run_tests.py"],
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                mock.patch.dict(os.environ, {"PYTHONINSPECT": "1"}),
+                mock.patch.object(
+                    run_tests.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as execute,
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(run_tests.main(arguments), 0)
+                for call in execute.call_args_list:
+                    self.assertFalse("PYTHONINSPECT" in call.kwargs["env"])
+                self.assertEqual(os.environ["PYTHONINSPECT"], "1")
+
+    def test_cli_inspection_rejection_is_fatal_even_if_diagnostic_output_fails(
+        self,
+    ) -> None:
+        for broken_output in (False, True):
+            fake_sys = mock.Mock(flags=mock.Mock(inspect=1), stderr=StringIO())
+            with (
+                self.subTest(broken_output=broken_output),
+                mock.patch.object(run_tests, "sys", fake_sys),
+                mock.patch.object(
+                    run_tests.os, "_exit", side_effect=SystemExit(2)
+                ) as terminate,
+                mock.patch(
+                    "builtins.print",
+                    side_effect=OSError("closed") if broken_output else None,
+                ) as diagnostic,
+                self.assertRaises(SystemExit) as result,
+            ):
+                run_tests.reject_cli_inspection()
+            self.assertEqual(result.exception.code, 2)
+            terminate.assert_called_once_with(2)
+            self.assertTrue(diagnostic.call_args.kwargs["flush"])
+        with (
+            mock.patch.object(run_tests, "sys", mock.Mock(flags=mock.Mock(inspect=0))),
+            mock.patch.object(run_tests.os, "_exit") as terminate,
+        ):
+            run_tests.reject_cli_inspection()
+            terminate.assert_not_called()
+
     def test_unmeasured_feedback_preserves_pytest_cache_and_temp_selection(
         self,
     ) -> None:

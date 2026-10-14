@@ -269,8 +269,8 @@ working directory, following workflow, job and step override precedence. Only
 GitHub's built-in command shells are admitted; custom templates can ignore the
 script. The directory must retain the workspace (implicit, `.`, `./` or
 `${{ github.workspace }}`), not select another checkout's relative script.
-Declared `BASH_ENV` and `SHELLOPTS` controls are rejected at every scope because
-they can terminate startup or disable execution before the Python gate runs.
+Declared `BASH_ENV`, `SHELLOPTS` and `PYTHONINSPECT` controls are rejected at every
+scope: they can disable execution or turn a failed Python exit into REPL success.
 Other scalar environment settings, including the Windows PyYAML selection and
 integration opt-in, remain supported. This checks declared command context, not
 arbitrary behavior of trusted earlier steps or host startup state.
@@ -307,6 +307,16 @@ fingerprints are unchanged. Put test-created directories in owned temporary
 state, not in the repository input tree. These comparisons cannot detect an edit
 that is restored between reads, so keep inputs unchanged throughout the run. On failure, correct
 the relevant group with focused checks before starting another full run.
+
+Every runner child clears `PYTHONINSPECT`, preserving the parent environment.
+The CLI rejects an already-active inspection interpreter (`-i` or environment)
+with status 2 before starting tests or creating runner-owned outputs. Removing
+the variable after interpreter startup does not disable that REPL; ordinary
+`SystemExit` can become success on EOF. This admission failure therefore uses
+an immediate process exit, even if its diagnostic cannot be flushed. Callable
+`main()` still returns a status for its caller to propagate; it does not control
+the caller's interpreter lifecycle. For interactive debugging, invoke pytest
+directly outside the guarded runner.
 
 Measured runs and suite mode clear inherited `COVERAGE_*` controls in the child
 environment, including force-config, process-start and debug-output settings;
