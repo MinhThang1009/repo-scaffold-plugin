@@ -93,15 +93,16 @@ def coverage_policy_errors(text: str) -> list[str]:
                 "use canonical unprefixed sections"
             ]
         branch = config.getboolean("run", "branch")
+        # Match Coverage's comma/LF lists, not Python's broader splitlines().
         sources = {
             line.strip().replace("\\", "/")
-            for line in config.get("run", "source").splitlines()
+            for line in config.get("run", "source").replace(",", "\n").split("\n")
             if line.strip()
         }
         omitted = {
             line.strip().replace("\\", "/")
-            for line in config.get("run", "omit").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
+            for line in config.get("run", "omit").replace(",", "\n").split("\n")
+            if line.strip()
         }
         floor = config.getfloat("report", "fail_under")
         namespace_packages = config.getboolean("report", "include_namespace_packages")

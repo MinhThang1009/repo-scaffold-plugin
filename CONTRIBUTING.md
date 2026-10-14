@@ -299,7 +299,10 @@ frozen copy of the admitted policy for both commands. Guarded coverage and the
 repository validator require unprefixed `.coveragerc` sections. They reject every
 `coverage:`-prefixed section because Coverage.py gives that dialect precedence
 even inside `.coveragerc`; otherwise its effective run/report/path policy could
-differ from the settings that were validated. Input fingerprints are
+differ from the settings that were validated. Source and omission lists use
+Coverage's comma/LF delimiters; equivalent comma/newline forms are accepted,
+but Unicode-only line separators cannot stand in for those delimiters.
+Input fingerprints are
 compared after pytest and after reporting in measured and suite runs; changed
 source, tests or metadata invalidate the result. Fingerprints bind admitted
 directory identities as well as file bytes, so adding, removing or renaming an

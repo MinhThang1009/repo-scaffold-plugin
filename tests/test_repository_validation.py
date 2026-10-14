@@ -3085,6 +3085,37 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 problems,
             )
 
+    def test_coverage_consumer_uses_upstream_list_delimiters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            coverage_path = root / ".coveragerc"
+            original = coverage_path.read_text(encoding="utf-8")
+            for paths in (
+                "scripts\n    skills/repo-scaffold/scripts",
+                "skills/repo-scaffold/scripts/audit_freshness.py\n    "
+                "skills/repo-scaffold/scripts/render_pr_body_evidence.py\n    "
+                "skills/repo-scaffold/scripts/sync_action_pins.py",
+            ):
+                for separator in (", ", "\u2028", "\v"):
+                    with self.subTest(paths=paths, separator=repr(separator)):
+                        coverage_path.write_text(
+                            original.replace(paths, paths.replace("\n    ", separator)),
+                            encoding="utf-8",
+                        )
+
+                        problems = validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+
+                        self.assertEqual(
+                            any(
+                                problem.startswith(".coveragerc:")
+                                for problem in problems
+                            ),
+                            separator != ", ",
+                        )
+
     def test_coverage_configuration_cannot_be_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

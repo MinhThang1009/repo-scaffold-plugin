@@ -15,6 +15,44 @@ POLICY = (Path(__file__).resolve().parents[1] / ".coveragerc").read_text(
 
 
 class CoveragePolicyTests(unittest.TestCase):
+    def test_coverage_lists_accept_comma_and_lf_delimiters(self) -> None:
+        source_paths = "scripts\n    skills/repo-scaffold/scripts"
+        copy_paths = (
+            "skills/repo-scaffold/scripts/audit_freshness.py\n    "
+            "skills/repo-scaffold/scripts/render_pr_body_evidence.py\n    "
+            "skills/repo-scaffold/scripts/sync_action_pins.py"
+        )
+        for paths in (source_paths, copy_paths):
+            for separator in (",", ", ", ",,\n    "):
+                with self.subTest(paths=paths, separator=separator):
+                    text = POLICY.replace(paths, paths.replace("\n    ", separator))
+                    self.assertEqual(coverage_policy_errors(text), [])
+
+    def test_coverage_lists_do_not_split_unicode_line_separators(self) -> None:
+        for paths in (
+            "scripts\n    skills/repo-scaffold/scripts",
+            "skills/repo-scaffold/scripts/audit_freshness.py\n    "
+            "skills/repo-scaffold/scripts/render_pr_body_evidence.py\n    "
+            "skills/repo-scaffold/scripts/sync_action_pins.py",
+        ):
+            for separator in ("\u2028", "\u2029", "\u0085", "\v", "\f"):
+                with self.subTest(paths=paths, separator=repr(separator)):
+                    text = POLICY.replace(paths, paths.replace("\n    ", separator))
+                    self.assertTrue(coverage_policy_errors(text))
+
+    def test_comma_list_members_starting_with_hash_are_not_comments(self) -> None:
+        for paths in (
+            "scripts\n    skills/repo-scaffold/scripts",
+            "skills/repo-scaffold/scripts/audit_freshness.py\n    "
+            "skills/repo-scaffold/scripts/render_pr_body_evidence.py\n    "
+            "skills/repo-scaffold/scripts/sync_action_pins.py",
+        ):
+            with self.subTest(paths=paths):
+                text = POLICY.replace(
+                    paths, paths.replace("\n    ", ", ") + ", #extra-path"
+                )
+                self.assertTrue(coverage_policy_errors(text))
+
     def test_pytest_policy_parser_limit_is_a_controlled_admission_error(self) -> None:
         canonical = '[tool.pytest.ini_options]\ntestpaths=["tests"]\npythonpath=["."]\n'
         self.assertEqual(

@@ -26,6 +26,58 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_comma_delimited_coverage_lists_preserve_native_gate_results(self) -> None:
+        for paths in (
+            "scripts\n    skills/repo-scaffold/scripts",
+            "skills/repo-scaffold/scripts/audit_freshness.py\n    "
+            "skills/repo-scaffold/scripts/render_pr_body_evidence.py\n    "
+            "skills/repo-scaffold/scripts/sync_action_pins.py",
+        ):
+            for uncovered in (False, True):
+                with (
+                    self.subTest(paths=paths, uncovered=uncovered),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    if uncovered:
+                        (root / "scripts/uncovered.py").write_text(
+                            "def unused():\n    return 2\n", encoding="utf-8"
+                        )
+                    (root / ".coveragerc").write_text(
+                        POLICY.replace(paths, paths.replace("\n    ", ", ")),
+                        encoding="utf-8",
+                    )
+
+                    result = self.run_runner(root)
+
+                    self.assertEqual(
+                        result.returncode,
+                        2 if uncovered else 0,
+                        result.stdout + result.stderr,
+                    )
+
+    def test_unicode_coverage_list_separators_fail_before_native_tests(self) -> None:
+        for paths in (
+            "scripts\n    skills/repo-scaffold/scripts",
+            "skills/repo-scaffold/scripts/audit_freshness.py\n    "
+            "skills/repo-scaffold/scripts/render_pr_body_evidence.py\n    "
+            "skills/repo-scaffold/scripts/sync_action_pins.py",
+        ):
+            with self.subTest(paths=paths), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.project(root)
+                (root / ".coveragerc").write_text(
+                    POLICY.replace(paths, paths.replace("\n    ", "\u2028")),
+                    encoding="utf-8",
+                )
+
+                result = self.run_runner(root)
+
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("require branch coverage", result.stderr)
+                self.assertNotIn("1 passed", result.stdout)
+
     def test_guarded_pytest_config_nesting_fails_before_test_execution_without_traceback(
         self,
     ) -> None:
