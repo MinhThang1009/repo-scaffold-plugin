@@ -274,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     environment = os.environ.copy()
     environment.pop("PYTHONINSPECT", None)
     if arguments.mode != "focused" or sources:
+        environment.pop("PYTHONOPTIMIZE", None)
         for name in list(environment):
             if name.upper().startswith("COVERAGE_"):
                 environment.pop(name)

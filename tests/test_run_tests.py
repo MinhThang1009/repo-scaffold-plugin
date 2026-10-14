@@ -63,6 +63,35 @@ class RunTestsTests(unittest.TestCase):
                     self.assertFalse("PYTHONINSPECT" in call.kwargs["env"])
                 self.assertEqual(os.environ["PYTHONINSPECT"], "1")
 
+    def test_guarded_children_clear_optimization_without_changing_the_parent(
+        self,
+    ) -> None:
+        for optimize in ("1", "2"):
+            for arguments in (
+                ["full"],
+                ["suite"],
+                [
+                    "focused",
+                    "tests/test_run_tests.py",
+                    "--source",
+                    "scripts/run_tests.py",
+                ],
+            ):
+                with (
+                    self.subTest(optimize=optimize, arguments=arguments),
+                    mock.patch.dict(os.environ, {"PYTHONOPTIMIZE": optimize}),
+                    mock.patch.object(
+                        run_tests.subprocess,
+                        "run",
+                        return_value=subprocess.CompletedProcess([], 0),
+                    ) as execute,
+                    redirect_stdout(StringIO()),
+                ):
+                    self.assertEqual(run_tests.main(arguments), 0)
+                    for call in execute.call_args_list:
+                        self.assertFalse("PYTHONOPTIMIZE" in call.kwargs["env"])
+                    self.assertEqual(os.environ["PYTHONOPTIMIZE"], optimize)
+
     def test_cli_inspection_rejection_is_fatal_even_if_diagnostic_output_fails(
         self,
     ) -> None:
@@ -98,6 +127,7 @@ class RunTestsTests(unittest.TestCase):
             "PYTEST_DEBUG_TEMPROOT": "feedback-temp",
             "TOX_ENV_DIR": "feedback-tox",
             "PYTEST_ADDOPTS": "--lf",
+            "PYTHONOPTIMIZE": "2",
         }
         with (
             mock.patch.dict(os.environ, controls),

@@ -55,6 +55,68 @@ class NativeRunTestsTests(unittest.TestCase):
                     self.assertNotIn("Traceback", result.stderr)
                     self.assertNotIn("test_bad", result.stdout)
 
+    def test_guarded_runs_preserve_unrewritten_assertions_under_inherited_optimization(
+        self,
+    ) -> None:
+        for mode in ("full", "suite", "focused"):
+            for optimize in ("1", "2"):
+                with (
+                    self.subTest(mode=mode, optimize=optimize),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    (root / "tests/checks.py").write_text(
+                        "def check():\n    assert False, 'helper invariant fails'\n",
+                        encoding="utf-8",
+                    )
+                    (root / "tests/test_good.py").write_text(
+                        "from checks import check\nfrom scripts.decision import value\n"
+                        "def test_good():\n    check()\n    assert value() == 1\n",
+                        encoding="utf-8",
+                    )
+                    arguments = (
+                        ["tests/test_good.py", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+                    result = self.run_runner(
+                        root,
+                        mode,
+                        arguments=arguments,
+                        coverage_environment={"PYTHONOPTIMIZE": optimize},
+                    )
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertIn(
+                        "AssertionError: helper invariant fails", result.stdout
+                    )
+
+    def test_guarded_successful_children_use_the_unoptimized_runtime(self) -> None:
+        for mode in ("full", "suite", "focused"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.project(root)
+                (root / "tests/test_good.py").write_text(
+                    "import sys\nfrom scripts.decision import value\n"
+                    "def test_good():\n    assert sys.flags.optimize == 0\n"
+                    "    assert value() == 1\n",
+                    encoding="utf-8",
+                )
+                arguments = (
+                    ["tests/test_good.py", "--source", "scripts/decision.py"]
+                    if mode == "focused"
+                    else []
+                )
+                result = self.run_runner(
+                    root,
+                    mode,
+                    arguments=arguments,
+                    coverage_environment={"PYTHONOPTIMIZE": "2"},
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_cli_inspection_cannot_turn_failing_tests_into_success(self) -> None:
         for inspection in ("environment", "command-line"):
             for arguments in (

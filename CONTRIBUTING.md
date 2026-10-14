@@ -320,6 +320,11 @@ an immediate process exit, even if its diagnostic cannot be flushed. Callable
 the caller's interpreter lifecycle. For interactive debugging, invoke pytest
 directly outside the guarded runner.
 
+Measured runs and suite mode also clear inherited `PYTHONOPTIMIZE` in every
+child, so helper and production assertions are not removed by an optimized
+interpreter. Pytest rewrites test-module assertions, not every imported helper.
+The parent environment and unmeasured focused feedback remain unchanged.
+
 Measured runs and suite mode clear inherited `COVERAGE_*` controls in the child
 environment, including force-config, process-start and debug-output settings;
 the caller's environment remains unchanged. Measured checks require both declared
