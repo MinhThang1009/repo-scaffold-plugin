@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -23,10 +24,79 @@ from scripts.prepare_mutation_cache import (
     _read_bounded_bytes,
     MAX_FILE_BYTES,
     MAX_TOTAL_BYTES,
+    unique_json_object,
 )
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+PYTEST_BOOTSTRAP = '''"""Record completion using pytest's public session hooks."""
+from __future__ import annotations
+from collections import Counter
+import json
+from pathlib import Path
+import sys
+import pytest
+
+class Completion:
+    def __init__(self) -> None:
+        self.collected: Counter[str] | None = None
+        self.finished: Counter[str] = Counter()
+        self.failed = False
+
+    def pytest_collectreport(self, report: pytest.CollectReport) -> None:
+        self.failed = self.failed or report.failed
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        self.failed = self.failed or report.failed
+
+    def pytest_collection_finish(self, session: pytest.Session) -> None:
+        self.collected = Counter(item.nodeid for item in session.items)
+
+    def pytest_runtest_logfinish(self, nodeid: str) -> None:
+        self.finished[nodeid] += 1
+
+completion = Completion()
+status = int(pytest.main(sys.argv[4:], plugins=[completion]))
+complete = bool(completion.collected) and completion.collected == completion.finished and not completion.failed
+with Path(sys.argv[1]).open("x", encoding="utf-8") as receipt:
+    json.dump({"exit_code": status, "complete": complete}, receipt)
+raise SystemExit(status)
+'''
+
+
+def guarded_pytest_command(
+    pytest: list[str], directory: Path
+) -> tuple[list[str], Path]:
+    """Use a fresh owned bootstrap/receipt without changing pytest selection."""
+    bootstrap = directory / "pytest-bootstrap.py"
+    receipt = directory / "pytest-completion.json"
+    with bootstrap.open("x", encoding="utf-8") as stream:
+        stream.write(PYTEST_BOOTSTRAP)
+    return [str(bootstrap), str(receipt), *pytest], receipt
+
+
+def validate_pytest_completion(receipt: Path) -> None:
+    """Do not accept a zero process status for an unfinished pytest session."""
+    try:
+        _assert_safe_project_path(receipt.parent, receipt)
+        if not receipt.is_file():
+            raise ValueError("receipt must be a regular file")
+        payload = _read_bounded_bytes(
+            receipt, 512, "pytest completion receipt is oversized"
+        )
+        document = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=unique_json_object
+        )
+        if (
+            not isinstance(document, dict)
+            or set(document) != {"exit_code", "complete"}
+            or type(document["exit_code"]) is not int
+            or document["exit_code"] != 0
+            or document["complete"] is not True
+        ):
+            raise ValueError("session did not complete successfully")
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
+        raise ValueError("pytest completion receipt is missing or invalid") from error
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -213,13 +283,15 @@ def run_coverage(
             "coverage",
         ]
         settings = ["--rcfile", str(frozen_configuration), "--data-file", data_file]
+        guarded_pytest, receipt = guarded_pytest_command(pytest, Path(directory))
         result = subprocess.run(
-            [*common, "run", *settings, *pytest],
+            [*common, "run", *settings, *guarded_pytest],
             cwd=REPOSITORY_ROOT,
             env=environment,
         )
         if result.returncode:
             return result.returncode
+        validate_pytest_completion(receipt)
         assert_inputs_current(fingerprint, "the run")
         report = [
             *common,
@@ -299,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
             else nullcontext()
         )
         with runtime as directory:
+            receipt = None
             if directory is not None:
                 environment["PYTHONPYCACHEPREFIX"] = str(Path(directory) / "bytecode")
                 environment.pop("PYTEST_DEBUG_TEMPROOT", None)
@@ -310,6 +383,8 @@ def main(argv: list[str] | None = None) -> int:
                 ]
             if arguments.mode == "full" or sources:
                 return run_coverage(pytest, sources, environment, fingerprint)
+            if directory is not None:
+                pytest, receipt = guarded_pytest_command(pytest, Path(directory))
             result = subprocess.run(
                 [sys.executable, *pytest],
                 cwd=REPOSITORY_ROOT,
@@ -317,6 +392,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             if result.returncode:
                 return result.returncode
+            if receipt is not None:
+                validate_pytest_completion(receipt)
             assert_inputs_current(fingerprint, "the run")
             return 0
     except (OSError, UnicodeError, ValueError) as error:

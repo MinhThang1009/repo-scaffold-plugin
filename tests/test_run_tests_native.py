@@ -26,6 +26,71 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_complete_sessions_preserve_skips_xfails_and_duplicate_nodeids(
+        self,
+    ) -> None:
+        for mode in ("suite", "full", "focused"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.project(root)
+                (root / "tests/test_applicability.py").write_text(
+                    "import pytest\n"
+                    "@pytest.mark.skip(reason='not applicable')\ndef test_skip():\n    assert False\n"
+                    "@pytest.mark.xfail(reason='expected')\ndef test_xfail():\n    assert False\n",
+                    encoding="utf-8",
+                )
+                arguments = [] if mode == "full" else ["tests", "tests/test_good.py"]
+                if mode == "focused":
+                    arguments += ["--source", "scripts/decision.py"]
+                result = self.run_runner(root, mode, arguments=arguments)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("1 skipped", result.stdout)
+                self.assertIn("1 xfailed", result.stdout)
+
+    def test_failed_reports_cannot_be_relabelled_as_a_successful_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.project(root, failing=True)
+            (root / "tests/conftest.py").write_text(
+                "def pytest_sessionfinish(session, exitstatus):\n    session.exitstatus = 0\n",
+                encoding="utf-8",
+            )
+            result = self.run_runner(root, "suite")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("pytest completion", result.stderr)
+
+    def test_zero_exit_before_finishing_collected_tests_cannot_pass_guarded_runs(
+        self,
+    ) -> None:
+        for mode in ("suite", "full", "focused"):
+            for exit_call in ("os._exit(0)", "pytest.exit('early stop', returncode=0)"):
+                with (
+                    self.subTest(mode=mode, exit_call=exit_call),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root, failing=True)
+                    (root / "tests/test_aaa_exit.py").write_text(
+                        "import os, pytest\nfrom scripts.decision import value\n"
+                        "def test_early():\n    assert value() == 1\n    "
+                        + exit_call
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    arguments = (
+                        ["tests", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+
+                    result = self.run_runner(root, mode, arguments=arguments)
+
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertIn("pytest completion", result.stderr)
+                    self.assertNotIn("TOTAL", result.stdout)
+
     def test_comma_delimited_coverage_lists_preserve_native_gate_results(self) -> None:
         for paths in (
             "scripts\n    skills/repo-scaffold/scripts",

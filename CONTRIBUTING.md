@@ -323,6 +323,14 @@ an immediate process exit, even if its diagnostic cannot be flushed. Callable
 the caller's interpreter lifecycle. For interactive debugging, invoke pytest
 directly outside the guarded runner.
 
+Guarded runs also require a fresh, bounded completion receipt in owned temporary
+state, not only process status zero. A bootstrap invokes pytest's public API and
+tracks collection and each test-finish event, preserving duplicate node counts.
+An abrupt zero exit, missing receipt or incomplete session fails before accepting
+runtime evidence or reporting coverage. Nonzero pytest statuses still propagate.
+Ordinary skips and xfails remain supported; unmeasured focused feedback is unchanged.
+This detects incomplete execution, not tampering by arbitrary trusted test/plugin code.
+
 Measured runs and suite mode also clear inherited `PYTHONOPTIMIZE` in every
 child, so helper and production assertions are not removed by an optimized
 interpreter. Pytest rewrites test-module assertions, not every imported helper.

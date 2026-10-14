@@ -26,6 +26,9 @@ class RunTestsTests(unittest.TestCase):
         copies = mock.patch.object(run_tests, "validate_omitted_copies")
         copies.start()
         self.addCleanup(copies.stop)
+        completion = mock.patch.object(run_tests, "validate_pytest_completion")
+        self.completion = completion.start()
+        self.addCleanup(completion.stop)
 
     def test_unmeasured_feedback_does_not_require_a_full_input_inventory(self) -> None:
         with (
@@ -38,6 +41,28 @@ class RunTestsTests(unittest.TestCase):
         ):
             self.assertEqual(run_tests.main(["focused", "tests/test_run_tests.py"]), 0)
         self.fingerprint.assert_not_called()
+        self.completion.assert_not_called()
+
+    def test_incomplete_pytest_success_stops_before_report_and_cleans_owned_state(
+        self,
+    ) -> None:
+        for mode in ("full", "suite"):
+            self.completion.side_effect = ValueError("pytest completion is incomplete")
+            with (
+                self.subTest(mode=mode),
+                mock.patch.object(
+                    run_tests.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as execute,
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()) as errors,
+            ):
+                self.assertEqual(run_tests.main([mode]), 1)
+                execute.assert_called_once()
+                self.assertIn("pytest completion", errors.getvalue())
+                receipt = self.completion.call_args.args[0]
+                self.assertFalse(receipt.parent.exists())
 
     def test_inspection_is_cleared_in_every_child_without_mutating_parent_environment(
         self,
@@ -884,6 +909,87 @@ class RunTestsTests(unittest.TestCase):
         ):
             self.assertEqual(run_tests.main(["full"]), 1)
             self.assertIn("regular repository file", errors.getvalue())
+
+
+class PytestCompletionTests(unittest.TestCase):
+    def test_bootstrap_and_receipt_are_fresh_owned_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command, receipt = run_tests.guarded_pytest_command(
+                ["-m", "pytest", "tests"], root
+            )
+            self.assertEqual(
+                command,
+                [
+                    str(root / "pytest-bootstrap.py"),
+                    str(receipt),
+                    "-m",
+                    "pytest",
+                    "tests",
+                ],
+            )
+            self.assertFalse(receipt.exists())
+            self.assertEqual(
+                (root / "pytest-bootstrap.py").read_text(encoding="utf-8"),
+                run_tests.PYTEST_BOOTSTRAP,
+            )
+            compile(run_tests.PYTEST_BOOTSTRAP, "pytest-bootstrap.py", "exec")
+            with self.assertRaises(FileExistsError):
+                run_tests.guarded_pytest_command(["-m", "pytest", "tests"], root)
+
+    def test_only_complete_success_receipts_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "pytest-completion.json"
+            receipt.write_text('{"exit_code":0,"complete":true}', encoding="utf-8")
+            run_tests.validate_pytest_completion(receipt)
+            for payload in (
+                b"",
+                b"[]",
+                b"{}",
+                b"invalid",
+                b"\xff",
+                b'{"exit_code":false,"complete":true}',
+                b'{"exit_code":0.0,"complete":true}',
+                b'{"exit_code":1,"complete":true}',
+                b'{"exit_code":0,"complete":false}',
+                b'{"exit_code":0,"complete":1}',
+                b'{"exit_code":0,"complete":true,"extra":1}',
+                b'{"exit_code":0,"exit_code":0,"complete":true}',
+                b"x" * 513,
+            ):
+                with self.subTest(payload=payload[:80]):
+                    receipt.write_bytes(payload)
+                    with self.assertRaisesRegex(ValueError, "pytest completion"):
+                        run_tests.validate_pytest_completion(receipt)
+
+    def test_missing_nonregular_linked_and_parser_failure_receipts_fail_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "pytest-completion.json"
+            with self.assertRaisesRegex(ValueError, "pytest completion"):
+                run_tests.validate_pytest_completion(receipt)
+            receipt.mkdir()
+            with self.assertRaisesRegex(ValueError, "pytest completion"):
+                run_tests.validate_pytest_completion(receipt)
+            for function, error in (
+                ("_assert_safe_project_path", ValueError("linked")),
+                ("_read_bounded_bytes", OSError("unreadable")),
+            ):
+                with (
+                    self.subTest(function=function),
+                    mock.patch.object(Path, "is_file", return_value=True),
+                    mock.patch.object(run_tests, function, side_effect=error),
+                    self.assertRaisesRegex(ValueError, "pytest completion"),
+                ):
+                    run_tests.validate_pytest_completion(receipt)
+            with (
+                mock.patch.object(Path, "is_file", return_value=True),
+                mock.patch.object(run_tests, "_read_bounded_bytes", return_value=b"{}"),
+                mock.patch.object(run_tests.json, "loads", side_effect=RecursionError),
+                self.assertRaisesRegex(ValueError, "pytest completion"),
+            ):
+                run_tests.validate_pytest_completion(receipt)
 
 
 class CoverageInventoryTests(unittest.TestCase):
