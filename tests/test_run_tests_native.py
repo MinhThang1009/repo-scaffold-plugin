@@ -94,6 +94,156 @@ class NativeRunTestsTests(unittest.TestCase):
                 self.assertIn("1 skipped", result.stdout)
                 self.assertIn("1 xfailed", result.stdout)
 
+    def test_session_errors_cannot_be_relabelled_as_success(self) -> None:
+        for mode in ("suite", "full", "focused"):
+            for exception, native_status in (
+                ("RuntimeError('synthetic hook failure')", 3),
+                ("KeyboardInterrupt()", 2),
+            ):
+                for relabel in (False, True):
+                    with (
+                        self.subTest(mode=mode, exception=exception, relabel=relabel),
+                        tempfile.TemporaryDirectory() as directory,
+                    ):
+                        root = Path(directory)
+                        self.project(root)
+                        hook = (
+                            "import pytest\n"
+                            "@pytest.hookimpl(trylast=True)\n"
+                            "def pytest_runtest_logfinish(nodeid):\n"
+                            f"    raise {exception}\n"
+                        )
+                        if relabel:
+                            hook += (
+                                "def pytest_sessionfinish(session, exitstatus):\n"
+                                "    session.exitstatus = 0\n"
+                            )
+                        (root / "tests/conftest.py").write_text(hook, encoding="utf-8")
+                        arguments = (
+                            ["tests", "--source", "scripts/decision.py"]
+                            if mode == "focused"
+                            else []
+                        )
+
+                        result = self.run_runner(root, mode, arguments=arguments)
+
+                        self.assertEqual(
+                            result.returncode,
+                            1 if relabel else native_status,
+                            result.stdout + result.stderr,
+                        )
+                        self.assertNotIn("TOTAL", result.stdout)
+                        if relabel:
+                            self.assertIn("pytest completion", result.stderr)
+
+    def test_failed_session_status_is_not_hidden_by_sessionfinish_hook(self) -> None:
+        for mode in ("suite", "full", "focused"):
+            for relabel in (False, True):
+                with (
+                    self.subTest(mode=mode, relabel=relabel),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    (root / "tests/test_good.py").write_text(
+                        "from scripts.decision import value\n"
+                        "def test_good(request):\n    assert value() == 1\n"
+                        "    request.session.shouldfail = 'synthetic session policy failure'\n",
+                        encoding="utf-8",
+                    )
+                    if relabel:
+                        (root / "tests/conftest.py").write_text(
+                            "def pytest_sessionfinish(session, exitstatus):\n    session.exitstatus = 0\n",
+                            encoding="utf-8",
+                        )
+                    arguments = (
+                        ["tests", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+
+                    result = self.run_runner(root, mode, arguments=arguments)
+
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertNotIn("TOTAL", result.stdout)
+                    if relabel:
+                        self.assertIn("pytest completion", result.stderr)
+
+    def test_sessionfinish_zero_exit_preserves_original_verdict(self) -> None:
+        for mode in ("suite", "full", "focused"):
+            for failed in (False, True):
+                with (
+                    self.subTest(mode=mode, failed=failed),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    if failed:
+                        (root / "tests/test_good.py").write_text(
+                            "from scripts.decision import value\n"
+                            "def test_good(request):\n    assert value() == 1\n"
+                            "    request.session.shouldfail = 'synthetic failure'\n",
+                            encoding="utf-8",
+                        )
+                    (root / "tests/conftest.py").write_text(
+                        "import pytest\n@pytest.hookimpl(tryfirst=True)\n"
+                        "def pytest_sessionfinish(session, exitstatus):\n"
+                        "    pytest.exit('synthetic zero exit', returncode=0)\n",
+                        encoding="utf-8",
+                    )
+                    arguments = (
+                        ["tests", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+
+                    result = self.run_runner(root, mode, arguments=arguments)
+
+                    self.assertEqual(
+                        result.returncode,
+                        1 if failed else 0,
+                        result.stdout + result.stderr,
+                    )
+                    if failed:
+                        self.assertIn("pytest completion", result.stderr)
+                        self.assertNotIn("TOTAL", result.stdout)
+
+    def test_error_notification_exit_cannot_override_verification(self) -> None:
+        for mode in ("suite", "full", "focused"):
+            for callback, exception in (
+                ("pytest_internalerror", "RuntimeError('synthetic error')"),
+                ("pytest_keyboard_interrupt", "KeyboardInterrupt()"),
+            ):
+                with (
+                    self.subTest(mode=mode, callback=callback),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    (root / "tests/conftest.py").write_text(
+                        "import pytest\n@pytest.hookimpl(trylast=True)\n"
+                        "def pytest_runtest_logfinish(nodeid):\n"
+                        f"    raise {exception}\n"
+                        "@pytest.hookimpl(tryfirst=True)\n"
+                        f"def {callback}():\n"
+                        "    pytest.exit('synthetic handler exit', returncode=0)\n",
+                        encoding="utf-8",
+                    )
+                    arguments = (
+                        ["tests", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+
+                    result = self.run_runner(root, mode, arguments=arguments)
+
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertNotIn("TOTAL", result.stdout)
+
     def test_failed_reports_cannot_be_relabelled_as_a_successful_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

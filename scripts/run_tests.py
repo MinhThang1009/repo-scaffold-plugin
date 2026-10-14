@@ -51,6 +51,7 @@ def owned_temporary_directory(prefix: str) -> Iterator[str]:
 PYTEST_BOOTSTRAP = '''"""Record completion using pytest's public session hooks."""
 from __future__ import annotations
 from collections import Counter
+from collections.abc import Generator
 import json
 from pathlib import Path
 import sys
@@ -67,6 +68,21 @@ class Completion:
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         self.failed = self.failed or report.failed
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_internalerror(self) -> Generator[None, object, object]:
+        self.failed = True
+        return (yield)
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_keyboard_interrupt(self) -> Generator[None, object, object]:
+        self.failed = True
+        return (yield)
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_sessionfinish(self, exitstatus: int) -> Generator[None, object, object]:
+        self.failed = self.failed or exitstatus != 0
+        return (yield)
 
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         self.collected = Counter(item.nodeid for item in session.items)

@@ -326,6 +326,11 @@ directly outside the guarded runner.
 Guarded runs also require a fresh, bounded completion receipt in owned temporary
 state, not only process status zero. A bootstrap invokes pytest's public API and
 tracks collection and each test-finish event, preserving duplicate node counts.
+Failed reports, internal-error/interruption events and the original nonzero
+session-finish status invalidate the receipt,
+with events/status observed by wrappers before their ordinary hooks run,
+even if a session-finish hook changes the final exit status to zero after all
+collected tests have emitted finish events.
 An abrupt zero exit, missing receipt or incomplete session fails before accepting
 runtime evidence or reporting coverage. Nonzero pytest statuses still propagate
 when owned-output cleanup succeeds.
