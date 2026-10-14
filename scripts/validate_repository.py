@@ -6173,7 +6173,11 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         pytest_config = config["tool"]["pytest"]["ini_options"]
         if not isinstance(mutation_config, dict) or not isinstance(pytest_config, dict):
             raise TypeError("mutation and pytest settings must be TOML tables")
-    except (tomllib.TOMLDecodeError, KeyError, TypeError) as error:
+    except RecursionError:
+        problems.append(
+            "pyproject.toml: mutation/pytest settings nesting exceeds parser limit"
+        )
+    except (ValueError, KeyError, TypeError) as error:
         problems.append(f"pyproject.toml: could not verify mutation settings: {error}")
     else:
         if mutation_config.get("source_paths") != expected_source_paths:

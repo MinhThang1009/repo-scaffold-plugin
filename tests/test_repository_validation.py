@@ -2739,6 +2739,23 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             [],
         )
 
+    def test_pytest_policy_nesting_limit_is_reported_without_crashing_validator(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            configuration = root / "pyproject.toml"
+            original = configuration.read_text(encoding="utf-8")
+            configuration.write_text(
+                "metadata = " + "[" * 2000 + "0" + "]" * 2000 + "\n" + original,
+                encoding="utf-8",
+            )
+            self.assertIn(
+                "pyproject.toml: pytest policy nesting exceeds parser limit",
+                validate_repository.validate_development_dependency_contract(root),
+            )
+
     def test_coverage_consumer_binds_shell_directory_and_startup_controls(self) -> None:
         for scope in ("step", "job"):
             for control in (
@@ -3357,6 +3374,39 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
 
 
 class MutationTestingContractTests(unittest.TestCase):
+    def test_native_numeric_parser_limit_does_not_abort_shared_config_consumer(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            with mock.patch.object(
+                validate_repository.tomllib,
+                "loads",
+                side_effect=ValueError("integer conversion exceeds parser limit"),
+            ):
+                self.assertIn(
+                    "pyproject.toml: could not verify mutation settings: integer conversion exceeds parser limit",
+                    validate_repository.validate_mutation_testing_contract(root),
+                )
+
+    def test_shared_pytest_config_nesting_does_not_abort_mutation_contract_checks(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            configuration = root / "pyproject.toml"
+            original = configuration.read_text(encoding="utf-8")
+            configuration.write_text(
+                "metadata = " + "[" * 2000 + "0" + "]" * 2000 + "\n" + original,
+                encoding="utf-8",
+            )
+            self.assertIn(
+                "pyproject.toml: mutation/pytest settings nesting exceeds parser limit",
+                validate_repository.validate_mutation_testing_contract(root),
+            )
+
     CONTRACT_FILES = (
         ".gitattributes",
         ".github/workflows/mutation-testing.yml",

@@ -15,6 +15,20 @@ POLICY = (Path(__file__).resolve().parents[1] / ".coveragerc").read_text(
 
 
 class CoveragePolicyTests(unittest.TestCase):
+    def test_pytest_policy_parser_limit_is_a_controlled_admission_error(self) -> None:
+        canonical = '[tool.pytest.ini_options]\ntestpaths=["tests"]\npythonpath=["."]\n'
+        self.assertEqual(
+            pytest_policy_errors("metadata = [[{x=[0]}]]\n" + canonical), []
+        )
+        for nested in ("[" * 2000 + "0" + "]" * 2000, "{x=" * 2000 + "0" + "}" * 2000):
+            with self.subTest(shape=nested[:3]):
+                text = "metadata = " + nested + "\n" + canonical
+                self.assertLess(len(text.encode("utf-8")), 65536)
+                self.assertEqual(
+                    pytest_policy_errors(text),
+                    ["pyproject.toml: pytest policy nesting exceeds parser limit"],
+                )
+
     def test_prefixed_sections_cannot_shadow_the_admitted_coverage_policy(self) -> None:
         for section, settings in (
             ("run", "branch = false\ndebug_file = outside.log\n"),

@@ -48,6 +48,8 @@ def pytest_policy_errors(text: str) -> list[str]:
         return ["pyproject.toml: configuration exceeds the 65536-byte limit"]
     try:
         document = tomllib.loads(text)
+    except RecursionError:
+        return ["pyproject.toml: pytest policy nesting exceeds parser limit"]
     except ValueError as error:
         return [f"pyproject.toml: could not verify pytest policy: {error}"]
     tool = document.get("tool")

@@ -26,6 +26,35 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def test_guarded_pytest_config_nesting_fails_before_test_execution_without_traceback(
+        self,
+    ) -> None:
+        for mode in ("full", "suite"):
+            for nested in (
+                "[" * 2000 + "0" + "]" * 2000,
+                "{x=" * 2000 + "0" + "}" * 2000,
+            ):
+                with (
+                    self.subTest(mode=mode, shape=nested[:3]),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root, failing=True)
+                    configuration = root / "pyproject.toml"
+                    original = configuration.read_text(encoding="utf-8")
+                    configuration.write_text(
+                        "metadata = " + nested + "\n" + original, encoding="utf-8"
+                    )
+                    result = self.run_runner(root, mode)
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertTrue(
+                        "pytest policy nesting exceeds parser limit" in result.stderr
+                    )
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertNotIn("test_bad", result.stdout)
+
     def test_cli_inspection_cannot_turn_failing_tests_into_success(self) -> None:
         for inspection in ("environment", "command-line"):
             for arguments in (

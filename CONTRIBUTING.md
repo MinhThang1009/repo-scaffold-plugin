@@ -359,10 +359,17 @@ against its canonical `scripts/` source before running coverage. Missing canonic
 files, nonregular inputs, unsafe paths, oversized content and unequal bytes fail
 admission. An absent copy has no code to omit; partial isolated projects need not
 manufacture unused mirrors. Fingerprint revalidation still rejects later changes.
-Guarded full/suite pytest policy rejects `log_file` and `cache_dir` redirects, and
-coverage policy rejects `debug_file`, so config cannot redirect these built-in
-writes to unrelated paths. This does not prevent trusted test code from writing
-its own files or sandbox the focused/manual pytest feedback mode.
+Guarded full/suite pytest policy rejects `log_file` and `cache_dir` redirects.
+It turns the TOML parser's nesting-limit rejection into a controlled admission error
+before tests execute, including deeply nested unrelated metadata below the
+64 KiB configuration cap. The installed parser's depth limit is not raised;
+ordinary nested metadata stays supported. The shared repository validator reports
+the same policy error instead of aborting its remaining checks.
+The supported legacy mutation/pytest config consumer also reports native numeric
+conversion limits as parse errors; neither parser limit is increased to admit input.
+Coverage policy rejects `debug_file`, so config cannot redirect built-in
+report writes to unrelated paths. These controls do not sandbox trusted test code
+or the focused/manual pytest feedback mode.
 
 The shared input inventory admits directory entries before retaining and sorting
 them. Its 10,000-entry limit includes directories, ignored names and ordinary
