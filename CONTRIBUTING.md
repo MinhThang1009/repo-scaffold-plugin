@@ -264,7 +264,17 @@ tests. Repository workflow validation checks execution controls as well as comma
 text: required runtime, coverage and integration checks, and the `ci-success`
 verdict step, must remain foreground, mandatory and failure-propagating. The
 verdict job must retain `always()` so failed or skipped producers are evaluated.
-Its single verdict step is checked as a bounded Bash grammar, not by searching
+Required single-command Python producers also bind their effective shell and
+working directory, following workflow, job and step override precedence. Only
+GitHub's built-in command shells are admitted; custom templates can ignore the
+script. The directory must retain the workspace (implicit, `.`, `./` or
+`${{ github.workspace }}`), not select another checkout's relative script.
+Declared `BASH_ENV` and `SHELLOPTS` controls are rejected at every scope because
+they can terminate startup or disable execution before the Python gate runs.
+Other scalar environment settings, including the Windows PyYAML selection and
+integration opt-in, remain supported. This checks declared command context, not
+arbitrary behavior of trusted earlier steps or host startup state.
+The single `ci-success` verdict step uses a bounded Bash grammar, not a search
 for comparison text. The admitted guard ORs quoted non-success comparisons for
 every bound result, exits with status 1 through 255 on that branch, and admits
 only quoted diagnostics and optional final success exit. Variable ordering,

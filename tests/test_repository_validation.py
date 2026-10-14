@@ -746,6 +746,127 @@ class CIVerdictGrammarTests(unittest.TestCase):
 
 
 class RequiredCIExecutionTests(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "requires native POSIX Bash")
+    def test_bash_startup_controls_can_skip_a_failed_required_python_command(
+        self,
+    ) -> None:
+        import shlex
+
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash)
+        assert bash is not None
+        command = shlex.join([sys.executable, "-c", "raise SystemExit(7)"])
+        with tempfile.TemporaryDirectory() as directory:
+            startup = Path(directory) / "startup.sh"
+            startup.write_text("exit 0\n", encoding="utf-8")
+            environments: tuple[tuple[dict[str, str], int], ...] = (
+                ({}, 7),
+                ({"BASH_ENV": str(startup)}, 0),
+                ({"SHELLOPTS": "noexec"}, 0),
+            )
+            for environment, status in environments:
+                with self.subTest(environment=environment):
+                    result = subprocess.run(
+                        [
+                            bash,
+                            "--noprofile",
+                            "--norc",
+                            "-e",
+                            "-o",
+                            "pipefail",
+                            "-c",
+                            command,
+                        ],
+                        env={"PATH": os.defpath, **environment},
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        result.returncode, status, result.stdout + result.stderr
+                    )
+                    self.assertEqual(
+                        validate_repository.required_ci_command_context_is_safe(
+                            {}, {}, {"env": environment}
+                        ),
+                        not environment,
+                    )
+
+    def test_command_context_preserves_builtin_shells_and_override_precedence(
+        self,
+    ) -> None:
+        for shell in (None, "bash", "sh", "pwsh", "powershell", "cmd"):
+            for directory in (None, ".", "./", "${{ github.workspace }}"):
+                with self.subTest(shell=shell, directory=directory):
+                    self.assertTrue(
+                        validate_repository.required_ci_command_context_is_safe(
+                            {}, {}, {"shell": shell, "working-directory": directory}
+                        )
+                    )
+        inherited = {
+            "defaults": {
+                "run": {"shell": "echo {0}", "working-directory": "other-target"}
+            }
+        }
+        self.assertTrue(
+            validate_repository.required_ci_command_context_is_safe(
+                inherited,
+                {"defaults": {"run": {"shell": "bash", "working-directory": "."}}},
+                {},
+            )
+        )
+        self.assertTrue(
+            validate_repository.required_ci_command_context_is_safe(
+                {}, inherited, {"shell": "bash", "working-directory": "./"}
+            )
+        )
+        self.assertTrue(
+            validate_repository.required_ci_command_context_is_safe(
+                {"defaults": {}},
+                {"env": {"PYYAML_FORCE_LIBYAML": "0"}},
+                {"env": {"REPO_SCAFFOLD_MUTMUT_INTEGRATION": "1"}},
+            )
+        )
+
+    def test_command_context_rejects_unknown_shells_directories_and_startup_controls(
+        self,
+    ) -> None:
+        for workflow, job, step in (
+            (None, {}, {}),
+            ({}, None, {}),
+            ({}, {}, None),
+            ({"defaults": []}, {}, {}),
+            ({}, {"defaults": {"run": []}}, {}),
+            ({"defaults": {"run": {"shell": "echo {0}"}}}, {}, {}),
+            ({}, {"defaults": {"run": {"working-directory": "other-target"}}}, {}),
+            ({}, {}, {"shell": "python"}),
+            ({}, {}, {"shell": ["bash"]}),
+            ({}, {}, {"working-directory": []}),
+        ):
+            with self.subTest(workflow=workflow, job=job, step=step):
+                self.assertFalse(
+                    validate_repository.required_ci_command_context_is_safe(
+                        workflow, job, step
+                    )
+                )
+        environment: object
+        for index in range(3):
+            for environment in (
+                [],
+                {1: "value"},
+                {"VALID": []},
+                {"BASH_ENV": ""},
+                {"bash_env": "startup.sh"},
+                {"SHELLOPTS": "noexec"},
+            ):
+                scopes: list[dict[str, object]] = [{}, {}, {}]
+                scopes[index]["env"] = environment
+                with self.subTest(index=index, environment=environment):
+                    self.assertFalse(
+                        validate_repository.required_ci_command_context_is_safe(*scopes)
+                    )
+
     def test_required_execution_rejects_unsafe_controls_but_accepts_fatal_defaults(
         self,
     ) -> None:
@@ -805,6 +926,68 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             validate_repository.validate_python_support_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_runtime_consumers_cannot_ignore_or_redirect_their_required_command(
+        self,
+    ) -> None:
+        for marker in (
+            "      - name: Run tests\n",
+            "      - name: Exercise real fork-based incremental reuse\n",
+            "      - name: Run tests on the latest stable Python\n",
+        ):
+            for control in ("shell: echo {0}", "working-directory: other-target"):
+                with (
+                    self.subTest(marker=marker, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    self.assertEqual(original.count(marker), 1)
+                    workflow.write_text(
+                        original.replace(
+                            marker, marker + "        " + control + "\n", 1
+                        ),
+                        encoding="utf-8",
+                    )
+                    errors = validate_repository.validate_python_support_contract(root)
+                    self.assertTrue(any("ci.yml:" in error for error in errors), errors)
+
+    def test_runtime_consumers_bind_inherited_shell_and_startup_controls(self) -> None:
+        for job in ("test", "mutation-cache-integration", "python-latest-canary"):
+            for control in ("shell", "BASH_ENV", "SHELLOPTS"):
+                with (
+                    self.subTest(job=job, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    marker = f"  {job}:\n"
+                    if job == "test" and control == "shell":
+                        modified = original.replace(
+                            "        shell: bash\n    strategy:",
+                            "        shell: echo {0}\n    strategy:",
+                            1,
+                        )
+                    elif control == "shell":
+                        modified = original.replace(
+                            marker,
+                            marker
+                            + "    defaults:\n      run:\n        shell: echo {0}\n",
+                            1,
+                        )
+                    else:
+                        value = "startup.sh" if control == "BASH_ENV" else "noexec"
+                        modified = original.replace(
+                            marker, marker + f"    env:\n      {control}: {value}\n", 1
+                        )
+                    self.assertNotEqual(original, modified)
+                    workflow.write_text(modified, encoding="utf-8")
+                    errors = validate_repository.validate_python_support_contract(root)
+                    self.assertTrue(any("ci.yml:" in error for error in errors), errors)
 
     def test_required_ci_execution_controls_cannot_skip_or_tolerate_failures(
         self,
@@ -2550,6 +2733,46 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             validate_repository.validate_development_dependency_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_coverage_consumer_binds_shell_directory_and_startup_controls(self) -> None:
+        for scope in ("step", "job"):
+            for control in ("shell", "working-directory", "BASH_ENV", "SHELLOPTS"):
+                with (
+                    self.subTest(scope=scope, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    marker = (
+                        "  quality:\n"
+                        if scope == "job"
+                        else "      - name: Enforce test coverage baseline\n"
+                    )
+                    indent = "    " if scope == "job" else "        "
+                    if control in ("shell", "working-directory"):
+                        value = "echo {0}" if control == "shell" else "other-target"
+                        body = (
+                            f"{indent}{control}: {value}\n"
+                            if scope == "step"
+                            else f"    defaults:\n      run:\n        {control}: {value}\n"
+                        )
+                    else:
+                        value = "startup.sh" if control == "BASH_ENV" else "noexec"
+                        body = f"{indent}env:\n{indent}  {control}: {value}\n"
+                    workflow.write_text(
+                        original.replace(marker, marker + body, 1), encoding="utf-8"
+                    )
+                    errors = (
+                        validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+                    )
+                    self.assertIn(
+                        ".github/workflows/ci.yml: quality must enforce the repository coverage gate",
+                        errors,
+                    )
 
     def test_coverage_job_and_step_cannot_be_optional_or_failure_tolerant(self) -> None:
         for marker, indent in (

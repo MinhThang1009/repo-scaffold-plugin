@@ -3651,6 +3651,50 @@ def required_ci_execution_is_safe(
     )
 
 
+def required_ci_command_context_is_safe(
+    workflow: object, job: object, step: object
+) -> bool:
+    """Bind single Python gate commands to built-in shells and the workspace."""
+    if (
+        not isinstance(workflow, dict)
+        or not isinstance(job, dict)
+        or not isinstance(step, dict)
+    ):
+        return False
+    shell = None
+    directory = None
+    for index, scope in enumerate((workflow, job, step)):
+        environment = scope.get("env")
+        if environment is not None and (
+            not isinstance(environment, dict)
+            or any(
+                not isinstance(name, str)
+                or not isinstance(value, str)
+                or name.upper() in {"BASH_ENV", "SHELLOPTS"}
+                for name, value in environment.items()
+            )
+        ):
+            return False
+        defaults = scope.get("defaults") if index != 2 else scope
+        if defaults is None:
+            continue
+        if not isinstance(defaults, dict):
+            return False
+        run = defaults.get("run") if index != 2 else defaults
+        if run is None:
+            continue
+        if not isinstance(run, dict):
+            return False
+        shell = run.get("shell", shell)
+        directory = run.get("working-directory", directory)
+    return shell in (None, "bash", "sh", "pwsh", "powershell", "cmd") and directory in (
+        None,
+        ".",
+        "./",
+        "${{ github.workspace }}",
+    )
+
+
 def ci_verdict_echo_is_safe(line: str, variables: set[str]) -> bool:
     """Allow quoted diagnostics, not commands, redirections or mutating expansion."""
     if not re.fullmatch(r"echo(?:[ \t]+(?:\"[^\"\\\r\n]*\"|'[^'\r\n]*'))+", line):
@@ -3861,6 +3905,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         test_steps = test.get("steps") if isinstance(test, dict) else None
         test_run = isinstance(test_steps, list) and any(
             required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(workflow, test, step)
             and step.get("run") == "python scripts/run_tests.py suite"
             for step in test_steps
         )
@@ -3920,6 +3965,9 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         )
         mutation_integration_run = isinstance(mutation_integration_steps, list) and any(
             required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(
+                workflow, mutation_integration, step
+            )
             and step.get("env") == {"REPO_SCAFFOLD_MUTMUT_INTEGRATION": "1"}
             and step.get("run")
             == "python scripts/run_tests.py suite tests/test_mutation_runner_linux.py"
@@ -3960,6 +4008,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         )
         canary_tests = isinstance(canary_steps, list) and any(
             required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(workflow, canary, step)
             and step.get("run") == "python scripts/run_tests.py suite"
             for step in canary_steps
         )
@@ -5040,6 +5089,7 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
         or not isinstance(quality_steps, list)
         or not any(
             required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(workflow, quality, step)
             and isinstance(step.get("run"), str)
             and step["run"].rstrip("\n") == expected_coverage
             for step in quality_steps
