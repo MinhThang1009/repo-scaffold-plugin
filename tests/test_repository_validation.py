@@ -4716,6 +4716,49 @@ jobs:
                         )
                     )
 
+    def test_mutation_workspace_rejects_nonstring_copy_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            config_path = root / "pyproject.toml"
+            original_config = config_path.read_text(encoding="utf-8")
+            for value in ('["nested"]', '{path = "nested"}', "1", "false", "[]"):
+                with self.subTest(value=value):
+                    config_path.write_text(
+                        original_config.replace(
+                            "also_copy = [\n", f"also_copy = [\n  {value},\n", 1
+                        ),
+                        encoding="utf-8",
+                    )
+
+                    problems = validate_repository.validate_mutation_testing_contract(
+                        root
+                    )
+
+                    self.assertTrue(
+                        any(
+                            "workspace must copy the plugin marketplace" in problem
+                            for problem in problems
+                        )
+                    )
+
+    def test_mutation_workspace_accepts_extra_string_copy_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            config_path = root / "pyproject.toml"
+            original_config = config_path.read_text(encoding="utf-8")
+            config_path.write_text(
+                original_config.replace(
+                    "also_copy = [\n", 'also_copy = [\n  "fixtures",\n', 1
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertFalse(any("mutation workspace" in problem for problem in problems))
+
     def test_mutation_loaders_must_use_canonical_module_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -163,7 +163,9 @@ rejects a missing provider or a marker that activates it on other runtimes.
 A mutmut update must pass the runner's internal API
 integration and behavioral tests; validators derive the reviewed version from
 the direct input instead of duplicating it. Regenerating the lock alone remains
-insufficient. Trusted scheduled and manual runs
+insufficient. Mutation workspace `also_copy` entries must be string paths;
+the legacy contract validator rejects non-string entries before membership checks.
+Trusted scheduled and manual runs
 plan every mutant, executes the exact assignment in 128 Linux workers, and merges
 only a complete non-overlapping result set. A hash-validated mutation cache may
 reuse state only for the same source, tests, mutation workflow and dependency

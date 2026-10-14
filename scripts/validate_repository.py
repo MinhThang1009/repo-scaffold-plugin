@@ -6205,17 +6205,21 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                     "exclude production code"
                 )
         also_copy = mutation_config.get("also_copy")
-        if not isinstance(also_copy, list) or not {
-            ".agents",
-            ".claude",
-            "AGENTS.md",
-            "requirements-mutation.txt",
-            "requirements-mutation.in",
-        }.issubset(also_copy):
+        if (
+            not isinstance(also_copy, list)
+            or not all(isinstance(path, str) for path in also_copy)
+            or not {
+                ".agents",
+                ".claude",
+                "AGENTS.md",
+                "requirements-mutation.txt",
+                "requirements-mutation.in",
+            }.issubset(also_copy)
+        ):
             problems.append(
                 "pyproject.toml: mutation workspace must copy the plugin "
                 "marketplace, maintainer instructions, and both mutation "
-                "requirement files"
+                "requirement files using only string paths in also_copy"
             )
         if pytest_config.get("testpaths") != ["tests"]:
             problems.append(
