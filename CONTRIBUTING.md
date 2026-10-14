@@ -264,6 +264,18 @@ tests. Repository workflow validation checks execution controls as well as comma
 text: required runtime, coverage and integration checks, and the `ci-success`
 verdict step, must remain foreground, mandatory and failure-propagating. The
 verdict job must retain `always()` so failed or skipped producers are evaluated.
+Its single verdict step is checked as a bounded Bash grammar, not by searching
+for comparison text. The admitted guard ORs quoted non-success comparisons for
+every bound result, exits with status 1 through 255 on that branch, and admits
+only quoted diagnostics and optional final success exit. Variable ordering,
+whitespace and diagnostic text may vary; header continuations must follow `||`,
+not split a comparison. Parsing uses Bash line/whitespace boundaries, not Unicode
+line separators. Comments, early success, AND guards,
+missing results and status 256 cannot stand in for failure propagation. Unsupported
+shell programs fail admission without execution; this is not a general shell
+analyzer. The verdict context must retain Bash on the reviewed Ubuntu runner,
+without workflow/job environment overrides or extra preparation steps that could
+replace its execution environment.
 Conditional platform bootstrap and scheduled canary jobs remain applicable-only;
 they do not make required test/gate steps optional or error-tolerant. Full mode
 clears inherited `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, disables

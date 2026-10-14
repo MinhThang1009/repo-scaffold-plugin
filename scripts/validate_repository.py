@@ -58,6 +58,7 @@ MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 MAX_VALIDATION_FILE_BYTES = 8 * 1024 * 1024
 MAX_VALIDATION_PROJECT_ENTRIES = 10_000
+MAX_CI_VERDICT_BYTES = 64 * 1024
 MAX_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 10_000
@@ -3650,6 +3651,106 @@ def required_ci_execution_is_safe(
     )
 
 
+def ci_verdict_echo_is_safe(line: str, variables: set[str]) -> bool:
+    """Allow quoted diagnostics, not commands, redirections or mutating expansion."""
+    if not re.fullmatch(r"echo(?:[ \t]+(?:\"[^\"\\\r\n]*\"|'[^'\r\n]*'))+", line):
+        return False
+    pattern = r"\$(?:\{([A-Z_][A-Z0-9_]*)\}|([A-Z_][A-Z0-9_]*))"
+    if any(
+        (match.group(1) or match.group(2)) not in variables
+        for match in re.finditer(pattern, line)
+    ):
+        return False
+    return "$" not in re.sub(pattern, "", line) and "`" not in line
+
+
+def ci_result_guard_is_fail_closed(text: object, variables: set[str]) -> bool:
+    """Prove the admitted quoted OR guard rejects every non-success input."""
+    if not isinstance(text, str) or len(text) > MAX_CI_VERDICT_BYTES or not variables:
+        return False
+    try:
+        if len(text.encode("utf-8")) > MAX_CI_VERDICT_BYTES:
+            return False
+    except UnicodeError:
+        return False
+    lines = [
+        line.strip(" \t")
+        for line in text.split("\n")
+        if line.strip(" \t") and not line.lstrip(" \t").startswith("#")
+    ]
+    header: list[str] = []
+    for index, line in enumerate(lines):
+        header.append(line)
+        if re.search(r";[ \t]*then$", line):
+            break
+        if not line.endswith("||"):
+            return False
+    else:
+        return False
+    prefix, _, keyword = " ".join(header).rpartition(";")
+    if not prefix.startswith(("if ", "if\t")) or keyword.strip(" \t") != "then":
+        return False
+    checked: set[str] = set()
+    for term in prefix[2:].strip(" \t").split("||"):
+        comparison = re.fullmatch(
+            r'(?P<open>\[\[?)[ \t]+"\$(?:\{(?P<braced>[A-Z_][A-Z0-9_]*)\}|'
+            r'(?P<plain>[A-Z_][A-Z0-9_]*))"[ \t]+!=[ \t]+(?:"success"|\'success\'|success)'
+            r"[ \t]+(?P<close>\]\]?)",
+            term.strip(" \t"),
+        )
+        if comparison is None or len(comparison["open"]) != len(comparison["close"]):
+            return False
+        variable = comparison["braced"] or comparison["plain"]
+        if variable not in variables or variable in checked:
+            return False
+        checked.add(variable)
+    if checked != variables:
+        return False
+    remaining = lines[index + 1 :]
+    if remaining.count("fi") != 1:
+        return False
+    end = remaining.index("fi")
+    failure, success = remaining[:end], remaining[end + 1 :]
+    if not failure:
+        return False
+    exit_status = re.fullmatch(r"exit[ \t]+([0-9]{1,3})", failure[-1])
+    if exit_status is None or not 1 <= int(exit_status[1]) <= 255:
+        return False
+    if success and success[-1] == "exit 0":
+        success = success[:-1]
+    return all(
+        ci_verdict_echo_is_safe(line, variables) for line in [*failure[:-1], *success]
+    )
+
+
+def ci_verdict_context_is_safe(workflow: object, job: object, step: object) -> bool:
+    """Bind the admitted grammar to an unmodified Bash verdict environment."""
+    if (
+        not isinstance(workflow, dict)
+        or not isinstance(job, dict)
+        or not isinstance(step, dict)
+    ):
+        return False
+    if job.get("runs-on") != "ubuntu-latest" or step.get("shell") not in (None, "bash"):
+        return False
+    if any(key in job for key in ("container", "services")):
+        return False
+    for scope in (workflow, job):
+        if scope.get("env") not in (None, {}):
+            return False
+        defaults = scope.get("defaults")
+        if defaults is None:
+            continue
+        if not isinstance(defaults, dict):
+            return False
+        run = defaults.get("run")
+        if run is None:
+            continue
+        if not isinstance(run, dict) or run.get("shell") not in (None, "bash"):
+            return False
+    return True
+
+
 def validate_python_support_contract(repository_root: Path) -> list[str]:
     """Validate the centralized Python policy and every repository consumer."""
     script = repository_root / "scripts" / "python_support.py"
@@ -3894,10 +3995,10 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         ci_success_checks_results = isinstance(ci_success_steps, list) and any(
             required_ci_execution_is_safe(step)
             and step.get("env") == required_result_environment
-            and isinstance(step.get("run"), str)
-            and '"$MUTATION_CACHE_INTEGRATION_RESULT" != "success"' in step["run"]
-            and '"$TEST_RESULT" != "success"' in step["run"]
-            and '"$QUALITY_RESULT" != "success"' in step["run"]
+            and ci_verdict_context_is_safe(workflow, ci_success, step)
+            and ci_result_guard_is_fail_closed(
+                step.get("run"), set(required_result_environment)
+            )
             for step in ci_success_steps
         )
         if (
@@ -3905,6 +4006,8 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             or not all(isinstance(need, str) for need in ci_success_needs)
             or set(ci_success_needs)
             != {"test", "quality", "mutation-cache-integration"}
+            or not isinstance(ci_success_steps, list)
+            or len(ci_success_steps) != 1
             or not required_ci_execution_is_safe(
                 ci_success, condition="${{ always() }}"
             )

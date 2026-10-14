@@ -551,6 +551,200 @@ class SerializedFileValidationTests(unittest.TestCase):
             self.assertEqual(result, str(outside_tool.resolve()))
 
 
+class CIVerdictGrammarTests(unittest.TestCase):
+    VARIABLES = {"TEST_RESULT", "QUALITY_RESULT", "MUTATION_CACHE_INTEGRATION_RESULT"}
+
+    @classmethod
+    def guard(cls) -> str:
+        condition = " || ".join(
+            f'[ "${name}" != "success" ]' for name in sorted(cls.VARIABLES)
+        )
+        return f'if {condition}; then\n    echo "Required check did not succeed"\n    exit 1\nfi\necho "All succeeded"\n'
+
+    def test_guard_accepts_semantic_format_variants_not_fixed_message_text(
+        self,
+    ) -> None:
+        canonical = self.guard()
+        reversed_condition = " || ".join(
+            f'[[ "${{{name}}}" != success ]]'
+            for name in sorted(self.VARIABLES, reverse=True)
+        )
+        alternate = (
+            f"# harmless comment\nif {reversed_condition};then\nexit 255\nfi\nexit 0\n"
+        )
+        for text in (
+            canonical,
+            alternate,
+            canonical.replace("exit 1", "exit 2"),
+            canonical.replace(" || ", " ||\n"),
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    validate_repository.ci_result_guard_is_fail_closed(
+                        text, self.VARIABLES
+                    )
+                )
+
+    def test_guard_rejects_ambiguous_incomplete_or_bypassing_programs(self) -> None:
+        canonical = self.guard()
+        first = sorted(self.VARIABLES)[0]
+        texts: tuple[object, ...] = (
+            None,
+            [],
+            "",
+            "# whole Bash comment\u2028" + canonical.replace("\n", "\u2028"),
+            "if true; then\nexit 1\nfi\n",
+            "if a" + " " * 60000 + "b; then\nexit 1\nfi\n",
+            canonical.replace("if ", "while ", 1),
+            canonical.replace("; then", "; nope"),
+            canonical.replace(f'"${first}"', "'$" + first + "'"),
+            canonical.replace(f'"${first}"', '"$OTHER_RESULT"'),
+            canonical.replace(f'[ "${first}" != "success" ] || ', "", 1),
+            canonical.replace(
+                '[ "$TEST_RESULT" != "success" ]', '[ "$QUALITY_RESULT" != "success" ]'
+            ),
+            canonical.replace(" || ", " && "),
+            canonical.replace('[ "$QUALITY_RESULT" !=', '[ "$QUALITY_RESULT"\n !='),
+            canonical.replace("exit 1", "exit 0"),
+            canonical.replace("exit 1", "exit 256"),
+            canonical.replace("exit 1\n", ""),
+            canonical.replace(
+                '    echo "Required check did not succeed"\n    exit 1\n', ""
+            ),
+            canonical.replace("fi\n", "fi\nfi\n"),
+            canonical.replace("!=", "=="),
+            canonical.replace('"success" ]', '"success" ]]'),
+            "exit 0\n" + canonical,
+            "if false; then\n" + canonical + "fi\n",
+            canonical + "exit 1\n",
+            canonical.replace('echo "All succeeded"', 'echo "$(exit 0)"'),
+            canonical.replace('echo "All succeeded"', 'echo "`exit 0`"'),
+            canonical.replace('echo "All succeeded"', 'echo "$UNBOUND"'),
+            canonical.replace('echo "All succeeded"', 'echo "${TEST_RESULT:=success}"'),
+            canonical.replace('echo "All succeeded"', 'echo "ok" > outside.txt'),
+        )
+        for text in texts:
+            with self.subTest(text=text):
+                self.assertFalse(
+                    validate_repository.ci_result_guard_is_fail_closed(
+                        text, self.VARIABLES
+                    )
+                )
+        self.assertFalse(
+            validate_repository.ci_result_guard_is_fail_closed(canonical, set())
+        )
+
+    def test_guard_bounds_bytes_before_parsing_and_rejects_invalid_unicode(
+        self,
+    ) -> None:
+        canonical = self.guard()
+        limit = validate_repository.MAX_CI_VERDICT_BYTES
+        exact = canonical + "#" + "x" * (limit - len(canonical.encode("utf-8")) - 1)
+        self.assertTrue(
+            validate_repository.ci_result_guard_is_fail_closed(exact, self.VARIABLES)
+        )
+        for text in (
+            exact + "x",
+            canonical + "#" + "é" * (limit // 2),
+            canonical + "\ud800",
+        ):
+            with self.subTest(size=len(text)):
+                self.assertFalse(
+                    validate_repository.ci_result_guard_is_fail_closed(
+                        text, self.VARIABLES
+                    )
+                )
+
+    @unittest.skipIf(sys.platform == "win32", "requires native POSIX Bash")
+    def test_admitted_guard_propagates_all_producer_states_in_native_bash(self) -> None:
+        import itertools
+
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash)
+        assert bash is not None
+        names = sorted(self.VARIABLES)
+        rows = list(
+            itertools.product(
+                ("success", "failure", "cancelled", "skipped"), repeat=len(names)
+            )
+        )
+        for name in names:
+            for state in ("", "unknown", "success with spaces", "*; exit 0"):
+                candidate_row = ["success"] * len(names)
+                candidate_row[names.index(name)] = state
+                rows.append(tuple(candidate_row))
+        for script in (self.guard(), self.guard().replace('"success"', "'success'")):
+            self.assertTrue(
+                validate_repository.ci_result_guard_is_fail_closed(
+                    script, self.VARIABLES
+                )
+            )
+            for row in rows:
+                with self.subTest(row=row):
+                    result = subprocess.run(
+                        [
+                            bash,
+                            "--noprofile",
+                            "--norc",
+                            "-e",
+                            "-o",
+                            "pipefail",
+                            "-c",
+                            script,
+                        ],
+                        env={"PATH": os.defpath, **dict(zip(names, row))},
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        result.returncode,
+                        0 if all(value == "success" for value in row) else 1,
+                        result.stdout + result.stderr,
+                    )
+
+        malformed = self.guard().replace(
+            '[ "$QUALITY_RESULT" !=', '[ "$QUALITY_RESULT"\n !='
+        )
+        self.assertFalse(
+            validate_repository.ci_result_guard_is_fail_closed(
+                malformed, self.VARIABLES
+            )
+        )
+
+    def test_verdict_context_admits_only_the_reviewed_bash_environment(self) -> None:
+        job = {"runs-on": "ubuntu-latest"}
+        self.assertTrue(validate_repository.ci_verdict_context_is_safe({}, job, {}))
+        self.assertTrue(
+            validate_repository.ci_verdict_context_is_safe(
+                {"defaults": {"run": {"shell": "bash"}}}, job, {"shell": "bash"}
+            )
+        )
+        for workflow, candidate, step in (
+            (None, job, {}),
+            ({}, None, {}),
+            ({}, job, None),
+            ({}, {"runs-on": "windows-latest"}, {}),
+            ({}, job, {"shell": "echo {0}"}),
+            ({}, {**job, "container": "unreviewed"}, {}),
+            ({"env": {"BASH_ENV": "outside"}}, job, {}),
+            ({}, {**job, "env": {"BASH_ENV": "outside"}}, {}),
+            ({"defaults": []}, job, {}),
+            ({"defaults": {"run": []}}, job, {}),
+            ({"defaults": {"run": {"shell": "echo {0}"}}}, job, {}),
+        ):
+            with self.subTest(workflow=workflow, job=candidate, step=step):
+                self.assertFalse(
+                    validate_repository.ci_verdict_context_is_safe(
+                        workflow, candidate, step
+                    )
+                )
+        self.assertTrue(
+            validate_repository.ci_verdict_context_is_safe({"defaults": {}}, job, {})
+        )
+
+
 class RequiredCIExecutionTests(unittest.TestCase):
     def test_required_execution_rejects_unsafe_controls_but_accepts_fatal_defaults(
         self,
@@ -926,6 +1120,100 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             "and mutation integration while keeping canaries outside the gate",
             problems,
         )
+
+    def test_ci_success_rejects_nonexecuted_or_successful_failure_guards(self) -> None:
+        variables = (
+            "TEST_RESULT",
+            "QUALITY_RESULT",
+            "MUTATION_CACHE_INTEGRATION_RESULT",
+        )
+        for mutation in (
+            "comments",
+            "early-success",
+            "exit-zero",
+            "exit-wrapped-zero",
+            "wrong-conjunction",
+            "dead-guard",
+        ):
+            with (
+                self.subTest(mutation=mutation),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                workflow = root / ".github/workflows/ci.yml"
+                original = workflow.read_text(encoding="utf-8")
+                marker = original.index("      - name: Verify required jobs passed\n")
+                start = original.index("        run: |\n", marker) + len(
+                    "        run: |\n"
+                )
+                body = (
+                    "\n".join(line[10:] for line in original[start:].splitlines())
+                    + "\n"
+                )
+                if mutation == "comments":
+                    body = (
+                        "\n".join(f'# "${name}" != "success"' for name in variables)
+                        + '\necho "Unchecked success"\n'
+                    )
+                elif mutation == "early-success":
+                    body = "exit 0\n" + body
+                elif mutation == "exit-zero":
+                    body = body.replace("exit 1", "exit 0")
+                elif mutation == "exit-wrapped-zero":
+                    body = body.replace("exit 1", "exit 256")
+                elif mutation == "wrong-conjunction":
+                    body = body.replace(" ||", " &&")
+                else:
+                    body = "if false; then\n" + body + "fi\n"
+                workflow.write_text(
+                    original[:start]
+                    + "".join("          " + line + "\n" for line in body.splitlines()),
+                    encoding="utf-8",
+                )
+                errors = validate_repository.validate_python_support_contract(root)
+                self.assertTrue(
+                    any("ci-success must require" in error for error in errors), errors
+                )
+
+    def test_ci_success_rejects_a_shell_that_can_ignore_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/ci.yml"
+            original = workflow.read_text(encoding="utf-8")
+            marker = "      - name: Verify required jobs passed\n"
+            workflow.write_text(
+                original.replace(marker, marker + "        shell: echo {0}\n", 1),
+                encoding="utf-8",
+            )
+            errors = validate_repository.validate_python_support_contract(root)
+            self.assertTrue(
+                any("ci-success must require" in error for error in errors), errors
+            )
+
+    def test_ci_success_rejects_extra_steps_that_can_replace_the_environment(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/ci.yml"
+            original = workflow.read_text(encoding="utf-8")
+            marker = "      - name: Verify required jobs passed\n"
+            workflow.write_text(
+                original.replace(
+                    marker,
+                    '      - name: Extra preparation\n        run: echo "Unexpected setup"\n'
+                    + marker,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            errors = validate_repository.validate_python_support_contract(root)
+            self.assertTrue(
+                any("ci-success must require" in error for error in errors), errors
+            )
 
     def test_ci_success_rejects_unhashable_needs_entries_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
