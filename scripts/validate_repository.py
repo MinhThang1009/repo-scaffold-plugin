@@ -3892,11 +3892,17 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
                 "matrix and latest outputs"
             )
         prepare_steps = prepare.get("steps") if isinstance(prepare, dict) else None
-        if not isinstance(prepare_steps, list) or not any(
-            isinstance(step, dict)
-            and step.get("run")
-            == 'python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"'
-            for step in prepare_steps
+        if (
+            not required_ci_execution_is_safe(prepare)
+            or not isinstance(prepare_steps, list)
+            or not any(
+                required_ci_execution_is_safe(step)
+                and required_ci_command_context_is_safe(workflow, prepare, step)
+                and step.get("id") == "support"
+                and step.get("run")
+                == 'python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"'
+                for step in prepare_steps
+            )
         ):
             problems.append(
                 ".github/workflows/ci.yml: prepare_ci must load the centralized policy"
@@ -4480,13 +4486,18 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         problems.append(
             ".github/workflows/ci.yml: prepare_ci must expose standalone tool outputs"
         )
-    if not isinstance(prepare_steps, list) or not any(
-        isinstance(step, dict)
-        and step.get("id") == "toolchain"
-        and step.get("run")
-        == "python skills/repo-scaffold/scripts/ci_toolchain.py "
-        'emit-github-output >> "$GITHUB_OUTPUT"'
-        for step in prepare_steps
+    if (
+        not required_ci_execution_is_safe(prepare)
+        or not isinstance(prepare_steps, list)
+        or not any(
+            required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(workflow, prepare, step)
+            and step.get("id") == "toolchain"
+            and step.get("run")
+            == "python skills/repo-scaffold/scripts/ci_toolchain.py "
+            'emit-github-output >> "$GITHUB_OUTPUT"'
+            for step in prepare_steps
+        )
     ):
         problems.append(
             ".github/workflows/ci.yml: prepare_ci must load the CI toolchain policy"

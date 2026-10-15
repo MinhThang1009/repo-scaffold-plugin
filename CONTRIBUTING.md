@@ -266,8 +266,10 @@ tests. Repository workflow validation checks execution controls as well as comma
 text: required runtime, coverage and integration checks, and the `ci-success`
 verdict step, must remain foreground, mandatory and failure-propagating. The
 verdict job must retain `always()` so failed or skipped producers are evaluated.
-Required single-command Python producers also bind their effective shell and
-working directory, following workflow, job and step override precedence. Only
+Policy preparation also requires mandatory, failure-propagating job/step execution
+and binds each command to the step ID used by its matrix/latest or toolchain outputs.
+Required Python command producers, including policy preparation, bind their
+effective shell and working directory using workflow, job and step precedence. Only
 GitHub's built-in command shells are admitted; custom templates can ignore the
 script. The directory must retain the workspace (implicit, `.`, `./` or
 `${{ github.workspace }}`), not select another checkout's relative script.

@@ -2601,6 +2601,138 @@ class CiToolchainContractValidationTests(unittest.TestCase):
             self.assertFalse(any("found '7'" in item for item in problems))
 
 
+class PolicyPreparationExecutionTests(unittest.TestCase):
+    def test_policy_producers_require_bound_fatal_workspace_execution(self) -> None:
+        for fixture, validator, identity, name in (
+            (
+                PythonSupportContractValidationTests(),
+                validate_repository.validate_python_support_contract,
+                "support",
+                "Load Python support policy",
+            ),
+            (
+                CiToolchainContractValidationTests(),
+                validate_repository.validate_ci_toolchain_contract,
+                "toolchain",
+                "Load CI toolchain policy",
+            ),
+        ):
+            for scope, setting in (
+                ("step", "if: false"),
+                ("step", "continue-on-error: true"),
+                ("step", "background: true"),
+                ("step", "working-directory: alternate-checkout"),
+                ("job", "if: false"),
+                ("job", "continue-on-error: true"),
+                (
+                    "job",
+                    "defaults:\n      run:\n        working-directory: alternate-checkout",
+                ),
+                ("job", "env:\n      PYTHONINSPECT: '1'"),
+                (
+                    "workflow",
+                    "defaults:\n  run:\n    working-directory: alternate-checkout",
+                ),
+                ("identity", "unbound-policy"),
+                ("shell", "echo {0}"),
+                ("steps", "invalid"),
+            ):
+                with (
+                    self.subTest(identity=identity, scope=scope, setting=setting),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    fixture.copy_contract(root)
+                    path = root / ".github/workflows/ci.yml"
+                    text = path.read_text(encoding="utf-8")
+                    marker = "      - name: " + name + "\n"
+                    self.assertEqual(text.count(marker), 1)
+                    if scope == "step":
+                        text = text.replace(
+                            marker, marker + "        " + setting + "\n", 1
+                        )
+                    elif scope == "job":
+                        text = text.replace(
+                            "  prepare_ci:\n", "  prepare_ci:\n    " + setting + "\n", 1
+                        )
+                    elif scope == "workflow":
+                        text = setting + "\n" + text
+                    elif scope == "identity":
+                        text = text.replace(
+                            "        id: " + identity + "\n",
+                            "        id: " + setting + "\n",
+                            1,
+                        )
+                    elif scope == "steps":
+                        text = text.replace(
+                            "    steps:\n",
+                            "    steps: " + setting + "\n    ignored_steps:\n",
+                            1,
+                        )
+                    else:
+                        start = text.index(marker)
+                        text = text[:start] + text[start:].replace(
+                            "        shell: bash\n",
+                            "        shell: " + setting + "\n",
+                            1,
+                        )
+                    path.write_text(text, encoding="utf-8")
+
+                    problems = validator(root)
+
+                    self.assertTrue(
+                        any("prepare_ci must load" in problem for problem in problems),
+                        problems,
+                    )
+
+    def test_policy_producers_preserve_safe_overrides_and_scalar_environments(
+        self,
+    ) -> None:
+        for fixture, validator, identity, name in (
+            (
+                PythonSupportContractValidationTests(),
+                validate_repository.validate_python_support_contract,
+                "support",
+                "Load Python support policy",
+            ),
+            (
+                CiToolchainContractValidationTests(),
+                validate_repository.validate_ci_toolchain_contract,
+                "toolchain",
+                "Load CI toolchain policy",
+            ),
+        ):
+            with (
+                self.subTest(identity=identity),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                fixture.copy_contract(root)
+                path = root / ".github/workflows/ci.yml"
+                text = path.read_text(encoding="utf-8")
+                text = text.replace(
+                    "  prepare_ci:\n",
+                    "  prepare_ci:\n    continue-on-error: false\n    defaults:\n      run:\n        working-directory: alternate-checkout\n    env:\n      POLICY_CHECK: '1'\n",
+                    1,
+                )
+                marker = "      - name: " + name + "\n"
+                text = text.replace(
+                    marker,
+                    marker + "        continue-on-error: false\n",
+                    1,
+                )
+                for producer in ("support", "toolchain"):
+                    marker = "        id: " + producer + "\n"
+                    text = text.replace(
+                        marker,
+                        marker + "        working-directory: ${{ github.workspace }}\n",
+                        1,
+                    )
+                path.write_text(text, encoding="utf-8")
+
+                self.assertEqual(validator(root), [])
+
+
 class LinkWorkflowContractTests(unittest.TestCase):
     def test_link_workflows_retry_transient_upstream_failures(self) -> None:
         workflow_paths = (
