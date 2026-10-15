@@ -62,6 +62,14 @@ class Completion:
         self.collected: Counter[str] | None = None
         self.finished: Counter[str] = Counter()
         self.failed = False
+        self.warning_count = 0
+        self.warning_budget: int | None = None
+
+    @pytest.hookimpl(tryfirst=True)
+    def pytest_warning_recorded(self) -> None:
+        self.warning_count += 1
+        if self.warning_budget is not None and self.warning_count > self.warning_budget:
+            self.failed = True
 
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
         self.failed = self.failed or report.failed
@@ -82,6 +90,16 @@ class Completion:
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> Generator[None, object, object]:
         self.failed = self.failed or exitstatus != 0
+        try:
+            budget = session.config.getoption("max_warnings")
+            if budget is None:
+                budget = session.config.getini("max_warnings")
+            self.warning_budget = None if budget in (None, "") else int(budget)
+        except (TypeError, ValueError):
+            # Leave invalid-policy diagnostics to pytest, but never certify success.
+            self.failed = True
+        if self.warning_budget is not None and self.warning_count > self.warning_budget:
+            self.failed = True
         result = yield
         self.failed = self.failed or session.exitstatus != 0
         return result

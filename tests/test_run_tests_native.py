@@ -61,6 +61,18 @@ class NativeRunTestsTests(unittest.TestCase):
                     "def pytest_sessionfinish(session, exitstatus):\n"
                     "    result = yield\n    session.exitstatus = 0\n    return result\n"
                 )
+            elif hook.startswith("registered-"):
+                priority = hook.removeprefix("registered-")
+                modifier = "" if priority == "normal" else f", {priority}=True"
+                program = (
+                    "import pytest\nclass Relabel:\n"
+                    f"    @pytest.hookimpl(wrapper=True{modifier})\n"
+                    "    def pytest_sessionfinish(self, session, exitstatus):\n"
+                    "        result = yield\n        session.exitstatus = 0\n        return result\n"
+                    "@pytest.hookimpl(trylast=True)\n"
+                    "def pytest_configure(config):\n"
+                    "    config.pluginmanager.register(Relabel(), 'synthetic-relabel')\n"
+                )
             (root / "tests/conftest.py").write_text(program, encoding="utf-8")
         arguments = (
             ["tests", "--source", "scripts/decision.py"] if mode == "focused" else []
@@ -74,7 +86,14 @@ class NativeRunTestsTests(unittest.TestCase):
 
     def test_late_warning_budget_failure_cannot_be_relabelled_as_success(self) -> None:
         for mode in ("suite", "full", "focused"):
-            for hook in ("none", "ordinary", "wrapper"):
+            for hook in (
+                "none",
+                "ordinary",
+                "wrapper",
+                "registered-normal",
+                "registered-tryfirst",
+                "registered-trylast",
+            ):
                 with (
                     self.subTest(mode=mode, hook=hook),
                     tempfile.TemporaryDirectory() as directory,
@@ -85,17 +104,27 @@ class NativeRunTestsTests(unittest.TestCase):
 
                     self.assertEqual(
                         result.returncode,
-                        1 if hook == "wrapper" else 6,
+                        1
+                        if hook
+                        in {"wrapper", "registered-normal", "registered-tryfirst"}
+                        else 6,
                         result.stdout + result.stderr,
                     )
                     self.assertIn("maximum allowed warnings exceeded", result.stdout)
                     self.assertNotIn("TOTAL", result.stdout)
-                    if hook == "wrapper":
+                    if hook in {"wrapper", "registered-normal", "registered-tryfirst"}:
                         self.assertIn("pytest completion receipt", result.stderr)
 
     def test_warning_budgets_preserve_success_and_optional_warning_policy(self) -> None:
         for mode in ("suite", "full", "focused"):
-            for hook in ("none", "ordinary", "wrapper"):
+            for hook in (
+                "none",
+                "ordinary",
+                "wrapper",
+                "registered-normal",
+                "registered-tryfirst",
+                "registered-trylast",
+            ):
                 for budget, emit_warning in ((0, False), (1, True), (None, True)):
                     with (
                         self.subTest(mode=mode, hook=hook, budget=budget),
@@ -111,6 +140,80 @@ class NativeRunTestsTests(unittest.TestCase):
                         self.assertNotIn("warnings exceeded", result.stdout)
                         if mode != "suite":
                             self.assertIn("100.00%", result.stdout)
+
+    def test_warning_budget_preserves_filter_capture_and_cli_precedence(self) -> None:
+        for mode in ("suite", "full", "focused"):
+            for handling in ("filtered", "captured"):
+                with (
+                    self.subTest(mode=mode, handling=handling),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    configuration = root / "pyproject.toml"
+                    policy = (
+                        configuration.read_text(encoding="utf-8") + "max_warnings = 0\n"
+                    )
+                    if handling == "filtered":
+                        policy += 'filterwarnings = ["ignore:synthetic warning budget:UserWarning"]\n'
+                    configuration.write_text(policy, encoding="utf-8")
+                    test = (
+                        "import warnings, pytest\nfrom scripts.decision import value\n"
+                        "def test_good():\n    assert value() == 1\n"
+                    )
+                    if handling == "captured":
+                        test += "    with pytest.warns(UserWarning):\n        warnings.warn('synthetic warning budget', UserWarning)\n"
+                    else:
+                        test += "    warnings.warn('synthetic warning budget', UserWarning)\n"
+                    (root / "tests/test_good.py").write_text(test, encoding="utf-8")
+                    arguments = (
+                        ["tests", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+
+                    result = self.run_runner(root, mode, arguments=arguments)
+
+                    self.assertEqual(
+                        result.returncode, 0, result.stdout + result.stderr
+                    )
+                    self.assertNotIn("warnings exceeded", result.stdout)
+
+        for configured, override, expected in (
+            ("0", 1, 0),
+            ("1", 0, 6),
+            ("invalid", 1, 0),
+            ("-1", 0, 6),
+        ):
+            with (
+                self.subTest(configured=configured, override=override),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.project(root)
+                configuration = root / "pyproject.toml"
+                configuration.write_text(
+                    configuration.read_text(encoding="utf-8")
+                    + f'max_warnings = "{configured}"\n',
+                    encoding="utf-8",
+                )
+                (root / "tests/test_good.py").write_text(
+                    "import warnings\nfrom scripts.decision import value\n"
+                    "def test_good():\n    assert value() == 1\n"
+                    "    warnings.warn('synthetic warning budget', UserWarning)\n",
+                    encoding="utf-8",
+                )
+
+                result = self.run_runner(
+                    root,
+                    "focused",
+                    arguments=["tests", "--source", "scripts/decision.py"],
+                    addopts=f"--max-warnings={override}",
+                )
+
+                self.assertEqual(
+                    result.returncode, expected, result.stdout + result.stderr
+                )
 
     def test_guarded_cleanup_preserves_readonly_outside_hardlink_attributes(
         self,

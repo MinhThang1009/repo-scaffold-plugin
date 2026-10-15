@@ -355,6 +355,14 @@ invalidate the receipt if an outer hook wrapper later resets status to zero.
 Unchanged nonzero statuses propagate normally, including pytest's warning-budget
 status 6. No warning budget is imposed when the project has not configured one;
 within-budget warnings and successful session hooks remain valid.
+Recorded warnings are also counted through pytest's public warning hook and
+checked against the effective CLI-first, configuration-second `max_warnings`
+value. This anchors a configured budget failure to warning events, not only
+mutable final status or wrapper registration order. Filtered warnings and
+warnings captured by `pytest.warns()` do not count. A missing budget remains
+optional; invalid effective values cannot certify success while pytest retains
+its own diagnostics and nonzero status. The observer stores a count, not warning
+objects or another unbounded warning log.
 An abrupt zero exit, missing receipt or incomplete session fails before accepting
 runtime evidence or reporting coverage. Nonzero pytest statuses still propagate
 when owned-output cleanup succeeds.
