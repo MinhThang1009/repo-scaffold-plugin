@@ -3695,6 +3695,62 @@ def required_ci_command_context_is_safe(
     )
 
 
+def ci_python_bootstrap_is_safe(
+    workflow: object, job: object, version: str, lock: str, command: str
+) -> bool:
+    """Bind one selected interpreter and hashed install before its test gate."""
+    if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
+        return False
+    steps = job["steps"]
+    setups = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].partition("@")[0].lower() == "actions/setup-python"
+    ]
+    if len(setups) != 1:
+        return False
+    setup_index, setup = setups[0]
+    settings = setup.get("with")
+    if (
+        not required_ci_execution_is_safe(setup)
+        or not isinstance(settings, dict)
+        or re.fullmatch(r"actions/setup-python@[0-9a-f]{40}", setup["uses"], re.I)
+        is None
+        or settings.get("python-version") != version
+        or settings.get("update-environment") not in (None, "true", "True", "TRUE")
+        or settings.get("cache-dependency-path") != lock
+    ):
+        return False
+    install_command = (
+        "python -m pip install --disable-pip-version-check --require-hashes "
+        f"--requirement {lock}"
+    )
+    installs = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and step["run"].rstrip("\n") == install_command
+    ]
+    executions = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and step["run"].rstrip("\n") == command
+    ]
+    if len(installs) != 1 or len(executions) != 1:
+        return False
+    install_index, install = installs[0]
+    return (
+        required_ci_execution_is_safe(install)
+        and required_ci_command_context_is_safe(workflow, job, install)
+        and setup_index < install_index < executions[0]
+    )
+
+
 def ci_verdict_echo_is_safe(line: str, variables: set[str]) -> bool:
     """Allow quoted diagnostics, not commands, redirections or mutating expansion."""
     if not re.fullmatch(r"echo(?:[ \t]+(?:\"[^\"\\\r\n]*\"|'[^'\r\n]*'))+", line):
@@ -3966,7 +4022,9 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         mutation_integration_install = isinstance(
             mutation_integration_steps, list
         ) and any(
-            isinstance(step, dict) and step.get("run") == expected_mutation_install
+            isinstance(step, dict)
+            and isinstance(step.get("run"), str)
+            and step["run"].rstrip("\n") == expected_mutation_install
             for step in mutation_integration_steps
         )
         mutation_integration_run = isinstance(mutation_integration_steps, list) and any(
@@ -4007,7 +4065,8 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         )
         canary_install = isinstance(canary_steps, list) and any(
             isinstance(step, dict)
-            and step.get("run")
+            and isinstance(step.get("run"), str)
+            and step["run"].rstrip("\n")
             == "python -m pip install --disable-pip-version-check "
             "--require-hashes --requirement requirements-dev.txt"
             for step in canary_steps
@@ -4034,6 +4093,39 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
                 ".github/workflows/ci.yml: scheduled 3.x canary must test and "
                 "detect undeclared stable releases"
             )
+        for job_id, version, lock, test_command in (
+            (
+                "test",
+                "${{ matrix.python-version }}",
+                "requirements-dev.txt",
+                "python scripts/run_tests.py suite",
+            ),
+            (
+                "quality",
+                "${{ needs.prepare_ci.outputs.latest }}",
+                "requirements-dev.txt",
+                "python scripts/run_tests.py full",
+            ),
+            (
+                "mutation-cache-integration",
+                "${{ needs.prepare_ci.outputs.latest }}",
+                "requirements-mutation.txt",
+                "python scripts/run_tests.py suite tests/test_mutation_runner_linux.py",
+            ),
+            (
+                "python-latest-canary",
+                "3.x",
+                "requirements-dev.txt",
+                "python scripts/run_tests.py suite",
+            ),
+        ):
+            if not ci_python_bootstrap_is_safe(
+                workflow, jobs.get(job_id), version, lock, test_command
+            ):
+                problems.append(
+                    f".github/workflows/ci.yml: {job_id} must set up the policy "
+                    f"Python on PATH and install {lock} before its test gate"
+                )
         ci_success_needs = (
             ci_success.get("needs") if isinstance(ci_success, dict) else None
         )

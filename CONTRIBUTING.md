@@ -268,6 +268,14 @@ verdict step, must remain foreground, mandatory and failure-propagating. The
 verdict job must retain `always()` so failed or skipped producers are evaluated.
 Policy preparation also requires mandatory, failure-propagating job/step execution
 and binds each command to the step ID used by its matrix/latest or toolchain outputs.
+Each runtime, coverage, integration and applicable canary job also binds a single
+pinned `actions/setup-python` step to its policy version and cache lock. Setup and
+the hashed dependency install must be mandatory, fatal and ordered before the
+test gate, with setup before installation. Setup must update PATH; a successful
+download with `update-environment: false` does not select that interpreter for
+later `python` commands. Duplicate setup/install/gate steps fail admission rather
+than supplying ambiguous evidence. The install retains the guarded command
+context; conditional Windows bootstrap and scheduled job applicability remain valid.
 Required Python command producers, including policy preparation, bind their
 effective shell and working directory using workflow, job and step precedence. Only
 GitHub's built-in command shells are admitted; custom templates can ignore the

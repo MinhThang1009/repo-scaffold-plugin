@@ -2201,6 +2201,187 @@ class ActionPinSyncContractTests(unittest.TestCase):
         )
 
 
+class CiPythonBootstrapValidationTests(unittest.TestCase):
+    def test_bootstrap_drift_cannot_replace_the_selected_runtime_or_lock(self) -> None:
+        for job_id in (
+            "test",
+            "quality",
+            "mutation-cache-integration",
+            "python-latest-canary",
+        ):
+            for mutation in (
+                "setup-skip",
+                "setup-tolerance",
+                "setup-no-path",
+                "setup-after-install",
+                "setup-after-test",
+                "install-skip",
+                "install-tolerance",
+                "install-after-test",
+                "install-shell",
+                "install-directory",
+                "install-startup",
+                "wrong-version",
+                "duplicate-setup",
+                "duplicate-install",
+                "duplicate-gate",
+                "missing-setup",
+                "missing-install",
+                "missing-gate",
+                "invalid-setup-inputs",
+                "unpinned-setup",
+                "invalid-steps",
+                "missing-job",
+                "wrong-cache",
+                "wrong-action",
+            ):
+                with (
+                    self.subTest(job=job_id, mutation=mutation),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    PythonSupportContractValidationTests().copy_contract(root)
+                    path = root / ".github/workflows/ci.yml"
+                    document = validate_repository.load_yaml(path)
+                    job = document["jobs"][job_id]
+                    steps = job["steps"]
+                    setup = next(
+                        step
+                        for step in steps
+                        if step.get("uses", "").startswith("actions/setup-python@")
+                    )
+                    install = next(
+                        step
+                        for step in steps
+                        if "python -m pip install" in step.get("run", "")
+                    )
+                    gate = next(
+                        step
+                        for step in steps
+                        if step.get("run", "").startswith("python scripts/run_tests.py")
+                    )
+                    if mutation == "setup-skip":
+                        setup["if"] = "${{ false }}"
+                    elif mutation == "setup-tolerance":
+                        setup["continue-on-error"] = "true"
+                    elif mutation == "setup-no-path":
+                        setup["with"]["update-environment"] = "false"
+                    elif mutation in {
+                        "setup-after-install",
+                        "setup-after-test",
+                        "install-after-test",
+                    }:
+                        moved = install if mutation == "install-after-test" else setup
+                        anchor = install if mutation == "setup-after-install" else gate
+                        steps.remove(moved)
+                        steps.insert(steps.index(anchor) + 1, moved)
+                    elif mutation == "install-skip":
+                        install["if"] = "${{ false }}"
+                    elif mutation == "install-tolerance":
+                        install["continue-on-error"] = "true"
+                    elif mutation == "install-shell":
+                        install["shell"] = "echo {0}"
+                    elif mutation == "install-directory":
+                        install["working-directory"] = "other-target"
+                    elif mutation == "install-startup":
+                        install["env"] = {"BASH_ENV": "startup.sh"}
+                    elif mutation == "wrong-version":
+                        setup["with"]["python-version"] = (
+                            "3.x"
+                            if job_id != "python-latest-canary"
+                            else "${{ matrix.python-version }}"
+                        )
+                    elif mutation.startswith("duplicate-"):
+                        selected = {
+                            "duplicate-setup": setup,
+                            "duplicate-install": install,
+                            "duplicate-gate": gate,
+                        }[mutation]
+                        steps.append(dict(selected))
+                    elif mutation in {
+                        "missing-setup",
+                        "missing-install",
+                        "missing-gate",
+                    }:
+                        selected = {
+                            "missing-setup": setup,
+                            "missing-install": install,
+                            "missing-gate": gate,
+                        }[mutation]
+                        steps.remove(selected)
+                    elif mutation == "invalid-setup-inputs":
+                        setup["with"] = []
+                    elif mutation == "unpinned-setup":
+                        setup["uses"] = "actions/setup-python@main"
+                    elif mutation == "missing-job":
+                        document["jobs"].pop(job_id)
+                    elif mutation == "wrong-cache":
+                        setup["with"]["cache-dependency-path"] = "other-lock.txt"
+                    elif mutation == "wrong-action":
+                        setup["uses"] = "other-owner/setup-python@" + "a" * 40
+                    else:
+                        job["steps"] = "invalid"
+                    path.write_text(
+                        yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                    )
+
+                    problems = validate_repository.validate_python_support_contract(
+                        root
+                    )
+
+                    self.assertIn(
+                        f".github/workflows/ci.yml: {job_id} must set up the policy "
+                        f"Python on PATH and install {'requirements-mutation.txt' if job_id == 'mutation-cache-integration' else 'requirements-dev.txt'} before its test gate",
+                        problems,
+                    )
+
+    def test_bootstrap_preserves_explicit_success_and_platform_applicability(
+        self,
+    ) -> None:
+        for path_update in (None, "true", "True", "TRUE"):
+            with (
+                self.subTest(path_update=path_update),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                PythonSupportContractValidationTests().copy_contract(root)
+                path = root / ".github/workflows/ci.yml"
+                document = validate_repository.load_yaml(path)
+                for job_id in (
+                    "test",
+                    "quality",
+                    "mutation-cache-integration",
+                    "python-latest-canary",
+                ):
+                    steps = document["jobs"][job_id]["steps"]
+                    setup = next(
+                        step
+                        for step in steps
+                        if step.get("uses", "").startswith("actions/setup-python@")
+                    )
+                    install = next(
+                        step
+                        for step in steps
+                        if "python -m pip install" in step.get("run", "")
+                    )
+                    setup["continue-on-error"] = "false"
+                    install["continue-on-error"] = "false"
+                    install["shell"] = "bash"
+                    install["working-directory"] = "${{ github.workspace }}"
+                    install["env"] = {"BOOTSTRAP_CHECK": "synthetic-positive"}
+                    if path_update is not None:
+                        setup["with"]["update-environment"] = path_update
+                    if path_update in {"True", "TRUE"}:
+                        install["run"] += "\n"
+                path.write_text(
+                    yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                )
+
+                self.assertEqual(
+                    validate_repository.validate_python_support_contract(root), []
+                )
+
+
 class CiToolchainContractValidationTests(unittest.TestCase):
     CONTRACT_FILES = (
         ".github/ci-toolchain.json",
