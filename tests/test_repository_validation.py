@@ -902,6 +902,18 @@ class RequiredCIExecutionTests(unittest.TestCase):
                 {"PYTHONPATH": ""},
                 {"pythonpath": "startup"},
                 {"PythonPath": "startup"},
+                {"PYTHONHOME": ""},
+                {"pythonhome": "startup"},
+                {"PythonHome": "startup"},
+                {"PYTHONUSERBASE": ""},
+                {"pythonuserbase": "startup"},
+                {"PythonUserBase": "startup"},
+                {"PYTHONPLATLIBDIR": ""},
+                {"pythonplatlibdir": "startup"},
+                {"PythonPlatLibDir": "startup"},
+                {"PYTHONPYCACHEPREFIX": ""},
+                {"pythonpycacheprefix": "startup"},
+                {"PythonPycachePrefix": "startup"},
             ):
                 scopes: list[dict[str, object]] = [{}, {}, {}]
                 scopes[index]["env"] = environment
@@ -1005,6 +1017,10 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                 "SHELLOPTS",
                 "PYTHONINSPECT",
                 "PYTHONPATH",
+                "PYTHONHOME",
+                "PYTHONUSERBASE",
+                "PYTHONPLATLIBDIR",
+                "PYTHONPYCACHEPREFIX",
             ):
                 with (
                     self.subTest(job=job, control=control),
@@ -1034,6 +1050,10 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                             "SHELLOPTS": "noexec",
                             "PYTHONINSPECT": "1",
                             "PYTHONPATH": "startup",
+                            "PYTHONHOME": "startup",
+                            "PYTHONUSERBASE": "startup",
+                            "PYTHONPLATLIBDIR": "startup",
+                            "PYTHONPYCACHEPREFIX": "startup",
                         }[control]
                         modified = original.replace(
                             marker, marker + f"    env:\n      {control}: {value}\n", 1
@@ -2271,6 +2291,10 @@ class CiPythonBootstrapValidationTests(unittest.TestCase):
                 "install-directory",
                 "install-startup",
                 "install-pythonpath",
+                "install-pythonhome",
+                "install-pythonuserbase",
+                "install-pythonplatlibdir",
+                "install-pythonpycacheprefix",
                 "wrong-version",
                 "duplicate-setup",
                 "duplicate-install",
@@ -2335,8 +2359,16 @@ class CiPythonBootstrapValidationTests(unittest.TestCase):
                         install["working-directory"] = "other-target"
                     elif mutation == "install-startup":
                         install["env"] = {"BASH_ENV": "startup.sh"}
-                    elif mutation == "install-pythonpath":
-                        install["env"] = {"PYTHONPATH": "startup"}
+                    elif mutation in {
+                        "install-pythonpath",
+                        "install-pythonhome",
+                        "install-pythonuserbase",
+                        "install-pythonplatlibdir",
+                        "install-pythonpycacheprefix",
+                    }:
+                        install["env"] = {
+                            mutation.removeprefix("install-").upper(): "startup"
+                        }
                     elif mutation == "wrong-version":
                         setup["with"]["python-version"] = (
                             "3.x"
@@ -2469,6 +2501,14 @@ class CanaryVerdictExecutionTests(unittest.TestCase):
                 "job-startup",
                 "pythonpath",
                 "job-pythonpath",
+                "pythonhome",
+                "pythonuserbase",
+                "pythonplatlibdir",
+                "job-pythonhome",
+                "job-pythonuserbase",
+                "job-pythonplatlibdir",
+                "pythonpycacheprefix",
+                "job-pythonpycacheprefix",
             ]
             if job_id == "python-latest-canary":
                 mutations += ["before-setup", "before-tests", "latest-decoy"]
@@ -2496,8 +2536,14 @@ class CanaryVerdictExecutionTests(unittest.TestCase):
                         verifier["working-directory"] = "other-target"
                     elif mutation == "startup":
                         verifier["env"] = {"PYTHONINSPECT": "1"}
-                    elif mutation == "pythonpath":
-                        verifier["env"] = {"PYTHONPATH": "startup"}
+                    elif mutation in {
+                        "pythonpath",
+                        "pythonhome",
+                        "pythonuserbase",
+                        "pythonplatlibdir",
+                        "pythonpycacheprefix",
+                    }:
+                        verifier["env"] = {mutation.upper(): "startup"}
                     elif mutation == "job-tolerance":
                         job["continue-on-error"] = "true"
                     elif mutation == "job-background":
@@ -2521,8 +2567,14 @@ class CanaryVerdictExecutionTests(unittest.TestCase):
                         }
                     elif mutation == "job-startup":
                         job["env"] = {"BASH_ENV": "startup.sh"}
-                    elif mutation == "job-pythonpath":
-                        job["env"] = {"PYTHONPATH": "startup"}
+                    elif mutation in {
+                        "job-pythonpath",
+                        "job-pythonhome",
+                        "job-pythonuserbase",
+                        "job-pythonplatlibdir",
+                        "job-pythonpycacheprefix",
+                    }:
+                        job["env"] = {mutation.removeprefix("job-").upper(): "startup"}
                     elif mutation in {"before-setup", "before-tests"}:
                         steps.remove(verifier)
                         position = (
@@ -3030,6 +3082,18 @@ class PolicyPreparationExecutionTests(unittest.TestCase):
                 ("step", "env:\n          PYTHONPATH: startup"),
                 ("job", "env:\n      PYTHONPATH: startup"),
                 ("workflow", "env:\n  PYTHONPATH: startup"),
+                ("step", "env:\n          PYTHONHOME: startup"),
+                ("job", "env:\n      PYTHONHOME: startup"),
+                ("workflow", "env:\n  PYTHONHOME: startup"),
+                ("step", "env:\n          PYTHONUSERBASE: startup"),
+                ("job", "env:\n      PYTHONUSERBASE: startup"),
+                ("workflow", "env:\n  PYTHONUSERBASE: startup"),
+                ("step", "env:\n          PYTHONPLATLIBDIR: startup"),
+                ("job", "env:\n      PYTHONPLATLIBDIR: startup"),
+                ("workflow", "env:\n  PYTHONPLATLIBDIR: startup"),
+                ("step", "env:\n          PYTHONPYCACHEPREFIX: startup"),
+                ("job", "env:\n      PYTHONPYCACHEPREFIX: startup"),
+                ("workflow", "env:\n  PYTHONPYCACHEPREFIX: startup"),
                 (
                     "workflow",
                     "defaults:\n  run:\n    working-directory: alternate-checkout",
@@ -3298,6 +3362,10 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 "SHELLOPTS",
                 "PYTHONINSPECT",
                 "PYTHONPATH",
+                "PYTHONHOME",
+                "PYTHONUSERBASE",
+                "PYTHONPLATLIBDIR",
+                "PYTHONPYCACHEPREFIX",
             ):
                 with (
                     self.subTest(scope=scope, control=control),
@@ -3326,6 +3394,10 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                             "SHELLOPTS": "noexec",
                             "PYTHONINSPECT": "1",
                             "PYTHONPATH": "startup",
+                            "PYTHONHOME": "startup",
+                            "PYTHONUSERBASE": "startup",
+                            "PYTHONPLATLIBDIR": "startup",
+                            "PYTHONPYCACHEPREFIX": "startup",
                         }[control]
                         body = f"{indent}env:\n{indent}  {control}: {value}\n"
                     workflow.write_text(
@@ -4006,6 +4078,75 @@ class MutationTestingContractTests(unittest.TestCase):
         "tests/test_repository_validation.py",
         "tests/test_validate_scaffold.py",
     )
+
+    def test_sharded_commands_reject_inherited_startup_context(self) -> None:
+        original = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github/workflows/mutation-testing.yml"
+        )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(original), []
+        )
+        scopes: list[tuple[str, str | None]] = [("workflow", None)] + [
+            (scope, job_id) for scope in ("job", "step") for job_id in original["jobs"]
+        ]
+        for variable in (
+            "BASH_ENV",
+            "SHELLOPTS",
+            "PYTHONINSPECT",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONUSERBASE",
+            "PYTHONPLATLIBDIR",
+            "PYTHONPYCACHEPREFIX",
+        ):
+            for scope, job_id in scopes:
+                candidate = copy.deepcopy(original)
+                selected = candidate
+                if scope != "workflow":
+                    assert job_id is not None
+                    selected = candidate["jobs"][job_id]
+                    if scope == "step":
+                        selected = next(
+                            step
+                            for step in selected["steps"]
+                            if step.get("run", "").startswith("python ")
+                        )
+                selected.setdefault("env", {})[variable] = "startup"
+                with self.subTest(variable=variable, scope=scope, job=job_id):
+                    self.assertIn(
+                        ".github/workflows/mutation-testing.yml: mutation steps require safe command context",
+                        validate_repository.validate_sharded_mutation_workflow(
+                            candidate
+                        ),
+                    )
+        for scope, job_id in scopes[:4]:
+            candidate = copy.deepcopy(original)
+            selected = candidate if job_id is None else candidate["jobs"][job_id]
+            selected["env"] = {"SYNTHETIC_OPT_IN": "1"}
+            with self.subTest(safe_scope=scope, job=job_id):
+                self.assertEqual(
+                    validate_repository.validate_sharded_mutation_workflow(candidate),
+                    [],
+                )
+
+        action_only = copy.deepcopy(original)
+        upload = next(
+            step
+            for step in action_only["jobs"]["mutation-shards"]["steps"]
+            if step.get("name") == "Upload mutation shard"
+        )
+        upload["env"] = {"PYTHONHOME": "unused-action-only-setting"}
+        with self.subTest(action_only=True):
+            self.assertEqual(
+                validate_repository.validate_sharded_mutation_workflow(action_only), []
+            )
+        malformed = copy.deepcopy(original)
+        malformed["jobs"]["mutation-plan"]["steps"].append(None)
+        with self.subTest(malformed_step=True):
+            self.assertIn(
+                ".github/workflows/mutation-testing.yml: mutation steps require safe command context",
+                validate_repository.validate_sharded_mutation_workflow(malformed),
+            )
 
     def test_sharded_workflow_validator_rejects_every_incomplete_shape(self) -> None:
         valid: dict[str, Any] = {

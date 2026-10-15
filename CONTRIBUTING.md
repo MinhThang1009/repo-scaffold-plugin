@@ -288,13 +288,26 @@ effective shell and working directory using workflow, job and step precedence. O
 GitHub's built-in command shells are admitted; custom templates can ignore the
 script. The directory must retain the workspace (implicit, `.`, `./` or
 `${{ github.workspace }}`), not select another checkout's relative script.
-Declared `BASH_ENV`, `SHELLOPTS`, `PYTHONINSPECT` and `PYTHONPATH` controls are
+Declared `BASH_ENV`, `SHELLOPTS`, `PYTHONINSPECT`, `PYTHONPATH`, `PYTHONHOME`,
+`PYTHONUSERBASE`, `PYTHONPLATLIBDIR` and `PYTHONPYCACHEPREFIX` controls are
 rejected at every scope: they can disable execution, turn a failed Python exit
 into REPL success or load startup code before the guarded runner begins.
 For example, a `sitecustomize.py` on `PYTHONPATH` can exit successfully before
 the runner can validate inputs or require a completion receipt. Clearing that
 variable inside the runner cannot protect an interpreter that already loaded it.
 Reject the declared startup override at the CI admission boundary instead.
+Library/user-site roots can select startup code too, even without `PYTHONPATH`.
+User-site and platform-library behavior varies by host, interpreter version and
+virtual environment. A variable being inactive in one local venv does not make
+its declaration safe across the supported standalone CI interpreter matrix.
+An external bytecode-cache prefix can substitute startup bytecode before the
+runner can select its own fresh cache. Reject that declared override too; the
+runner's internally generated, owned cache prefix remains supported.
+The sharded mutation validator checks this same command context for every script
+step of the plan, shard and quality jobs, including inherited workflow/job values.
+Action-only settings are not treated as Python command context. Cache-reuse
+conditions, artifact actions, ordinary scalar opt-ins, shard counts and score
+requirements are unchanged.
 Other scalar environment settings, including the Windows PyYAML selection and
 integration opt-in, remain supported. This checks declared command context, not
 arbitrary behavior of trusted earlier steps or host startup state.

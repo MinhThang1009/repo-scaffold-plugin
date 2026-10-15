@@ -3671,7 +3671,16 @@ def required_ci_command_context_is_safe(
                 not isinstance(name, str)
                 or not isinstance(value, str)
                 or name.upper()
-                in {"BASH_ENV", "SHELLOPTS", "PYTHONINSPECT", "PYTHONPATH"}
+                in {
+                    "BASH_ENV",
+                    "SHELLOPTS",
+                    "PYTHONINSPECT",
+                    "PYTHONPATH",
+                    "PYTHONHOME",
+                    "PYTHONUSERBASE",
+                    "PYTHONPLATLIBDIR",
+                    "PYTHONPYCACHEPREFIX",
+                }
                 for name, value in environment.items()
             )
         ):
@@ -5615,6 +5624,14 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
             ".github/workflows/mutation-testing.yml: save the recorded plan "
             "before preparing and uploading shard state"
         ]
+    for job in (plan, shards, aggregate):
+        for step in job["steps"]:
+            if isinstance(step, dict) and "run" not in step:
+                continue
+            if not required_ci_command_context_is_safe(workflow, job, step):
+                return [
+                    ".github/workflows/mutation-testing.yml: mutation steps require safe command context"
+                ]
     return []
 
 
