@@ -746,6 +746,45 @@ class CIVerdictGrammarTests(unittest.TestCase):
 
 
 class RequiredCIExecutionTests(unittest.TestCase):
+    def test_python_startup_path_can_skip_a_failed_required_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            startup = Path(directory) / "startup"
+            startup.mkdir()
+            (startup / "sitecustomize.py").write_text(
+                "import os\nos._exit(0)\n", encoding="utf-8"
+            )
+            for enabled, status in ((False, 7), (True, 0)):
+                environment = os.environ.copy()
+                for name in ("PYTHONPATH", "PYTHONINSPECT", "PYTHONOPTIMIZE"):
+                    environment.pop(name, None)
+                environment.update(
+                    {"MUTANT_UNDER_TEST": "", "MUTMUT_DEPENDENCY_DEPTH": "-1"}
+                )
+                declared = {"PYTHONPATH": str(startup)} if enabled else {}
+                environment.update(declared)
+                result = subprocess.run(
+                    [sys.executable, "-c", "raise SystemExit(7)"],
+                    cwd=directory,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+                self.assertEqual(
+                    result.returncode, status, result.stdout + result.stderr
+                )
+                for index in range(3):
+                    scopes: list[dict[str, object]] = [{}, {}, {}]
+                    scopes[index]["env"] = declared
+                    with self.subTest(enabled=enabled, scope=index):
+                        self.assertEqual(
+                            validate_repository.required_ci_command_context_is_safe(
+                                *scopes
+                            ),
+                            not enabled,
+                        )
+
     @unittest.skipIf(sys.platform == "win32", "requires native POSIX Bash")
     def test_bash_startup_controls_can_skip_a_failed_required_python_command(
         self,
@@ -860,6 +899,9 @@ class RequiredCIExecutionTests(unittest.TestCase):
                 {"bash_env": "startup.sh"},
                 {"SHELLOPTS": "noexec"},
                 {"PYTHONINSPECT": "1"},
+                {"PYTHONPATH": ""},
+                {"pythonpath": "startup"},
+                {"PythonPath": "startup"},
             ):
                 scopes: list[dict[str, object]] = [{}, {}, {}]
                 scopes[index]["env"] = environment
@@ -957,7 +999,13 @@ class PythonSupportContractValidationTests(unittest.TestCase):
 
     def test_runtime_consumers_bind_inherited_shell_and_startup_controls(self) -> None:
         for job in ("test", "mutation-cache-integration", "python-latest-canary"):
-            for control in ("shell", "BASH_ENV", "SHELLOPTS", "PYTHONINSPECT"):
+            for control in (
+                "shell",
+                "BASH_ENV",
+                "SHELLOPTS",
+                "PYTHONINSPECT",
+                "PYTHONPATH",
+            ):
                 with (
                     self.subTest(job=job, control=control),
                     tempfile.TemporaryDirectory() as directory,
@@ -985,6 +1033,7 @@ class PythonSupportContractValidationTests(unittest.TestCase):
                             "BASH_ENV": "startup.sh",
                             "SHELLOPTS": "noexec",
                             "PYTHONINSPECT": "1",
+                            "PYTHONPATH": "startup",
                         }[control]
                         modified = original.replace(
                             marker, marker + f"    env:\n      {control}: {value}\n", 1
@@ -2221,6 +2270,7 @@ class CiPythonBootstrapValidationTests(unittest.TestCase):
                 "install-shell",
                 "install-directory",
                 "install-startup",
+                "install-pythonpath",
                 "wrong-version",
                 "duplicate-setup",
                 "duplicate-install",
@@ -2285,6 +2335,8 @@ class CiPythonBootstrapValidationTests(unittest.TestCase):
                         install["working-directory"] = "other-target"
                     elif mutation == "install-startup":
                         install["env"] = {"BASH_ENV": "startup.sh"}
+                    elif mutation == "install-pythonpath":
+                        install["env"] = {"PYTHONPATH": "startup"}
                     elif mutation == "wrong-version":
                         setup["with"]["python-version"] = (
                             "3.x"
@@ -2415,6 +2467,8 @@ class CanaryVerdictExecutionTests(unittest.TestCase):
                 "job-shell",
                 "job-directory",
                 "job-startup",
+                "pythonpath",
+                "job-pythonpath",
             ]
             if job_id == "python-latest-canary":
                 mutations += ["before-setup", "before-tests", "latest-decoy"]
@@ -2442,6 +2496,8 @@ class CanaryVerdictExecutionTests(unittest.TestCase):
                         verifier["working-directory"] = "other-target"
                     elif mutation == "startup":
                         verifier["env"] = {"PYTHONINSPECT": "1"}
+                    elif mutation == "pythonpath":
+                        verifier["env"] = {"PYTHONPATH": "startup"}
                     elif mutation == "job-tolerance":
                         job["continue-on-error"] = "true"
                     elif mutation == "job-background":
@@ -2465,6 +2521,8 @@ class CanaryVerdictExecutionTests(unittest.TestCase):
                         }
                     elif mutation == "job-startup":
                         job["env"] = {"BASH_ENV": "startup.sh"}
+                    elif mutation == "job-pythonpath":
+                        job["env"] = {"PYTHONPATH": "startup"}
                     elif mutation in {"before-setup", "before-tests"}:
                         steps.remove(verifier)
                         position = (
@@ -2969,6 +3027,9 @@ class PolicyPreparationExecutionTests(unittest.TestCase):
                     "defaults:\n      run:\n        working-directory: alternate-checkout",
                 ),
                 ("job", "env:\n      PYTHONINSPECT: '1'"),
+                ("step", "env:\n          PYTHONPATH: startup"),
+                ("job", "env:\n      PYTHONPATH: startup"),
+                ("workflow", "env:\n  PYTHONPATH: startup"),
                 (
                     "workflow",
                     "defaults:\n  run:\n    working-directory: alternate-checkout",
@@ -3236,6 +3297,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 "BASH_ENV",
                 "SHELLOPTS",
                 "PYTHONINSPECT",
+                "PYTHONPATH",
             ):
                 with (
                     self.subTest(scope=scope, control=control),
@@ -3263,6 +3325,7 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                             "BASH_ENV": "startup.sh",
                             "SHELLOPTS": "noexec",
                             "PYTHONINSPECT": "1",
+                            "PYTHONPATH": "startup",
                         }[control]
                         body = f"{indent}env:\n{indent}  {control}: {value}\n"
                     workflow.write_text(

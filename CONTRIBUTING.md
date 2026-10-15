@@ -288,8 +288,13 @@ effective shell and working directory using workflow, job and step precedence. O
 GitHub's built-in command shells are admitted; custom templates can ignore the
 script. The directory must retain the workspace (implicit, `.`, `./` or
 `${{ github.workspace }}`), not select another checkout's relative script.
-Declared `BASH_ENV`, `SHELLOPTS` and `PYTHONINSPECT` controls are rejected at every
-scope: they can disable execution or turn a failed Python exit into REPL success.
+Declared `BASH_ENV`, `SHELLOPTS`, `PYTHONINSPECT` and `PYTHONPATH` controls are
+rejected at every scope: they can disable execution, turn a failed Python exit
+into REPL success or load startup code before the guarded runner begins.
+For example, a `sitecustomize.py` on `PYTHONPATH` can exit successfully before
+the runner can validate inputs or require a completion receipt. Clearing that
+variable inside the runner cannot protect an interpreter that already loaded it.
+Reject the declared startup override at the CI admission boundary instead.
 Other scalar environment settings, including the Windows PyYAML selection and
 integration opt-in, remain supported. This checks declared command context, not
 arbitrary behavior of trusted earlier steps or host startup state.
