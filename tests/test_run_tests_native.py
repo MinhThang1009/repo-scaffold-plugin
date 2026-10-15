@@ -27,6 +27,91 @@ DRIVER = (
 
 
 class NativeRunTestsTests(unittest.TestCase):
+    def warning_budget_result(
+        self,
+        root: Path,
+        mode: str,
+        hook: str,
+        budget: int | None,
+        emit_warning: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        self.project(root)
+        if budget is not None:
+            configuration = root / "pyproject.toml"
+            configuration.write_text(
+                configuration.read_text(encoding="utf-8")
+                + f"max_warnings = {budget}\n",
+                encoding="utf-8",
+            )
+        test = (
+            "import warnings\nfrom scripts.decision import value\n"
+            "def test_good():\n    assert value() == 1\n"
+        )
+        if emit_warning:
+            test += "    warnings.warn('synthetic warning budget', UserWarning)\n"
+        (root / "tests/test_good.py").write_text(test, encoding="utf-8")
+        if hook != "none":
+            program = (
+                "def pytest_sessionfinish(session, exitstatus):\n"
+                "    session.exitstatus = 0\n"
+            )
+            if hook == "wrapper":
+                program = (
+                    "import pytest\n@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+                    "def pytest_sessionfinish(session, exitstatus):\n"
+                    "    result = yield\n    session.exitstatus = 0\n    return result\n"
+                )
+            (root / "tests/conftest.py").write_text(program, encoding="utf-8")
+        arguments = (
+            ["tests", "--source", "scripts/decision.py"] if mode == "focused" else []
+        )
+        return self.run_runner(
+            root,
+            mode,
+            arguments=arguments,
+            coverage_environment={"PYTHONWARNINGS": "default"},
+        )
+
+    def test_late_warning_budget_failure_cannot_be_relabelled_as_success(self) -> None:
+        for mode in ("suite", "full", "focused"):
+            for hook in ("none", "ordinary", "wrapper"):
+                with (
+                    self.subTest(mode=mode, hook=hook),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    result = self.warning_budget_result(
+                        Path(directory), mode, hook, 0, True
+                    )
+
+                    self.assertEqual(
+                        result.returncode,
+                        1 if hook == "wrapper" else 6,
+                        result.stdout + result.stderr,
+                    )
+                    self.assertIn("maximum allowed warnings exceeded", result.stdout)
+                    self.assertNotIn("TOTAL", result.stdout)
+                    if hook == "wrapper":
+                        self.assertIn("pytest completion receipt", result.stderr)
+
+    def test_warning_budgets_preserve_success_and_optional_warning_policy(self) -> None:
+        for mode in ("suite", "full", "focused"):
+            for hook in ("none", "ordinary", "wrapper"):
+                for budget, emit_warning in ((0, False), (1, True), (None, True)):
+                    with (
+                        self.subTest(mode=mode, hook=hook, budget=budget),
+                        tempfile.TemporaryDirectory() as directory,
+                    ):
+                        result = self.warning_budget_result(
+                            Path(directory), mode, hook, budget, emit_warning
+                        )
+
+                        self.assertEqual(
+                            result.returncode, 0, result.stdout + result.stderr
+                        )
+                        self.assertNotIn("warnings exceeded", result.stdout)
+                        if mode != "suite":
+                            self.assertIn("100.00%", result.stdout)
+
     def test_guarded_cleanup_preserves_readonly_outside_hardlink_attributes(
         self,
     ) -> None:

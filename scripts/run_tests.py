@@ -80,9 +80,11 @@ class Completion:
         return (yield)
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
-    def pytest_sessionfinish(self, exitstatus: int) -> Generator[None, object, object]:
+    def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> Generator[None, object, object]:
         self.failed = self.failed or exitstatus != 0
-        return (yield)
+        result = yield
+        self.failed = self.failed or session.exitstatus != 0
+        return result
 
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         self.collected = Counter(item.nodeid for item in session.items)

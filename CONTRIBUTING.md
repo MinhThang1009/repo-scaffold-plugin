@@ -348,6 +348,13 @@ session-finish status invalidate the receipt,
 with events/status observed by wrappers before their ordinary hooks run,
 even if a session-finish hook changes the final exit status to zero after all
 collected tests have emitted finish events.
+The session-finish observer also latches nonzero status after nested hooks return.
+Pytest can decide a configured `max_warnings` failure during terminal reporting,
+after the original session status was successful. That late verdict must still
+invalidate the receipt if an outer hook wrapper later resets status to zero.
+Unchanged nonzero statuses propagate normally, including pytest's warning-budget
+status 6. No warning budget is imposed when the project has not configured one;
+within-budget warnings and successful session hooks remain valid.
 An abrupt zero exit, missing receipt or incomplete session fails before accepting
 runtime evidence or reporting coverage. Nonzero pytest statuses still propagate
 when owned-output cleanup succeeds.
