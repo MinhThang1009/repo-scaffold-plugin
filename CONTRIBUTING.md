@@ -276,6 +276,13 @@ download with `update-environment: false` does not select that interpreter for
 later `python` commands. Duplicate setup/install/gate steps fail admission rather
 than supplying ambiguous evidence. The install retains the guarded command
 context; conditional Windows bootstrap and scheduled job applicability remain valid.
+Applicable canary verdicts must also remain mandatory, fatal and foreground in
+the guarded workspace/shell context. Python's runtime drift check must follow
+its test suite, which already follows setup and the hashed install. Bind
+`check-latest` to the actual pinned Python setup, not another step's inputs.
+Both canaries require one unambiguous verifier; skipped or error-tolerant checks
+cannot supply a clean verdict to the policy reminder. Scheduled/manual job
+conditions remain unchanged, and canaries stay outside the required CI aggregate.
 Required Python command producers, including policy preparation, bind their
 effective shell and working directory using workflow, job and step precedence. Only
 GitHub's built-in command shells are admitted; custom templates can ignore the

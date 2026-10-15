@@ -3751,6 +3751,40 @@ def ci_python_bootstrap_is_safe(
     )
 
 
+def ci_canary_verification_is_safe(
+    workflow: object, job: object, command: str, *, after: str | None = None
+) -> bool:
+    """Keep applicable drift verdicts fatal, bound and after their prerequisites."""
+    condition = "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
+    if not required_ci_execution_is_safe(job, condition=condition):
+        return False
+    if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
+        return False
+    steps = job["steps"]
+    verifiers = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and step["run"].rstrip("\n") == command
+    ]
+    if len(verifiers) != 1:
+        return False
+    index, verifier = verifiers[0]
+    if not required_ci_execution_is_safe(
+        verifier
+    ) or not required_ci_command_context_is_safe(workflow, job, verifier):
+        return False
+    if after is None:
+        return True
+    prerequisites = [
+        position
+        for position, step in enumerate(steps)
+        if isinstance(step, dict) and step.get("run") == after
+    ]
+    return len(prerequisites) == 1 and prerequisites[0] < index
+
+
 def ci_verdict_echo_is_safe(line: str, variables: set[str]) -> bool:
     """Allow quoted diagnostics, not commands, redirections or mutating expansion."""
     if not re.fullmatch(r"echo(?:[ \t]+(?:\"[^\"\\\r\n]*\"|'[^'\r\n]*'))+", line):
@@ -4052,16 +4086,19 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         canary_steps = canary.get("steps") if isinstance(canary, dict) else None
         canary_setup = isinstance(canary_steps, list) and any(
             isinstance(step, dict)
+            and isinstance(step.get("uses"), str)
+            and re.fullmatch(r"actions/setup-python@[0-9a-f]{40}", step["uses"], re.I)
+            is not None
             and isinstance(step.get("with"), dict)
             and step["with"].get("python-version") == "3.x"
-            and step["with"].get("check-latest") == "true"
+            and step["with"].get("check-latest") in ("true", "True", "TRUE")
             for step in canary_steps
         )
-        canary_verification = isinstance(canary_steps, list) and any(
-            isinstance(step, dict)
-            and step.get("run")
-            == "python scripts/python_support.py verify-latest-runtime"
-            for step in canary_steps
+        canary_verification = ci_canary_verification_is_safe(
+            workflow,
+            canary,
+            "python scripts/python_support.py verify-latest-runtime",
+            after="python scripts/run_tests.py suite",
         )
         canary_install = isinstance(canary_steps, list) and any(
             isinstance(step, dict)
@@ -4686,19 +4723,12 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
                     ".github/workflows/ci.yml: standalone tool metadata must "
                     f"come from policy outputs, found {literal!r}"
                 )
-    canary_steps = canary.get("steps") if isinstance(canary, dict) else None
     triggers = workflow.get("on") if isinstance(workflow, dict) else None
     if (
-        not isinstance(canary, dict)
-        or canary.get("if")
-        != "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
-        or not isinstance(canary_steps, list)
-        or not any(
-            isinstance(step, dict)
-            and step.get("run")
-            == "python skills/repo-scaffold/scripts/ci_toolchain.py "
-            "verify-latest-releases"
-            for step in canary_steps
+        not ci_canary_verification_is_safe(
+            workflow,
+            canary,
+            "python skills/repo-scaffold/scripts/ci_toolchain.py verify-latest-releases",
         )
         or not isinstance(triggers, dict)
         or "schedule" not in triggers

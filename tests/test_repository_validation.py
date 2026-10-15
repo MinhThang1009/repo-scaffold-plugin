@@ -2382,6 +2382,165 @@ class CiPythonBootstrapValidationTests(unittest.TestCase):
                 )
 
 
+class CanaryVerdictExecutionTests(unittest.TestCase):
+    def copy_contract(self, root: Path) -> None:
+        PythonSupportContractValidationTests().copy_contract(root)
+        CiToolchainContractValidationTests().copy_contract(root)
+
+    def test_canary_verdicts_reject_skips_tolerance_redirects_and_ambiguity(
+        self,
+    ) -> None:
+        for job_id, command in (
+            (
+                "python-latest-canary",
+                "python scripts/python_support.py verify-latest-runtime",
+            ),
+            (
+                "toolchain-drift-canary",
+                "python skills/repo-scaffold/scripts/ci_toolchain.py verify-latest-releases",
+            ),
+        ):
+            mutations = [
+                "skip",
+                "tolerance",
+                "shell",
+                "directory",
+                "startup",
+                "job-tolerance",
+                "job-background",
+                "background",
+                "duplicate",
+                "missing",
+                "invalid-steps",
+                "job-shell",
+                "job-directory",
+                "job-startup",
+            ]
+            if job_id == "python-latest-canary":
+                mutations += ["before-setup", "before-tests", "latest-decoy"]
+            for mutation in mutations:
+                with (
+                    self.subTest(job=job_id, mutation=mutation),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    path = root / ".github/workflows/ci.yml"
+                    document = validate_repository.load_yaml(path)
+                    job = document["jobs"][job_id]
+                    steps = job["steps"]
+                    verifier = next(
+                        step for step in steps if step.get("run") == command
+                    )
+                    if mutation == "skip":
+                        verifier["if"] = "${{ false }}"
+                    elif mutation == "tolerance":
+                        verifier["continue-on-error"] = "true"
+                    elif mutation == "shell":
+                        verifier["shell"] = "echo {0}"
+                    elif mutation == "directory":
+                        verifier["working-directory"] = "other-target"
+                    elif mutation == "startup":
+                        verifier["env"] = {"PYTHONINSPECT": "1"}
+                    elif mutation == "job-tolerance":
+                        job["continue-on-error"] = "true"
+                    elif mutation == "job-background":
+                        job["background"] = "true"
+                    elif mutation == "background":
+                        verifier["background"] = "true"
+                    elif mutation == "duplicate":
+                        steps.append(dict(verifier))
+                    elif mutation == "missing":
+                        steps.remove(verifier)
+                    elif mutation == "invalid-steps":
+                        job["steps"] = "invalid"
+                    elif mutation in {"job-shell", "job-directory"}:
+                        key = (
+                            "shell" if mutation == "job-shell" else "working-directory"
+                        )
+                        job["defaults"] = {
+                            "run": {
+                                key: "echo {0}" if key == "shell" else "other-target"
+                            }
+                        }
+                    elif mutation == "job-startup":
+                        job["env"] = {"BASH_ENV": "startup.sh"}
+                    elif mutation in {"before-setup", "before-tests"}:
+                        steps.remove(verifier)
+                        position = (
+                            1
+                            if mutation == "before-setup"
+                            else next(
+                                index
+                                for index, step in enumerate(steps)
+                                if step.get("run")
+                                == "python scripts/run_tests.py suite"
+                            )
+                        )
+                        steps.insert(position, verifier)
+                    else:
+                        setup = next(
+                            step
+                            for step in steps
+                            if step.get("uses", "").startswith("actions/setup-python@")
+                        )
+                        setup["with"]["check-latest"] = "false"
+                        steps[0]["with"].update(
+                            {"python-version": "3.x", "check-latest": "true"}
+                        )
+                    path.write_text(
+                        yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                    )
+                    validate = (
+                        validate_repository.validate_python_support_contract
+                        if job_id == "python-latest-canary"
+                        else validate_repository.validate_ci_toolchain_contract
+                    )
+                    expected = (
+                        ".github/workflows/ci.yml: scheduled 3.x canary must test and detect undeclared stable releases"
+                        if job_id == "python-latest-canary"
+                        else ".github/workflows/ci.yml: scheduled/manual toolchain drift canary must verify latest releases"
+                    )
+
+                    self.assertIn(expected, validate(root))
+
+    def test_canaries_preserve_applicability_and_safe_explicit_context(self) -> None:
+        for latest in ("true", "True", "TRUE"):
+            with (
+                self.subTest(latest=latest),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                path = root / ".github/workflows/ci.yml"
+                document = validate_repository.load_yaml(path)
+                for job_id in ("python-latest-canary", "toolchain-drift-canary"):
+                    job = document["jobs"][job_id]
+                    job["continue-on-error"] = "false"
+                    verifier = job["steps"][-1]
+                    verifier["continue-on-error"] = "false"
+                    verifier["shell"] = "bash"
+                    verifier["working-directory"] = "${{ github.workspace }}"
+                    verifier["env"] = {"CANARY_CHECK": "synthetic-positive"}
+                    verifier["run"] += "\n"
+                    if job_id == "python-latest-canary":
+                        setup = next(
+                            step
+                            for step in job["steps"]
+                            if step.get("uses", "").startswith("actions/setup-python@")
+                        )
+                        setup["with"]["check-latest"] = latest
+                path.write_text(
+                    yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                )
+
+                self.assertEqual(
+                    validate_repository.validate_python_support_contract(root)
+                    + validate_repository.validate_ci_toolchain_contract(root),
+                    [],
+                )
+
+
 class CiToolchainContractValidationTests(unittest.TestCase):
     CONTRACT_FILES = (
         ".github/ci-toolchain.json",
