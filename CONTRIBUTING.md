@@ -247,6 +247,13 @@ python scripts/run_tests.py focused tests/test_pr_template_preflight.py
 python scripts/run_tests.py focused tests/test_pr_template_preflight.py --source skills/repo-scaffold/scripts/pr_template_preflight.py
 ```
 
+The native warning-budget matrices overlap at most two isolated case subprocesses
+to stay within the supported-runtime CI budget. Each case retains its own target,
+runner outputs and subprocess timeout. Results and exceptions are collected in
+case order after workers have drained; assertions and unittest subtest reporting
+remain on the calling thread. This does not reuse verdicts or change mutation
+workers, test selection, coverage requirements or job timeouts.
+
 `--source` enforces the existing coverage floor for the selected Python file;
 both `.py` and `.pyw` source files are accepted, matching the full inventory.
 Repeat it for additional files. If it selects one of the three verified omitted

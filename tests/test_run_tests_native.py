@@ -17,6 +17,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = (ROOT / ".coveragerc").read_text(encoding="utf-8")
+WarningBudgetCase = tuple[str, str, int | None, bool]
 DRIVER = (
     "from pathlib import Path; import sys; "
     "sys.path.insert(0, sys.argv[1]); "
@@ -84,8 +85,87 @@ class NativeRunTestsTests(unittest.TestCase):
             coverage_environment={"PYTHONWARNINGS": "default"},
         )
 
+    def warning_budget_results(
+        self, cases: list[WarningBudgetCase]
+    ) -> list[tuple[WarningBudgetCase, subprocess.CompletedProcess[str]]]:
+        """Overlap isolated subprocesses, not unittest reporting or shared state."""
+
+        def run(case: WarningBudgetCase) -> subprocess.CompletedProcess[str]:
+            with tempfile.TemporaryDirectory() as directory:
+                return self.warning_budget_result(Path(directory), *case)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            return list(zip(cases, pool.map(run, cases)))
+
+    def test_warning_budget_workers_preserve_cap_order_and_owned_cleanup(self) -> None:
+        import threading
+
+        cases: list[WarningBudgetCase] = [
+            ("suite", "none", 0, False),
+            ("full", "ordinary", 1, True),
+            ("focused", "wrapper", None, True),
+            ("suite", "registered-normal", 1, True),
+        ]
+        barrier = threading.Barrier(2)
+        lock = threading.Lock()
+        roots: list[Path] = []
+        active = peak = 0
+
+        def probe(root: Path, *case: object) -> subprocess.CompletedProcess[str]:
+            nonlocal active, peak
+            with lock:
+                roots.append(root)
+                active += 1
+                peak = max(peak, active)
+            try:
+                barrier.wait(timeout=5)
+                return subprocess.CompletedProcess([], 0, stdout=repr(case), stderr="")
+            finally:
+                with lock:
+                    active -= 1
+
+        with (
+            mock.patch.object(self, "warning_budget_result", side_effect=probe),
+            mock.patch(
+                __name__ + ".ThreadPoolExecutor", wraps=ThreadPoolExecutor
+            ) as executor,
+        ):
+            results = self.warning_budget_results(cases)
+
+        executor.assert_called_once_with(max_workers=2)
+        self.assertEqual((active, peak), (0, 2))
+        self.assertEqual([case for case, _ in results], cases)
+        self.assertEqual(
+            [result.stdout for _, result in results], list(map(repr, cases))
+        )
+        self.assertEqual(len(set(roots)), len(cases))
+        self.assertTrue(all(not root.exists() for root in roots))
+
+    def test_warning_budget_worker_errors_propagate_after_owned_cleanup(self) -> None:
+        import threading
+
+        roots: list[Path] = []
+        lock = threading.Lock()
+
+        def fail(root: Path, *case: object) -> subprocess.CompletedProcess[str]:
+            del case
+            with lock:
+                roots.append(root)
+            raise ValueError("synthetic worker failure")
+
+        with (
+            mock.patch.object(self, "warning_budget_result", side_effect=fail),
+            self.assertRaisesRegex(ValueError, "synthetic worker failure"),
+        ):
+            self.warning_budget_results([("suite", "none", 0, False)] * 4)
+
+        self.assertTrue(roots)
+        self.assertTrue(all(not root.exists() for root in roots))
+
     def test_late_warning_budget_failure_cannot_be_relabelled_as_success(self) -> None:
-        for mode in ("suite", "full", "focused"):
+        cases: list[WarningBudgetCase] = [
+            (mode, hook, 0, True)
+            for mode in ("suite", "full", "focused")
             for hook in (
                 "none",
                 "ordinary",
@@ -93,30 +173,26 @@ class NativeRunTestsTests(unittest.TestCase):
                 "registered-normal",
                 "registered-tryfirst",
                 "registered-trylast",
-            ):
-                with (
-                    self.subTest(mode=mode, hook=hook),
-                    tempfile.TemporaryDirectory() as directory,
-                ):
-                    result = self.warning_budget_result(
-                        Path(directory), mode, hook, 0, True
-                    )
-
-                    self.assertEqual(
-                        result.returncode,
-                        1
-                        if hook
-                        in {"wrapper", "registered-normal", "registered-tryfirst"}
-                        else 6,
-                        result.stdout + result.stderr,
-                    )
-                    self.assertIn("maximum allowed warnings exceeded", result.stdout)
-                    self.assertNotIn("TOTAL", result.stdout)
-                    if hook in {"wrapper", "registered-normal", "registered-tryfirst"}:
-                        self.assertIn("pytest completion receipt", result.stderr)
+            )
+        ]
+        for (mode, hook, _, _), result in self.warning_budget_results(cases):
+            with self.subTest(mode=mode, hook=hook):
+                self.assertEqual(
+                    result.returncode,
+                    1
+                    if hook in {"wrapper", "registered-normal", "registered-tryfirst"}
+                    else 6,
+                    result.stdout + result.stderr,
+                )
+                self.assertIn("maximum allowed warnings exceeded", result.stdout)
+                self.assertNotIn("TOTAL", result.stdout)
+                if hook in {"wrapper", "registered-normal", "registered-tryfirst"}:
+                    self.assertIn("pytest completion receipt", result.stderr)
 
     def test_warning_budgets_preserve_success_and_optional_warning_policy(self) -> None:
-        for mode in ("suite", "full", "focused"):
+        cases: list[WarningBudgetCase] = [
+            (mode, hook, budget, emit_warning)
+            for mode in ("suite", "full", "focused")
             for hook in (
                 "none",
                 "ordinary",
@@ -124,22 +200,15 @@ class NativeRunTestsTests(unittest.TestCase):
                 "registered-normal",
                 "registered-tryfirst",
                 "registered-trylast",
-            ):
-                for budget, emit_warning in ((0, False), (1, True), (None, True)):
-                    with (
-                        self.subTest(mode=mode, hook=hook, budget=budget),
-                        tempfile.TemporaryDirectory() as directory,
-                    ):
-                        result = self.warning_budget_result(
-                            Path(directory), mode, hook, budget, emit_warning
-                        )
-
-                        self.assertEqual(
-                            result.returncode, 0, result.stdout + result.stderr
-                        )
-                        self.assertNotIn("warnings exceeded", result.stdout)
-                        if mode != "suite":
-                            self.assertIn("100.00%", result.stdout)
+            )
+            for budget, emit_warning in ((0, False), (1, True), (None, True))
+        ]
+        for (mode, hook, budget, _), result in self.warning_budget_results(cases):
+            with self.subTest(mode=mode, hook=hook, budget=budget):
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("warnings exceeded", result.stdout)
+                if mode != "suite":
+                    self.assertIn("100.00%", result.stdout)
 
     def test_warning_budget_preserves_filter_capture_and_cli_precedence(self) -> None:
         for mode in ("suite", "full", "focused"):
