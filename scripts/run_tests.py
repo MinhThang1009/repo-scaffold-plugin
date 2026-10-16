@@ -109,24 +109,49 @@ class Completion:
 
     def pytest_runtest_logfinish(self, nodeid: str) -> None:
         self.finished[nodeid] += 1
+'''
 
+
+COVERAGE_SOURCE_PREFLIGHT = """
+def validate_coverage_sources(sources: list[str]) -> None:
+    from coverage import Coverage
+    from coverage.exceptions import CoverageException
+
+    measurement = Coverage.current()
+    if measurement is None:
+        print("error: coverage source analysis requires active measurement", file=sys.stderr)
+        raise SystemExit(1)
+    for source in sources:
+        try:
+            measurement.analysis2(source)
+        except (CoverageException, RecursionError):
+            print(f"error: coverage source cannot be analyzed: {source}", file=sys.stderr)
+            raise SystemExit(1)
+"""
+
+
+PYTEST_EXECUTION = """
 completion = Completion()
 status = int(pytest.main(sys.argv[4:], plugins=[completion]))
 complete = bool(completion.collected) and completion.collected == completion.finished and not completion.failed
 with Path(sys.argv[1]).open("x", encoding="utf-8") as receipt:
     json.dump({"exit_code": status, "complete": complete}, receipt)
 raise SystemExit(status)
-'''
+"""
 
 
 def guarded_pytest_command(
-    pytest: list[str], directory: Path
+    pytest: list[str], directory: Path, *, sources: list[str] | None = None
 ) -> tuple[list[str], Path]:
     """Use a fresh owned bootstrap/receipt without changing pytest selection."""
     bootstrap = directory / "pytest-bootstrap.py"
     receipt = directory / "pytest-completion.json"
     with bootstrap.open("x", encoding="utf-8") as stream:
         stream.write(PYTEST_BOOTSTRAP)
+        if sources is not None:
+            stream.write(COVERAGE_SOURCE_PREFLIGHT)
+            stream.write(f"\nvalidate_coverage_sources({sources!r})\n")
+        stream.write(PYTEST_EXECUTION)
     return [str(bootstrap), str(receipt), *pytest], receipt
 
 
@@ -338,7 +363,9 @@ def run_coverage(
             "coverage",
         ]
         settings = ["--rcfile", str(frozen_configuration), "--data-file", data_file]
-        guarded_pytest, receipt = guarded_pytest_command(pytest, Path(directory))
+        guarded_pytest, receipt = guarded_pytest_command(
+            pytest, Path(directory), sources=report_sources or inventory
+        )
         result = subprocess.run(
             [*common, "run", *settings, *guarded_pytest],
             cwd=REPOSITORY_ROOT,

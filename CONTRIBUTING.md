@@ -422,6 +422,13 @@ declarations and rejects invalid
 syntax regardless of suffix casing, rather than letting Coverage.py silently
 drop an unparseable `.PY`/`.PYW` file as non-Python. Full mode checks its complete
 inventory; measured-focused mode checks only selected canonical sources.
+The measured child's bootstrap also calls Coverage's public `analysis2()` for
+every report source before starting pytest. Compilability alone is insufficient:
+Coverage can parse a valid form-feed-containing source differently and silently
+skip a report parse error for uppercase `.PY`/`.PYW` suffixes. Any analysis failure
+invalidates the run instead of shrinking its denominator. This check uses the
+active measurement's frozen policy and unoptimized child interpreter, performs
+no source execution and leaves suite/unmeasured-focused applicability unchanged.
 The coverage denominator includes unimported Python files inside namespace-package
 directories. Both the runner
 and repository validator reject `partial_also` and `[paths]` aliases that would

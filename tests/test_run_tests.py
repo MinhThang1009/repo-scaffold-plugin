@@ -978,11 +978,74 @@ class PytestCompletionTests(unittest.TestCase):
             self.assertFalse(receipt.exists())
             self.assertEqual(
                 (root / "pytest-bootstrap.py").read_text(encoding="utf-8"),
-                run_tests.PYTEST_BOOTSTRAP,
+                run_tests.PYTEST_BOOTSTRAP + run_tests.PYTEST_EXECUTION,
             )
-            compile(run_tests.PYTEST_BOOTSTRAP, "pytest-bootstrap.py", "exec")
+            compile(
+                run_tests.PYTEST_BOOTSTRAP + run_tests.PYTEST_EXECUTION,
+                "pytest-bootstrap.py",
+                "exec",
+            )
             with self.assertRaises(FileExistsError):
                 run_tests.guarded_pytest_command(["-m", "pytest", "tests"], root)
+
+    def test_coverage_bootstrap_analyzes_literal_sources_before_pytest(self) -> None:
+        from coverage import Coverage
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = ["scripts/a.py", "scripts/quote'\\caf\u00e9.PYW"]
+            command, receipt = run_tests.guarded_pytest_command(
+                ["-m", "pytest", "tests"], root, sources=sources
+            )
+            measurement = mock.Mock()
+            order = mock.Mock()
+            order.attach_mock(measurement.analysis2, "analyze")
+            with (
+                mock.patch.object(Coverage, "current", return_value=measurement),
+                mock.patch("pytest.main", return_value=0) as execute,
+                mock.patch.object(sys, "argv", command),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                order.attach_mock(execute, "pytest")
+                runpy.run_path(command[0], run_name="__main__")
+            self.assertEqual(raised.exception.code, 0)
+            self.assertEqual(
+                order.mock_calls[:2], [mock.call.analyze(source) for source in sources]
+            )
+            self.assertEqual(order.mock_calls[2].args[0], ["tests"])
+            self.assertTrue(receipt.is_file())
+
+    def test_coverage_bootstrap_analysis_failures_stop_before_pytest(self) -> None:
+        from coverage import Coverage
+        from coverage.exceptions import NotPython
+
+        for failure in (
+            None,
+            NotPython("synthetic parse failure"),
+            RecursionError("synthetic parser limit"),
+        ):
+            measurement = None if failure is None else mock.Mock()
+            if measurement is not None:
+                measurement.analysis2.side_effect = failure
+            with (
+                self.subTest(failure=failure),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                command, receipt = run_tests.guarded_pytest_command(
+                    ["-m", "pytest", "tests"], Path(directory), sources=["scripts/a.PY"]
+                )
+                with (
+                    mock.patch.object(Coverage, "current", return_value=measurement),
+                    mock.patch("pytest.main") as execute,
+                    mock.patch.object(sys, "argv", command),
+                    redirect_stderr(StringIO()) as errors,
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    runpy.run_path(command[0], run_name="__main__")
+                self.assertEqual(raised.exception.code, 1)
+                execute.assert_not_called()
+                self.assertFalse(receipt.exists())
+                self.assertIn("coverage source", errors.getvalue())
 
     def test_only_complete_success_receipts_are_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

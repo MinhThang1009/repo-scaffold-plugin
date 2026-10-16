@@ -802,6 +802,38 @@ class NativeRunTestsTests(unittest.TestCase):
                     self.assertNotIn("1 passed", result.stdout)
                     self.assertNotIn("TOTAL", result.stdout)
 
+    def test_report_parser_failures_cannot_drop_compilable_sources(self) -> None:
+        for mode in ("full", "focused"):
+            for suffix in (".PY", ".PYW"):
+                with (
+                    self.subTest(mode=mode, suffix=suffix),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    relative = "scripts/uncovered" + suffix
+                    source = "def unused():\n    result = 1\n    \f    return result\n"
+                    compile(source, relative, "exec", dont_inherit=True, optimize=0)
+                    (root / relative).write_text(source, encoding="utf-8")
+                    arguments = (
+                        [
+                            "tests",
+                            "--source",
+                            "scripts/decision.py",
+                            "--source",
+                            relative,
+                        ]
+                        if mode == "focused"
+                        else []
+                    )
+                    result = self.run_runner(root, mode, arguments=arguments)
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertIn("coverage source cannot be analyzed", result.stderr)
+                    self.assertNotIn("1 passed", result.stdout)
+                    self.assertNotIn("TOTAL", result.stdout)
+
     def test_valid_uppercase_suffix_sources_stay_in_full_reports(self) -> None:
         for suffix in (".PY", ".PYW"):
             for covered in (False, True):
