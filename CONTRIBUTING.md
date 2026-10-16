@@ -414,7 +414,11 @@ from that inventory fail admission before either coverage child starts.
 Every source in the report scope must also compile as Python before either child
 starts, with per-file and actual aggregate reads bounded by the existing inventory
 budgets. This check creates no bytecode files and does
-not execute source. It honors Python encoding declarations and rejects invalid
+not execute source. Syntax admission always uses unoptimized compile semantics,
+independently of parent `-O`, `-OO` or `PYTHONOPTIMIZE`. `dont_inherit` isolates
+compiler/future flags, not optimization: discarding an assertion expression must
+not make an invalid source appear compilable. The check honors Python encoding
+declarations and rejects invalid
 syntax regardless of suffix casing, rather than letting Coverage.py silently
 drop an unparseable `.PY`/`.PYW` file as non-Python. Full mode checks its complete
 inventory; measured-focused mode checks only selected canonical sources.

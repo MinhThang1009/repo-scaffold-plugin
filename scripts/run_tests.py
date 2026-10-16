@@ -291,7 +291,7 @@ def validate_report_source_syntax(repository_root: Path, sources: list[str]) -> 
         )
         total_bytes += len(content)
         try:
-            compile(content, relative, "exec", dont_inherit=True)
+            compile(content, relative, "exec", dont_inherit=True, optimize=0)
         except (SyntaxError, RecursionError) as error:
             raise ValueError(
                 f"coverage source cannot be compiled as Python: {relative}"

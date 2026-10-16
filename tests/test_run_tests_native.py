@@ -767,6 +767,41 @@ class NativeRunTestsTests(unittest.TestCase):
                         )
                         self.assertNotIn("1 passed", result.stdout)
 
+    def test_optimized_parents_cannot_skip_source_compile_rejections(self) -> None:
+        for optimization in ("1", "2"):
+            for mode, suffix in (("full", ".PY"), ("focused", ".PYW")):
+                with (
+                    self.subTest(optimization=optimization, mode=mode, suffix=suffix),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root)
+                    relative = "scripts/unparseable" + suffix
+                    (root / relative).write_text("assert (yield 1)\n", encoding="utf-8")
+                    arguments = (
+                        [
+                            "tests/test_good.py",
+                            "--source",
+                            "scripts/decision.py",
+                            "--source",
+                            relative,
+                        ]
+                        if mode == "focused"
+                        else []
+                    )
+                    result = self.run_runner(
+                        root,
+                        mode,
+                        arguments=arguments,
+                        coverage_environment={"PYTHONOPTIMIZE": optimization},
+                    )
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertIn("coverage source cannot be compiled", result.stderr)
+                    self.assertNotIn("1 passed", result.stdout)
+                    self.assertNotIn("TOTAL", result.stdout)
+
     def test_valid_uppercase_suffix_sources_stay_in_full_reports(self) -> None:
         for suffix in (".PY", ".PYW"):
             for covered in (False, True):

@@ -1051,12 +1051,18 @@ class CoverageInventoryTests(unittest.TestCase):
             with (
                 self.subTest(content=content),
                 tempfile.TemporaryDirectory() as directory,
+                mock.patch.object(
+                    run_tests, "compile", create=True, wraps=compile
+                ) as compiler,
             ):
                 root = Path(directory)
                 relative = "source.PYW"
                 (root / relative).write_bytes(content)
                 run_tests.validate_report_source_syntax(root, [relative])
                 self.assertEqual((root / relative).read_bytes(), content)
+                compiler.assert_called_once_with(
+                    content, relative, "exec", dont_inherit=True, optimize=0
+                )
 
     def test_report_source_compilation_is_bounded_and_rejects_links(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1097,7 +1103,7 @@ class CoverageInventoryTests(unittest.TestCase):
             ):
                 run_tests.validate_report_source_syntax(root, sources)
             compiler.assert_called_once_with(
-                b"x=1\n", "first.py", "exec", dont_inherit=True
+                b"x=1\n", "first.py", "exec", dont_inherit=True, optimize=0
             )
 
     def test_report_source_compilation_rejects_invalid_syntax_and_parser_recursion(
@@ -1122,7 +1128,7 @@ class CoverageInventoryTests(unittest.TestCase):
             ):
                 run_tests.validate_report_source_syntax(root, [relative])
             compiler.assert_called_once_with(
-                b"value = 1\n", relative, "exec", dont_inherit=True
+                b"value = 1\n", relative, "exec", dont_inherit=True, optimize=0
             )
 
     def test_source_selection_accepts_python_window_files_not_bytecode_or_text(
