@@ -13,6 +13,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from markdown_body_preflight import visible_body_heading_lines
+from pr_template_preflight import validate_body_structure
+
 
 MAX_BODY_BYTES = 1 * 1024 * 1024
 MAX_JSON_BYTES = 10 * 1024 * 1024
@@ -203,11 +206,12 @@ def _validate_files(document: Any) -> list[dict[str, Any]]:
         status = row.get("status")
         if status not in {
             "added",
+            "removed",
             "copied",
             "modified",
             "renamed",
-            "deleted",
             "changed",
+            "unchanged",
         }:
             raise ValueError("pull-request files contain an unknown status")
         numbers: dict[str, int] = {}
@@ -441,31 +445,33 @@ def _issue_lines(commits: list[dict[str, str]]) -> list[str]:
 
 def _section_kind(heading: str) -> str | None:
     normalized = heading.casefold()
-    if any(
-        token in normalized for token in ("purpose", "summary", "mục đích", "tóm tắt")
-    ):
+    if normalized in {"purpose", "summary", "mục đích", "tóm tắt"}:
         return "purpose"
-    if any(token in normalized for token in ("root cause", "nguyên nhân")):
+    if normalized in {"root cause", "nguyên nhân", "nguyên nhân gốc"}:
         return "root_cause"
-    if any(
-        token in normalized
-        for token in (
-            "verification",
-            "how to test",
-            "monitor",
-            "xác minh",
-            "kiểm tra",
-            "kiểm thử",
-        )
-    ):
+    if normalized in {
+        "verification",
+        "how to test",
+        "xác minh",
+        "kiểm tra",
+        "kiểm thử",
+        "cách kiểm thử",
+    }:
         return "verification"
-    if any(token in normalized for token in ("related", "issue", "liên quan")):
+    if normalized in {
+        "related",
+        "related issue",
+        "issue",
+        "liên quan",
+        "issue liên quan",
+    }:
         return "related"
     if normalized in {
         "key changes",
         "dependency changes",
         "thay đổi chính",
         "thay đổi phụ thuộc",
+        "thay đổi dependency",
     }:
         return "changes"
     return None
@@ -519,7 +525,19 @@ def _localize_system_text(lines: list[str], language: str) -> list[str]:
 def _remove_protocol_lines(lines: list[str]) -> list[str]:
     filtered: list[str] = []
     in_head = False
+    in_metadata = True
     for line in lines:
+        if (
+            in_metadata
+            and not in_head
+            and line.strip()
+            and line not in {MANAGED_BODY_MARKER, HEAD_START_MARKER, HEAD_END_MARKER}
+            and TEMPLATE_MARKER_PATTERN.fullmatch(line) is None
+        ):
+            in_metadata = False
+        if not in_metadata:
+            filtered.append(line)
+            continue
         if line == MANAGED_BODY_MARKER:
             continue
         if line == HEAD_START_MARKER:
@@ -535,6 +553,51 @@ def _remove_protocol_lines(lines: list[str]) -> list[str]:
     return filtered
 
 
+def _automation_managed_body(pr: dict[str, Any]) -> bool:
+    """Recognize the same native-body owners as the trusted template gate."""
+    user = pr.get("user")
+    if not isinstance(user, dict):
+        return False
+    if user.get("login") == "dependabot[bot]" and user.get("type") == "Bot":
+        return True
+    head, base = pr.get("head"), pr.get("base")
+    if not isinstance(head, dict) or not isinstance(base, dict):
+        return False
+    head_repo, base_repo = head.get("repo"), base.get("repo")
+    if not isinstance(head_repo, dict) or not isinstance(base_repo, dict):
+        return False
+    owner = base_repo.get("owner")
+    if not isinstance(owner, dict):
+        return False
+    ref = head.get("ref")
+    source, destination = head_repo.get("full_name"), base_repo.get("full_name")
+    login, owner_login = user.get("login"), owner.get("login")
+    if (
+        not isinstance(ref, str)
+        or not ref
+        or not isinstance(source, str)
+        or not source
+        or not isinstance(destination, str)
+        or not destination
+        or not isinstance(login, str)
+        or not login
+        or not isinstance(owner_login, str)
+        or not owner_login
+    ):
+        return False
+    return (
+        ref.startswith("release-please--branches--")
+        and source.casefold() == destination.casefold()
+        and (
+            user.get("type") == "Bot"
+            or (
+                user.get("type") == "User"
+                and login.casefold() == owner_login.casefold()
+            )
+        )
+    )
+
+
 def render_dynamic_body(
     body: str,
     pr: dict[str, Any],
@@ -546,18 +609,27 @@ def render_dynamic_body(
     newline = _line_ending(body)
     normalized = body.replace("\r\n", "\n")
     marker_matches = list(TEMPLATE_MARKER_PATTERN.finditer(normalized))
-    if len(marker_matches) != 1 or marker_matches[0].start() != 0:
+    automation_managed = _automation_managed_body(pr)
+    if not automation_managed and (
+        len(marker_matches) != 1 or marker_matches[0].start() != 0
+    ):
         raise ValueError(
             "pull-request body must begin with exactly one trusted template marker"
         )
     head_sha, base_sha, _repository, _title = _head_and_base(pr)
-    current_body = pr.get("body") or ""
-    if not isinstance(current_body, str) or current_body != body:
+    current_body = pr.get("body")
+    if current_body is None:
+        current_body = ""
+    if not isinstance(current_body, str):
+        raise ValueError("pull-request body must be text or null")
+    if current_body != body:
         raise ValueError("pull-request body changed before rendering")
     commits = _validate_commits(commits_document, head_sha)
     files = _validate_files(files_document)
     _validate_inventory(pr, "commits", len(commits), MAX_COMMITS)
     _validate_inventory(pr, "changed_files", len(files), MAX_FILES)
+    if automation_managed:
+        return body
     summary_commits = _summary_commits(commits, base_sha)
     lines = normalized.split("\n")
     if lines and lines[-1] == "":
@@ -566,10 +638,12 @@ def render_dynamic_body(
     marker_line = lines.pop(0)
     while lines and not lines[0].strip():
         lines.pop(0)
+    visible_headings = visible_body_heading_lines("\n".join(lines))
     headings = [
         (index, match.group(1))
         for index, line in enumerate(lines)
-        if (match := HEADING_PATTERN.match(line)) is not None
+        if index + 1 in visible_headings
+        and (match := HEADING_PATTERN.match(line)) is not None
     ]
     generated = {
         "purpose": _purpose_lines(summary_commits, head_sha),
@@ -658,6 +732,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--files-file", type=Path, required=True)
     parser.add_argument("--checks-file", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--repository-root", type=Path, default=Path("."))
     return parser.parse_args(argv)
 
 
@@ -675,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
             _read_json(arguments.files_file, "pull-request files"),
             None,
         )
+        if not _automation_managed_body(pr):
+            validate_body_structure(arguments.repository_root, pr["title"], rendered)
         write_body(arguments.output, rendered)
     except (OSError, UnicodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

@@ -14,14 +14,18 @@ from datetime import date, datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+from urllib.parse import unquote_plus
 from zoneinfo import available_timezones
 
 from codeql_preflight import (
+    request_metrics,
     GitHubClient,
     InspectionError,
     MAX_WORKFLOW_BYTES,
     UniqueKeyBaseLoader,
+    revalidate_repository_state,
     split_repository,
+    verified_repository_id,
     yaml,
 )
 import sync_action_pins
@@ -64,8 +68,33 @@ FRESHNESS_REMINDER_API_ENDPOINT = (
     "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+"
     "%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"
 )
-FRESHNESS_REMINDER_API_JQ = '[.items[].number] | join(" ")'
-FRESHNESS_REMINDER_API_JQ_LEGACY = ".items[].number"
+MANAGED_REMINDER_SEARCH_MARKERS = (
+    "<!-- repo-scaffold-freshness-audit -->",
+    "<!-- repo-scaffold-community-health-drift -->",
+    "<!-- repo-scaffold-official-docs-audit -->",
+    "<!-- repo-scaffold-ci-policy-drift -->",
+)
+FRESHNESS_REMINDER_API_JQ_GUARD = (
+    'if type == "object" and .incomplete_results == false '
+    'and (.total_count | type) == "number" and .total_count >= 0 '
+    'and .total_count == (.total_count | floor) and (.items | type) == "array" '
+    "and (.items | length) == ([.total_count, 2] | min) "
+    'and all(.items[]; type == "object" and (.number | type) == "number" '
+    "and .number > 0 and .number == (.number | floor)) "
+    "and ([.items[].number] | unique | length) == (.items | length) "
+)
+FRESHNESS_REMINDER_API_JQ = (
+    FRESHNESS_REMINDER_API_JQ_GUARD
+    + 'then if (.items | length) == 0 then "none" '
+    + 'else [.items[].number] | join(" ") end '
+    + 'else error("Incomplete or invalid issue search response") end'
+)
+FRESHNESS_REMINDER_API_JQ_LEGACY = (
+    FRESHNESS_REMINDER_API_JQ_GUARD
+    + 'then if (.items | length) == 0 then "none" '
+    + "else .items[].number end "
+    + 'else error("Incomplete or invalid issue search response") end'
+)
 FRESHNESS_REMINDER_API_JQ_VALUES = frozenset(
     {FRESHNESS_REMINDER_API_JQ, FRESHNESS_REMINDER_API_JQ_LEGACY}
 )
@@ -271,7 +300,36 @@ FRESHNESS_MARKER_ASSIGNMENTS = frozenset(
     }
 )
 FRESHNESS_TITLE_ASSIGNMENT = "title=Repository freshness update required"
+FRESHNESS_VI_TITLE_ASSIGNMENT = "title=Cần cập nhật các đầu vào bảo trì repository"
+# Normalize only reviewed display tokens, never shell syntax or protocol values.
+FRESHNESS_LOCALIZED_PRINT_TEXT = {
+    "# Báo cáo freshness của repository": "# Repository freshness report",
+    "Checker đã lỗi trước khi tạo báo cáo. Hãy kiểm tra workflow run này.": (
+        "The checker failed before it could produce a report. Inspect this workflow run."
+    ),
+    "Có nhiều issue nhắc bảo trì freshness đang mở.\\n": (
+        "Found multiple open freshness reminder issues.\\n"
+    ),
+    "Checker freshness trả về exit status không hợp lệ: %s\\n": (
+        "Freshness checker returned an unexpected exit status: %s\\n"
+    ),
+    "Checker freshness chưa xác định được kết quả; không thay đổi issue nhắc bảo trì.\\n": (
+        "Freshness checker was indeterminate; no reminder issue was changed.\\n"
+    ),
+}
 FRESHNESS_ISSUE_NUMBERS_INITIALIZATION = "issue_numbers="
+FRESHNESS_EMPTY_SEARCH_GUARD = (
+    'if [[ -z "$issue_numbers_output" ]]; then',
+    "printf 'Issue search returned no verified result.\\n' >&2",
+    "exit 1",
+    "fi",
+)
+FRESHNESS_EMPTY_SEARCH_PRINTF = (
+    "printf",
+    "Issue search returned no verified result.\\n",
+    ">&",
+    "2",
+)
 FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS = (
     ("mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"),
     ("read", "-r", "-a", "issue_numbers", "<<<", "$issue_numbers_output"),
@@ -347,12 +405,14 @@ FRESHNESS_ALLOWED_PRINTF_COMMANDS = frozenset(
             "2",
         ),
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
+        FRESHNESS_EMPTY_SEARCH_PRINTF,
     }
 )
 FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
     {
         f'if [[ ! -f "{FRESHNESS_AUDIT_MARKDOWN_OUTPUT}" ]]; then',
-        'if [[ -n "$issue_numbers_output" ]]; then',
+        "if [[ \"$issue_numbers_output\" != 'none' ]]; then",
+        FRESHNESS_EMPTY_SEARCH_GUARD[0],
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
         FRESHNESS_INDETERMINATE_GUARD,
@@ -1644,6 +1704,7 @@ def freshness_shell_control_flow_is_safe(command: str) -> bool:
     if any(line not in FRESHNESS_ALLOWED_SHELL_IF_LINES for line in if_lines):
         return False
     required_if_lines = (
+        FRESHNESS_EMPTY_SEARCH_GUARD[0],
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
         FRESHNESS_INDETERMINATE_GUARD,
@@ -1652,9 +1713,25 @@ def freshness_shell_control_flow_is_safe(command: str) -> bool:
     )
     if any(if_lines.count(line) != 1 for line in required_if_lines):
         return False
+    if (
+        sum(
+            tuple(lines[index : index + len(FRESHNESS_EMPTY_SEARCH_GUARD)])
+            == FRESHNESS_EMPTY_SEARCH_GUARD
+            for index in range(len(lines) - len(FRESHNESS_EMPTY_SEARCH_GUARD) + 1)
+        )
+        != 1
+    ):
+        return False
     duplicate_guard_count = sum(
         tuple(lines[index : index + len(FRESHNESS_DUPLICATE_ISSUE_GUARD)])
-        == FRESHNESS_DUPLICATE_ISSUE_GUARD
+        in (
+            FRESHNESS_DUPLICATE_ISSUE_GUARD,
+            (
+                FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
+                "printf 'Có nhiều issue nhắc bảo trì freshness đang mở.\\n' >&2",
+                *FRESHNESS_DUPLICATE_ISSUE_GUARD[2:],
+            ),
+        )
         for index in range(len(lines) - len(FRESHNESS_DUPLICATE_ISSUE_GUARD) + 1)
     )
     if duplicate_guard_count != 1:
@@ -1671,7 +1748,7 @@ def freshness_shell_control_flow_is_safe(command: str) -> bool:
     nonempty_indices = [
         index
         for index, line in enumerate(if_lines)
-        if line == 'if [[ -n "$issue_numbers_output" ]]; then'
+        if line == "if [[ \"$issue_numbers_output\" != 'none' ]]; then"
     ]
     if len(nonempty_indices) > 1 or any(
         index >= clean_index for index in nonempty_indices
@@ -1825,7 +1902,9 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
             return False
         segments.extend(line_segments)
     printf_commands = [
-        tuple(command_tokens)
+        tuple(
+            FRESHNESS_LOCALIZED_PRINT_TEXT.get(token, token) for token in command_tokens
+        )
         for segment in segments
         if (command_tokens := shell_command_prefix(segment))
         and command_tokens[0] == "printf"
@@ -1844,12 +1923,16 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         return False
     reconciliation_start = reconciliation_start_indices[0]
     reconciliation_printf_commands = [
-        tuple(shell_command_prefix(segment))
+        tuple(
+            FRESHNESS_LOCALIZED_PRINT_TEXT.get(token, token)
+            for token in shell_command_prefix(segment)
+        )
         for index, segment in enumerate(segments)
         if index >= reconciliation_start
         and (shell_command_prefix(segment) or [""])[0] == "printf"
     ]
     if reconciliation_printf_commands != [
+        FRESHNESS_EMPTY_SEARCH_PRINTF,
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
         (
             "printf",
@@ -1885,7 +1968,10 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         for token in shell_command_prefix(segment)
         if freshness_variable_reference(token, "title")
     ]
-    if title_assignments and title_assignments != [[FRESHNESS_TITLE_ASSIGNMENT]]:
+    if title_assignments and title_assignments not in (
+        [[FRESHNESS_TITLE_ASSIGNMENT]],
+        [[FRESHNESS_VI_TITLE_ASSIGNMENT]],
+    ):
         return False
     if title_references and not title_assignments:
         return False
@@ -1952,11 +2038,12 @@ def freshness_checker_result_controls_reconciliation(command: str) -> bool:
         and len(close_mutations) == 1
         and len(edit_mutations) == 1
         and len(create_mutations) == 1
-        # One failure exit guards duplicate issues, one rejects an unexpected
+        # One failure exit rejects missing search evidence, one guards duplicate
+        # issues, one rejects an unexpected
         # checker status, one rejects indeterminate status, and one propagates
         # stale status.
         and len(indeterminate_tests) == 1
-        and len(failure_exits) == 4
+        and len(failure_exits) == 5
     ):
         return False
     issue_numbers_initialization_indices = [
@@ -2063,6 +2150,88 @@ def has_freshness_repository_context(document: dict[str, Any]) -> bool:
     return True
 
 
+def managed_issue_search_projections_are_safe(command: str) -> bool:
+    """Reject incomplete-result projections for repo-scaffold reminder lookups."""
+    managed_context = any(
+        marker in command for marker in MANAGED_REMINDER_SEARCH_MARKERS
+    )
+    segments: list[list[str]] = []
+    for logical_line in shell_logical_lines(command):
+        parsed = shell_command_segments(logical_line)
+        if parsed is None:
+            return False
+        segments.extend(parsed)
+    for segment in segments:
+        tokens = shell_command_prefix(segment)
+        for index in range(len(tokens) - 1):
+            if not (
+                is_github_cli_executable(tokens[index]) and tokens[index + 1] == "api"
+            ):
+                continue
+            arguments = tokens[index + 2 :]
+            if any(
+                token.startswith("search/issues?")
+                and (
+                    managed_context
+                    or any(
+                        marker in unquote_plus(token)
+                        for marker in MANAGED_REMINDER_SEARCH_MARKERS
+                    )
+                )
+                for token in arguments
+            ) and option_values(arguments, "--jq") not in (
+                (FRESHNESS_REMINDER_API_JQ,),
+                (FRESHNESS_REMINDER_API_JQ_LEGACY,),
+            ):
+                return False
+    lines = [
+        line.strip()
+        for line in command.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    mutations = [
+        index
+        for index, line in enumerate(lines)
+        if re.match(r"^gh issue (?:create|edit|close)(?:\s|$)", line)
+    ]
+    if mutations and any(
+        marker in unquote_plus(command) for marker in MANAGED_REMINDER_SEARCH_MARKERS
+    ):
+        lookups = [
+            index
+            for index, line in enumerate(lines)
+            if line == "issue_numbers_output=$("
+        ]
+        if len(lookups) != 1:
+            return False
+        preparation = [
+            index for index in range(lookups[0]) if lines[index] == "set -euo pipefail"
+        ]
+        if not preparation or any(
+            not line.startswith(("marker=", "title="))
+            and line != 'grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"'
+            for line in lines[preparation[-1] + 1 : lookups[0]]
+        ):
+            return False
+        closing = [
+            index for index in range(lookups[0] + 1, len(lines)) if lines[index] == ")"
+        ]
+        if not closing:
+            return False
+        receipt = (
+            ")",
+            *FRESHNESS_EMPTY_SEARCH_GUARD,
+            "issue_numbers=()",
+            "if [[ \"$issue_numbers_output\" != 'none' ]]; then",
+        )
+        start = closing[0]
+        if tuple(lines[start : start + len(receipt)]) != receipt or start + len(
+            receipt
+        ) > min(mutations):
+            return False
+    return True
+
+
 def issue_mutation_command_blocks(command: str) -> list[tuple[str, list[str]]]:
     """Return parsed ``gh issue`` mutation command blocks from shell text."""
     blocks: list[tuple[str, list[str]]] = []
@@ -2102,6 +2271,8 @@ def issue_mutation_command_blocks(command: str) -> list[tuple[str, list[str]]]:
             if not freshness_issue_options_are_safe(tokens, issue_position, subcommand):
                 return [(INVALID_ISSUE_MUTATION, [])]
             blocks.append((subcommand, tokens))
+    if not managed_issue_search_projections_are_safe(command):
+        return [(INVALID_ISSUE_MUTATION, [])]
     return blocks
 
 
@@ -2681,6 +2852,7 @@ def freshness_audit_markdown_outputs(command: str) -> set[str] | None:
                 return None
             repository_root = values["--repository-root"]
             tracker_registry = option_values(tokens, "--tracker-registry")
+            language = option_values(tokens, "--language")
             if (
                 repository_root is None
                 or repository_root[0] != FRESHNESS_AUDIT_REPOSITORY_ROOT
@@ -2688,6 +2860,10 @@ def freshness_audit_markdown_outputs(command: str) -> set[str] | None:
                 or len(tracker_registry) > 1
                 or tracker_registry
                 and tracker_registry[0] != FRESHNESS_AUDIT_TRACKER_REGISTRY
+                or language is None
+                or len(language) > 1
+                or language
+                and language[0] not in {"en", "vi"}
             ):
                 return None
             expected_argument_count = 2
@@ -2700,6 +2876,10 @@ def freshness_audit_markdown_outputs(command: str) -> set[str] | None:
                     1
                     if any(token.startswith("--tracker-registry=") for token in tokens)
                     else 2
+                )
+            if language:
+                expected_argument_count += (
+                    1 if any(token.startswith("--language=") for token in tokens) else 2
                 )
             if len(tokens) != expected_argument_count:
                 return None
@@ -3230,7 +3410,9 @@ SELECTED_ACTIONS_URL_PATTERN = re.compile(
 )
 
 
-def selected_actions_endpoint(document: Any) -> str:
+def selected_actions_endpoint(
+    document: Any, *, repository_id: int | None = None
+) -> str:
     """Return the trusted selected-actions endpoint advertised by GitHub."""
     if not isinstance(document, dict):
         raise InspectionError("Selected Actions policy response is invalid.")
@@ -3249,6 +3431,14 @@ def selected_actions_endpoint(document: Any) -> str:
     if identifier in {".", ".."}:
         raise InspectionError(
             "Selected Actions policy response has an invalid selected-actions URL."
+        )
+    if (
+        repository_id is not None
+        and endpoint.startswith("repositories/")
+        and identifier != str(repository_id)
+    ):
+        raise InspectionError(
+            "Selected Actions policy URL targets a different repository."
         )
     return endpoint
 
@@ -3682,6 +3872,16 @@ def workflow_capabilities(
             raise InspectionError(str(exc)) from exc
         if requires_issue_write(text, workflow):
             issue_workflows.add(workflow.name)
+            for command in workflow_run_commands(workflow_documents[workflow]):
+                if (
+                    "search/issues?" in command
+                    and "repo-scaffold-" in command
+                    and not managed_issue_search_projections_are_safe(command)
+                ):
+                    raise InspectionError(
+                        f"Workflow {workflow.name} must verify complete, valid Issue "
+                        "Search evidence before reminder reconciliation."
+                    )
             if not manual_issue_write_checkout_is_safe(workflow_documents[workflow]):
                 raise InspectionError(
                     f"Workflow {workflow.name} has workflow_dispatch and Issue write "
@@ -3696,7 +3896,17 @@ def workflow_capabilities(
             pull_request_target_workflows.add(workflow.name)
         if is_code_scanning_gate(text, workflow):
             code_scanning_gate_workflows.add(workflow.name)
-        if is_freshness_reminder_workflow(text, workflow):
+        freshness_verified = is_freshness_reminder_workflow(text, workflow)
+        declared_commands = workflow_run_commands(workflow_documents[workflow])
+        declares_freshness = any(
+            FRESHNESS_AUDIT_COMMAND in command for command in declared_commands
+        ) and any(FRESHNESS_REMINDER_MARKER in command for command in declared_commands)
+        if declares_freshness and not freshness_verified:
+            raise InspectionError(
+                f"Workflow {workflow.name} declares the freshness reminder but "
+                "its executable lifecycle was not verified."
+            )
+        if freshness_verified:
             freshness_reminder_supplied = True
         direct_references = {
             sync_action_pins.normalized_uses_reference(match)
@@ -3763,6 +3973,13 @@ def selected_policy_allows(
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     """Inspect one repository before copying a dependent workflow asset."""
+    for control in (
+        "require_external_actions",
+        "require_issues",
+        "confirm_pull_request_write_tokens",
+    ):
+        if type(getattr(args, control, None)) is not bool:
+            raise InspectionError(f"Workflow control {control} must be a Boolean.")
     if not isinstance(args.hostname, str) or args.hostname.casefold() != "github.com":
         raise InspectionError(
             "Workflow-installation preflight supports GitHub.com only."
@@ -3778,6 +3995,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         or full_name.casefold() != args.repository.casefold()
     ):
         raise InspectionError("GitHub returned a different repository than requested.")
+    repository_id = verified_repository_id(
+        repository, getattr(args, "expected_repository_id", None)
+    )
     if require_boolean(repository, "archived"):
         raise InspectionError("Archived repositories cannot install workflow assets.")
     if require_boolean(repository, "disabled"):
@@ -3816,7 +4036,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     unapproved_action_references: list[str] = []
     if actions_enabled and requires_external_actions and allowed_actions == "selected":
         selected_policy = selected_actions_policy(
-            client.json(selected_actions_endpoint(actions_permissions_response))
+            client.json(
+                selected_actions_endpoint(
+                    actions_permissions_response, repository_id=repository_id
+                )
+            )
         )
         if not external_action_references:
             (
@@ -3861,6 +4085,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     code_scanning_companions_verified = not code_scanning_gate_workflows or (
         freshness_reminder_supplied and code_scanning_allowlist_supplied
     )
+    revalidate_repository_state(
+        client,
+        args.repository,
+        repository,
+        ("archived", "disabled", "visibility", "has_issues", "owner.id", "owner.type"),
+    )
+    fresh_actions = client.json(f"repos/{owner}/{repo}/actions/permissions")
+    if actions_permissions(fresh_actions) != (actions_enabled, allowed_actions):
+        raise InspectionError("GitHub Actions permissions changed during inspection.")
+    if selected_policy is not None:
+        if selected_actions_endpoint(
+            fresh_actions, repository_id=repository_id
+        ) != selected_actions_endpoint(
+            actions_permissions_response, repository_id=repository_id
+        ):
+            raise InspectionError(
+                "Selected Actions policy binding changed during inspection."
+            )
+        fresh_selected_policy = selected_actions_policy(
+            client.json(
+                selected_actions_endpoint(fresh_actions, repository_id=repository_id)
+            )
+        )
+        if fresh_selected_policy != selected_policy:
+            raise InspectionError("Selected Actions policy changed during inspection.")
+    if visibility == "public" and pull_request_target_workflows:
+        if load_actions_policy_details(client, owner, repo) != policies:
+            raise InspectionError("Actions event policy changed during inspection.")
     if not actions_enabled:
         decision = "enable-github-actions-before-installing-workflows"
     elif requires_external_actions and allowed_actions == "local_only":
@@ -3880,11 +4132,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     elif not code_scanning_companions_verified:
         decision = "include-code-scanning-companions-before-installing-workflows"
     else:
-        decision = "may-install-workflow-assets"
+        decision = (
+            "bind-repository-identity-before-mutation"
+            if getattr(args, "expected_repository_id", None) is None
+            else "may-install-workflow-assets"
+        )
     return {
         "inspection_complete": True,
         "decision": decision,
         "repository": args.repository,
+        "repository_id": repository_id,
         "visibility": visibility,
         "github_actions_enabled": actions_enabled,
         "allowed_actions": allowed_actions,
@@ -3907,13 +4164,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "freshness_reminder_supplied": freshness_reminder_supplied,
         "code_scanning_allowlist_supplied": code_scanning_allowlist_supplied,
         "code_scanning_companions_verified": code_scanning_companions_verified,
-        "github_api_requests": client.request_count,
+        **request_metrics(client.request_count),
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--hostname", default="github.com")
     parser.add_argument("--require-external-actions", action="store_true")
     parser.add_argument("--require-issues", action="store_true")

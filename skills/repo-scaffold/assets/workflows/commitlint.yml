@@ -20,16 +20,20 @@ concurrency:
 
 jobs:
   commitlint:
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.state == 'closed' && 'commitlint-closed-pr' || 'commitlint' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name != 'pull_request' || github.event.pull_request.state != 'closed'
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Validate Conventional Commit headers
         env:
           EVENT_NAME: ${{ github.event_name }}
+          PR_STATE: ${{ github.event.pull_request.state }}
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           PR_TITLE: ${{ github.event.pull_request.title || '' }}
@@ -37,6 +41,18 @@ jobs:
         run: |
           node <<'NODE'
           const { spawnSync } = require('node:child_process');
+
+          // Editing metadata on a closed PR can emit `edited` after its refs expire.
+          if (process.env.EVENT_NAME === 'pull_request') {
+            if (process.env.PR_STATE === 'closed') {
+              console.log('Commitlint is not applicable to a closed pull request.');
+              process.exit(0);
+            }
+            if (process.env.PR_STATE !== 'open') {
+              console.error('Pull request state must be open or closed.');
+              process.exit(1);
+            }
+          }
 
           const allowedTypes = new Set([
             'build', 'chore', 'ci', 'docs', 'feat', 'fix', 'perf',

@@ -42,6 +42,20 @@ def statistics(**changes: object) -> dict[str, object]:
 
 
 class MutationStatisticsTests(unittest.TestCase):
+    def test_statistics_loader_accepts_the_exact_byte_budget(self) -> None:
+        encoded = json.dumps(statistics()).encode("utf-8")
+        limit = validate_mutation_results.MAX_STATISTICS_BYTES
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "statistics.json"
+            path.write_bytes(encoded + b" " * (limit - len(encoded)))
+            self.assertEqual(
+                validate_mutation_results.load_statistics(path), statistics()
+            )
+            with path.open("ab") as stream:
+                stream.write(b" ")
+            with self.assertRaisesRegex(ValueError, "byte safety cap"):
+                validate_mutation_results.load_statistics(path)
+
     def test_accepts_a_complete_run_without_survivors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "statistics.json"

@@ -78,6 +78,11 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
+      - name: Select pure-Python PyYAML on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: printf 'PYYAML_FORCE_LIBYAML=0\n' >> "$GITHUB_ENV"
+
       - name: Install development dependencies
         run: >-
           python -m pip install --disable-pip-version-check --require-hashes
@@ -87,7 +92,7 @@ jobs:
         run: python -m pip check
 
       - name: Run tests
-        run: python -m pytest -q
+        run: python scripts/run_tests.py suite
 
   quality:
     name: quality
@@ -121,10 +126,7 @@ jobs:
         run: python scripts/audit_official_docs.py --repository-root . --validate-registry
 
       - name: Enforce test coverage baseline
-        run: |
-          python -m coverage erase
-          python -m coverage run -m pytest -q
-          python -m coverage report
+        run: python scripts/run_tests.py full
 
       - name: Check formatting
         run: python -m ruff format --check skills scripts tests
@@ -156,11 +158,13 @@ jobs:
           scripts/audit_freshness.py
           scripts/audit_official_docs.py
           scripts/check_code_scanning_alerts.py
+          scripts/coverage_policy.py
           scripts/merge_mutation_shards.py
           scripts/pr_template_preflight.py
           scripts/markdown_body_preflight.py
           scripts/prepare_mutation_cache.py
           scripts/python_support.py
+          scripts/run_tests.py
           scripts/run_mutation_testing.py
           scripts/sync_action_pins.py
           scripts/sync_versioned_inputs.py
@@ -265,7 +269,7 @@ jobs:
       - name: Exercise real fork-based incremental reuse
         env:
           REPO_SCAFFOLD_MUTMUT_INTEGRATION: "1"
-        run: python -m pytest -q tests/test_mutation_runner_linux.py
+        run: python scripts/run_tests.py suite tests/test_mutation_runner_linux.py
 
   python-latest-canary:
     name: python-latest-canary
@@ -295,7 +299,7 @@ jobs:
         run: python -m pip check
 
       - name: Run tests on the latest stable Python
-        run: python -m pytest -q
+        run: python scripts/run_tests.py suite
 
       - name: Detect undeclared stable Python releases
         run: python scripts/python_support.py verify-latest-runtime
@@ -353,10 +357,14 @@ jobs:
           issue_numbers_output=$(
             gh api --hostname github.com \
               "search/issues?q=repo:${REPOSITORY}+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-ci-policy-drift+--%3E%22&per_page=2" \
-              --jq '[.items[].number] | join(" ")'
+              --jq 'if type == "object" and .incomplete_results == false and (.total_count | type) == "number" and .total_count >= 0 and .total_count == (.total_count | floor) and (.items | type) == "array" and (.items | length) == ([.total_count, 2] | min) and all(.items[]; type == "object" and (.number | type) == "number" and .number > 0 and .number == (.number | floor)) and ([.items[].number] | unique | length) == (.items | length) then if (.items | length) == 0 then "none" else [.items[].number] | join(" ") end else error("Incomplete or invalid issue search response") end'
           )
+          if [[ -z "$issue_numbers_output" ]]; then
+            printf 'Issue search returned no verified result.\n' >&2
+            exit 1
+          fi
           issue_numbers=()
-          if [[ -n "$issue_numbers_output" ]]; then
+          if [[ "$issue_numbers_output" != 'none' ]]; then
             read -r -a issue_numbers <<< "$issue_numbers_output"
           fi
           if (( ${#issue_numbers[@]} > 1 )); then

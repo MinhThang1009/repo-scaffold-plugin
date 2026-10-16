@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from http.client import HTTPException, HTTPResponse
+
 import argparse
 import json
 import os
@@ -38,8 +40,8 @@ TOOL_FIELDS = {
 TOOL_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 NPM_PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-PYTHON_FEATURE = re.compile(r"^3\.(0|[1-9]\d*)$")
-STABLE_SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+PYTHON_FEATURE = re.compile(r"^3\.(0|[1-9]\d*)$", re.ASCII)
+STABLE_SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$", re.ASCII)
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 MAX_RESPONSE_BYTES = 1_000_000
 MAX_POLICY_BYTES = 64 * 1024
@@ -63,7 +65,19 @@ class RejectRedirectHandler(HTTPRedirectHandler):
         headers: Any,
         new_url: str,
     ) -> Request | None:
+        if response is not None:
+            try:
+                response.close()
+            except OSError as error:
+                raise ToolchainError("Redirect response could not be closed") from error
         raise ToolchainError("upstream redirects are not allowed")
+
+    def http_error_302(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any
+    ) -> Request | None:
+        return self.redirect_request(req, fp, code, msg, headers, req.full_url)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
 GITHUB_API_OPENER = build_opener(RejectRedirectHandler())
@@ -347,6 +361,43 @@ def github_output_lines(policy: CiToolchainPolicy) -> list[str]:
     return lines
 
 
+def read_http_payload(response: Any, limit: int) -> bytes:
+    """Read bounded bytes without accepting ambiguous native length framing."""
+    expected: int | None = None
+    if isinstance(response, HTTPResponse):
+        values = response.headers.get_all("Content-Length", [])
+        if len(values) > 100 or sum(len(value) for value in values) > 8192:
+            raise ValueError("HTTP Content-Length exceeds the header safety bound")
+        canonical: str | None = None
+        members = 0
+        for value in values:
+            for item in value.split(","):
+                members += 1
+                item = item.strip(" \t")
+                if members > 100 or re.fullmatch(r"[0-9]+", item) is None:
+                    raise ValueError("HTTP Content-Length is invalid")
+                normalized = item.lstrip("0") or "0"
+                if canonical is not None and normalized != canonical:
+                    raise ValueError("HTTP Content-Length values conflict")
+                canonical = normalized
+        if canonical is not None:
+            if len(canonical) > len(str(limit)) or (
+                len(canonical) == len(str(limit)) and canonical > str(limit)
+            ):
+                raise ValueError(
+                    "HTTP Content-Length exceeds the response safety bound"
+                )
+            if not response.chunked:
+                expected = int(canonical)
+    payload: bytes = response.read(limit + 1)
+    if isinstance(response, HTTPResponse) and (
+        response.length not in {None, 0}
+        or (expected is not None and len(payload) != expected)
+    ):
+        raise ValueError("HTTP response is incomplete")
+    return payload
+
+
 def fetch_latest_release(tool: ToolPin, *, opener: Any | None = None) -> Any:
     """Fetch one bounded public GitHub release document without credentials."""
     url = f"https://api.github.com/repos/{tool.repository}/releases/latest"
@@ -359,8 +410,15 @@ def fetch_latest_release(tool: ToolPin, *, opener: Any | None = None) -> Any:
     )
     try:
         with (opener or GITHUB_API_OPENER.open)(request, timeout=15) as response:
-            payload = response.read(MAX_RESPONSE_BYTES + 1)
-    except (HTTPError, URLError, OSError) as error:
+            payload = read_http_payload(response, MAX_RESPONSE_BYTES)
+    except (HTTPError, URLError, OSError, HTTPException, ValueError) as error:
+        if isinstance(error, HTTPError):
+            try:
+                error.close()
+            except OSError as cleanup_error:
+                raise ToolchainError(
+                    "Release error response could not be closed"
+                ) from cleanup_error
         raise ToolchainError(
             f"could not query latest release for {tool.repository}: {error}"
         ) from error
@@ -386,8 +444,15 @@ def fetch_latest_npm_tool(tool: NpmToolPin, *, opener: Any | None = None) -> Any
     )
     try:
         with (opener or NPM_REGISTRY_OPENER.open)(request, timeout=15) as response:
-            payload = response.read(MAX_RESPONSE_BYTES + 1)
-    except (HTTPError, URLError, OSError) as error:
+            payload = read_http_payload(response, MAX_RESPONSE_BYTES)
+    except (HTTPError, URLError, OSError, HTTPException, ValueError) as error:
+        if isinstance(error, HTTPError):
+            try:
+                error.close()
+            except OSError as cleanup_error:
+                raise ToolchainError(
+                    "npm error response could not be closed"
+                ) from cleanup_error
         raise ToolchainError(
             f"could not query latest npm release for {tool.package}: {error}"
         ) from error

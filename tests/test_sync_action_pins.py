@@ -11,7 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from email.message import Message
 from io import BytesIO, StringIO
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, ClassVar
 from unittest import mock
 from urllib.request import Request
@@ -38,6 +38,231 @@ class FakeResponse(BytesIO):
 
 
 class ActionPinSyncTests(unittest.TestCase):
+    def test_native_tag_inventory_rejects_conflicting_same_tag_identities(
+        self,
+    ) -> None:
+        for paginated in (False, True):
+            for reverse in (False, True):
+                entries = [
+                    {"name": "v9.0.0", "commit": {"sha": "a" * 40}},
+                    {"name": "v9.0.0", "commit": {"sha": "b" * 40}},
+                ]
+                if reverse:
+                    entries.reverse()
+                payloads = iter(
+                    [[entries[0]] * 100, [entries[1]]] if paginated else [entries]
+                )
+                client = sync_action_pins.GitHubReleaseClient(
+                    "synthetic",
+                    lambda *_args, **_kwargs: FakeResponse(
+                        json.dumps(next(payloads)).encode()
+                    ),
+                )
+                with (
+                    self.subTest(paginated=paginated, reverse=reverse),
+                    self.assertRaisesRegex(ValueError, "conflicting commit identities"),
+                ):
+                    client.latest_release("github/codeql-action")
+
+    def test_native_tag_inventory_rejects_unknown_and_invalid_stable_entries(
+        self,
+    ) -> None:
+        malformed: tuple[dict[str, Any], ...] = (
+            {},
+            {"name": None},
+            {"name": True},
+            {"name": 9},
+            {"name": ["v9.0.0"]},
+            {"name": {}},
+            {"name": ""},
+            {"name": "v9.0.0"},
+            {"name": "v9.0.0", "commit": None},
+            {"name": "v9.0.0", "commit": []},
+            {"name": "v9.0.0", "commit": {"sha": True}},
+            {"name": "v9.0.0", "commit": {"sha": "not-a-sha"}},
+            {"name": "v9.0.0", "commit": {"sha": "A" * 40}},
+        )
+        older = {"name": "v1.0.0", "commit": {"sha": "a" * 40}}
+        for entry in malformed:
+            for first_page in (False, True):
+                payloads = iter(
+                    [[entry, older]] if first_page else [[older] * 100, [entry]]
+                )
+                client = sync_action_pins.GitHubReleaseClient(
+                    "synthetic",
+                    lambda *_args, **_kwargs: FakeResponse(
+                        json.dumps(next(payloads)).encode()
+                    ),
+                )
+                with (
+                    self.subTest(entry=entry, first_page=first_page),
+                    self.assertRaisesRegex(ValueError, "action tag inventory"),
+                ):
+                    client.latest_release("github/codeql-action")
+
+    def test_native_tag_inventory_can_exclude_named_inapplicable_entries(
+        self,
+    ) -> None:
+        payload = [
+            {"name": "codeql-bundle-v9.0.0"},
+            {"name": "v9.0.0-beta.1", "commit": []},
+            {"name": "v9"},
+            {"name": "v1.0.0", "commit": {"sha": "a" * 40}},
+        ]
+        client = sync_action_pins.GitHubReleaseClient(
+            "synthetic",
+            lambda *_args, **_kwargs: FakeResponse(json.dumps(payload).encode()),
+        )
+        self.assertEqual(
+            client.latest_release("github/codeql-action"),
+            sync_action_pins.ActionRelease("v1.0.0", "a" * 40),
+        )
+
+    def test_native_stable_tag_validation_precedes_numeric_conversion(self) -> None:
+        for tag in ("v1\u0662.0.0", "v" + "9" * 5000 + ".0.0"):
+            client = sync_action_pins.GitHubReleaseClient(
+                "synthetic",
+                lambda *_args, **_kwargs: FakeResponse(
+                    json.dumps([{"name": tag, "commit": {"sha": "a" * 40}}]).encode()
+                ),
+            )
+            with (
+                self.subTest(tag_length=len(tag)),
+                self.assertRaisesRegex(ValueError, "supported bounded tag"),
+            ):
+                client.latest_release("github/codeql-action")
+
+    def test_native_release_ref_receipt_must_match_requested_tag(self) -> None:
+        refs: tuple[object, ...] = (None, "refs/tags/different", True, [], {})
+        for ref in refs:
+            responses = iter(
+                [
+                    {"tag_name": "v1.2.3"},
+                    {"ref": ref, "object": {"type": "commit", "sha": "a" * 40}},
+                ]
+            )
+            client = sync_action_pins.GitHubReleaseClient(
+                "synthetic",
+                lambda *_args, **_kwargs: FakeResponse(
+                    json.dumps(next(responses)).encode()
+                ),
+            )
+            with (
+                self.subTest(ref=ref),
+                self.assertRaisesRegex(ValueError, "reference identity"),
+            ):
+                client.latest_release("actions/checkout")
+
+    def test_native_annotated_tag_receipt_must_match_queried_object_sha(self) -> None:
+        identities: tuple[object, ...] = (None, "b" * 40, True, [], {})
+        for identity in identities:
+            responses = iter(
+                [
+                    {"tag_name": "v1.2.3"},
+                    {
+                        "ref": "refs/tags/v1.2.3",
+                        "object": {"type": "tag", "sha": "a" * 40},
+                    },
+                    {"sha": identity, "object": {"type": "commit", "sha": "c" * 40}},
+                ]
+            )
+            client = sync_action_pins.GitHubReleaseClient(
+                "synthetic",
+                lambda *_args, **_kwargs: FakeResponse(
+                    json.dumps(next(responses)).encode()
+                ),
+            )
+            with (
+                self.subTest(identity=identity),
+                self.assertRaisesRegex(ValueError, "tag object identity"),
+            ):
+                client.latest_release("actions/checkout")
+
+    def test_release_snapshot_uses_validated_text_not_custom_format_hooks(self) -> None:
+        class FormatText(str):
+            def __format__(self, spec: str) -> str:
+                return "UNAPPROVED\n      - run: echo synthetic"
+
+        release = sync_action_pins.validated_action_release(
+            SimpleNamespace(tag=FormatText("v1.0.1"), sha=FormatText("b" * 40))
+        )
+        self.assertIs(type(release.tag), str)
+        self.assertIs(type(release.sha), str)
+        self.assertEqual(f"{release.tag}@{release.sha}", "v1.0.1@" + "b" * 40)
+
+    def test_bad_release_results_preserve_all_files_before_replacement(self) -> None:
+        invalid: tuple[object, ...] = (
+            None,
+            {},
+            True,
+            SimpleNamespace(tag=None, sha="b" * 40),
+            SimpleNamespace(tag="v1.0.1", sha=None),
+            SimpleNamespace(tag="v1.0.1", sha="not-a-commit-id"),
+            SimpleNamespace(tag="v1.0.1\n      - run: echo synthetic", sha="b" * 40),
+            SimpleNamespace(tag="v1.0.1" + "x" * 1024, sha="b" * 40),
+            SimpleNamespace(tag="v1\u0662.0.1", sha="b" * 40),
+        )
+        for value in invalid:
+            for write in (False, True):
+                with (
+                    self.subTest(value=value, write=write),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    paths = self.make_repository(root)
+                    original = {path: path.read_bytes() for path in paths}
+                    with self.assertRaisesRegex(ValueError, "supported bounded tag"):
+                        sync_action_pins.synchronize_action_pins(
+                            root, lambda repository: value, write=write
+                        )  # type: ignore[arg-type]
+                    self.assertTrue(
+                        all(
+                            path.read_bytes() == payload
+                            for path, payload in original.items()
+                        )
+                    )
+
+    def test_release_snapshot_does_not_reuse_later_callback_object_mutation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed, asset = self.make_repository(root)
+            candidate = SimpleNamespace(tag="v9.1.2", sha="c" * 40)
+
+            def lookup(repository: str) -> Any:
+                if repository == "actions/checkout":
+                    return candidate
+                candidate.tag = "v9.1.2\n      - run: echo UNAPPROVED"
+                candidate.sha = "not-a-commit-id"
+                return sync_action_pins.ActionRelease("v8.7.6", "d" * 40)
+
+            sync_action_pins.synchronize_action_pins(root, lookup, write=True)
+            for path in (installed, asset):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("UNAPPROVED", text)
+                self.assertNotIn("not-a-commit-id", text)
+                self.assertIn("actions/checkout@" + "c" * 40, text)
+
+    def test_invalid_write_control_rejects_before_discovery_or_release_lookup(
+        self,
+    ) -> None:
+        values: tuple[object, ...] = (None, "false", "true", 0, 1, [], {}, [True])
+        for value in values:
+            with (
+                self.subTest(write=value),
+                mock.patch.object(sync_action_pins, "workflow_paths") as discovery,
+                self.assertRaisesRegex(ValueError, "Boolean"),
+            ):
+                lookup = mock.Mock()
+                sync_action_pins.synchronize_action_pins(
+                    Path("."),
+                    lookup,
+                    write=value,  # type: ignore[arg-type]
+                )
+            discovery.assert_not_called()
+            lookup.assert_not_called()
+
     def write_workflow(self, root: Path, relative: str, content: str) -> Path:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1588,10 +1813,13 @@ class ActionPinSyncTests(unittest.TestCase):
         responses = iter(
             [
                 {"tag_name": "v1.2.3"},
-                {"object": {"type": "commit", "sha": "a" * 40}},
+                {
+                    "ref": "refs/tags/v1.2.3",
+                    "object": {"type": "commit", "sha": "a" * 40},
+                },
                 {"tag_name": "v2.0.0"},
-                {"object": {"type": "tag", "sha": "b" * 40}},
-                {"object": {"type": "commit", "sha": "c" * 40}},
+                {"ref": "refs/tags/v2.0.0", "object": {"type": "tag", "sha": "b" * 40}},
+                {"sha": "b" * 40, "object": {"type": "commit", "sha": "c" * 40}},
             ]
         )
         requests: list[tuple[str, str | None, int]] = []
@@ -1625,9 +1853,9 @@ class ActionPinSyncTests(unittest.TestCase):
         responses = iter(
             [
                 {"tag_name": "v1.2.3"},
-                {"object": {"type": "tag", "sha": "a" * 40}},
-                {"object": {"type": "tag", "sha": "b" * 40}},
-                {"object": {"type": "commit", "sha": "c" * 40}},
+                {"ref": "refs/tags/v1.2.3", "object": {"type": "tag", "sha": "a" * 40}},
+                {"sha": "a" * 40, "object": {"type": "tag", "sha": "b" * 40}},
+                {"sha": "b" * 40, "object": {"type": "commit", "sha": "c" * 40}},
             ]
         )
         requests: list[str] = []
@@ -1654,7 +1882,11 @@ class ActionPinSyncTests(unittest.TestCase):
         )
 
     def test_github_release_client_bounds_nested_annotated_tags(self) -> None:
-        nested_tag = {"object": {"type": "tag", "sha": "a" * 40}}
+        nested_tag = {
+            "ref": "refs/tags/v1.2.3",
+            "sha": "a" * 40,
+            "object": {"type": "tag", "sha": "a" * 40},
+        }
         responses = iter([{"tag_name": "v1.2.3"}, nested_tag, nested_tag])
 
         def opener(_request: Any, *, timeout: int) -> FakeResponse:
@@ -1671,7 +1903,10 @@ class ActionPinSyncTests(unittest.TestCase):
         responses = iter(
             [
                 {"tag_name": "v1.2.3"},
-                {"object": {"type": "tag", "sha": "not-a-sha"}},
+                {
+                    "ref": "refs/tags/v1.2.3",
+                    "object": {"type": "tag", "sha": "not-a-sha"},
+                },
             ]
         )
 
@@ -1780,7 +2015,7 @@ class ActionPinSyncTests(unittest.TestCase):
                     malformed.get_json("/test")
         for payload, message in (
             ({"tag_name": "main"}, "invalid tag"),
-            ({"tag_name": "v1.2.3"}, "no tag object"),
+            ({"tag_name": "v1.2.3", "ref": "refs/tags/v1.2.3"}, "no tag object"),
         ):
             with self.subTest(payload=payload):
                 bad = sync_action_pins.GitHubReleaseClient(
@@ -1831,8 +2066,11 @@ class ActionPinSyncTests(unittest.TestCase):
             (
                 [
                     {"tag_name": "v1.2.3"},
-                    {"object": {"type": "tag", "sha": "a" * 40}},
-                    {"object": []},
+                    {
+                        "ref": "refs/tags/v1.2.3",
+                        "object": {"type": "tag", "sha": "a" * 40},
+                    },
+                    {"sha": "a" * 40, "object": []},
                 ],
                 "release tag is invalid",
                 "actions/checkout",
@@ -1840,7 +2078,10 @@ class ActionPinSyncTests(unittest.TestCase):
             (
                 [
                     {"tag_name": "v1.2.3"},
-                    {"object": {"type": "commit", "sha": "not-a-sha"}},
+                    {
+                        "ref": "refs/tags/v1.2.3",
+                        "object": {"type": "commit", "sha": "not-a-sha"},
+                    },
                 ],
                 "does not resolve to a commit",
                 "actions/checkout",

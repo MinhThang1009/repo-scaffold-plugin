@@ -32,4 +32,4 @@
 - [ ] Đã thêm regression test tập trung hoặc cập nhật hướng dẫn về tài liệu, migration, rollback, release hoặc security
 <!-- repo-scaffold:optional-checklist:end -->
 
-<!-- Đóng #<issue> nếu phù hợp -->
+<!-- Nếu phù hợp, hãy dùng một dòng đóng issue riêng: Fixes #<issue>, Closes #<issue>, hoặc Resolves #<issue>. -->

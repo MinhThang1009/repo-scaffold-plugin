@@ -38,6 +38,7 @@ The plugin has no build step. Development checks require:
 - markdown-it-py, for CommonMark-compliant Markdown validation
 - PyYAML
 - pytest
+- Git, including `hash-object` for independent fixture object IDs
 - mutmut, on Linux, macOS, or Windows through WSL
 - Ruff
 - mypy
@@ -47,6 +48,69 @@ The plugin has no build step. Development checks require:
 - `pip-tools`, only when regenerating a lock; record the version used in the
   pull request verification
 
+Native reminder-query integration tests also use an available GitHub CLI and
+Bash (Git Bash on Windows). They serve synthetic responses only on loopback,
+isolate GitHub CLI configuration, and never require real credentials or write
+to GitHub. When either tool is absent, report the corresponding applicability
+skip rather than claiming the integration passed.
+
+Imported preflight wrappers reuse the bundled code loaded at import, while
+validating each new body and rereading the current target template. This caches
+code, not target evidence or verdicts. The focused bundled-parser test helper
+also keeps one process-local module; mutmut's trampolines still select the
+active mutant on each call. The Linux integration fixture checks that behavior
+with the real backend.
+The HTTP response regression helper also reuses at most 16 immutable repository
+modules instead of loading expanded code for each framing or redirect case.
+Temporary target repositories are deliberately uncached, and every response is
+still read and validated independently. The helper restores module aliases after
+loading and retains each source's canonical mutation namespace. A separate Linux
+fixture runs this actual helper against real mutants to check verdict isolation.
+The pytest session-finish hook collects unreachable temporary module cycles
+before an in-process runner can freeze them into its inherited heap. It does
+not unfreeze live inherited objects, change GC thresholds or enabled state,
+rewrite an exit status, or change mutation workers, exclusions or score floors.
+The shard wrapper opts into bounded runner-submission/completion diagnostics.
+They emit only assigned mutant keys and a PID when the pinned backend exposes an
+unambiguous match, independently of process-title sampling. Unknown identities
+are not authorization or verdict evidence. Resource samples and runner events
+each receive a 1 MiB budget, retaining the combined 2 MiB diagnostic limit;
+exhaustion is explicit. Runner arguments, returned results, exceptions and the
+original factory are preserved. The real Linux shard fixture checks these events
+against the assigned mutant inventory.
+Repository-validator and workflow-preflight tests give the original HTTP
+token classifiers a linear
+token-read allowance, shared across slices and fresh for each call. A parser
+mutation that resets its index must raise a test assertion before its method
+list grows without bound. The module fixture covers direct and higher-level
+calls and restores the source functions afterward. It does not substitute a
+classification verdict, execute generated artifact code, or change production
+limits, mutation workers, timeouts, exclusions or quality floors.
+Text-parser fixtures also bound call events for shell continuation folding and
+HTML comment search/removal. This catches non-advancing internal scans and
+repeated output allocation without replacing parser inputs or results. Each
+call gets a fresh allowance proportional to its text length. The current-thread
+profile callback forwards any previous profiler and restores it even after a
+test assertion or parser exception; it does not replace the coverage trace
+hook. A non-callable native profiler is rejected without replacing it. These
+test assertions are not a sandbox or a production resource limit.
+The Linux fixtures copy the actual checked-in classifiers and comment/line
+parsers into isolated repositories, then verify that real index-reset,
+index-decrement and omitted-search-offset mutants receive killed verdicts.
+Fault selection examines syntax rather than relying on historical mutant IDs.
+
+Workflow-blob fixtures use `git hash-object --stdin --no-filters` as an
+independent object-format oracle. Up to 128 fixture IDs are memoized by exact
+text; this is deterministic object-format data, not cached GitHub evidence or
+authorization. Their workflow text is synthetic, not a
+credential or password hash. Portable Windows pipe-backend contract tests
+exercise control flow through modeled APIs on every platform; retain the
+native Windows tests separately. Passing those contract tests on Linux does
+not establish Windows ABI or native pipe behavior.
+Each platform's quality run keeps the declared coverage floor. Do not exclude
+a native backend solely because that quality runner uses another OS; pair
+portable contract seams with the applicable native integration checks.
+
 CI pins for markdownlint and standalone downloaded tools, plus the rolling
 documentation bootstrap and minimum bundled-tooling Python runtimes, are
 maintained in [`.github/ci-toolchain.json`](.github/ci-toolchain.json). Change
@@ -54,6 +118,11 @@ that policy only after reviewing the npm or upstream release and any asset
 digest.
 
 PSScriptAnalyzer is recommended when a change adds PowerShell snippets.
+
+On Windows, CI sets PyYAML's optional libyaml extension to pure-Python mode
+during dependency installation. This keeps the hash-locked PyYAML source build
+usable on newly supported Windows Python releases without installing a
+compiler or changing the dependency pin.
 
 Install the fully resolved, hash-verified development toolchain from the
 repository root:
@@ -85,10 +154,18 @@ Mutation testing uses a separate lock because mutmut requires operating-system
 same procedure: record `pip-compile --version` and preserve the lockfile
 header's hash-mode options. Its unconditional
 `toml` pin preserves mutmut's Python 3.10 dependency when the lock is generated
-on a newer interpreter. A mutmut update must pass the runner's internal API
+on a newer interpreter. Generate the mutation lock with CPython 3.13 so
+LibCST's Python 3.13-only `PyYAML-ft` dependency and its hashes are retained.
+Keep that provider explicitly pinned with `python_version == "3.13"` in
+`requirements-mutation.in`; it uses the separate `yaml_ft` namespace and does
+not replace the development toolchain's `yaml` package. The repository validator
+rejects a missing provider or a marker that activates it on other runtimes.
+A mutmut update must pass the runner's internal API
 integration and behavioral tests; validators derive the reviewed version from
 the direct input instead of duplicating it. Regenerating the lock alone remains
-insufficient. Trusted scheduled and manual runs
+insufficient. Mutation workspace `also_copy` entries must be string paths;
+the legacy contract validator rejects non-string entries before membership checks.
+Trusted scheduled and manual runs
 plan every mutant, executes the exact assignment in 128 Linux workers, and merges
 only a complete non-overlapping result set. A hash-validated mutation cache may
 reuse state only for the same source, tests, mutation workflow and dependency
@@ -103,6 +180,21 @@ artifact, an unassigned result, or a shard that did not finish before it exports
 statistics. On a validated cache hit, preserved killed verdicts are carried into
 the merge and only pending assignments execute again. This preserves a full
 mutation run without accepting partial cache state or lowering the score gate.
+
+If preparation invalidates any source/cache metadata pair, remove the existing
+shard plan as well as stale statistics before reporting plan reuse. Regenerate
+the complete plan; verified killed results from other sources remain reusable.
+A remaining plan filename must not turn incomplete source state into a cache hit.
+
+The merger admits at most 10,000 directory entries across its metadata walk.
+It checks that budget while consuming each iterator, before retaining and
+sorting the directory entries. Even unrelated files count toward the budget;
+overflow closes the iterator and fails before metadata publication.
+
+Cache metadata uses an owned unique temporary file for replacement. Publication
+failures clean that temporary file without replacing the prior destination.
+A cleanup failure is reported separately, retaining any earlier I/O failure;
+an error after replacement does not imply rollback or an unchanged destination.
 
 ## Make a change
 
@@ -121,15 +213,321 @@ real check with a hardcoded result.
 
 ## Verify the change
 
-Run these commands from the repository root:
+The commitlint and code-scanning required jobs still run on `edited` events,
+including metadata edits after a PR closes. Only an explicit `closed` PR state
+returns a not-applicable result without validating commits or polling analyses.
+Open PRs and merge groups retain the full gates, and unknown PR states fail.
+Closed-PR noops use separate `commitlint-closed-pr` and
+`code-scanning-gate-closed-pr` names, so their success cannot be counted under
+the required contexts on a shared head SHA. The normal contexts remain
+`commitlint` and `code-scanning-gate` for admission events.
+Commitlint checks out the event's exact head SHA rather than an implicit ref.
+This lifecycle handling does not change failed historical checks or attest that
+a closed PR passed validation.
+
+The code-scanning gate requires explicit empty `error` and `warning` fields in
+the latest CodeQL analysis for each candidate commit/category. Missing,
+malformed or non-empty diagnostics leave that category unavailable; older
+healthy uploads cannot mask a degraded replacement, including across API pages.
+This admission rule applies to exact SHAs and equivalent event merge commits.
+An unavailable category fails before alert dispositions can admit the ref.
+
+For PR admission, the gate binds the live open PR's base/head and its test-merge
+parents to the triggering event before consuming analyses. It revalidates that
+binding after reading alerts and before returning a verdict. Changed, closed,
+malformed or unavailable state cannot reuse an earlier successful analysis.
+These sequential reads do not make GitHub state atomic after the final read;
+merge authorization still requires fresh checks on the controlling SHA.
+
+During implementation, select the relevant test files or pytest node IDs for
+fast feedback. The local runner reports the 20 slowest test phases:
 
 ```powershell
-python -m coverage erase
-python -m coverage run -m pytest -q
-python -m coverage report
+python scripts/run_tests.py focused tests/test_pr_template_preflight.py
+python scripts/run_tests.py focused tests/test_pr_template_preflight.py --source skills/repo-scaffold/scripts/pr_template_preflight.py
+```
+
+The native warning-budget matrices overlap at most two isolated case subprocesses
+to stay within the supported-runtime CI budget. Each case retains its own target,
+runner outputs and subprocess timeout. Results and exceptions are collected in
+case order after workers have drained; assertions and unittest subtest reporting
+remain on the calling thread. This does not reuse verdicts or change mutation
+workers, test selection, coverage requirements or job timeouts.
+
+`--source` enforces the existing coverage floor for the selected Python file;
+both `.py` and `.pyw` source files are accepted, matching the full inventory.
+Repeat it for additional files. If it selects one of the three verified omitted
+copies, its report identity is the byte-identical canonical root script.
+Selecting both paths measures that
+canonical identity once. This remapping follows copy-byte admission and does not
+hide missing canonical coverage when other selected files are fully covered.
+This is focused feedback, not a full-repository verdict. Every measured run
+uses a fresh, isolated coverage data file and cleans
+it afterward, so concurrent checks cannot overwrite the normal `.coverage`
+file or combine earlier results with new code.
+
+Once the change is complete, run `python scripts/run_tests.py full`. It runs the
+entire suite once under Coverage.py, then checks the unchanged `.coveragerc`
+branch-coverage floor. A separate full pytest invocation would repeat the same
+tests. Repository workflow validation checks execution controls as well as command
+text: required runtime, coverage and integration checks, and the `ci-success`
+verdict step, must remain foreground, mandatory and failure-propagating. The
+verdict job must retain `always()` so failed or skipped producers are evaluated.
+Policy preparation also requires mandatory, failure-propagating job/step execution
+and binds each command to the step ID used by its matrix/latest or toolchain outputs.
+Each runtime, coverage, integration and applicable canary job also binds a single
+pinned `actions/setup-python` step to its policy version and cache lock. Setup and
+the hashed dependency install must be mandatory, fatal and ordered before the
+test gate, with setup before installation. Setup must update PATH; a successful
+download with `update-environment: false` does not select that interpreter for
+later `python` commands. Duplicate setup/install/gate steps fail admission rather
+than supplying ambiguous evidence. The install retains the guarded command
+context; conditional Windows bootstrap and scheduled job applicability remain valid.
+Applicable canary verdicts must also remain mandatory, fatal and foreground in
+the guarded workspace/shell context. Python's runtime drift check must follow
+its test suite, which already follows setup and the hashed install. Bind
+`check-latest` to the actual pinned Python setup, not another step's inputs.
+Both canaries require one unambiguous verifier; skipped or error-tolerant checks
+cannot supply a clean verdict to the policy reminder. Scheduled/manual job
+conditions remain unchanged, and canaries stay outside the required CI aggregate.
+Required Python command producers, including policy preparation, bind their
+effective shell and working directory using workflow, job and step precedence. Only
+GitHub's built-in command shells are admitted; custom templates can ignore the
+script. The directory must retain the workspace (implicit, `.`, `./` or
+`${{ github.workspace }}`), not select another checkout's relative script.
+Declared `BASH_ENV`, `SHELLOPTS`, `PYTHONINSPECT`, `PYTHONPATH`, `PYTHONHOME`,
+`PYTHONUSERBASE`, `PYTHONPLATLIBDIR` and `PYTHONPYCACHEPREFIX` controls are
+rejected at every scope: they can disable execution, turn a failed Python exit
+into REPL success or load startup code before the guarded runner begins.
+For example, a `sitecustomize.py` on `PYTHONPATH` can exit successfully before
+the runner can validate inputs or require a completion receipt. Clearing that
+variable inside the runner cannot protect an interpreter that already loaded it.
+Reject the declared startup override at the CI admission boundary instead.
+Library/user-site roots can select startup code too, even without `PYTHONPATH`.
+User-site and platform-library behavior varies by host, interpreter version and
+virtual environment. A variable being inactive in one local venv does not make
+its declaration safe across the supported standalone CI interpreter matrix.
+An external bytecode-cache prefix can substitute startup bytecode before the
+runner can select its own fresh cache. Reject that declared override too; the
+runner's internally generated, owned cache prefix remains supported.
+The sharded mutation validator checks this same command context for every script
+step of the plan, shard and quality jobs, including inherited workflow/job values.
+Action-only settings are not treated as Python command context. Cache-reuse
+conditions, artifact actions, ordinary scalar opt-ins, shard counts and score
+requirements are unchanged.
+Other scalar environment settings, including the Windows PyYAML selection and
+integration opt-in, remain supported. This checks declared command context, not
+arbitrary behavior of trusted earlier steps or host startup state.
+The single `ci-success` verdict step uses a bounded Bash grammar, not a search
+for comparison text. The admitted guard ORs quoted non-success comparisons for
+every bound result, exits with status 1 through 255 on that branch, and admits
+only quoted diagnostics and optional final success exit. Variable ordering,
+whitespace and diagnostic text may vary; header continuations must follow `||`,
+not split a comparison. Parsing uses Bash line/whitespace boundaries, not Unicode
+line separators. Comments, early success, AND guards,
+missing results and status 256 cannot stand in for failure propagation. Unsupported
+shell programs fail admission without execution; this is not a general shell
+analyzer. The verdict context must retain Bash on the reviewed Ubuntu runner,
+without workflow/job environment overrides or extra preparation steps that could
+replace its execution environment.
+Conditional platform bootstrap and scheduled canary jobs remain applicable-only;
+they do not make required test/gate steps optional or error-tolerant. Full mode
+clears inherited `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, disables
+third-party plugin auto-loading, overrides config-file `addopts`, and selects
+the checked-in `pyproject.toml` explicitly. Repository `conftest.py` hooks remain
+active. Discovery overrides that omit first-party tests are rejected. It rejects
+coverage measurement/report overrides that hide missing coverage and uses a
+frozen copy of the admitted policy for both commands. Guarded coverage and the
+repository validator require unprefixed `.coveragerc` sections. They reject every
+`coverage:`-prefixed section because Coverage.py gives that dialect precedence
+even inside `.coveragerc`; otherwise its effective run/report/path policy could
+differ from the settings that were validated. Source and omission lists use
+Coverage's comma/LF delimiters; equivalent comma/newline forms are accepted,
+but Unicode-only line separators cannot stand in for those delimiters.
+Input fingerprints are
+compared after pytest and after reporting in measured and suite runs; changed
+source, tests or metadata invalidate the result. Fingerprints bind admitted
+directory identities as well as file bytes, so adding, removing or renaming an
+empty fixture directory also invalidates a guarded result. Both are collected
+in the same bounded traversal; root runtime-cache exclusions and mutation-cache
+fingerprints are unchanged. Put test-created directories in owned temporary
+state, not in the repository input tree. These comparisons cannot detect an edit
+that is restored between reads, so keep inputs unchanged throughout the run. On failure, correct
+the relevant group with focused checks before starting another full run.
+
+Every runner child clears `PYTHONINSPECT`, preserving the parent environment.
+The CLI rejects an already-active inspection interpreter (`-i` or environment)
+with status 2 before starting tests or creating runner-owned outputs. Removing
+the variable after interpreter startup does not disable that REPL; ordinary
+`SystemExit` can become success on EOF. This admission failure therefore uses
+an immediate process exit, even if its diagnostic cannot be flushed. Callable
+`main()` still returns a status for its caller to propagate; it does not control
+the caller's interpreter lifecycle. For interactive debugging, invoke pytest
+directly outside the guarded runner.
+
+Guarded runs also require a fresh, bounded completion receipt in owned temporary
+state, not only process status zero. A bootstrap invokes pytest's public API and
+tracks collection and each test-finish event, preserving duplicate node counts.
+Failed reports, internal-error/interruption events and the original nonzero
+session-finish status invalidate the receipt,
+with events/status observed by wrappers before their ordinary hooks run,
+even if a session-finish hook changes the final exit status to zero after all
+collected tests have emitted finish events.
+The session-finish observer also latches nonzero status after nested hooks return.
+Pytest can decide a configured `max_warnings` failure during terminal reporting,
+after the original session status was successful. That late verdict must still
+invalidate the receipt if an outer hook wrapper later resets status to zero.
+Unchanged nonzero statuses propagate normally, including pytest's warning-budget
+status 6. No warning budget is imposed when the project has not configured one;
+within-budget warnings and successful session hooks remain valid.
+Recorded warnings are also counted through pytest's public warning hook and
+checked against the effective CLI-first, configuration-second `max_warnings`
+value. This anchors a configured budget failure to warning events, not only
+mutable final status or wrapper registration order. Filtered warnings and
+warnings captured by `pytest.warns()` do not count. A missing budget remains
+optional; invalid effective values cannot certify success while pytest retains
+its own diagnostics and nonzero status. The observer stores a count, not warning
+objects or another unbounded warning log.
+An abrupt zero exit, missing receipt or incomplete session fails before accepting
+runtime evidence or reporting coverage. Nonzero pytest statuses still propagate
+when owned-output cleanup succeeds.
+Ordinary skips and xfails remain supported; unmeasured focused feedback is unchanged.
+This detects incomplete execution, not tampering by arbitrary trusted test/plugin code.
+
+Measured runs and suite mode also clear inherited `PYTHONOPTIMIZE` in every
+child, so helper and production assertions are not removed by an optimized
+interpreter. Pytest rewrites test-module assertions, not every imported helper.
+The parent environment and unmeasured focused feedback remain unchanged.
+
+Measured runs and suite mode clear inherited `COVERAGE_*` controls in the child
+environment, including force-config, process-start and debug-output settings;
+the caller's environment remains unchanged. Measured checks require both declared
+source roots to be safe directories. Full reports explicitly enumerate `.py` and
+`.pyw` files from the bounded verification inventory, including dotfiles that
+Coverage.py's automatic discovery skips. Focused reports explicitly name every
+selected canonical source, so an undiscovered file cannot disappear from a mixed
+report. Neither mode uses a data-only include filter as its denominator.
+Explicit report paths use the inventoried spelling and native separators, so
+Windows case-insensitive selections and verified omitted copies retain the
+correct data identity. Ambiguous inventory identities or selected files absent
+from that inventory fail admission before either coverage child starts.
+Every source in the report scope must also compile as Python before either child
+starts, with per-file and actual aggregate reads bounded by the existing inventory
+budgets. This check creates no bytecode files and does
+not execute source. Syntax admission always uses unoptimized compile semantics,
+independently of parent `-O`, `-OO` or `PYTHONOPTIMIZE`. `dont_inherit` isolates
+compiler/future flags, not optimization: discarding an assertion expression must
+not make an invalid source appear compilable. The check honors Python encoding
+declarations and rejects invalid
+syntax regardless of suffix casing, rather than letting Coverage.py silently
+drop an unparseable `.PY`/`.PYW` file as non-Python. Full mode checks its complete
+inventory; measured-focused mode checks only selected canonical sources.
+The measured child's bootstrap also calls Coverage's public `analysis2()` for
+every report source before starting pytest. Compilability alone is insufficient:
+Coverage can parse a valid form-feed-containing source differently and silently
+skip a report parse error for uppercase `.PY`/`.PYW` suffixes. Any analysis failure
+invalidates the run instead of shrinking its denominator. This check uses the
+active measurement's frozen policy and unoptimized child interpreter, performs
+no source execution and leaves suite/unmeasured-focused applicability unchanged.
+The coverage denominator includes unimported Python files inside namespace-package
+directories. Both the runner
+and repository validator reject `partial_also` and `[paths]` aliases that would
+hide missing branches or merge distinct source identities. Explicit test paths
+must stay under `tests/`, and measured source files under the two script trees;
+absolute in-repository paths are normalized, while traversal and link boundaries
+are rejected before subprocess execution. These checks do not sandbox trusted
+tests, conftest hooks, interpreter startup or arbitrary Python imports.
+Selection filenames use portable path components: colon-delimited names and
+Windows alternate data streams are rejected because stream bytes are not part of
+the directory inventory. A drive prefix in an absolute Windows path and colons
+inside the separate pytest node ID remain valid.
+Verification inventory uses native path semantics when binding first-party roots,
+including Windows case-insensitive spellings. Ignored dependency/cache names
+inside those roots still contain verification inputs. Default mutation-cache
+snapshot selection is unchanged.
+
+Every measured run verifies any present file in the three admitted copy omissions
+against its canonical `scripts/` source before running coverage. Missing canonical
+files, nonregular inputs, unsafe paths, oversized content and unequal bytes fail
+admission. An absent copy has no code to omit; partial isolated projects need not
+manufacture unused mirrors. Fingerprint revalidation still rejects later changes.
+Guarded full/suite pytest policy rejects `log_file` and `cache_dir` redirects.
+It turns the TOML parser's nesting-limit rejection into a controlled admission error
+before tests execute, including deeply nested unrelated metadata below the
+64 KiB configuration cap. The installed parser's depth limit is not raised;
+ordinary nested metadata stays supported. The shared repository validator reports
+the same policy error instead of aborting its remaining checks.
+The supported legacy mutation/pytest config consumer also reports native numeric
+conversion limits as parse errors; neither parser limit is increased to admit input.
+Coverage policy rejects `debug_file`, so config cannot redirect built-in
+report writes to unrelated paths. These controls do not sandbox trusted test code
+or the focused/manual pytest feedback mode.
+
+The shared input inventory admits directory entries before retaining and sorting
+them. Its 10,000-entry limit includes directories, ignored names and ordinary
+files; empty directory trees cannot bypass it. Directory iterators close on
+overflow or read failure. Per-file and aggregate byte limits still apply to
+actual bytes read, and link/reparse-point boundaries are rejected.
+
+Verification inventories traverse every directory inside `tests/` and both
+first-party script trees, even names such as `vendor`, `build` and `__pycache__`.
+Source and fixture files there cannot disappear behind mutation-cache ignore
+rules. Only regular `.pyc`/`.pyo` runtime bytecode files are omitted inside those
+trees; a directory with that suffix or a `.coverage.*` fixture is still inventoried.
+Temporary outputs should stay outside the first-party input trees. Root-level
+dependency/build caches retain their existing exclusions, and mutation-cache
+snapshot selection is unchanged. Bytecode caches are runtime state, not source
+attestation; the trusted-interpreter/import boundary described above still applies.
+
+Guarded child runs (`full`, `suite` and focused with `--source`) use a unique,
+owned `PYTHONPYCACHEPREFIX` instead of repository or inherited bytecode caches.
+They also bind pytest's `--basetemp` and `cache_dir` to distinct child directories
+inside the owned runtime root, clearing inherited `PYTEST_DEBUG_TEMPROOT` only
+in the child environment. Existing repository/tox caches and shared pytest temp
+sessions are not used or cleaned by these guarded checks. The runtime root is
+removed on success, failure or interruption when cleanup succeeds. Cleanup never
+resets file permissions or attributes, since an entry can share an inode with
+an unrelated read-only file through a hardlink. If the platform refuses deletion,
+the runner fails closed and identifies the retained owned directory for inspection;
+it does not clear read-only flags or silently ignore cleanup failure.
+Measured-focused checks therefore
+cannot use a previous cache's `--lf` selection; use unmeasured feedback for that
+workflow. This isolation does not sandbox arbitrary test/plugin writes.
+Ownership regressions record canonical runtime paths while the directories exist;
+system temp aliases (such as macOS `/var` and `/private/var`) must not create a
+false failure. Alias tests preserve the temp alias and verify owned-child cleanup.
+Timestamp/size collisions and unchecked-hash bytecode cannot substitute old code
+for current source. The run and report share that private prefix; it is removed
+on success, failure or interruption when cleanup succeeds, without clearing existing
+caches or changing the caller's environment. This incurs cold-import work during final verification.
+Focused feedback without measurement retains its normal cache behavior. This
+does not attest the parent interpreter's already-loaded modules, custom importers
+or executable startup hooks, and inputs must still remain immutable during a run.
+
+First-party verification inputs must be directories or regular files. FIFO,
+socket, device and other nonregular entries are rejected before reading content
+or starting pytest/coverage; silently omitting them would leave the inventory
+incomplete and could let later source readers block on a special file. Tests
+include a native POSIX FIFO case, marked not applicable on Windows. This is input
+admission, not a process sandbox or an atomic guarantee against filesystem races.
+
+For a quick retry of failures already recorded in pytest's local cache, use
+`python -m pytest --lf --last-failed-no-failures none -q`. An empty cache runs
+no tests, so it supplies no verification evidence. The cache tracks test
+selection, not whether changed code is correct.
+
+Runtime-only checks use `python scripts/run_tests.py suite`, or append explicit
+test paths for a declared subset such as Linux mutation integration. Suite mode
+also rejects inherited selection flags and changed inputs. CI's runtime,
+coverage, canary and integration consumers use these guarded entrypoints.
+
+Run the final full-coverage gate and other repository checks with:
+
+```powershell
+python scripts/run_tests.py full
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/coverage_policy.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_tests.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
@@ -138,6 +536,30 @@ python scripts/validate_repository.py
 
 The coverage command enforces the repository's 100% branch-coverage floor from
 `.coveragerc`.
+Run boundary checks on the declared minimum/latest runtimes with their actual
+standard libraries. Approved documentation HTTP 308 redirects must preserve
+GET/HEAD methods even when the minimum runtime's redirect handler lacks 308;
+HTTPS/host, unsafe-method, body-ownership and loop limits still apply.
+Legacy body publication reports cleanup failures without hiding a prior write
+failure or claiming rollback. It registers cleanup only after allocation.
+
+The shared GitHub preflight client admits stdout/stderr bytes before writing
+temporary spools. Per-stream and inspection-total limits apply during capture,
+not only after the CLI exits. Require EOF on both pipes and a completed CLI
+before decoding; timeout, excess output and incomplete spool writes are errors,
+not partial evidence. Native Windows uses pipe readiness rather than socket-only
+`select`; POSIX uses selectable pipe descriptors. These checks do not certify
+SDK-internal allocation, descendant-process termination, HTTP redirect origin
+or underlying request counts. Preserve those independent audit requirements.
+
+Gh-backed preflight metrics distinguish client attempts from wire requests.
+`github_client_requests` is the counter charged at client admission.
+`github_api_requests` remains a compatibility alias, explicitly tagged with
+`github_api_requests_unit: client-request-attempts`. The transport count is
+`github_http_requests: null` with state `not-measured`, never zero or passed
+evidence. Neither redirects nor other SDK-internal requests can be counted
+from the returned CLI body. These diagnostic metrics do not authorize writes
+or prove an underlying HTTP-request quota or initial-response provenance.
 
 Mutation testing runs daily and on manual dispatch because a complete run is
 substantially more expensive than the required pull-request checks. The workflow
@@ -145,6 +567,39 @@ plans every mutant, runs 128 exact Linux shards, and merges only a complete,
 non-overlapping assignment before it applies the gate. Mutmut requires
 operating-system `fork` support, so run it on Linux or macOS, or in WSL on
 Windows:
+
+Hosted shards use a read-only diagnostic sampler around the unchanged engine
+command. It records bounded system/cgroup and engine/owned-process memory
+counters and only exact mutant keys assigned to the shard, never environment
+values or arbitrary command lines. An empty worker-name list has unavailable
+identity, not proof that no mutants are running. Descendant memory is bounded
+to 16 processes and remains observable when titles cannot bind a mutant key.
+Sampling checks process start times, caps process scans, records at most 360
+samples at 30-second intervals, and emits at most 2 MiB. Missing counters and
+partial scans remain explicit; cgroup OOM counters alone do not identify the
+victim or establish why the runner stopped. The sampler cannot admit a verdict:
+the wrapper preserves the engine exit status and stops its observer on exit.
+CI/workflow validation and complete mutation aggregation remain required.
+
+The runner collects unreachable post-pytest cycles immediately before upstream
+startup freezes GC for forking. On Linux with `malloc_trim` available in the
+process allocator, it also returns already-free heap pages to the operating
+system. Other allocators skip that optional trim. Live modules, associations,
+verdicts, GC enabled/disabled state, worker count and upstream startup behavior
+remain unchanged. This reduces retained baseline allocations; it does not bound
+live worker memory or prove why a hosted runner received a shutdown signal.
+The native Linux integration check verifies heap reclamation and live-state
+preservation; only a completed exact-commit run can establish shard success.
+
+If the lock resolves LibCST to a source distribution because no compatible wheel
+is available, provision a compatible Rust toolchain and platform native build tools
+in an isolated build environment first. Derive compiler requirements from the
+hash-verified pinned source, including its Cargo manifest; do not assume Linux
+wheel availability also covers macOS Intel. The pip hash lock is not proof of a
+successful source build and does not provision Rust or the system linker/SDK.
+Record the actual toolchain and build/runtime result on the intended platform,
+or report that check as deferred. Do not lower the score gate, change the pin,
+or label metadata-only checks as runtime passes to bypass an unavailable build.
 
 ```bash
 python -m pip install --require-hashes --requirement requirements-mutation.txt
@@ -182,7 +637,12 @@ security, deployment, or dependency-update review whose title has no mandatory
 mapping, add `--template security`, `--template deployment`, or
 `--template dependency-update`.
 After preparing the UTF-8 body file, rerun the preflight with `--body-file <path>`;
-it rejects hard-wrapped prose before the GitHub mutation.
+add `--require-structure` so it also verifies the selected template's required
+headings and checklist items before the GitHub mutation. Draft items may remain
+unchecked; readiness checks are enforced separately by the template gate.
+If this PR should close an issue after merge, add a standalone `Fixes #123`,
+`Closes #123`, or `Resolves #123` line. The preflight validates that syntax when
+present, but does not require every PR to reference an issue.
 
 When a commit changes behavior or policy, include structured summary fields in
 the commit body so the generated PR can preserve the review context:
@@ -225,7 +685,15 @@ change themes or verify narrative claims against patches. Live check status
 remains in GitHub's Checks tab. The workflow does not read a hard-coded PR-body
 narrative. The selected trusted PR template supplies the headings and checklist
 contract, while generated sections are replaced from current evidence. The
-workflow bounds API responses and combined evidence, runs the Markdown and
+renderer matches exact heading aliases outside code, comments, and raw HTML,
+preserving custom reviewer sections and combined verification/monitoring plans.
+Its CLI checks the rendered structure against the selected trusted template
+before replacing output, so partial bodies fail before the workflow can edit
+GitHub. Use `--repository-root` when invoking it outside the target repository.
+It preserves native Dependabot and same-repository Release Please bodies under
+the template gate's authenticated author rules, after validating complete bound
+PR evidence; bot names or release-like branches alone cannot claim an exemption.
+The workflow bounds API responses and combined evidence, runs the Markdown and
 PR-template preflights before editing, rechecks the head, base, title,
 repository, and current body immediately before the mutation, then verifies the
 complete body after GitHub accepts it. Missing, malformed, stale, incomplete,

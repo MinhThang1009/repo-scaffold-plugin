@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import ast
-import configparser
 import importlib
 import json
 import os
@@ -21,13 +20,18 @@ from collections.abc import Iterable
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, unquote_plus, urlsplit
 
 import yaml
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline.backticks import backtick as parse_backtick
 from markdown_it.rules_inline.state_inline import StateInline
 from markdown_it.token import Token
+
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.coverage_policy import coverage_policy_errors, pytest_policy_errors
 
 tomllib = importlib.import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
@@ -49,12 +53,12 @@ CACHE_DIRECTORIES = {
     "venv",
     ".venv",
 }
-COVERAGE_FAIL_UNDER = 100
 MUTATION_PLAN_TIMEOUT_MINUTES = "360"
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 MAX_VALIDATION_FILE_BYTES = 8 * 1024 * 1024
 MAX_VALIDATION_PROJECT_ENTRIES = 10_000
+MAX_CI_VERDICT_BYTES = 64 * 1024
 MAX_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 10_000
@@ -170,8 +174,33 @@ FRESHNESS_REMINDER_API_ENDPOINT = (
     "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+"
     "%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"
 )
-FRESHNESS_REMINDER_API_JQ = '[.items[].number] | join(" ")'
-FRESHNESS_REMINDER_API_JQ_LEGACY = ".items[].number"
+MANAGED_REMINDER_SEARCH_MARKERS = (
+    "<!-- repo-scaffold-freshness-audit -->",
+    "<!-- repo-scaffold-community-health-drift -->",
+    "<!-- repo-scaffold-official-docs-audit -->",
+    "<!-- repo-scaffold-ci-policy-drift -->",
+)
+FRESHNESS_REMINDER_API_JQ_GUARD = (
+    'if type == "object" and .incomplete_results == false '
+    'and (.total_count | type) == "number" and .total_count >= 0 '
+    'and .total_count == (.total_count | floor) and (.items | type) == "array" '
+    "and (.items | length) == ([.total_count, 2] | min) "
+    'and all(.items[]; type == "object" and (.number | type) == "number" '
+    "and .number > 0 and .number == (.number | floor)) "
+    "and ([.items[].number] | unique | length) == (.items | length) "
+)
+FRESHNESS_REMINDER_API_JQ = (
+    FRESHNESS_REMINDER_API_JQ_GUARD
+    + 'then if (.items | length) == 0 then "none" '
+    + 'else [.items[].number] | join(" ") end '
+    + 'else error("Incomplete or invalid issue search response") end'
+)
+FRESHNESS_REMINDER_API_JQ_LEGACY = (
+    FRESHNESS_REMINDER_API_JQ_GUARD
+    + 'then if (.items | length) == 0 then "none" '
+    + "else .items[].number end "
+    + 'else error("Incomplete or invalid issue search response") end'
+)
 FRESHNESS_REMINDER_API_JQ_VALUES = frozenset(
     {FRESHNESS_REMINDER_API_JQ, FRESHNESS_REMINDER_API_JQ_LEGACY}
 )
@@ -239,7 +268,36 @@ FRESHNESS_ALLOWED_ACTION_INPUTS: dict[str, dict[str, object]] = {
 }
 TRUSTED_DEFAULT_BRANCH_REF = "${{ github.event.repository.default_branch }}"
 FRESHNESS_TITLE_ASSIGNMENT = "title=Repository freshness update required"
+FRESHNESS_VI_TITLE_ASSIGNMENT = "title=Cần cập nhật các đầu vào bảo trì repository"
+# Normalize only reviewed display tokens, never shell syntax or protocol values.
+FRESHNESS_LOCALIZED_PRINT_TEXT = {
+    "# Báo cáo freshness của repository": "# Repository freshness report",
+    "Checker đã lỗi trước khi tạo báo cáo. Hãy kiểm tra workflow run này.": (
+        "The checker failed before it could produce a report. Inspect this workflow run."
+    ),
+    "Có nhiều issue nhắc bảo trì freshness đang mở.\\n": (
+        "Found multiple open freshness reminder issues.\\n"
+    ),
+    "Checker freshness trả về exit status không hợp lệ: %s\\n": (
+        "Freshness checker returned an unexpected exit status: %s\\n"
+    ),
+    "Checker freshness chưa xác định được kết quả; không thay đổi issue nhắc bảo trì.\\n": (
+        "Freshness checker was indeterminate; no reminder issue was changed.\\n"
+    ),
+}
 FRESHNESS_ISSUE_NUMBERS_INITIALIZATION = "issue_numbers="
+FRESHNESS_EMPTY_SEARCH_GUARD = (
+    'if [[ -z "$issue_numbers_output" ]]; then',
+    "printf 'Issue search returned no verified result.\\n' >&2",
+    "exit 1",
+    "fi",
+)
+FRESHNESS_EMPTY_SEARCH_PRINTF = (
+    "printf",
+    "Issue search returned no verified result.\\n",
+    ">&",
+    "2",
+)
 FRESHNESS_ISSUE_NUMBERS_COLLECTION_COMMANDS = (
     ("mapfile", "-t", "issue_numbers", "<<<", "$issue_numbers_output"),
     ("read", "-r", "-a", "issue_numbers", "<<<", "$issue_numbers_output"),
@@ -307,12 +365,14 @@ FRESHNESS_ALLOWED_PRINTF_COMMANDS = frozenset(
             "2",
         ),
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
+        FRESHNESS_EMPTY_SEARCH_PRINTF,
     }
 )
 FRESHNESS_ALLOWED_SHELL_IF_LINES = frozenset(
     {
         f'if [[ ! -f "{FRESHNESS_AUDIT_MARKDOWN_OUTPUT}" ]]; then',
-        'if [[ -n "$issue_numbers_output" ]]; then',
+        "if [[ \"$issue_numbers_output\" != 'none' ]]; then",
+        FRESHNESS_EMPTY_SEARCH_GUARD[0],
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
         FRESHNESS_INDETERMINATE_GUARD,
@@ -511,7 +571,8 @@ SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
     r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
-    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$",
+    re.ASCII,
 )
 RELEASE_PLEASE_ENGLISH_TEXT = {
     "pull-request-title-pattern": "chore${scope}: release${component} ${version}",
@@ -628,7 +689,8 @@ MAINTAINER_AGENT_INSTRUCTION_PATHS = (
 )
 MAINTAINER_AGENT_REQUIRED_FRAGMENTS = (
     "## Repository purpose",
-    "python -m pytest -q",
+    "python scripts/run_tests.py full",
+    "python scripts/run_tests.py suite",
     "python scripts/validate_repository.py",
     "python skills/repo-scaffold/scripts/validate_scaffold.py",
     "claude plugin validate --strict .",
@@ -739,6 +801,13 @@ WORKFLOW_SCRIPT_COPY_CONTRACT = (
         Path("skills/repo-scaffold/assets/requirements-docs.txt"),
         "assets/requirements-docs.txt",
         Path("requirements-docs.txt"),
+        False,
+    ),
+    (
+        Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+        Path("skills/repo-scaffold/assets/markdownlint-cli2.jsonc"),
+        "assets/markdownlint-cli2.jsonc",
+        Path(".markdownlint-cli2.jsonc"),
         False,
     ),
     (
@@ -1737,6 +1806,7 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     if any(line not in FRESHNESS_ALLOWED_SHELL_IF_LINES for line in if_lines):
         return False
     required_if_lines = (
+        FRESHNESS_EMPTY_SEARCH_GUARD[0],
         FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
         FRESHNESS_CHECKER_STATUS_GUARD,
         FRESHNESS_INDETERMINATE_GUARD,
@@ -1745,9 +1815,25 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     )
     if any(if_lines.count(line) != 1 for line in required_if_lines):
         return False
+    if (
+        sum(
+            tuple(lines[index : index + len(FRESHNESS_EMPTY_SEARCH_GUARD)])
+            == FRESHNESS_EMPTY_SEARCH_GUARD
+            for index in range(len(lines) - len(FRESHNESS_EMPTY_SEARCH_GUARD) + 1)
+        )
+        != 1
+    ):
+        return False
     duplicate_guard_count = sum(
         tuple(lines[index : index + len(FRESHNESS_DUPLICATE_ISSUE_GUARD)])
-        == FRESHNESS_DUPLICATE_ISSUE_GUARD
+        in (
+            FRESHNESS_DUPLICATE_ISSUE_GUARD,
+            (
+                FRESHNESS_DUPLICATE_ISSUE_GUARD[0],
+                "printf 'Có nhiều issue nhắc bảo trì freshness đang mở.\\n' >&2",
+                *FRESHNESS_DUPLICATE_ISSUE_GUARD[2:],
+            ),
+        )
         for index in range(len(lines) - len(FRESHNESS_DUPLICATE_ISSUE_GUARD) + 1)
     )
     if duplicate_guard_count != 1:
@@ -1764,7 +1850,7 @@ def freshness_shell_control_flow_is_safe(text: str) -> bool:
     nonempty_indices = [
         index
         for index, line in enumerate(if_lines)
-        if line == 'if [[ -n "$issue_numbers_output" ]]; then'
+        if line == "if [[ \"$issue_numbers_output\" != 'none' ]]; then"
     ]
     if len(nonempty_indices) > 1 or any(
         index >= clean_index for index in nonempty_indices
@@ -2089,7 +2175,7 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
     if segments is None:
         return False
     printf_commands = [
-        tuple(command)
+        tuple(FRESHNESS_LOCALIZED_PRINT_TEXT.get(token, token) for token in command)
         for segment in segments
         if (command := shell_command_prefix(segment)) and command[0] == "printf"
     ]
@@ -2106,12 +2192,16 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         return False
     reconciliation_start = reconciliation_start_indices[0]
     reconciliation_printf_commands = [
-        tuple(shell_command_prefix(segment))
+        tuple(
+            FRESHNESS_LOCALIZED_PRINT_TEXT.get(token, token)
+            for token in shell_command_prefix(segment)
+        )
         for index, segment in enumerate(segments)
         if index >= reconciliation_start
         and (shell_command_prefix(segment) or [""])[0] == "printf"
     ]
     if reconciliation_printf_commands != [
+        FRESHNESS_EMPTY_SEARCH_PRINTF,
         FRESHNESS_DUPLICATE_ISSUE_PRINTF,
         (
             "printf",
@@ -2147,7 +2237,10 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         for token in shell_command_prefix(segment)
         if freshness_variable_reference(token, "title")
     ]
-    if title_assignments and title_assignments != [[FRESHNESS_TITLE_ASSIGNMENT]]:
+    if title_assignments and title_assignments not in (
+        [[FRESHNESS_TITLE_ASSIGNMENT]],
+        [[FRESHNESS_VI_TITLE_ASSIGNMENT]],
+    ):
         return False
     if title_references and not title_assignments:
         return False
@@ -2214,11 +2307,12 @@ def freshness_checker_result_controls_reconciliation(text: str) -> bool:
         and len(close_mutations) == 1
         and len(edit_mutations) == 1
         and len(create_mutations) == 1
-        # One failure exit guards duplicate issues, one rejects an unexpected
+        # One failure exit rejects missing search evidence, one guards duplicate
+        # issues, one rejects an unexpected
         # checker status, one rejects indeterminate status, and one propagates
         # stale status.
         and len(indeterminate_tests) == 1
-        and len(failure_exits) == 4
+        and len(failure_exits) == 5
     ):
         return False
     issue_numbers_initialization_indices = [
@@ -2738,6 +2832,87 @@ def reminder_issue_mutation_blocks(
     return commands
 
 
+def managed_issue_search_projections_are_safe(command: str) -> bool:
+    """Reject incomplete-result projections for repo-scaffold reminder lookups."""
+    managed_context = any(
+        marker in command for marker in MANAGED_REMINDER_SEARCH_MARKERS
+    )
+    segments: list[list[str]] = []
+    parsed = shell_command_segments(command)
+    if parsed is None:
+        return False
+    segments.extend(parsed)
+    for segment in segments:
+        tokens = shell_command_prefix(segment)
+        for index in range(len(tokens) - 1):
+            if not (
+                is_github_cli_executable(tokens[index]) and tokens[index + 1] == "api"
+            ):
+                continue
+            arguments = tokens[index + 2 :]
+            if any(
+                token.startswith("search/issues?")
+                and (
+                    managed_context
+                    or any(
+                        marker in unquote_plus(token)
+                        for marker in MANAGED_REMINDER_SEARCH_MARKERS
+                    )
+                )
+                for token in arguments
+            ) and option_values(arguments, "--jq") not in (
+                (FRESHNESS_REMINDER_API_JQ,),
+                (FRESHNESS_REMINDER_API_JQ_LEGACY,),
+            ):
+                return False
+    lines = [
+        line.strip()
+        for line in command.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    mutations = [
+        index
+        for index, line in enumerate(lines)
+        if re.match(r"^gh issue (?:create|edit|close)(?:\s|$)", line)
+    ]
+    if mutations and any(
+        marker in unquote_plus(command) for marker in MANAGED_REMINDER_SEARCH_MARKERS
+    ):
+        lookups = [
+            index
+            for index, line in enumerate(lines)
+            if line == "issue_numbers_output=$("
+        ]
+        if len(lookups) != 1:
+            return False
+        preparation = [
+            index for index in range(lookups[0]) if lines[index] == "set -euo pipefail"
+        ]
+        if not preparation or any(
+            not line.startswith(("marker=", "title="))
+            and line != 'grep -Fq "$marker" "$RUNNER_TEMP/freshness.md"'
+            for line in lines[preparation[-1] + 1 : lookups[0]]
+        ):
+            return False
+        closing = [
+            index for index in range(lookups[0] + 1, len(lines)) if lines[index] == ")"
+        ]
+        if not closing:
+            return False
+        receipt = (
+            ")",
+            *FRESHNESS_EMPTY_SEARCH_GUARD,
+            "issue_numbers=()",
+            "if [[ \"$issue_numbers_output\" != 'none' ]]; then",
+        )
+        start = closing[0]
+        if tuple(lines[start : start + len(receipt)]) != receipt or start + len(
+            receipt
+        ) > min(mutations):
+            return False
+    return True
+
+
 def has_repo_bound_issue_reconciliation(
     text: str,
     expected_body_files: set[str] | None = None,
@@ -2745,7 +2920,7 @@ def has_repo_bound_issue_reconciliation(
 ) -> bool:
     """Require every reminder issue mutation to bind its repository."""
     commands = reminder_issue_mutation_blocks(text)
-    if commands is None:
+    if commands is None or not managed_issue_search_projections_are_safe(text):
         return False
     body_commands = [
         (subcommand, tokens)
@@ -3253,6 +3428,7 @@ def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
             return None
         repository_root = values["--repository-root"]
         tracker_registry = option_values(tokens, "--tracker-registry")
+        language = option_values(tokens, "--language")
         if (
             repository_root is None
             or repository_root[0] != FRESHNESS_AUDIT_REPOSITORY_ROOT
@@ -3260,6 +3436,10 @@ def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
             or len(tracker_registry) > 1
             or tracker_registry
             and tracker_registry[0] != FRESHNESS_AUDIT_TRACKER_REGISTRY
+            or language is None
+            or len(language) > 1
+            or language
+            and language[0] not in {"en", "vi"}
         ):
             return None
         expected_argument_count = 2
@@ -3272,6 +3452,10 @@ def freshness_audit_markdown_outputs(text: str) -> set[str] | None:
                 1
                 if any(token.startswith("--tracker-registry=") for token in tokens)
                 else 2
+            )
+        if language:
+            expected_argument_count += (
+                1 if any(token.startswith("--language=") for token in tokens) else 2
             )
         if len(tokens) != expected_argument_count:
             return None
@@ -3452,6 +3636,265 @@ def validate_serialized_files(repository_root: Path) -> list[str]:
     return problems
 
 
+def required_ci_execution_is_safe(
+    configuration: object, *, condition: str | None = None
+) -> bool:
+    """Keep required CI producers and verdict checks fatal and foreground."""
+    return (
+        isinstance(configuration, dict)
+        and configuration.get("if") == condition
+        and configuration.get("continue-on-error") in (None, "false")
+        and not any(
+            control in configuration
+            for control in ("background", "parallel", "wait", "wait-all", "cancel")
+        )
+    )
+
+
+def required_ci_command_context_is_safe(
+    workflow: object, job: object, step: object
+) -> bool:
+    """Bind single Python gate commands to built-in shells and the workspace."""
+    if (
+        not isinstance(workflow, dict)
+        or not isinstance(job, dict)
+        or not isinstance(step, dict)
+    ):
+        return False
+    shell = None
+    directory = None
+    for index, scope in enumerate((workflow, job, step)):
+        environment = scope.get("env")
+        if environment is not None and (
+            not isinstance(environment, dict)
+            or any(
+                not isinstance(name, str)
+                or not isinstance(value, str)
+                or name.upper()
+                in {
+                    "BASH_ENV",
+                    "SHELLOPTS",
+                    "PYTHONINSPECT",
+                    "PYTHONPATH",
+                    "PYTHONHOME",
+                    "PYTHONUSERBASE",
+                    "PYTHONPLATLIBDIR",
+                    "PYTHONPYCACHEPREFIX",
+                }
+                for name, value in environment.items()
+            )
+        ):
+            return False
+        defaults = scope.get("defaults") if index != 2 else scope
+        if defaults is None:
+            continue
+        if not isinstance(defaults, dict):
+            return False
+        run = defaults.get("run") if index != 2 else defaults
+        if run is None:
+            continue
+        if not isinstance(run, dict):
+            return False
+        shell = run.get("shell", shell)
+        directory = run.get("working-directory", directory)
+    return shell in (None, "bash", "sh", "pwsh", "powershell", "cmd") and directory in (
+        None,
+        ".",
+        "./",
+        "${{ github.workspace }}",
+    )
+
+
+def ci_python_bootstrap_is_safe(
+    workflow: object, job: object, version: str, lock: str, command: str
+) -> bool:
+    """Bind one selected interpreter and hashed install before its test gate."""
+    if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
+        return False
+    steps = job["steps"]
+    setups = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].partition("@")[0].lower() == "actions/setup-python"
+    ]
+    if len(setups) != 1:
+        return False
+    setup_index, setup = setups[0]
+    settings = setup.get("with")
+    if (
+        not required_ci_execution_is_safe(setup)
+        or not isinstance(settings, dict)
+        or re.fullmatch(r"actions/setup-python@[0-9a-f]{40}", setup["uses"], re.I)
+        is None
+        or settings.get("python-version") != version
+        or settings.get("update-environment") not in (None, "true", "True", "TRUE")
+        or settings.get("cache-dependency-path") != lock
+    ):
+        return False
+    install_command = (
+        "python -m pip install --disable-pip-version-check --require-hashes "
+        f"--requirement {lock}"
+    )
+    installs = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and step["run"].rstrip("\n") == install_command
+    ]
+    executions = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and step["run"].rstrip("\n") == command
+    ]
+    if len(installs) != 1 or len(executions) != 1:
+        return False
+    install_index, install = installs[0]
+    return (
+        required_ci_execution_is_safe(install)
+        and required_ci_command_context_is_safe(workflow, job, install)
+        and setup_index < install_index < executions[0]
+    )
+
+
+def ci_canary_verification_is_safe(
+    workflow: object, job: object, command: str, *, after: str | None = None
+) -> bool:
+    """Keep applicable drift verdicts fatal, bound and after their prerequisites."""
+    condition = "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
+    if not required_ci_execution_is_safe(job, condition=condition):
+        return False
+    if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
+        return False
+    steps = job["steps"]
+    verifiers = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and step["run"].rstrip("\n") == command
+    ]
+    if len(verifiers) != 1:
+        return False
+    index, verifier = verifiers[0]
+    if not required_ci_execution_is_safe(
+        verifier
+    ) or not required_ci_command_context_is_safe(workflow, job, verifier):
+        return False
+    if after is None:
+        return True
+    prerequisites = [
+        position
+        for position, step in enumerate(steps)
+        if isinstance(step, dict) and step.get("run") == after
+    ]
+    return len(prerequisites) == 1 and prerequisites[0] < index
+
+
+def ci_verdict_echo_is_safe(line: str, variables: set[str]) -> bool:
+    """Allow quoted diagnostics, not commands, redirections or mutating expansion."""
+    if not re.fullmatch(r"echo(?:[ \t]+(?:\"[^\"\\\r\n]*\"|'[^'\r\n]*'))+", line):
+        return False
+    pattern = r"\$(?:\{([A-Z_][A-Z0-9_]*)\}|([A-Z_][A-Z0-9_]*))"
+    if any(
+        (match.group(1) or match.group(2)) not in variables
+        for match in re.finditer(pattern, line)
+    ):
+        return False
+    return "$" not in re.sub(pattern, "", line) and "`" not in line
+
+
+def ci_result_guard_is_fail_closed(text: object, variables: set[str]) -> bool:
+    """Prove the admitted quoted OR guard rejects every non-success input."""
+    if not isinstance(text, str) or len(text) > MAX_CI_VERDICT_BYTES or not variables:
+        return False
+    try:
+        if len(text.encode("utf-8")) > MAX_CI_VERDICT_BYTES:
+            return False
+    except UnicodeError:
+        return False
+    lines = [
+        line.strip(" \t")
+        for line in text.split("\n")
+        if line.strip(" \t") and not line.lstrip(" \t").startswith("#")
+    ]
+    header: list[str] = []
+    for index, line in enumerate(lines):
+        header.append(line)
+        if re.search(r";[ \t]*then$", line):
+            break
+        if not line.endswith("||"):
+            return False
+    else:
+        return False
+    prefix, _, keyword = " ".join(header).rpartition(";")
+    if not prefix.startswith(("if ", "if\t")) or keyword.strip(" \t") != "then":
+        return False
+    checked: set[str] = set()
+    for term in prefix[2:].strip(" \t").split("||"):
+        comparison = re.fullmatch(
+            r'(?P<open>\[\[?)[ \t]+"\$(?:\{(?P<braced>[A-Z_][A-Z0-9_]*)\}|'
+            r'(?P<plain>[A-Z_][A-Z0-9_]*))"[ \t]+!=[ \t]+(?:"success"|\'success\'|success)'
+            r"[ \t]+(?P<close>\]\]?)",
+            term.strip(" \t"),
+        )
+        if comparison is None or len(comparison["open"]) != len(comparison["close"]):
+            return False
+        variable = comparison["braced"] or comparison["plain"]
+        if variable not in variables or variable in checked:
+            return False
+        checked.add(variable)
+    if checked != variables:
+        return False
+    remaining = lines[index + 1 :]
+    if remaining.count("fi") != 1:
+        return False
+    end = remaining.index("fi")
+    failure, success = remaining[:end], remaining[end + 1 :]
+    if not failure:
+        return False
+    exit_status = re.fullmatch(r"exit[ \t]+([0-9]{1,3})", failure[-1])
+    if exit_status is None or not 1 <= int(exit_status[1]) <= 255:
+        return False
+    if success and success[-1] == "exit 0":
+        success = success[:-1]
+    return all(
+        ci_verdict_echo_is_safe(line, variables) for line in [*failure[:-1], *success]
+    )
+
+
+def ci_verdict_context_is_safe(workflow: object, job: object, step: object) -> bool:
+    """Bind the admitted grammar to an unmodified Bash verdict environment."""
+    if (
+        not isinstance(workflow, dict)
+        or not isinstance(job, dict)
+        or not isinstance(step, dict)
+    ):
+        return False
+    if job.get("runs-on") != "ubuntu-latest" or step.get("shell") not in (None, "bash"):
+        return False
+    if any(key in job for key in ("container", "services")):
+        return False
+    for scope in (workflow, job):
+        if scope.get("env") not in (None, {}):
+            return False
+        defaults = scope.get("defaults")
+        if defaults is None:
+            continue
+        if not isinstance(defaults, dict):
+            return False
+        run = defaults.get("run")
+        if run is None:
+            continue
+        if not isinstance(run, dict) or run.get("shell") not in (None, "bash"):
+            return False
+    return True
+
+
 def validate_python_support_contract(repository_root: Path) -> list[str]:
     """Validate the centralized Python policy and every repository consumer."""
     script = repository_root / "scripts" / "python_support.py"
@@ -3549,18 +3992,33 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
                 "matrix and latest outputs"
             )
         prepare_steps = prepare.get("steps") if isinstance(prepare, dict) else None
-        if not isinstance(prepare_steps, list) or not any(
-            isinstance(step, dict)
-            and step.get("run")
-            == 'python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"'
-            for step in prepare_steps
+        if (
+            not required_ci_execution_is_safe(prepare)
+            or not isinstance(prepare_steps, list)
+            or not any(
+                required_ci_execution_is_safe(step)
+                and required_ci_command_context_is_safe(workflow, prepare, step)
+                and step.get("id") == "support"
+                and step.get("run")
+                == 'python scripts/python_support.py emit-github-output >> "$GITHUB_OUTPUT"'
+                for step in prepare_steps
+            )
         ):
             problems.append(
                 ".github/workflows/ci.yml: prepare_ci must load the centralized policy"
             )
         expected_matrix = "${{ fromJSON(needs.prepare_ci.outputs.matrix) }}"
+        test_steps = test.get("steps") if isinstance(test, dict) else None
+        test_run = isinstance(test_steps, list) and any(
+            required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(workflow, test, step)
+            and step.get("run") == "python scripts/run_tests.py suite"
+            for step in test_steps
+        )
         if (
             not isinstance(test, dict)
+            or not required_ci_execution_is_safe(test)
+            or not test_run
             or test.get("needs") != "prepare_ci"
             or test.get("runs-on") != "${{ matrix.os }}"
             or not isinstance(test.get("strategy"), dict)
@@ -3608,18 +4066,24 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         mutation_integration_install = isinstance(
             mutation_integration_steps, list
         ) and any(
-            isinstance(step, dict) and step.get("run") == expected_mutation_install
+            isinstance(step, dict)
+            and isinstance(step.get("run"), str)
+            and step["run"].rstrip("\n") == expected_mutation_install
             for step in mutation_integration_steps
         )
         mutation_integration_run = isinstance(mutation_integration_steps, list) and any(
-            isinstance(step, dict)
+            required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(
+                workflow, mutation_integration, step
+            )
             and step.get("env") == {"REPO_SCAFFOLD_MUTMUT_INTEGRATION": "1"}
             and step.get("run")
-            == "python -m pytest -q tests/test_mutation_runner_linux.py"
+            == "python scripts/run_tests.py suite tests/test_mutation_runner_linux.py"
             for step in mutation_integration_steps
         )
         if (
             not isinstance(mutation_integration, dict)
+            or not required_ci_execution_is_safe(mutation_integration)
             or mutation_integration.get("needs") != "prepare_ci"
             or not mutation_integration_setup
             or not mutation_integration_install
@@ -3632,26 +4096,32 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
         canary_steps = canary.get("steps") if isinstance(canary, dict) else None
         canary_setup = isinstance(canary_steps, list) and any(
             isinstance(step, dict)
+            and isinstance(step.get("uses"), str)
+            and re.fullmatch(r"actions/setup-python@[0-9a-f]{40}", step["uses"], re.I)
+            is not None
             and isinstance(step.get("with"), dict)
             and step["with"].get("python-version") == "3.x"
-            and step["with"].get("check-latest") == "true"
+            and step["with"].get("check-latest") in ("true", "True", "TRUE")
             for step in canary_steps
         )
-        canary_verification = isinstance(canary_steps, list) and any(
-            isinstance(step, dict)
-            and step.get("run")
-            == "python scripts/python_support.py verify-latest-runtime"
-            for step in canary_steps
+        canary_verification = ci_canary_verification_is_safe(
+            workflow,
+            canary,
+            "python scripts/python_support.py verify-latest-runtime",
+            after="python scripts/run_tests.py suite",
         )
         canary_install = isinstance(canary_steps, list) and any(
             isinstance(step, dict)
-            and step.get("run")
+            and isinstance(step.get("run"), str)
+            and step["run"].rstrip("\n")
             == "python -m pip install --disable-pip-version-check "
             "--require-hashes --requirement requirements-dev.txt"
             for step in canary_steps
         )
         canary_tests = isinstance(canary_steps, list) and any(
-            isinstance(step, dict) and step.get("run") == "python -m pytest -q"
+            required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(workflow, canary, step)
+            and step.get("run") == "python scripts/run_tests.py suite"
             for step in canary_steps
         )
         triggers = workflow.get("on") if isinstance(workflow, dict) else None
@@ -3670,6 +4140,39 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
                 ".github/workflows/ci.yml: scheduled 3.x canary must test and "
                 "detect undeclared stable releases"
             )
+        for job_id, version, lock, test_command in (
+            (
+                "test",
+                "${{ matrix.python-version }}",
+                "requirements-dev.txt",
+                "python scripts/run_tests.py suite",
+            ),
+            (
+                "quality",
+                "${{ needs.prepare_ci.outputs.latest }}",
+                "requirements-dev.txt",
+                "python scripts/run_tests.py full",
+            ),
+            (
+                "mutation-cache-integration",
+                "${{ needs.prepare_ci.outputs.latest }}",
+                "requirements-mutation.txt",
+                "python scripts/run_tests.py suite tests/test_mutation_runner_linux.py",
+            ),
+            (
+                "python-latest-canary",
+                "3.x",
+                "requirements-dev.txt",
+                "python scripts/run_tests.py suite",
+            ),
+        ):
+            if not ci_python_bootstrap_is_safe(
+                workflow, jobs.get(job_id), version, lock, test_command
+            ):
+                problems.append(
+                    f".github/workflows/ci.yml: {job_id} must set up the policy "
+                    f"Python on PATH and install {lock} before its test gate"
+                )
         ci_success_needs = (
             ci_success.get("needs") if isinstance(ci_success, dict) else None
         )
@@ -3684,12 +4187,12 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             "QUALITY_RESULT": "${{ needs.quality.result }}",
         }
         ci_success_checks_results = isinstance(ci_success_steps, list) and any(
-            isinstance(step, dict)
+            required_ci_execution_is_safe(step)
             and step.get("env") == required_result_environment
-            and isinstance(step.get("run"), str)
-            and '"$MUTATION_CACHE_INTEGRATION_RESULT" != "success"' in step["run"]
-            and '"$TEST_RESULT" != "success"' in step["run"]
-            and '"$QUALITY_RESULT" != "success"' in step["run"]
+            and ci_verdict_context_is_safe(workflow, ci_success, step)
+            and ci_result_guard_is_fail_closed(
+                step.get("run"), set(required_result_environment)
+            )
             for step in ci_success_steps
         )
         if (
@@ -3697,6 +4200,11 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             or not all(isinstance(need, str) for need in ci_success_needs)
             or set(ci_success_needs)
             != {"test", "quality", "mutation-cache-integration"}
+            or not isinstance(ci_success_steps, list)
+            or len(ci_success_steps) != 1
+            or not required_ci_execution_is_safe(
+                ci_success, condition="${{ always() }}"
+            )
             or not ci_success_checks_results
         ):
             problems.append(
@@ -4117,13 +4625,18 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         problems.append(
             ".github/workflows/ci.yml: prepare_ci must expose standalone tool outputs"
         )
-    if not isinstance(prepare_steps, list) or not any(
-        isinstance(step, dict)
-        and step.get("id") == "toolchain"
-        and step.get("run")
-        == "python skills/repo-scaffold/scripts/ci_toolchain.py "
-        'emit-github-output >> "$GITHUB_OUTPUT"'
-        for step in prepare_steps
+    if (
+        not required_ci_execution_is_safe(prepare)
+        or not isinstance(prepare_steps, list)
+        or not any(
+            required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(workflow, prepare, step)
+            and step.get("id") == "toolchain"
+            and step.get("run")
+            == "python skills/repo-scaffold/scripts/ci_toolchain.py "
+            'emit-github-output >> "$GITHUB_OUTPUT"'
+            for step in prepare_steps
+        )
     ):
         problems.append(
             ".github/workflows/ci.yml: prepare_ci must load the CI toolchain policy"
@@ -4220,19 +4733,12 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
                     ".github/workflows/ci.yml: standalone tool metadata must "
                     f"come from policy outputs, found {literal!r}"
                 )
-    canary_steps = canary.get("steps") if isinstance(canary, dict) else None
     triggers = workflow.get("on") if isinstance(workflow, dict) else None
     if (
-        not isinstance(canary, dict)
-        or canary.get("if")
-        != "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
-        or not isinstance(canary_steps, list)
-        or not any(
-            isinstance(step, dict)
-            and step.get("run")
-            == "python skills/repo-scaffold/scripts/ci_toolchain.py "
-            "verify-latest-releases"
-            for step in canary_steps
+        not ci_canary_verification_is_safe(
+            workflow,
+            canary,
+            "python skills/repo-scaffold/scripts/ci_toolchain.py verify-latest-releases",
         )
         or not isinstance(triggers, dict)
         or "schedule" not in triggers
@@ -4313,6 +4819,33 @@ def validate_ci_toolchain_contract(repository_root: Path) -> list[str]:
         problems.append(
             "skills/repo-scaffold/assets/workflows/documentation.yml: "
             "docs-contract must consume the rolling policy runtime"
+        )
+    docs_guard = docs_steps[0] if isinstance(docs_steps, list) and docs_steps else None
+    expected_docs_guard = {
+        "name": "Require verified documentation policy",
+        "if": "${{ always() }}",
+        "env": {
+            "PREPARE_DOCS_RESULT": "${{ needs.prepare_docs.result }}",
+            "DOCUMENTATION_PYTHON": "${{ needs.prepare_docs.outputs.documentation_python }}",
+        },
+        "shell": "bash",
+        "run": (
+            "if [[ \"$PREPARE_DOCS_RESULT\" != 'success' || "
+            '! "$DOCUMENTATION_PYTHON" =~ ^3\\.(x|0|[1-9][0-9]*)$ ]]; then\n'
+            "  printf 'Required documentation policy preparation or runtime output is invalid.\\n' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+        ),
+    }
+    if (
+        not isinstance(docs_contract, dict)
+        or docs_contract.get("if") != "${{ always() }}"
+        or docs_contract.get("continue-on-error") not in (None, "false")
+        or docs_guard != expected_docs_guard
+    ):
+        problems.append(
+            "skills/repo-scaffold/assets/workflows/documentation.yml: "
+            "docs-contract must fail closed on policy preparation and runtime output"
         )
 
     workflow_reference_path = (
@@ -4693,16 +5226,17 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
 
     quality = jobs.get("quality") if isinstance(jobs, dict) else None
     quality_steps = quality.get("steps") if isinstance(quality, dict) else None
-    expected_coverage = (
-        "python -m coverage erase\n"
-        "python -m coverage run -m pytest -q\n"
-        "python -m coverage report"
-    )
-    if not isinstance(quality_steps, list) or not any(
-        isinstance(step, dict)
-        and isinstance(step.get("run"), str)
-        and step["run"].rstrip("\n") == expected_coverage
-        for step in quality_steps
+    expected_coverage = "python scripts/run_tests.py full"
+    if (
+        not required_ci_execution_is_safe(quality)
+        or not isinstance(quality_steps, list)
+        or not any(
+            required_ci_execution_is_safe(step)
+            and required_ci_command_context_is_safe(workflow, quality, step)
+            and isinstance(step.get("run"), str)
+            and step["run"].rstrip("\n") == expected_coverage
+            for step in quality_steps
+        )
     ):
         problems.append(
             ".github/workflows/ci.yml: quality must enforce the repository coverage gate"
@@ -4759,41 +5293,18 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
                 )
 
     coverage_path = repository_root / ".coveragerc"
-    coverage_config = configparser.ConfigParser()
     try:
-        coverage_config.read_string(read_bounded_text(coverage_path))
-        branch = coverage_config.getboolean("run", "branch")
-        sources = {
-            line.strip().replace("\\", "/")
-            for line in coverage_config.get("run", "source").splitlines()
-            if line.strip()
-        }
-        omitted = {
-            line.strip().replace("\\", "/")
-            for line in coverage_config.get("run", "omit").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        }
-        fail_under = coverage_config.getfloat("report", "fail_under")
-    except (OSError, UnicodeError, configparser.Error, ValueError) as error:
+        pytest_text = read_bounded_text(repository_root / "pyproject.toml")
+    except (OSError, UnicodeError, ValueError) as error:
+        problems.append(f"pyproject.toml: could not verify pytest policy: {error}")
+    else:
+        problems.extend(pytest_policy_errors(pytest_text))
+    try:
+        coverage_text = read_bounded_text(coverage_path)
+    except (OSError, UnicodeError, ValueError) as error:
         problems.append(f".coveragerc: could not verify coverage policy: {error}")
     else:
-        expected_sources = {"scripts", "skills/repo-scaffold/scripts"}
-        expected_omitted = {
-            "skills/repo-scaffold/scripts/audit_freshness.py",
-            "skills/repo-scaffold/scripts/render_pr_body_evidence.py",
-            "skills/repo-scaffold/scripts/sync_action_pins.py",
-        }
-        if (
-            not branch
-            or sources != expected_sources
-            or omitted != expected_omitted
-            or fail_under < COVERAGE_FAIL_UNDER
-        ):
-            problems.append(
-                ".coveragerc: require branch coverage for both script trees, only "
-                "verified byte-for-byte script copies omitted, and a fail-under "
-                f"floor of at least {COVERAGE_FAIL_UNDER}"
-            )
+        problems.extend(coverage_policy_errors(coverage_text))
 
     for relative in ("README.md", "CONTRIBUTING.md"):
         path = repository_root / relative
@@ -4806,8 +5317,8 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
             continue
         for required in (
             "requirements-dev.txt",
-            "python -m coverage run -m pytest -q",
-            "python -m coverage report",
+            "python scripts/run_tests.py full",
+            "python scripts/run_tests.py suite",
         ):
             if required not in text:
                 problems.append(
@@ -4915,11 +5426,14 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
         "python scripts/run_mutation_testing.py --max-children 4 --shard-index "
         '"$SHARD_INDEX"'
     )
+    diagnostic_shard_run = 'bash .github/scripts/run_mutation_shard.sh "$SHARD_INDEX"'
     raw_shard_steps = shards.get("steps")
     shard_run_steps = [
         step
         for step in (raw_shard_steps if isinstance(raw_shard_steps, list) else [])
-        if isinstance(step, dict) and step.get("run") == expected_shard_run
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and step.get("run") in {expected_shard_run, diagnostic_shard_run}
     ]
     if len(shard_run_steps) != 1 or shard_run_steps[0].get("env") != {
         "SHARD_INDEX": "${{ matrix.shard }}",
@@ -4959,7 +5473,7 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
     }
     required = {
         expected_plan_run,
-        expected_shard_run,
+        shard_run_steps[0]["run"],
         "python scripts/prepare_mutation_cache.py prepare",
         "python scripts/prepare_mutation_cache.py record",
         "python scripts/merge_mutation_shards.py",
@@ -5110,6 +5624,14 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
             ".github/workflows/mutation-testing.yml: save the recorded plan "
             "before preparing and uploading shard state"
         ]
+    for job in (plan, shards, aggregate):
+        for step in job["steps"]:
+            if isinstance(step, dict) and "run" not in step:
+                continue
+            if not required_ci_command_context_is_safe(workflow, job, step):
+                return [
+                    ".github/workflows/mutation-testing.yml: mutation steps require safe command context"
+                ]
     return []
 
 
@@ -5168,18 +5690,28 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         "-r requirements-dev.in"
     )
     for line in direct_lines[1:] if direct_shape_valid else direct_lines:
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;\\]+)", line)
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;\\]+)(?:;\s*(.+))?", line)
         if match is None:
             direct_shape_valid = False
             continue
         name = normalize_package_name(match.group(1))
+        marker = match.group(3)
+        if name == "pyyaml-ft":
+            if marker not in {"python_version == '3.13'", 'python_version == "3.13"'}:
+                direct_shape_valid = False
+        elif marker is not None:
+            direct_shape_valid = False
         if name in mutation_direct_pins:
             direct_shape_valid = False
         mutation_direct_pins[name] = match.group(2)
-    if not direct_shape_valid or set(mutation_direct_pins) != {"mutmut", "toml"}:
+    if not direct_shape_valid or set(mutation_direct_pins) != {
+        "mutmut",
+        "pyyaml-ft",
+        "toml",
+    }:
         problems.append(
             "requirements-mutation.in: must extend requirements-dev.in and use "
-            "exact pins for only mutmut and the Python 3.10 toml dependency"
+            "exact pins for mutmut, toml, and the Python 3.13-only pyyaml-ft provider"
         )
 
     lock_text = texts["requirements-mutation.txt"]
@@ -5193,9 +5725,9 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         problems.append(
             "requirements-mutation.txt: must be generated in portable hash mode"
         )
-    for package in ("mutmut", "toml"):
+    for package in ("mutmut", "pyyaml-ft", "toml"):
         entry = re.search(
-            rf"(?ms)^{package}==([^\s;\\]+)\s+\\$(.*?)(?=^[A-Za-z0-9_.-]+==|\Z)",
+            rf"(?ms)^{package}==([^\s;\\]+)(?:[ \t]*;[ \t]*([^\n\\]+))?\s+\\$(.*?)(?=^[A-Za-z0-9_.-]+==|\Z)",
             lock_text,
         )
         if (
@@ -5213,6 +5745,20 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                 f"requirements-mutation.txt: {package} pin {entry.group(1)} does not "
                 f"match requirements-mutation.in pin {mutation_direct_pins[package]}"
             )
+        if entry is not None:
+            marker = entry.group(2)
+            if package == "pyyaml-ft":
+                if marker is None or marker.strip() not in {
+                    "python_version == '3.13'",
+                    'python_version == "3.13"',
+                }:
+                    problems.append(
+                        "requirements-mutation.txt: pyyaml-ft must apply only to Python 3.13"
+                    )
+            elif marker is not None:
+                problems.append(
+                    f"requirements-mutation.txt: {package} must remain unconditional"
+                )
 
     validator_relative = "scripts/validate_mutation_results.py"
     try:
@@ -5778,7 +6324,11 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
         pytest_config = config["tool"]["pytest"]["ini_options"]
         if not isinstance(mutation_config, dict) or not isinstance(pytest_config, dict):
             raise TypeError("mutation and pytest settings must be TOML tables")
-    except (tomllib.TOMLDecodeError, KeyError, TypeError) as error:
+    except RecursionError:
+        problems.append(
+            "pyproject.toml: mutation/pytest settings nesting exceeds parser limit"
+        )
+    except (ValueError, KeyError, TypeError) as error:
         problems.append(f"pyproject.toml: could not verify mutation settings: {error}")
     else:
         if mutation_config.get("source_paths") != expected_source_paths:
@@ -5806,17 +6356,21 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                     "exclude production code"
                 )
         also_copy = mutation_config.get("also_copy")
-        if not isinstance(also_copy, list) or not {
-            ".agents",
-            ".claude",
-            "AGENTS.md",
-            "requirements-mutation.txt",
-            "requirements-mutation.in",
-        }.issubset(also_copy):
+        if (
+            not isinstance(also_copy, list)
+            or not all(isinstance(path, str) for path in also_copy)
+            or not {
+                ".agents",
+                ".claude",
+                "AGENTS.md",
+                "requirements-mutation.txt",
+                "requirements-mutation.in",
+            }.issubset(also_copy)
+        ):
             problems.append(
                 "pyproject.toml: mutation workspace must copy the plugin "
                 "marketplace, maintainer instructions, and both mutation "
-                "requirement files"
+                "requirement files using only string paths in also_copy"
             )
         if pytest_config.get("testpaths") != ["tests"]:
             problems.append(
@@ -7745,11 +8299,13 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
     expected_environment = {
         "GH_TOKEN": "${{ github.token }}",
         "REPOSITORY": "${{ github.repository }}",
+        "REPOSITORY_ID": "${{ github.repository_id }}",
         "PR_NUMBER": "${{ github.event.pull_request.number }}",
         "PR_TITLE": "${{ github.event.pull_request.title }}",
         "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
         "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
         "PR_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
+        "PR_HEAD_REPOSITORY_ID": "${{ github.event.pull_request.head.repo.id }}",
     }
     if (
         not isinstance(update, dict)
@@ -7816,9 +8372,23 @@ def validate_pr_body_sync_workflow_contract(repository_root: Path) -> list[str]:
     if (
         run.count("expected_payload_path = Path(sys.argv[7])") != 2
         or run.count('for field in ("commits", "changed_files")') != 2
+        or run.count("type(value) is not int") != 2
+        or run.count("type(expected_value) is not int") != 2
     ):
         problems.append(
             f"{relative}: body-sync must revalidate the commit and file inventory before and after the mutation"
+        )
+    if (
+        run.count('payload["number"] != expected_ids["PR_NUMBER"]') != 3
+        or run.count('base_repository["id"] != expected_ids["REPOSITORY_ID"]') != 3
+        or run.count('head_repository["id"] != expected_ids["PR_HEAD_REPOSITORY_ID"]')
+        != 3
+        or run.count('base_repository.get("archived") is not False') != 3
+        or run.count('base_repository.get("disabled") is not False') != 3
+        or run.count("object_pairs_hook=unique_object") != 7
+    ):
+        problems.append(
+            f"{relative}: body-sync must reject ambiguous, inactive, or unbound numeric PR/repository evidence at every boundary"
         )
     if (
         run.count("if body != original:") != 1
@@ -8010,6 +8580,7 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
         repository_root / "skills" / "repo-scaffold" / "assets" / "ISSUE_TEMPLATE",
     )
     for template_root in template_roots:
+        template_names: set[str] = set()
         for path in sorted(template_root.glob("*.md")):
             relative = path.relative_to(repository_root)
             try:
@@ -8026,6 +8597,12 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
             name = front_matter.get("name")
             if isinstance(name, str) and len(name.strip()) <= 3:
                 problems.append(f"{relative}: name must be more than 3 characters")
+            if isinstance(name, str):
+                if name in template_names:
+                    problems.append(
+                        f"{relative}: name must be unique among issue templates"
+                    )
+                template_names.add(name)
             if not template_body.strip():
                 problems.append(f"{relative}: template body must be nonempty")
 
@@ -8064,6 +8641,12 @@ def validate_issue_templates(repository_root: Path) -> list[str]:
             name = document.get("name")
             if isinstance(name, str) and len(name.strip()) <= 3:
                 problems.append(f"{relative}: name must be more than 3 characters")
+            if isinstance(name, str):
+                if name in template_names:
+                    problems.append(
+                        f"{relative}: name must be unique among issue templates"
+                    )
+                template_names.add(name)
             form_body = document.get("body")
             if not isinstance(form_body, list) or not form_body:
                 problems.append(f"{relative}: body must be a nonempty list")
@@ -9090,6 +9673,8 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/assets/dependabot.yml",
                 },
                 "github-dependabot-auto-merge": {
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
                     "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
                 },
                 "github-dependency-review": {
@@ -9099,7 +9684,9 @@ def validate_official_docs_tracking_contract(repository_root: Path) -> list[str]
                     "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 },
                 "github-dependency-graph-sbom-api": {
+                    "skills/repo-scaffold/SKILL.md",
                     "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
                     "skills/repo-scaffold/scripts/dependency_review_preflight.py",
                 },
                 "github-actions-permissions-api": {
@@ -9624,7 +10211,8 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
             or not isinstance(jobs, dict)
             or set(jobs) != {"code_scanning_gate"}
             or not isinstance(gate, dict)
-            or gate.get("name") != "code-scanning-gate"
+            or gate.get("name")
+            != "${{ github.event_name == 'pull_request_target' && github.event.pull_request.state == 'closed' && 'code-scanning-gate-closed-pr' || 'code-scanning-gate' }}"
             or "if" in gate
             or gate.get("timeout-minutes") != "25"
         ):
@@ -9650,12 +10238,23 @@ def validate_code_scanning_gate_contract(repository_root: Path) -> list[str]:
                 "GITHUB_TOKEN": "${{ github.token }}",
                 "EVENT_NAME": "${{ github.event_name }}",
                 "PR_NUMBER": "${{ github.event.pull_request.number }}",
+                "PR_STATE": "${{ github.event.pull_request.state }}",
                 "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
                 "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
                 "MERGE_GROUP_REF": "${{ github.ref }}",
                 "MERGE_GROUP_SHA": "${{ github.sha }}",
             }
             or "scripts/check_code_scanning_alerts.py" not in run_text
+            or not run_text.startswith(
+                "# A closed PR has no merge admission to gate and may have no queryable ref.\n"
+                "if [[ \"$EVENT_NAME\" == 'pull_request_target' ]]; then\n"
+                '  case "$PR_STATE" in\n'
+                '    closed) echo "Code scanning gate is not applicable to a closed pull request."; exit 0 ;;\n'
+                "    open) ;;\n"
+                '    *) echo "::error::Pull request state must be open or closed."; exit 1 ;;\n'
+                "  esac\n"
+                "fi\n"
+            )
             or "if [[ \"$EVENT_NAME\" == 'pull_request_target' ]]; then" not in run_text
             or "elif [[ \"$EVENT_NAME\" == 'merge_group' ]]; then" not in run_text
             or "Unsupported event for the code-scanning gate." not in run_text

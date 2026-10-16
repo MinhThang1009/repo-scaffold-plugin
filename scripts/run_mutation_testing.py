@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import gc
 import importlib
 import importlib.metadata
 import json
@@ -27,6 +29,7 @@ MAX_MUTATION_SHARDS = 128
 MAX_MUTANTS_PER_SHARD = 100_000
 MAX_REUSABLE_SOURCES_BYTES = 1024 * 1024
 MAX_SHARD_PLAN_BYTES = 512 * 1024 * 1024
+MAX_WORKER_DIAGNOSTIC_BYTES = 1024 * 1024
 
 _MUTMUT_MAIN: Any = None
 _ORIGINAL_CREATE_MUTANTS: Callable[[Path, Path], Any] | None = None
@@ -212,6 +215,8 @@ def shard_mutants(mutant_names: list[str], shard_count: int) -> list[list[str]]:
     names = sorted(_validate_mutant_name(name) for name in mutant_names)
     if not names:
         raise ValueError("mutation shard plan cannot be empty")
+    if shard_count > len(names):
+        raise ValueError("mutation shard count exceeds the mutant inventory")
     if len(names) != len(set(names)):
         raise ValueError("mutation shard plan contains duplicate mutant names")
     shards: list[list[str]] = [[] for _ in range(shard_count)]
@@ -414,6 +419,112 @@ def _generate_mutation_sources(
         marker.unlink(missing_ok=True)
 
 
+def diagnostic_runner_factory(
+    factory: Callable[..., Any], names: frozenset[str]
+) -> Callable[..., Any]:
+    """Observe pinned runner submission/completion without changing its results."""
+    written = 0
+    stopped = False
+
+    def write(payload: str) -> None:
+        nonlocal written, stopped
+        written += len(payload.encode("utf-8"))
+        try:
+            print(payload, end="", flush=True)
+        except OSError:
+            # Optional diagnostics must not replace the engine's verdict.
+            stopped = True
+
+    def emit(phase: str, key: object, pid: object = None) -> None:
+        nonlocal stopped
+        if stopped or not isinstance(key, str) or key not in names:
+            return
+        document: dict[str, object] = {"phase": phase, "mutant": key}
+        document["pid"] = pid if type(pid) is int and pid > 0 else None
+        payload = (
+            "mutation-worker-diagnostic "
+            + json.dumps(document, ensure_ascii=True)
+            + "\n"
+        )
+        size = len(payload.encode("utf-8"))
+        if written + size > MAX_WORKER_DIAGNOSTIC_BYTES - 128:
+            stopped = True
+            marker = 'mutation-worker-diagnostic {"status":"output-budget-exhausted"}\n'
+            if written + len(marker.encode("utf-8")) <= MAX_WORKER_DIAGNOSTIC_BYTES:
+                write(marker)
+            return
+        write(payload)
+
+    def create(*args: Any, **kwargs: Any) -> Any:
+        runner = factory(*args, **kwargs)
+        original_submit = runner.submit
+        original_wait = runner.wait_for_result
+
+        def submit(
+            mutant_name: str,
+            tests: list[str],
+            cpu_time_limit: int,
+            estimated_time: float,
+        ) -> Any:
+            result = original_submit(mutant_name, tests, cpu_time_limit, estimated_time)
+            running = getattr(runner, "_running", None)
+            pid = None
+            if isinstance(running, dict) and len(running) <= 32:
+                matches = [
+                    candidate
+                    for candidate, worker in running.items()
+                    if getattr(worker, "mutant_name", None) == mutant_name
+                ]
+                if len(matches) == 1:
+                    pid = matches[0]
+            emit("submitted", mutant_name, pid)
+            return result
+
+        def wait(*args: Any, **kwargs: Any) -> Any:
+            result = original_wait(*args, **kwargs)
+            emit("completed", getattr(result, "mutant_name", None))
+            return result
+
+        runner.submit = submit
+        runner.wait_for_result = wait
+        return runner
+
+    return create
+
+
+def release_pre_fork_memory() -> None:
+    """Release post-pytest garbage and free allocator pages before GC is frozen."""
+    gc.collect()
+    if sys.platform != "linux":
+        return
+    try:
+        trim = ctypes.CDLL(None).malloc_trim
+    except (OSError, AttributeError):
+        # Non-glibc platforms may have no trimming API; keep the engine verdict.
+        return
+    trim.argtypes = [ctypes.c_size_t]
+    trim.restype = ctypes.c_int
+    trim(0)
+
+
+def pre_fork_runner_factory(factory: Callable[..., Any]) -> Callable[..., Any]:
+    """Collect after pytest teardown, immediately before the runner's freeze."""
+
+    def create(*args: Any, **kwargs: Any) -> Any:
+        runner = factory(*args, **kwargs)
+        startup = getattr(runner, "startup", None)
+        if callable(startup):
+
+            def start(*args: Any, **kwargs: Any) -> Any:
+                release_pre_fork_memory()
+                return startup(*args, **kwargs)
+
+            runner.startup = start
+        return runner
+
+    return create
+
+
 def run_mutation_testing(
     repository_root: Path,
     *,
@@ -441,6 +552,21 @@ def run_mutation_testing(
             marker.unlink(missing_ok=True)
             return
     original = implementation.create_mutants_for_file
+    original_factory = getattr(implementation, "get_mutant_runner", None)
+    runner_factory = (
+        pre_fork_runner_factory(original_factory)
+        if callable(original_factory)
+        else None
+    )
+    if (
+        os.environ.get("REPO_SCAFFOLD_MUTATION_DIAGNOSTICS") == "1"
+        and mutant_names
+        and runner_factory is not None
+    ):
+        runner_factory = diagnostic_runner_factory(
+            runner_factory,
+            frozenset(name.replace("__init__.", "") for name in mutant_names),
+        )
     previous_cwd = Path.cwd()
     _MUTMUT_MAIN = implementation
     _ORIGINAL_CREATE_MUTANTS = original
@@ -448,9 +574,13 @@ def run_mutation_testing(
     implementation.create_mutants_for_file = _create_or_reuse_mutants
     try:
         os.chdir(root)
+        if runner_factory is not None:
+            implementation.get_mutant_runner = runner_factory
         implementation._run(mutant_names or [], max_children)
     finally:
         os.chdir(previous_cwd)
+        if runner_factory is not None:
+            implementation.get_mutant_runner = original_factory
         implementation.create_mutants_for_file = original
         _MUTMUT_MAIN = None
         _ORIGINAL_CREATE_MUTANTS = None

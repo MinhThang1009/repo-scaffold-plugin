@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
+import os
+import re
 import runpy
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -59,6 +65,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "hostname": "github.com",
         "repository": "octo/example",
+        "expected_repository_id": 42,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -67,6 +74,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
 def repository(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "full_name": "octo/example",
+        "id": 42,
         "archived": False,
         "disabled": False,
         "visibility": "public",
@@ -78,6 +86,252 @@ def repository(**overrides: object) -> dict[str, object]:
 
 
 class ScorecardPreflightTests(unittest.TestCase):
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_documented_install_consumers_require_bound_current_identity(self) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        identity = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert identity is not None
+        prelude = r"""
+$ErrorActionPreference='Stop'
+$SELECTED_REPOSITORY_ID=42
+$REPO_SCAFFOLD_SKILL_ROOT=$env:SKILL_ROOT
+$global:LASTEXITCODE=0
+function python { $global:LASTEXITCODE=0; return (Get-Content -Raw -LiteralPath $env:FIXTURE) }
+"""
+        postlude = "\n$copies += 1\n} catch { $failure=$_.Exception.Message }\n@{copies=$copies;failure=$failure} | ConvertTo-Json -Compress\n"
+        for marker, script_name, decision in (
+            (
+                "- **Scorecard SARIF upload**:",
+                "scorecard_preflight.py",
+                "may-install-scorecard-workflow",
+            ),
+            (
+                "- **Dependency review workflow**:",
+                "dependency_review_preflight.py",
+                "may-install-dependency-review-workflow",
+            ),
+        ):
+            section = reference.split(marker, 1)[1]
+            block = re.search(r"```powershell\n(.*?)\n\s*```", section, re.DOTALL)
+            assert block is not None
+            consumer = "\n".join(
+                line[2:] if line.startswith("  ") else line
+                for line in block[1].splitlines()
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                scripts = root / "scripts"
+                scripts.mkdir()
+                shutil.copyfile(SCRIPT_DIRECTORY / script_name, scripts / script_name)
+                command = root / "consumer.ps1"
+                command.write_bytes(
+                    (
+                        prelude
+                        + identity[0]
+                        + "\n$copies=0; $failure=$null\ntry {\n"
+                        + consumer
+                        + postlude
+                    ).encode("utf-8-sig")
+                )
+                cases = (
+                    (42, decision, True, "OWNER/REPO", 1),
+                    (43, decision, True, "OWNER/REPO", 0),
+                    (None, decision, True, "OWNER/REPO", 0),
+                    ("42", decision, True, "OWNER/REPO", 0),
+                    (True, decision, True, "OWNER/REPO", 0),
+                    (
+                        42,
+                        "bind-repository-identity-before-mutation",
+                        True,
+                        "OWNER/REPO",
+                        0,
+                    ),
+                    (42, decision, False, "OWNER/REPO", 0),
+                    (42, decision, True, "other/target", 0),
+                    (42, decision, True, ["OWNER/REPO"], 0),
+                )
+                base_cases = [(*case, {}) for case in cases]
+                base_cases.extend(
+                    (
+                        42,
+                        decision,
+                        True,
+                        "OWNER/REPO",
+                        0,
+                        overrides,
+                    )
+                    for overrides in (
+                        {"decision": [decision]},
+                        {"array_root": True},
+                        {"inspection_complete": "true"},
+                    )
+                )
+                if script_name == "dependency_review_preflight.py":
+                    base_cases.extend(
+                        (42, decision, True, "OWNER/REPO", expected, overrides)
+                        for overrides, expected in (
+                            ({"dependency_graph_available": False}, 0),
+                            ({"dependency_graph_available": "true"}, 0),
+                            ({"dependency_graph_available": None}, 0),
+                            ({"visibility": "unknown"}, 0),
+                            ({"visibility": ["public"]}, 0),
+                            ({"github_code_security": ["not-required"]}, 0),
+                            ({"github_code_security": None}, 0),
+                            ({"github_code_security": "enabled"}, 0),
+                            ({"visibility": "private"}, 0),
+                            (
+                                {
+                                    "visibility": "internal",
+                                    "github_code_security": "disabled",
+                                },
+                                0,
+                            ),
+                            (
+                                {
+                                    "visibility": "private",
+                                    "github_code_security": "enabled",
+                                },
+                                1,
+                            ),
+                            (
+                                {
+                                    "visibility": "internal",
+                                    "github_code_security": "enabled",
+                                },
+                                1,
+                            ),
+                        )
+                    )
+                for (
+                    repository_id,
+                    verdict,
+                    complete,
+                    repository_name,
+                    copies,
+                    overrides,
+                ) in base_cases:
+                    with self.subTest(
+                        producer=script_name,
+                        repository_id=repository_id,
+                        decision=verdict,
+                        complete=complete,
+                        repository=repository_name,
+                        overrides=overrides,
+                    ):
+                        fixture = root / "verdict.json"
+                        evidence: dict[str, object] = {
+                            "inspection_complete": complete,
+                            "repository": repository_name,
+                            "repository_id": repository_id,
+                            "decision": verdict,
+                        }
+                        if script_name == "dependency_review_preflight.py":
+                            evidence.update(
+                                {
+                                    "dependency_graph_available": True,
+                                    "visibility": "public",
+                                    "github_code_security": "not-required",
+                                }
+                            )
+                        evidence.update(
+                            {
+                                key: value
+                                for key, value in overrides.items()
+                                if key != "array_root"
+                            }
+                        )
+                        fixture.write_text(
+                            json.dumps(
+                                [evidence] if overrides.get("array_root") else evidence
+                            ),
+                            encoding="utf-8",
+                        )
+                        process = subprocess.run(
+                            [
+                                str(
+                                    shutil.which("powershell.exe")
+                                    or shutil.which("pwsh")
+                                ),
+                                "-NoProfile",
+                                "-NonInteractive",
+                                "-File",
+                                str(command),
+                            ],
+                            env={
+                                **os.environ,
+                                "FIXTURE": str(fixture),
+                                "SKILL_ROOT": str(root),
+                            },
+                            capture_output=True,
+                            timeout=30,
+                            check=False,
+                        )
+                        self.assertEqual(process.returncode, 0, process.stderr)
+                        result = json.loads(
+                            process.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                        )
+                        self.assertEqual(result["copies"], copies, result)
+
+    def test_multi_request_verdict_revalidates_identity_and_applicability(self) -> None:
+        original = repository(id=42)
+        for final in (
+            repository(id=43),
+            repository(id=42, full_name="other/target"),
+            repository(id=42, archived=True),
+            repository(id=42, disabled=True),
+            repository(id=42, visibility="private"),
+            None,
+        ):
+            client = FakeClient("github.com")
+            with (
+                self.subTest(final=final),
+                mock.patch.object(
+                    client, "json", side_effect=[original, {"enabled": True}, final]
+                ),
+                mock.patch.object(
+                    scorecard_preflight, "GitHubClient", return_value=client
+                ),
+                self.assertRaisesRegex(
+                    scorecard_preflight.InspectionError,
+                    "repository identity|repository.*changed|revalidation",
+                ),
+            ):
+                scorecard_preflight.run(arguments(expected_repository_id=42))
+
+    def test_repository_identity_cannot_change_between_discovery_and_verdict(
+        self,
+    ) -> None:
+        FakeClient.repository_response = repository(id=42)
+        with mock.patch.object(scorecard_preflight, "GitHubClient", FakeClient):
+            positive = scorecard_preflight.run(arguments(expected_repository_id=42))
+        self.assertEqual(positive.get("repository_id"), 42)
+        for identity in (43, None, True, "42", 0, -1, 42.5):
+            FakeClient.repository_response = repository(id=identity)
+            with (
+                self.subTest(identity=identity),
+                mock.patch.object(scorecard_preflight, "GitHubClient", FakeClient),
+                self.assertRaisesRegex(
+                    scorecard_preflight.InspectionError,
+                    "repository ID|repository identity",
+                ),
+            ):
+                scorecard_preflight.run(arguments(expected_repository_id=42))
+
+    def test_unbound_inspection_returns_discovery_only_not_installation_authorization(
+        self,
+    ) -> None:
+        FakeClient.repository_response = repository(id=42)
+        with mock.patch.object(scorecard_preflight, "GitHubClient", FakeClient):
+            result = scorecard_preflight.run(arguments(expected_repository_id=None))
+        self.assertEqual(result["decision"], "bind-repository-identity-before-mutation")
+        self.assertEqual(result["repository_id"], 42)
+
     def setUp(self) -> None:
         FakeClient.repository_response = repository()
         FakeClient.actions_response = {"enabled": True}
@@ -89,7 +343,7 @@ class ScorecardPreflightTests(unittest.TestCase):
         self.assertEqual(result["decision"], "may-install-scorecard-workflow")
         self.assertEqual(result["github_code_security"], "not-required")
         self.assertTrue(result["github_actions_enabled"])
-        self.assertEqual(result["github_api_requests"], 2)
+        self.assertEqual(result["github_api_requests"], 3)
 
     def test_requires_code_security_and_actions_for_nonpublic_repository(self) -> None:
         FakeClient.repository_response = repository(

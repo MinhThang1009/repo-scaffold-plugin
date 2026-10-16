@@ -91,11 +91,19 @@ def upstream_responses(
         f"repos/EthicalSource/contributor_covenant/git/trees/{commit}?recursive=1": {
             "truncated": False,
             "tree": [
-                {"path": "content/version/2/1/code_of_conduct.md"},
-                {"path": "content/version/3/0/code_of_conduct.md"},
+                {
+                    "path": "content/version/2/1/code_of_conduct.md",
+                    "type": "blob",
+                    "mode": "100644",
+                    "sha": "b" * 40,
+                },
+                {
+                    "path": "content/version/3/0/code_of_conduct.md",
+                    "type": "blob",
+                    "mode": "100644",
+                    "sha": "c" * 40,
+                },
                 {"path": "README.md"},
-                {"path": None},
-                "invalid",
             ],
         },
     }
@@ -519,6 +527,44 @@ def stat_value() -> int:
 
 
 class CovenantTests(unittest.TestCase):
+    def test_policy_candidate_must_be_regular_blob_with_unambiguous_bound_identity(
+        self,
+    ) -> None:
+        endpoint = (
+            f"repos/EthicalSource/contributor_covenant/git/trees/{'a' * 40}?recursive=1"
+        )
+        valid: dict[str, object] = {
+            "path": "content/version/3/0/code_of_conduct.md",
+            "type": "blob",
+            "mode": "100644",
+            "sha": "b" * 40,
+        }
+        for candidate in (
+            {**valid, "type": "tree", "mode": "040000"},
+            {**valid, "mode": "120000"},
+            {**valid, "sha": "not-a-sha"},
+            {"path": valid["path"]},
+        ):
+            responses = upstream_responses()
+            responses[endpoint] = {"truncated": False, "tree": [candidate]}
+            with (
+                self.subTest(candidate=candidate),
+                self.assertRaises(community_health.AuditError),
+            ):
+                community_health.latest_contributor_covenant(FakeClient(responses))
+        responses = upstream_responses()
+        responses[endpoint] = {
+            "truncated": False,
+            "tree": [valid, {**valid, "sha": "c" * 40}],
+        }
+        with self.assertRaises(community_health.AuditError):
+            community_health.latest_contributor_covenant(FakeClient(responses))
+
+    def test_oversized_version_component_fails_as_controlled_audit_error(self) -> None:
+        with self.assertRaises(community_health.AuditError) as error:
+            community_health.version_tuple("9" * 5000 + ".0")
+        self.assertLess(len(str(error.exception)), 128)
+
     def test_versions_and_local_policy_parsing(self) -> None:
         self.assertEqual(community_health.version_tuple("3.0"), (3, 0, 0))
         self.assertEqual(community_health.version_tuple("3.0.0"), (3, 0, 0))
@@ -604,7 +650,35 @@ class CovenantTests(unittest.TestCase):
             FakeClient(upstream_responses())
         )
         self.assertEqual(upstream["version"], "3.0")
+        self.assertEqual(upstream["blob_sha"], "c" * 40)
         self.assertIn("a" * 40, upstream["url"])
+
+    def test_policy_inventory_rejects_unknown_paths_and_caps_work_before_iteration(
+        self,
+    ) -> None:
+        endpoint = (
+            f"repos/EthicalSource/contributor_covenant/git/trees/{'a' * 40}?recursive=1"
+        )
+        for entry in ("invalid", {"path": None}, {"path": ""}):
+            responses = upstream_responses()
+            responses[endpoint] = {"truncated": False, "tree": [entry]}
+            with (
+                self.subTest(entry=entry),
+                self.assertRaises(community_health.AuditError),
+            ):
+                community_health.latest_contributor_covenant(FakeClient(responses))
+        with (
+            mock.patch.object(community_health, "MAX_UPSTREAM_TREE_ENTRIES", 1),
+            self.assertRaisesRegex(community_health.AuditError, "entry safety cap"),
+        ):
+            community_health.latest_contributor_covenant(
+                FakeClient(upstream_responses())
+            )
+        self.assertEqual(
+            community_health.version_tuple("1" * 32 + ".0"), (int("1" * 32), 0, 0)
+        )
+        with self.assertRaises(community_health.AuditError):
+            community_health.version_tuple("1" * 33 + ".0")
 
     def test_latest_contributor_covenant_rejects_invalid_responses(self) -> None:
         branch_endpoint = "repos/EthicalSource/contributor_covenant/branches/release"

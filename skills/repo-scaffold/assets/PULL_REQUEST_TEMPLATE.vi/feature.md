@@ -32,4 +32,4 @@
 - [ ] Đã cập nhật test, tài liệu, migration, rollback, performance, accessibility hoặc hướng dẫn release
 <!-- repo-scaffold:optional-checklist:end -->
 
-<!-- Đóng #<issue> nếu phù hợp -->
+<!-- Nếu phù hợp, hãy dùng một dòng đóng issue riêng: Fixes #<issue>, Closes #<issue>, hoặc Resolves #<issue>. -->

@@ -20,9 +20,12 @@ from unittest import mock
 
 import yaml
 
+from tests.token_walk_budget import guard_token_reads
+from tests.parser_work_budget import guard_text_work
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "validate_repository.py"
+
+MODULE_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_PATH = MODULE_ROOT / "scripts" / "validate_repository.py"
 SPEC = importlib.util.spec_from_file_location(
     "scripts.validate_repository", SCRIPT_PATH
 )
@@ -32,7 +35,7 @@ validate_repository = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = validate_repository
 SPEC.loader.exec_module(validate_repository)
 
-WORKFLOW_SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "validate_workflows.py"
+WORKFLOW_SCRIPT_PATH = MODULE_ROOT / "scripts" / "validate_workflows.py"
 WORKFLOW_SPEC = importlib.util.spec_from_file_location(
     "scripts.validate_workflows", WORKFLOW_SCRIPT_PATH
 )
@@ -41,6 +44,49 @@ if WORKFLOW_SPEC is None or WORKFLOW_SPEC.loader is None:
 validate_workflows = importlib.util.module_from_spec(WORKFLOW_SPEC)
 sys.modules[WORKFLOW_SPEC.name] = validate_workflows
 WORKFLOW_SPEC.loader.exec_module(validate_workflows)
+
+
+PLUGIN_ROOT = validate_repository.release_archive_source_root(MODULE_ROOT)
+_TOKEN_WALK_PATCHES: ExitStack | None = None
+
+
+def setUpModule() -> None:
+    """Guard every classifier call, including calls through higher-level validators."""
+    global _TOKEN_WALK_PATCHES
+    if _TOKEN_WALK_PATCHES is not None:
+        raise RuntimeError("module token-walk guards are already active")
+    with ExitStack() as patches:
+        for name in ("github_api_is_mutation", "network_client_is_mutation"):
+            patches.enter_context(
+                mock.patch.object(
+                    validate_repository,
+                    name,
+                    guard_token_reads(getattr(validate_repository, name)),
+                )
+            )
+        name = "freshness_issue_lookup_substitution_is_safe"
+        patches.enter_context(
+            mock.patch.object(
+                validate_repository,
+                name,
+                guard_text_work(getattr(validate_repository, name), input_name="text"),
+            )
+        )
+        _TOKEN_WALK_PATCHES = patches.pop_all()
+
+
+def tearDownModule() -> None:
+    """Restore the actual source functions before other test modules run."""
+    global _TOKEN_WALK_PATCHES
+    if _TOKEN_WALK_PATCHES is not None:
+        _TOKEN_WALK_PATCHES.close()
+        _TOKEN_WALK_PATCHES = None
+
+
+def repository_entrypoint_path(repository_root: Path) -> Path:
+    """Validate repository data from its bound source, not mutmut instrumentation."""
+    source_root = validate_repository.release_archive_source_root(repository_root)
+    return source_root / "scripts" / "validate_repository.py"
 
 
 def run_test_subprocess(
@@ -59,6 +105,104 @@ def run_test_subprocess(
 
 
 class SerializedFileValidationTests(unittest.TestCase):
+    def test_issue_lookup_fixture_preserves_continuation_semantics(self) -> None:
+        self.assertTrue(
+            validate_repository.freshness_issue_lookup_substitution_is_safe(
+                "issue_numbers_output=$(\ngh api endpoint \\\n --method HEAD\n)"
+            )
+        )
+        self.assertFalse(
+            validate_repository.freshness_issue_lookup_substitution_is_safe(
+                "issue_numbers_output=$(\nprintf extra\ngh api endpoint\n)"
+            )
+        )
+
+    def test_issue_lookup_fixture_bounds_repeated_output_and_restores_source(
+        self,
+    ) -> None:
+        retained: list[str] = []
+
+        def repeat_line(text: str) -> bool:
+            while text:
+                retained.append(text.strip())
+            return False
+
+        name = "freshness_issue_lookup_substitution_is_safe"
+        original = getattr(validate_repository, name).__wrapped__
+        try:
+            tearDownModule()
+            self.assertIs(getattr(validate_repository, name), original)
+            with mock.patch.object(validate_repository, name, repeat_line):
+                setUpModule()
+                with self.assertRaisesRegex(AssertionError, "linear call budget"):
+                    getattr(validate_repository, name)("x")
+                tearDownModule()
+        finally:
+            if _TOKEN_WALK_PATCHES is not None:
+                tearDownModule()
+            setUpModule()
+        self.assertLessEqual(len(retained), 192)
+
+    def test_http_token_classifier_module_hook_rejects_duplicate_setup(self) -> None:
+        current = validate_repository.github_api_is_mutation
+        with self.assertRaisesRegex(RuntimeError, "already active"):
+            setUpModule()
+        self.assertIs(validate_repository.github_api_is_mutation, current)
+
+    def test_http_token_classifier_module_hooks_delegate_and_restore_source(
+        self,
+    ) -> None:
+        wrapped = validate_repository.github_api_is_mutation
+        original = wrapped.__wrapped__
+        self.assertIsNot(wrapped, original)
+        try:
+            tearDownModule()
+            self.assertIs(validate_repository.github_api_is_mutation, original)
+            setUpModule()
+            self.assertIs(
+                validate_repository.github_api_is_mutation.__wrapped__, original
+            )
+            self.assertFalse(
+                validate_repository.github_api_is_mutation(
+                    ["gh", "api", "endpoint", "-X", "HEAD"], 0
+                )
+            )
+        finally:
+            if _TOKEN_WALK_PATCHES is None:
+                setUpModule()
+
+    def test_http_token_classifier_fixture_rejects_nonprogress_in_nested_calls(
+        self,
+    ) -> None:
+        methods = []
+
+        def reset_index(tokens: list[str], position: int) -> bool:
+            selected = tokens[position:]
+            index = 2
+            while index < len(selected):
+                if selected[index] == "-X":
+                    methods.append(selected[index + 1])
+                    index = 1
+                index += 1
+            return bool(methods)
+
+        try:
+            tearDownModule()
+            with mock.patch.object(
+                validate_repository, "github_api_is_mutation", reset_index
+            ):
+                setUpModule()
+                with self.assertRaisesRegex(AssertionError, "linear read budget"):
+                    validate_repository.reminder_issue_mutation_blocks(
+                        "gh api endpoint -X HEAD"
+                    )
+                tearDownModule()
+        finally:
+            if _TOKEN_WALK_PATCHES is not None:
+                tearDownModule()
+            setUpModule()
+        self.assertLessEqual(len(methods), 28)
+
     def test_test_subprocess_environment_does_not_inherit_mutmut_runtime_flags(
         self,
     ) -> None:
@@ -407,6 +551,410 @@ class SerializedFileValidationTests(unittest.TestCase):
             self.assertEqual(result, str(outside_tool.resolve()))
 
 
+class CIVerdictGrammarTests(unittest.TestCase):
+    VARIABLES = {"TEST_RESULT", "QUALITY_RESULT", "MUTATION_CACHE_INTEGRATION_RESULT"}
+
+    @classmethod
+    def guard(cls) -> str:
+        condition = " || ".join(
+            f'[ "${name}" != "success" ]' for name in sorted(cls.VARIABLES)
+        )
+        return f'if {condition}; then\n    echo "Required check did not succeed"\n    exit 1\nfi\necho "All succeeded"\n'
+
+    def test_guard_accepts_semantic_format_variants_not_fixed_message_text(
+        self,
+    ) -> None:
+        canonical = self.guard()
+        reversed_condition = " || ".join(
+            f'[[ "${{{name}}}" != success ]]'
+            for name in sorted(self.VARIABLES, reverse=True)
+        )
+        alternate = (
+            f"# harmless comment\nif {reversed_condition};then\nexit 255\nfi\nexit 0\n"
+        )
+        for text in (
+            canonical,
+            alternate,
+            canonical.replace("exit 1", "exit 2"),
+            canonical.replace(" || ", " ||\n"),
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    validate_repository.ci_result_guard_is_fail_closed(
+                        text, self.VARIABLES
+                    )
+                )
+
+    def test_guard_rejects_ambiguous_incomplete_or_bypassing_programs(self) -> None:
+        canonical = self.guard()
+        first = sorted(self.VARIABLES)[0]
+        texts: tuple[object, ...] = (
+            None,
+            [],
+            "",
+            "# whole Bash comment\u2028" + canonical.replace("\n", "\u2028"),
+            "if true; then\nexit 1\nfi\n",
+            "if a" + " " * 60000 + "b; then\nexit 1\nfi\n",
+            canonical.replace("if ", "while ", 1),
+            canonical.replace("; then", "; nope"),
+            canonical.replace(f'"${first}"', "'$" + first + "'"),
+            canonical.replace(f'"${first}"', '"$OTHER_RESULT"'),
+            canonical.replace(f'[ "${first}" != "success" ] || ', "", 1),
+            canonical.replace(
+                '[ "$TEST_RESULT" != "success" ]', '[ "$QUALITY_RESULT" != "success" ]'
+            ),
+            canonical.replace(" || ", " && "),
+            canonical.replace('[ "$QUALITY_RESULT" !=', '[ "$QUALITY_RESULT"\n !='),
+            canonical.replace("exit 1", "exit 0"),
+            canonical.replace("exit 1", "exit 256"),
+            canonical.replace("exit 1\n", ""),
+            canonical.replace(
+                '    echo "Required check did not succeed"\n    exit 1\n', ""
+            ),
+            canonical.replace("fi\n", "fi\nfi\n"),
+            canonical.replace("!=", "=="),
+            canonical.replace('"success" ]', '"success" ]]'),
+            "exit 0\n" + canonical,
+            "if false; then\n" + canonical + "fi\n",
+            canonical + "exit 1\n",
+            canonical.replace('echo "All succeeded"', 'echo "$(exit 0)"'),
+            canonical.replace('echo "All succeeded"', 'echo "`exit 0`"'),
+            canonical.replace('echo "All succeeded"', 'echo "$UNBOUND"'),
+            canonical.replace('echo "All succeeded"', 'echo "${TEST_RESULT:=success}"'),
+            canonical.replace('echo "All succeeded"', 'echo "ok" > outside.txt'),
+        )
+        for text in texts:
+            with self.subTest(text=text):
+                self.assertFalse(
+                    validate_repository.ci_result_guard_is_fail_closed(
+                        text, self.VARIABLES
+                    )
+                )
+        self.assertFalse(
+            validate_repository.ci_result_guard_is_fail_closed(canonical, set())
+        )
+
+    def test_guard_bounds_bytes_before_parsing_and_rejects_invalid_unicode(
+        self,
+    ) -> None:
+        canonical = self.guard()
+        limit = validate_repository.MAX_CI_VERDICT_BYTES
+        exact = canonical + "#" + "x" * (limit - len(canonical.encode("utf-8")) - 1)
+        self.assertTrue(
+            validate_repository.ci_result_guard_is_fail_closed(exact, self.VARIABLES)
+        )
+        for text in (
+            exact + "x",
+            canonical + "#" + "é" * (limit // 2),
+            canonical + "\ud800",
+        ):
+            with self.subTest(size=len(text)):
+                self.assertFalse(
+                    validate_repository.ci_result_guard_is_fail_closed(
+                        text, self.VARIABLES
+                    )
+                )
+
+    @unittest.skipIf(sys.platform == "win32", "requires native POSIX Bash")
+    def test_admitted_guard_propagates_all_producer_states_in_native_bash(self) -> None:
+        import itertools
+
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash)
+        assert bash is not None
+        names = sorted(self.VARIABLES)
+        rows = list(
+            itertools.product(
+                ("success", "failure", "cancelled", "skipped"), repeat=len(names)
+            )
+        )
+        for name in names:
+            for state in ("", "unknown", "success with spaces", "*; exit 0"):
+                candidate_row = ["success"] * len(names)
+                candidate_row[names.index(name)] = state
+                rows.append(tuple(candidate_row))
+        for script in (self.guard(), self.guard().replace('"success"', "'success'")):
+            self.assertTrue(
+                validate_repository.ci_result_guard_is_fail_closed(
+                    script, self.VARIABLES
+                )
+            )
+            for row in rows:
+                with self.subTest(row=row):
+                    result = subprocess.run(
+                        [
+                            bash,
+                            "--noprofile",
+                            "--norc",
+                            "-e",
+                            "-o",
+                            "pipefail",
+                            "-c",
+                            script,
+                        ],
+                        env={"PATH": os.defpath, **dict(zip(names, row))},
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        result.returncode,
+                        0 if all(value == "success" for value in row) else 1,
+                        result.stdout + result.stderr,
+                    )
+
+        malformed = self.guard().replace(
+            '[ "$QUALITY_RESULT" !=', '[ "$QUALITY_RESULT"\n !='
+        )
+        self.assertFalse(
+            validate_repository.ci_result_guard_is_fail_closed(
+                malformed, self.VARIABLES
+            )
+        )
+
+    def test_verdict_context_admits_only_the_reviewed_bash_environment(self) -> None:
+        job = {"runs-on": "ubuntu-latest"}
+        self.assertTrue(validate_repository.ci_verdict_context_is_safe({}, job, {}))
+        self.assertTrue(
+            validate_repository.ci_verdict_context_is_safe(
+                {"defaults": {"run": {"shell": "bash"}}}, job, {"shell": "bash"}
+            )
+        )
+        for workflow, candidate, step in (
+            (None, job, {}),
+            ({}, None, {}),
+            ({}, job, None),
+            ({}, {"runs-on": "windows-latest"}, {}),
+            ({}, job, {"shell": "echo {0}"}),
+            ({}, {**job, "container": "unreviewed"}, {}),
+            ({"env": {"BASH_ENV": "outside"}}, job, {}),
+            ({}, {**job, "env": {"BASH_ENV": "outside"}}, {}),
+            ({"defaults": []}, job, {}),
+            ({"defaults": {"run": []}}, job, {}),
+            ({"defaults": {"run": {"shell": "echo {0}"}}}, job, {}),
+        ):
+            with self.subTest(workflow=workflow, job=candidate, step=step):
+                self.assertFalse(
+                    validate_repository.ci_verdict_context_is_safe(
+                        workflow, candidate, step
+                    )
+                )
+        self.assertTrue(
+            validate_repository.ci_verdict_context_is_safe({"defaults": {}}, job, {})
+        )
+
+
+class RequiredCIExecutionTests(unittest.TestCase):
+    def test_python_startup_path_can_skip_a_failed_required_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            startup = Path(directory) / "startup"
+            startup.mkdir()
+            (startup / "sitecustomize.py").write_text(
+                "import os\nos._exit(0)\n", encoding="utf-8"
+            )
+            for enabled, status in ((False, 7), (True, 0)):
+                environment = os.environ.copy()
+                for name in ("PYTHONPATH", "PYTHONINSPECT", "PYTHONOPTIMIZE"):
+                    environment.pop(name, None)
+                environment.update(
+                    {"MUTANT_UNDER_TEST": "", "MUTMUT_DEPENDENCY_DEPTH": "-1"}
+                )
+                declared = {"PYTHONPATH": str(startup)} if enabled else {}
+                environment.update(declared)
+                result = subprocess.run(
+                    [sys.executable, "-c", "raise SystemExit(7)"],
+                    cwd=directory,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+                self.assertEqual(
+                    result.returncode, status, result.stdout + result.stderr
+                )
+                for index in range(3):
+                    scopes: list[dict[str, object]] = [{}, {}, {}]
+                    scopes[index]["env"] = declared
+                    with self.subTest(enabled=enabled, scope=index):
+                        self.assertEqual(
+                            validate_repository.required_ci_command_context_is_safe(
+                                *scopes
+                            ),
+                            not enabled,
+                        )
+
+    @unittest.skipIf(sys.platform == "win32", "requires native POSIX Bash")
+    def test_bash_startup_controls_can_skip_a_failed_required_python_command(
+        self,
+    ) -> None:
+        import shlex
+
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash)
+        assert bash is not None
+        command = shlex.join([sys.executable, "-c", "raise SystemExit(7)"])
+        with tempfile.TemporaryDirectory() as directory:
+            startup = Path(directory) / "startup.sh"
+            startup.write_text("exit 0\n", encoding="utf-8")
+            environments: tuple[tuple[dict[str, str], int], ...] = (
+                ({}, 7),
+                ({"BASH_ENV": str(startup)}, 0),
+                ({"SHELLOPTS": "noexec"}, 0),
+            )
+            for environment, status in environments:
+                with self.subTest(environment=environment):
+                    result = subprocess.run(
+                        [
+                            bash,
+                            "--noprofile",
+                            "--norc",
+                            "-e",
+                            "-o",
+                            "pipefail",
+                            "-c",
+                            command,
+                        ],
+                        env={"PATH": os.defpath, **environment},
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        result.returncode, status, result.stdout + result.stderr
+                    )
+                    self.assertEqual(
+                        validate_repository.required_ci_command_context_is_safe(
+                            {}, {}, {"env": environment}
+                        ),
+                        not environment,
+                    )
+
+    def test_command_context_preserves_builtin_shells_and_override_precedence(
+        self,
+    ) -> None:
+        for shell in (None, "bash", "sh", "pwsh", "powershell", "cmd"):
+            for directory in (None, ".", "./", "${{ github.workspace }}"):
+                with self.subTest(shell=shell, directory=directory):
+                    self.assertTrue(
+                        validate_repository.required_ci_command_context_is_safe(
+                            {}, {}, {"shell": shell, "working-directory": directory}
+                        )
+                    )
+        inherited = {
+            "defaults": {
+                "run": {"shell": "echo {0}", "working-directory": "other-target"}
+            }
+        }
+        self.assertTrue(
+            validate_repository.required_ci_command_context_is_safe(
+                inherited,
+                {"defaults": {"run": {"shell": "bash", "working-directory": "."}}},
+                {},
+            )
+        )
+        self.assertTrue(
+            validate_repository.required_ci_command_context_is_safe(
+                {}, inherited, {"shell": "bash", "working-directory": "./"}
+            )
+        )
+        self.assertTrue(
+            validate_repository.required_ci_command_context_is_safe(
+                {"defaults": {}},
+                {"env": {"PYYAML_FORCE_LIBYAML": "0"}},
+                {"env": {"REPO_SCAFFOLD_MUTMUT_INTEGRATION": "1"}},
+            )
+        )
+
+    def test_command_context_rejects_unknown_shells_directories_and_startup_controls(
+        self,
+    ) -> None:
+        for workflow, job, step in (
+            (None, {}, {}),
+            ({}, None, {}),
+            ({}, {}, None),
+            ({"defaults": []}, {}, {}),
+            ({}, {"defaults": {"run": []}}, {}),
+            ({"defaults": {"run": {"shell": "echo {0}"}}}, {}, {}),
+            ({}, {"defaults": {"run": {"working-directory": "other-target"}}}, {}),
+            ({}, {}, {"shell": "python"}),
+            ({}, {}, {"shell": ["bash"]}),
+            ({}, {}, {"working-directory": []}),
+        ):
+            with self.subTest(workflow=workflow, job=job, step=step):
+                self.assertFalse(
+                    validate_repository.required_ci_command_context_is_safe(
+                        workflow, job, step
+                    )
+                )
+        environment: object
+        for index in range(3):
+            for environment in (
+                [],
+                {1: "value"},
+                {"VALID": []},
+                {"BASH_ENV": ""},
+                {"bash_env": "startup.sh"},
+                {"SHELLOPTS": "noexec"},
+                {"PYTHONINSPECT": "1"},
+                {"PYTHONPATH": ""},
+                {"pythonpath": "startup"},
+                {"PythonPath": "startup"},
+                {"PYTHONHOME": ""},
+                {"pythonhome": "startup"},
+                {"PythonHome": "startup"},
+                {"PYTHONUSERBASE": ""},
+                {"pythonuserbase": "startup"},
+                {"PythonUserBase": "startup"},
+                {"PYTHONPLATLIBDIR": ""},
+                {"pythonplatlibdir": "startup"},
+                {"PythonPlatLibDir": "startup"},
+                {"PYTHONPYCACHEPREFIX": ""},
+                {"pythonpycacheprefix": "startup"},
+                {"PythonPycachePrefix": "startup"},
+            ):
+                scopes: list[dict[str, object]] = [{}, {}, {}]
+                scopes[index]["env"] = environment
+                with self.subTest(index=index, environment=environment):
+                    self.assertFalse(
+                        validate_repository.required_ci_command_context_is_safe(*scopes)
+                    )
+
+    def test_required_execution_rejects_unsafe_controls_but_accepts_fatal_defaults(
+        self,
+    ) -> None:
+        invalid_configurations: tuple[object, ...] = (
+            None,
+            [],
+            "invalid",
+            {"if": "false"},
+            {"continue-on-error": "true"},
+            {"continue-on-error": []},
+        )
+        for configuration in invalid_configurations:
+            with self.subTest(configuration=configuration):
+                self.assertFalse(
+                    validate_repository.required_ci_execution_is_safe(configuration)
+                )
+        for control in ("background", "parallel", "wait", "wait-all", "cancel"):
+            with self.subTest(control=control):
+                self.assertFalse(
+                    validate_repository.required_ci_execution_is_safe({control: "true"})
+                )
+        for configuration in ({}, {"continue-on-error": "false"}):
+            with self.subTest(configuration=configuration):
+                self.assertTrue(
+                    validate_repository.required_ci_execution_is_safe(configuration)
+                )
+        self.assertTrue(
+            validate_repository.required_ci_execution_is_safe(
+                {"if": "${{ always() }}"}, condition="${{ always() }}"
+            )
+        )
+
+
 class PythonSupportContractValidationTests(unittest.TestCase):
     CONTRACT_FILES = (
         ".github/python-support.json",
@@ -433,6 +981,140 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             validate_repository.validate_python_support_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_runtime_consumers_cannot_ignore_or_redirect_their_required_command(
+        self,
+    ) -> None:
+        for marker in (
+            "      - name: Run tests\n",
+            "      - name: Exercise real fork-based incremental reuse\n",
+            "      - name: Run tests on the latest stable Python\n",
+        ):
+            for control in ("shell: echo {0}", "working-directory: other-target"):
+                with (
+                    self.subTest(marker=marker, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    self.assertEqual(original.count(marker), 1)
+                    workflow.write_text(
+                        original.replace(
+                            marker, marker + "        " + control + "\n", 1
+                        ),
+                        encoding="utf-8",
+                    )
+                    errors = validate_repository.validate_python_support_contract(root)
+                    self.assertTrue(any("ci.yml:" in error for error in errors), errors)
+
+    def test_runtime_consumers_bind_inherited_shell_and_startup_controls(self) -> None:
+        for job in ("test", "mutation-cache-integration", "python-latest-canary"):
+            for control in (
+                "shell",
+                "BASH_ENV",
+                "SHELLOPTS",
+                "PYTHONINSPECT",
+                "PYTHONPATH",
+                "PYTHONHOME",
+                "PYTHONUSERBASE",
+                "PYTHONPLATLIBDIR",
+                "PYTHONPYCACHEPREFIX",
+            ):
+                with (
+                    self.subTest(job=job, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    marker = f"  {job}:\n"
+                    if job == "test" and control == "shell":
+                        modified = original.replace(
+                            "        shell: bash\n    strategy:",
+                            "        shell: echo {0}\n    strategy:",
+                            1,
+                        )
+                    elif control == "shell":
+                        modified = original.replace(
+                            marker,
+                            marker
+                            + "    defaults:\n      run:\n        shell: echo {0}\n",
+                            1,
+                        )
+                    else:
+                        value = {
+                            "BASH_ENV": "startup.sh",
+                            "SHELLOPTS": "noexec",
+                            "PYTHONINSPECT": "1",
+                            "PYTHONPATH": "startup",
+                            "PYTHONHOME": "startup",
+                            "PYTHONUSERBASE": "startup",
+                            "PYTHONPLATLIBDIR": "startup",
+                            "PYTHONPYCACHEPREFIX": "startup",
+                        }[control]
+                        modified = original.replace(
+                            marker, marker + f"    env:\n      {control}: {value}\n", 1
+                        )
+                    self.assertNotEqual(original, modified)
+                    workflow.write_text(modified, encoding="utf-8")
+                    errors = validate_repository.validate_python_support_contract(root)
+                    self.assertTrue(any("ci.yml:" in error for error in errors), errors)
+
+    def test_required_ci_execution_controls_cannot_skip_or_tolerate_failures(
+        self,
+    ) -> None:
+        for marker, indent in (
+            ("  test:\n", "    "),
+            ("      - name: Run tests\n", "        "),
+            ("  mutation-cache-integration:\n", "    "),
+            ("      - name: Exercise real fork-based incremental reuse\n", "        "),
+            ("      - name: Verify required jobs passed\n", "        "),
+        ):
+            for control in ("if: false", "continue-on-error: true"):
+                with (
+                    self.subTest(marker=marker, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    self.assertEqual(original.count(marker), 1)
+                    workflow.write_text(
+                        original.replace(marker, marker + indent + control + "\n", 1),
+                        encoding="utf-8",
+                    )
+                    errors = validate_repository.validate_python_support_contract(root)
+                    self.assertTrue(any("ci.yml:" in error for error in errors), errors)
+
+    def test_ci_success_job_must_report_even_when_producers_fail(self) -> None:
+        for control in ("if: false", "continue-on-error: true"):
+            with (
+                self.subTest(control=control),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                workflow = root / ".github/workflows/ci.yml"
+                original = workflow.read_text(encoding="utf-8")
+                modified = (
+                    original.replace("    if: ${{ always() }}\n", "    if: false\n", 1)
+                    if control == "if: false"
+                    else original.replace(
+                        "  ci-success:\n",
+                        "  ci-success:\n    continue-on-error: true\n",
+                        1,
+                    )
+                )
+                self.assertNotEqual(modified, original)
+                workflow.write_text(modified, encoding="utf-8")
+                errors = validate_repository.validate_python_support_contract(root)
+                self.assertTrue(
+                    any("ci-success must require" in error for error in errors), errors
+                )
 
     def test_hardcoded_workflow_version_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -695,6 +1377,100 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             "and mutation integration while keeping canaries outside the gate",
             problems,
         )
+
+    def test_ci_success_rejects_nonexecuted_or_successful_failure_guards(self) -> None:
+        variables = (
+            "TEST_RESULT",
+            "QUALITY_RESULT",
+            "MUTATION_CACHE_INTEGRATION_RESULT",
+        )
+        for mutation in (
+            "comments",
+            "early-success",
+            "exit-zero",
+            "exit-wrapped-zero",
+            "wrong-conjunction",
+            "dead-guard",
+        ):
+            with (
+                self.subTest(mutation=mutation),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                workflow = root / ".github/workflows/ci.yml"
+                original = workflow.read_text(encoding="utf-8")
+                marker = original.index("      - name: Verify required jobs passed\n")
+                start = original.index("        run: |\n", marker) + len(
+                    "        run: |\n"
+                )
+                body = (
+                    "\n".join(line[10:] for line in original[start:].splitlines())
+                    + "\n"
+                )
+                if mutation == "comments":
+                    body = (
+                        "\n".join(f'# "${name}" != "success"' for name in variables)
+                        + '\necho "Unchecked success"\n'
+                    )
+                elif mutation == "early-success":
+                    body = "exit 0\n" + body
+                elif mutation == "exit-zero":
+                    body = body.replace("exit 1", "exit 0")
+                elif mutation == "exit-wrapped-zero":
+                    body = body.replace("exit 1", "exit 256")
+                elif mutation == "wrong-conjunction":
+                    body = body.replace(" ||", " &&")
+                else:
+                    body = "if false; then\n" + body + "fi\n"
+                workflow.write_text(
+                    original[:start]
+                    + "".join("          " + line + "\n" for line in body.splitlines()),
+                    encoding="utf-8",
+                )
+                errors = validate_repository.validate_python_support_contract(root)
+                self.assertTrue(
+                    any("ci-success must require" in error for error in errors), errors
+                )
+
+    def test_ci_success_rejects_a_shell_that_can_ignore_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/ci.yml"
+            original = workflow.read_text(encoding="utf-8")
+            marker = "      - name: Verify required jobs passed\n"
+            workflow.write_text(
+                original.replace(marker, marker + "        shell: echo {0}\n", 1),
+                encoding="utf-8",
+            )
+            errors = validate_repository.validate_python_support_contract(root)
+            self.assertTrue(
+                any("ci-success must require" in error for error in errors), errors
+            )
+
+    def test_ci_success_rejects_extra_steps_that_can_replace_the_environment(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/ci.yml"
+            original = workflow.read_text(encoding="utf-8")
+            marker = "      - name: Verify required jobs passed\n"
+            workflow.write_text(
+                original.replace(
+                    marker,
+                    '      - name: Extra preparation\n        run: echo "Unexpected setup"\n'
+                    + marker,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            errors = validate_repository.validate_python_support_contract(root)
+            self.assertTrue(
+                any("ci-success must require" in error for error in errors), errors
+            )
 
     def test_ci_success_rejects_unhashable_needs_entries_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1494,6 +2270,387 @@ class ActionPinSyncContractTests(unittest.TestCase):
         )
 
 
+class CiPythonBootstrapValidationTests(unittest.TestCase):
+    def test_bootstrap_drift_cannot_replace_the_selected_runtime_or_lock(self) -> None:
+        for job_id in (
+            "test",
+            "quality",
+            "mutation-cache-integration",
+            "python-latest-canary",
+        ):
+            for mutation in (
+                "setup-skip",
+                "setup-tolerance",
+                "setup-no-path",
+                "setup-after-install",
+                "setup-after-test",
+                "install-skip",
+                "install-tolerance",
+                "install-after-test",
+                "install-shell",
+                "install-directory",
+                "install-startup",
+                "install-pythonpath",
+                "install-pythonhome",
+                "install-pythonuserbase",
+                "install-pythonplatlibdir",
+                "install-pythonpycacheprefix",
+                "wrong-version",
+                "duplicate-setup",
+                "duplicate-install",
+                "duplicate-gate",
+                "missing-setup",
+                "missing-install",
+                "missing-gate",
+                "invalid-setup-inputs",
+                "unpinned-setup",
+                "invalid-steps",
+                "missing-job",
+                "wrong-cache",
+                "wrong-action",
+            ):
+                with (
+                    self.subTest(job=job_id, mutation=mutation),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    PythonSupportContractValidationTests().copy_contract(root)
+                    path = root / ".github/workflows/ci.yml"
+                    document = validate_repository.load_yaml(path)
+                    job = document["jobs"][job_id]
+                    steps = job["steps"]
+                    setup = next(
+                        step
+                        for step in steps
+                        if step.get("uses", "").startswith("actions/setup-python@")
+                    )
+                    install = next(
+                        step
+                        for step in steps
+                        if "python -m pip install" in step.get("run", "")
+                    )
+                    gate = next(
+                        step
+                        for step in steps
+                        if step.get("run", "").startswith("python scripts/run_tests.py")
+                    )
+                    if mutation == "setup-skip":
+                        setup["if"] = "${{ false }}"
+                    elif mutation == "setup-tolerance":
+                        setup["continue-on-error"] = "true"
+                    elif mutation == "setup-no-path":
+                        setup["with"]["update-environment"] = "false"
+                    elif mutation in {
+                        "setup-after-install",
+                        "setup-after-test",
+                        "install-after-test",
+                    }:
+                        moved = install if mutation == "install-after-test" else setup
+                        anchor = install if mutation == "setup-after-install" else gate
+                        steps.remove(moved)
+                        steps.insert(steps.index(anchor) + 1, moved)
+                    elif mutation == "install-skip":
+                        install["if"] = "${{ false }}"
+                    elif mutation == "install-tolerance":
+                        install["continue-on-error"] = "true"
+                    elif mutation == "install-shell":
+                        install["shell"] = "echo {0}"
+                    elif mutation == "install-directory":
+                        install["working-directory"] = "other-target"
+                    elif mutation == "install-startup":
+                        install["env"] = {"BASH_ENV": "startup.sh"}
+                    elif mutation in {
+                        "install-pythonpath",
+                        "install-pythonhome",
+                        "install-pythonuserbase",
+                        "install-pythonplatlibdir",
+                        "install-pythonpycacheprefix",
+                    }:
+                        install["env"] = {
+                            mutation.removeprefix("install-").upper(): "startup"
+                        }
+                    elif mutation == "wrong-version":
+                        setup["with"]["python-version"] = (
+                            "3.x"
+                            if job_id != "python-latest-canary"
+                            else "${{ matrix.python-version }}"
+                        )
+                    elif mutation.startswith("duplicate-"):
+                        selected = {
+                            "duplicate-setup": setup,
+                            "duplicate-install": install,
+                            "duplicate-gate": gate,
+                        }[mutation]
+                        steps.append(dict(selected))
+                    elif mutation in {
+                        "missing-setup",
+                        "missing-install",
+                        "missing-gate",
+                    }:
+                        selected = {
+                            "missing-setup": setup,
+                            "missing-install": install,
+                            "missing-gate": gate,
+                        }[mutation]
+                        steps.remove(selected)
+                    elif mutation == "invalid-setup-inputs":
+                        setup["with"] = []
+                    elif mutation == "unpinned-setup":
+                        setup["uses"] = "actions/setup-python@main"
+                    elif mutation == "missing-job":
+                        document["jobs"].pop(job_id)
+                    elif mutation == "wrong-cache":
+                        setup["with"]["cache-dependency-path"] = "other-lock.txt"
+                    elif mutation == "wrong-action":
+                        setup["uses"] = "other-owner/setup-python@" + "a" * 40
+                    else:
+                        job["steps"] = "invalid"
+                    path.write_text(
+                        yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                    )
+
+                    problems = validate_repository.validate_python_support_contract(
+                        root
+                    )
+
+                    self.assertIn(
+                        f".github/workflows/ci.yml: {job_id} must set up the policy "
+                        f"Python on PATH and install {'requirements-mutation.txt' if job_id == 'mutation-cache-integration' else 'requirements-dev.txt'} before its test gate",
+                        problems,
+                    )
+
+    def test_bootstrap_preserves_explicit_success_and_platform_applicability(
+        self,
+    ) -> None:
+        for path_update in (None, "true", "True", "TRUE"):
+            with (
+                self.subTest(path_update=path_update),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                PythonSupportContractValidationTests().copy_contract(root)
+                path = root / ".github/workflows/ci.yml"
+                document = validate_repository.load_yaml(path)
+                for job_id in (
+                    "test",
+                    "quality",
+                    "mutation-cache-integration",
+                    "python-latest-canary",
+                ):
+                    steps = document["jobs"][job_id]["steps"]
+                    setup = next(
+                        step
+                        for step in steps
+                        if step.get("uses", "").startswith("actions/setup-python@")
+                    )
+                    install = next(
+                        step
+                        for step in steps
+                        if "python -m pip install" in step.get("run", "")
+                    )
+                    setup["continue-on-error"] = "false"
+                    install["continue-on-error"] = "false"
+                    install["shell"] = "bash"
+                    install["working-directory"] = "${{ github.workspace }}"
+                    install["env"] = {"BOOTSTRAP_CHECK": "synthetic-positive"}
+                    if path_update is not None:
+                        setup["with"]["update-environment"] = path_update
+                    if path_update in {"True", "TRUE"}:
+                        install["run"] += "\n"
+                path.write_text(
+                    yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                )
+
+                self.assertEqual(
+                    validate_repository.validate_python_support_contract(root), []
+                )
+
+
+class CanaryVerdictExecutionTests(unittest.TestCase):
+    def copy_contract(self, root: Path) -> None:
+        PythonSupportContractValidationTests().copy_contract(root)
+        CiToolchainContractValidationTests().copy_contract(root)
+
+    def test_canary_verdicts_reject_skips_tolerance_redirects_and_ambiguity(
+        self,
+    ) -> None:
+        for job_id, command in (
+            (
+                "python-latest-canary",
+                "python scripts/python_support.py verify-latest-runtime",
+            ),
+            (
+                "toolchain-drift-canary",
+                "python skills/repo-scaffold/scripts/ci_toolchain.py verify-latest-releases",
+            ),
+        ):
+            mutations = [
+                "skip",
+                "tolerance",
+                "shell",
+                "directory",
+                "startup",
+                "job-tolerance",
+                "job-background",
+                "background",
+                "duplicate",
+                "missing",
+                "invalid-steps",
+                "job-shell",
+                "job-directory",
+                "job-startup",
+                "pythonpath",
+                "job-pythonpath",
+                "pythonhome",
+                "pythonuserbase",
+                "pythonplatlibdir",
+                "job-pythonhome",
+                "job-pythonuserbase",
+                "job-pythonplatlibdir",
+                "pythonpycacheprefix",
+                "job-pythonpycacheprefix",
+            ]
+            if job_id == "python-latest-canary":
+                mutations += ["before-setup", "before-tests", "latest-decoy"]
+            for mutation in mutations:
+                with (
+                    self.subTest(job=job_id, mutation=mutation),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    path = root / ".github/workflows/ci.yml"
+                    document = validate_repository.load_yaml(path)
+                    job = document["jobs"][job_id]
+                    steps = job["steps"]
+                    verifier = next(
+                        step for step in steps if step.get("run") == command
+                    )
+                    if mutation == "skip":
+                        verifier["if"] = "${{ false }}"
+                    elif mutation == "tolerance":
+                        verifier["continue-on-error"] = "true"
+                    elif mutation == "shell":
+                        verifier["shell"] = "echo {0}"
+                    elif mutation == "directory":
+                        verifier["working-directory"] = "other-target"
+                    elif mutation == "startup":
+                        verifier["env"] = {"PYTHONINSPECT": "1"}
+                    elif mutation in {
+                        "pythonpath",
+                        "pythonhome",
+                        "pythonuserbase",
+                        "pythonplatlibdir",
+                        "pythonpycacheprefix",
+                    }:
+                        verifier["env"] = {mutation.upper(): "startup"}
+                    elif mutation == "job-tolerance":
+                        job["continue-on-error"] = "true"
+                    elif mutation == "job-background":
+                        job["background"] = "true"
+                    elif mutation == "background":
+                        verifier["background"] = "true"
+                    elif mutation == "duplicate":
+                        steps.append(dict(verifier))
+                    elif mutation == "missing":
+                        steps.remove(verifier)
+                    elif mutation == "invalid-steps":
+                        job["steps"] = "invalid"
+                    elif mutation in {"job-shell", "job-directory"}:
+                        key = (
+                            "shell" if mutation == "job-shell" else "working-directory"
+                        )
+                        job["defaults"] = {
+                            "run": {
+                                key: "echo {0}" if key == "shell" else "other-target"
+                            }
+                        }
+                    elif mutation == "job-startup":
+                        job["env"] = {"BASH_ENV": "startup.sh"}
+                    elif mutation in {
+                        "job-pythonpath",
+                        "job-pythonhome",
+                        "job-pythonuserbase",
+                        "job-pythonplatlibdir",
+                        "job-pythonpycacheprefix",
+                    }:
+                        job["env"] = {mutation.removeprefix("job-").upper(): "startup"}
+                    elif mutation in {"before-setup", "before-tests"}:
+                        steps.remove(verifier)
+                        position = (
+                            1
+                            if mutation == "before-setup"
+                            else next(
+                                index
+                                for index, step in enumerate(steps)
+                                if step.get("run")
+                                == "python scripts/run_tests.py suite"
+                            )
+                        )
+                        steps.insert(position, verifier)
+                    else:
+                        setup = next(
+                            step
+                            for step in steps
+                            if step.get("uses", "").startswith("actions/setup-python@")
+                        )
+                        setup["with"]["check-latest"] = "false"
+                        steps[0]["with"].update(
+                            {"python-version": "3.x", "check-latest": "true"}
+                        )
+                    path.write_text(
+                        yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                    )
+                    validate = (
+                        validate_repository.validate_python_support_contract
+                        if job_id == "python-latest-canary"
+                        else validate_repository.validate_ci_toolchain_contract
+                    )
+                    expected = (
+                        ".github/workflows/ci.yml: scheduled 3.x canary must test and detect undeclared stable releases"
+                        if job_id == "python-latest-canary"
+                        else ".github/workflows/ci.yml: scheduled/manual toolchain drift canary must verify latest releases"
+                    )
+
+                    self.assertIn(expected, validate(root))
+
+    def test_canaries_preserve_applicability_and_safe_explicit_context(self) -> None:
+        for latest in ("true", "True", "TRUE"):
+            with (
+                self.subTest(latest=latest),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                path = root / ".github/workflows/ci.yml"
+                document = validate_repository.load_yaml(path)
+                for job_id in ("python-latest-canary", "toolchain-drift-canary"):
+                    job = document["jobs"][job_id]
+                    job["continue-on-error"] = "false"
+                    verifier = job["steps"][-1]
+                    verifier["continue-on-error"] = "false"
+                    verifier["shell"] = "bash"
+                    verifier["working-directory"] = "${{ github.workspace }}"
+                    verifier["env"] = {"CANARY_CHECK": "synthetic-positive"}
+                    verifier["run"] += "\n"
+                    if job_id == "python-latest-canary":
+                        setup = next(
+                            step
+                            for step in job["steps"]
+                            if step.get("uses", "").startswith("actions/setup-python@")
+                        )
+                        setup["with"]["check-latest"] = latest
+                path.write_text(
+                    yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                )
+
+                self.assertEqual(
+                    validate_repository.validate_python_support_contract(root)
+                    + validate_repository.validate_ci_toolchain_contract(root),
+                    [],
+                )
+
+
 class CiToolchainContractValidationTests(unittest.TestCase):
     CONTRACT_FILES = (
         ".github/ci-toolchain.json",
@@ -1534,8 +2691,8 @@ class CiToolchainContractValidationTests(unittest.TestCase):
                 / "documentation.yml"
             )
             workflow = workflow_path.read_text(encoding="utf-8").replace(
-                "${{ needs.prepare_docs.outputs.documentation_python }}",
-                '"3.10"',
+                "python-version: ${{ needs.prepare_docs.outputs.documentation_python }}",
+                'python-version: "3.10"',
                 1,
             )
             workflow_path.write_text(workflow, encoding="utf-8")
@@ -1552,6 +2709,51 @@ class CiToolchainContractValidationTests(unittest.TestCase):
                 "docs-contract must consume the rolling policy runtime",
                 problems,
             )
+
+    def test_documentation_required_check_rejects_skipped_or_bypassed_policy_guard(
+        self,
+    ) -> None:
+        for mutation in (
+            "job-condition",
+            "guard-condition",
+            "guard-command",
+            "guard-binding",
+            "guard-order",
+            "job-continue-on-error",
+            "guard-continue-on-error",
+        ):
+            with (
+                self.subTest(mutation=mutation),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                path = root / "skills/repo-scaffold/assets/workflows/documentation.yml"
+                document = validate_repository.load_yaml(path)
+                job = document["jobs"]["docs-contract"]
+                guard = job["steps"][0]
+                if mutation == "job-condition":
+                    job.pop("if")
+                elif mutation == "guard-condition":
+                    guard["if"] = "${{ false }}"
+                elif mutation == "guard-command":
+                    guard["run"] = "true\n"
+                elif mutation == "guard-binding":
+                    guard["env"]["PREPARE_DOCS_RESULT"] = "success"
+                elif mutation == "guard-order":
+                    job["steps"][0], job["steps"][1] = job["steps"][1], job["steps"][0]
+                elif mutation == "job-continue-on-error":
+                    job["continue-on-error"] = "true"
+                else:
+                    guard["continue-on-error"] = "true"
+                path.write_text(
+                    yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+                )
+                self.assertIn(
+                    "skills/repo-scaffold/assets/workflows/documentation.yml: "
+                    "docs-contract must fail closed on policy preparation and runtime output",
+                    validate_repository.validate_ci_toolchain_contract(root),
+                )
 
     def test_hardcoded_standalone_tool_version_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1849,6 +3051,153 @@ class CiToolchainContractValidationTests(unittest.TestCase):
             self.assertFalse(any("found '7'" in item for item in problems))
 
 
+class PolicyPreparationExecutionTests(unittest.TestCase):
+    def test_policy_producers_require_bound_fatal_workspace_execution(self) -> None:
+        for fixture, validator, identity, name in (
+            (
+                PythonSupportContractValidationTests(),
+                validate_repository.validate_python_support_contract,
+                "support",
+                "Load Python support policy",
+            ),
+            (
+                CiToolchainContractValidationTests(),
+                validate_repository.validate_ci_toolchain_contract,
+                "toolchain",
+                "Load CI toolchain policy",
+            ),
+        ):
+            for scope, setting in (
+                ("step", "if: false"),
+                ("step", "continue-on-error: true"),
+                ("step", "background: true"),
+                ("step", "working-directory: alternate-checkout"),
+                ("job", "if: false"),
+                ("job", "continue-on-error: true"),
+                (
+                    "job",
+                    "defaults:\n      run:\n        working-directory: alternate-checkout",
+                ),
+                ("job", "env:\n      PYTHONINSPECT: '1'"),
+                ("step", "env:\n          PYTHONPATH: startup"),
+                ("job", "env:\n      PYTHONPATH: startup"),
+                ("workflow", "env:\n  PYTHONPATH: startup"),
+                ("step", "env:\n          PYTHONHOME: startup"),
+                ("job", "env:\n      PYTHONHOME: startup"),
+                ("workflow", "env:\n  PYTHONHOME: startup"),
+                ("step", "env:\n          PYTHONUSERBASE: startup"),
+                ("job", "env:\n      PYTHONUSERBASE: startup"),
+                ("workflow", "env:\n  PYTHONUSERBASE: startup"),
+                ("step", "env:\n          PYTHONPLATLIBDIR: startup"),
+                ("job", "env:\n      PYTHONPLATLIBDIR: startup"),
+                ("workflow", "env:\n  PYTHONPLATLIBDIR: startup"),
+                ("step", "env:\n          PYTHONPYCACHEPREFIX: startup"),
+                ("job", "env:\n      PYTHONPYCACHEPREFIX: startup"),
+                ("workflow", "env:\n  PYTHONPYCACHEPREFIX: startup"),
+                (
+                    "workflow",
+                    "defaults:\n  run:\n    working-directory: alternate-checkout",
+                ),
+                ("identity", "unbound-policy"),
+                ("shell", "echo {0}"),
+                ("steps", "invalid"),
+            ):
+                with (
+                    self.subTest(identity=identity, scope=scope, setting=setting),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    fixture.copy_contract(root)
+                    path = root / ".github/workflows/ci.yml"
+                    text = path.read_text(encoding="utf-8")
+                    marker = "      - name: " + name + "\n"
+                    self.assertEqual(text.count(marker), 1)
+                    if scope == "step":
+                        text = text.replace(
+                            marker, marker + "        " + setting + "\n", 1
+                        )
+                    elif scope == "job":
+                        text = text.replace(
+                            "  prepare_ci:\n", "  prepare_ci:\n    " + setting + "\n", 1
+                        )
+                    elif scope == "workflow":
+                        text = setting + "\n" + text
+                    elif scope == "identity":
+                        text = text.replace(
+                            "        id: " + identity + "\n",
+                            "        id: " + setting + "\n",
+                            1,
+                        )
+                    elif scope == "steps":
+                        text = text.replace(
+                            "    steps:\n",
+                            "    steps: " + setting + "\n    ignored_steps:\n",
+                            1,
+                        )
+                    else:
+                        start = text.index(marker)
+                        text = text[:start] + text[start:].replace(
+                            "        shell: bash\n",
+                            "        shell: " + setting + "\n",
+                            1,
+                        )
+                    path.write_text(text, encoding="utf-8")
+
+                    problems = validator(root)
+
+                    self.assertTrue(
+                        any("prepare_ci must load" in problem for problem in problems),
+                        problems,
+                    )
+
+    def test_policy_producers_preserve_safe_overrides_and_scalar_environments(
+        self,
+    ) -> None:
+        for fixture, validator, identity, name in (
+            (
+                PythonSupportContractValidationTests(),
+                validate_repository.validate_python_support_contract,
+                "support",
+                "Load Python support policy",
+            ),
+            (
+                CiToolchainContractValidationTests(),
+                validate_repository.validate_ci_toolchain_contract,
+                "toolchain",
+                "Load CI toolchain policy",
+            ),
+        ):
+            with (
+                self.subTest(identity=identity),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                fixture.copy_contract(root)
+                path = root / ".github/workflows/ci.yml"
+                text = path.read_text(encoding="utf-8")
+                text = text.replace(
+                    "  prepare_ci:\n",
+                    "  prepare_ci:\n    continue-on-error: false\n    defaults:\n      run:\n        working-directory: alternate-checkout\n    env:\n      POLICY_CHECK: '1'\n",
+                    1,
+                )
+                marker = "      - name: " + name + "\n"
+                text = text.replace(
+                    marker,
+                    marker + "        continue-on-error: false\n",
+                    1,
+                )
+                for producer in ("support", "toolchain"):
+                    marker = "        id: " + producer + "\n"
+                    text = text.replace(
+                        marker,
+                        marker + "        working-directory: ${{ github.workspace }}\n",
+                        1,
+                    )
+                path.write_text(text, encoding="utf-8")
+
+                self.assertEqual(validator(root), [])
+
+
 class LinkWorkflowContractTests(unittest.TestCase):
     def test_link_workflows_retry_transient_upstream_failures(self) -> None:
         workflow_paths = (
@@ -1950,6 +3299,7 @@ class MirroredDependencyMetadataTests(unittest.TestCase):
 class DevelopmentDependencyContractTests(unittest.TestCase):
     CONTRACT_FILES = (
         ".coveragerc",
+        "pyproject.toml",
         ".gitattributes",
         ".gitignore",
         ".github/workflows/ci.yml",
@@ -1985,6 +3335,132 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             validate_repository.validate_development_dependency_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_pytest_policy_nesting_limit_is_reported_without_crashing_validator(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            configuration = root / "pyproject.toml"
+            original = configuration.read_text(encoding="utf-8")
+            configuration.write_text(
+                "metadata = " + "[" * 2000 + "0" + "]" * 2000 + "\n" + original,
+                encoding="utf-8",
+            )
+            self.assertIn(
+                "pyproject.toml: pytest policy nesting exceeds parser limit",
+                validate_repository.validate_development_dependency_contract(root),
+            )
+
+    def test_coverage_consumer_binds_shell_directory_and_startup_controls(self) -> None:
+        for scope in ("step", "job"):
+            for control in (
+                "shell",
+                "working-directory",
+                "BASH_ENV",
+                "SHELLOPTS",
+                "PYTHONINSPECT",
+                "PYTHONPATH",
+                "PYTHONHOME",
+                "PYTHONUSERBASE",
+                "PYTHONPLATLIBDIR",
+                "PYTHONPYCACHEPREFIX",
+            ):
+                with (
+                    self.subTest(scope=scope, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    marker = (
+                        "  quality:\n"
+                        if scope == "job"
+                        else "      - name: Enforce test coverage baseline\n"
+                    )
+                    indent = "    " if scope == "job" else "        "
+                    if control in ("shell", "working-directory"):
+                        value = "echo {0}" if control == "shell" else "other-target"
+                        body = (
+                            f"{indent}{control}: {value}\n"
+                            if scope == "step"
+                            else f"    defaults:\n      run:\n        {control}: {value}\n"
+                        )
+                    else:
+                        value = {
+                            "BASH_ENV": "startup.sh",
+                            "SHELLOPTS": "noexec",
+                            "PYTHONINSPECT": "1",
+                            "PYTHONPATH": "startup",
+                            "PYTHONHOME": "startup",
+                            "PYTHONUSERBASE": "startup",
+                            "PYTHONPLATLIBDIR": "startup",
+                            "PYTHONPYCACHEPREFIX": "startup",
+                        }[control]
+                        body = f"{indent}env:\n{indent}  {control}: {value}\n"
+                    workflow.write_text(
+                        original.replace(marker, marker + body, 1), encoding="utf-8"
+                    )
+                    errors = (
+                        validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+                    )
+                    self.assertIn(
+                        ".github/workflows/ci.yml: quality must enforce the repository coverage gate",
+                        errors,
+                    )
+
+    def test_coverage_job_and_step_cannot_be_optional_or_failure_tolerant(self) -> None:
+        for marker, indent in (
+            ("  quality:\n", "    "),
+            ("      - name: Enforce test coverage baseline\n", "        "),
+        ):
+            for control in ("if: false", "continue-on-error: true"):
+                with (
+                    self.subTest(marker=marker, control=control),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    workflow = root / ".github/workflows/ci.yml"
+                    original = workflow.read_text(encoding="utf-8")
+                    self.assertEqual(original.count(marker), 1)
+                    workflow.write_text(
+                        original.replace(marker, marker + indent + control + "\n", 1),
+                        encoding="utf-8",
+                    )
+                    errors = (
+                        validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+                    )
+                    self.assertIn(
+                        ".github/workflows/ci.yml: quality must enforce the repository coverage gate",
+                        errors,
+                    )
+
+    def test_explicit_false_failure_tolerance_does_not_weaken_coverage_gate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/ci.yml"
+            original = workflow.read_text(encoding="utf-8")
+            modified = original.replace(
+                "  quality:\n", "  quality:\n    continue-on-error: false\n", 1
+            ).replace(
+                "      - name: Enforce test coverage baseline\n",
+                "      - name: Enforce test coverage baseline\n        continue-on-error: false\n",
+                1,
+            )
+            workflow.write_text(modified, encoding="utf-8")
+            self.assertEqual(
+                validate_repository.validate_development_dependency_contract(root), []
+            )
 
     def test_direct_dependency_version_drift_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2216,6 +3692,37 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 problems,
             )
 
+    def test_coverage_consumer_uses_upstream_list_delimiters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            coverage_path = root / ".coveragerc"
+            original = coverage_path.read_text(encoding="utf-8")
+            for paths in (
+                "scripts\n    skills/repo-scaffold/scripts",
+                "skills/repo-scaffold/scripts/audit_freshness.py\n    "
+                "skills/repo-scaffold/scripts/render_pr_body_evidence.py\n    "
+                "skills/repo-scaffold/scripts/sync_action_pins.py",
+            ):
+                for separator in (", ", "\u2028", "\v"):
+                    with self.subTest(paths=paths, separator=repr(separator)):
+                        coverage_path.write_text(
+                            original.replace(paths, paths.replace("\n    ", separator)),
+                            encoding="utf-8",
+                        )
+
+                        problems = validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+
+                        self.assertEqual(
+                            any(
+                                problem.startswith(".coveragerc:")
+                                for problem in problems
+                            ),
+                            separator != ", ",
+                        )
+
     def test_coverage_configuration_cannot_be_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2234,6 +3741,93 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
                 ".gitignore: ignore coverage data files without ignoring .coveragerc",
                 problems,
             )
+
+    def test_report_filters_and_nonfinite_coverage_floors_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            coverage_path = root / ".coveragerc"
+            original = coverage_path.read_text(encoding="utf-8")
+            for text in (
+                original.replace("[report]", "[report]\ninclude = scripts/*.py"),
+                original.replace("[report]", "[report]\nomit = scripts/*.py"),
+                original.replace("fail_under = 100", "fail_under = nan"),
+                original.replace("fail_under = 100", "fail_under = inf"),
+                original.replace("[report]", "[report]\npartial_also = .*"),
+                original.replace("[run]", "[run]\ndebug_file = outside.log"),
+                original + "\n[paths]\nalias = scripts\n",
+                original
+                + "\n[coverage:report]\nfail_under = 0\ninclude = scripts/*.py\n",
+                original + "\n[coverage:run]\nbranch = false\n",
+                original + "\n[coverage:paths]\nalias = scripts\n",
+                original.replace(
+                    "include_namespace_packages = True",
+                    "include_namespace_packages = False",
+                ),
+            ):
+                with self.subTest(text=text):
+                    coverage_path.write_text(text, encoding="utf-8")
+                    errors = (
+                        validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+                    )
+                    self.assertTrue(any(".coveragerc:" in error for error in errors))
+
+    def test_pytest_config_output_redirects_are_rejected_by_the_repository_validator(
+        self,
+    ) -> None:
+        for option in ("log_file", "cache_dir"):
+            with (
+                self.subTest(option=option),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                config = root / "pyproject.toml"
+                config.write_text(
+                    config.read_text(encoding="utf-8") + f'{option} = "outside"\n',
+                    encoding="utf-8",
+                )
+                errors = validate_repository.validate_development_dependency_contract(
+                    root
+                )
+                self.assertTrue(
+                    any(
+                        "cannot redirect guarded pytest output" in error
+                        for error in errors
+                    )
+                )
+
+    def test_unreadable_verification_configs_fail_closed_in_the_repository_validator(
+        self,
+    ) -> None:
+        for name, purpose in (
+            ("pyproject.toml", "pytest"),
+            (".coveragerc", "coverage"),
+        ):
+            for unreadable in ("missing", "invalid-utf8"):
+                with (
+                    self.subTest(name=name, unreadable=unreadable),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    if unreadable == "missing":
+                        (root / name).unlink()
+                    else:
+                        (root / name).write_bytes(b"\xff")
+                    errors = (
+                        validate_repository.validate_development_dependency_contract(
+                            root
+                        )
+                    )
+                    self.assertTrue(
+                        any(
+                            f"{name}: could not verify {purpose} policy" in error
+                            for error in errors
+                        )
+                    )
 
     def test_missing_direct_and_lock_files_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2418,6 +4012,39 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
 
 
 class MutationTestingContractTests(unittest.TestCase):
+    def test_native_numeric_parser_limit_does_not_abort_shared_config_consumer(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            with mock.patch.object(
+                validate_repository.tomllib,
+                "loads",
+                side_effect=ValueError("integer conversion exceeds parser limit"),
+            ):
+                self.assertIn(
+                    "pyproject.toml: could not verify mutation settings: integer conversion exceeds parser limit",
+                    validate_repository.validate_mutation_testing_contract(root),
+                )
+
+    def test_shared_pytest_config_nesting_does_not_abort_mutation_contract_checks(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            configuration = root / "pyproject.toml"
+            original = configuration.read_text(encoding="utf-8")
+            configuration.write_text(
+                "metadata = " + "[" * 2000 + "0" + "]" * 2000 + "\n" + original,
+                encoding="utf-8",
+            )
+            self.assertIn(
+                "pyproject.toml: mutation/pytest settings nesting exceeds parser limit",
+                validate_repository.validate_mutation_testing_contract(root),
+            )
+
     CONTRACT_FILES = (
         ".gitattributes",
         ".github/workflows/mutation-testing.yml",
@@ -2451,6 +4078,75 @@ class MutationTestingContractTests(unittest.TestCase):
         "tests/test_repository_validation.py",
         "tests/test_validate_scaffold.py",
     )
+
+    def test_sharded_commands_reject_inherited_startup_context(self) -> None:
+        original = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github/workflows/mutation-testing.yml"
+        )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(original), []
+        )
+        scopes: list[tuple[str, str | None]] = [("workflow", None)] + [
+            (scope, job_id) for scope in ("job", "step") for job_id in original["jobs"]
+        ]
+        for variable in (
+            "BASH_ENV",
+            "SHELLOPTS",
+            "PYTHONINSPECT",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONUSERBASE",
+            "PYTHONPLATLIBDIR",
+            "PYTHONPYCACHEPREFIX",
+        ):
+            for scope, job_id in scopes:
+                candidate = copy.deepcopy(original)
+                selected = candidate
+                if scope != "workflow":
+                    assert job_id is not None
+                    selected = candidate["jobs"][job_id]
+                    if scope == "step":
+                        selected = next(
+                            step
+                            for step in selected["steps"]
+                            if step.get("run", "").startswith("python ")
+                        )
+                selected.setdefault("env", {})[variable] = "startup"
+                with self.subTest(variable=variable, scope=scope, job=job_id):
+                    self.assertIn(
+                        ".github/workflows/mutation-testing.yml: mutation steps require safe command context",
+                        validate_repository.validate_sharded_mutation_workflow(
+                            candidate
+                        ),
+                    )
+        for scope, job_id in scopes[:4]:
+            candidate = copy.deepcopy(original)
+            selected = candidate if job_id is None else candidate["jobs"][job_id]
+            selected["env"] = {"SYNTHETIC_OPT_IN": "1"}
+            with self.subTest(safe_scope=scope, job=job_id):
+                self.assertEqual(
+                    validate_repository.validate_sharded_mutation_workflow(candidate),
+                    [],
+                )
+
+        action_only = copy.deepcopy(original)
+        upload = next(
+            step
+            for step in action_only["jobs"]["mutation-shards"]["steps"]
+            if step.get("name") == "Upload mutation shard"
+        )
+        upload["env"] = {"PYTHONHOME": "unused-action-only-setting"}
+        with self.subTest(action_only=True):
+            self.assertEqual(
+                validate_repository.validate_sharded_mutation_workflow(action_only), []
+            )
+        malformed = copy.deepcopy(original)
+        malformed["jobs"]["mutation-plan"]["steps"].append(None)
+        with self.subTest(malformed_step=True):
+            self.assertIn(
+                ".github/workflows/mutation-testing.yml: mutation steps require safe command context",
+                validate_repository.validate_sharded_mutation_workflow(malformed),
+            )
 
     def test_sharded_workflow_validator_rejects_every_incomplete_shape(self) -> None:
         valid: dict[str, Any] = {
@@ -2707,6 +4403,36 @@ class MutationTestingContractTests(unittest.TestCase):
                     )
                 )
 
+    def test_diagnostic_shard_wrapper_keeps_strict_command_and_source_binding(
+        self,
+    ) -> None:
+        workflow = validate_repository.load_yaml(
+            PLUGIN_ROOT / ".github/workflows/mutation-testing.yml"
+        )
+        self.assertEqual(
+            validate_repository.validate_sharded_mutation_workflow(workflow), []
+        )
+        commands: tuple[object, ...] = (
+            'bash .github/scripts/run_mutation_shard.sh "$SHARD_INDEX" || true',
+            'bash .github/scripts/run_mutation_shard.sh "$SHARD_INDEX"; exit 0',
+            "bash .github/scripts/run_mutation_shard.sh 0",
+            [],
+            {},
+            None,
+        )
+        for command in commands:
+            candidate = copy.deepcopy(workflow)
+            step = next(
+                step
+                for step in candidate["jobs"]["mutation-shards"]["steps"]
+                if step.get("name") == "Run exact mutation shard"
+            )
+            step["run"] = command
+            with self.subTest(command=command):
+                self.assertTrue(
+                    validate_repository.validate_sharded_mutation_workflow(candidate)
+                )
+
     def test_sharded_workflow_cache_is_bound_and_preserves_reuse_marker(self) -> None:
         workflow = validate_repository.load_yaml(
             PLUGIN_ROOT / ".github" / "workflows" / "mutation-testing.yml"
@@ -2869,6 +4595,74 @@ class MutationTestingContractTests(unittest.TestCase):
         self.assertTrue(any("missing hashed mutmut entry" in p for p in problems))
         self.assertTrue(any("missing hashed toml entry" in p for p in problems))
 
+    def test_missing_python313_yaml_provider_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            lock_path = root / "requirements-mutation.txt"
+            lock_path.write_text(
+                re.sub(
+                    r"(?ms)^pyyaml-ft==.*?(?=^[A-Za-z0-9_.-]+==|\Z)",
+                    "",
+                    lock_path.read_text(encoding="utf-8"),
+                ),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertTrue(
+            any("missing hashed pyyaml-ft entry" in problem for problem in problems)
+        )
+
+    def test_python313_provider_cannot_be_enabled_for_other_runtimes(self) -> None:
+        for filename in ("requirements-mutation.in", "requirements-mutation.txt"):
+            for marker in ("", '; python_version == "3.14"'):
+                with self.subTest(filename=filename, marker=marker):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        self.copy_contract(root)
+                        path = root / filename
+                        path.write_text(
+                            path.read_text(encoding="utf-8").replace(
+                                '; python_version == "3.13"', marker
+                            ),
+                            encoding="utf-8",
+                        )
+                        problems = (
+                            validate_repository.validate_mutation_testing_contract(root)
+                        )
+                    self.assertTrue(
+                        any(
+                            "pyyaml-ft" in problem and "Python 3.13" in problem
+                            for problem in problems
+                        )
+                    )
+
+    def test_mutation_base_packages_cannot_be_made_conditional(self) -> None:
+        for filename in ("requirements-mutation.in", "requirements-mutation.txt"):
+            with self.subTest(filename=filename):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    path = root / filename
+                    path.write_text(
+                        re.sub(
+                            r"(?m)^(toml==[^\s;\\]+)",
+                            r'\1; python_version == "3.13"',
+                            path.read_text(encoding="utf-8"),
+                        ),
+                        encoding="utf-8",
+                    )
+                    problems = validate_repository.validate_mutation_testing_contract(
+                        root
+                    )
+                self.assertTrue(
+                    any(
+                        "unconditional" in problem or "use exact pins" in problem
+                        for problem in problems
+                    )
+                )
+
     def test_mutation_dependency_versions_are_not_hardcoded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2967,7 +4761,9 @@ class MutationTestingContractTests(unittest.TestCase):
             problems = validate_repository.validate_mutation_testing_contract(root)
 
             self.assertTrue(
-                any("use exact pins for only mutmut" in problem for problem in problems)
+                any(
+                    "use exact pins for mutmut, toml" in problem for problem in problems
+                )
             )
             self.assertTrue(
                 any(
@@ -3627,6 +5423,49 @@ jobs:
                         )
                     )
 
+    def test_mutation_workspace_rejects_nonstring_copy_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            config_path = root / "pyproject.toml"
+            original_config = config_path.read_text(encoding="utf-8")
+            for value in ('["nested"]', '{path = "nested"}', "1", "false", "[]"):
+                with self.subTest(value=value):
+                    config_path.write_text(
+                        original_config.replace(
+                            "also_copy = [\n", f"also_copy = [\n  {value},\n", 1
+                        ),
+                        encoding="utf-8",
+                    )
+
+                    problems = validate_repository.validate_mutation_testing_contract(
+                        root
+                    )
+
+                    self.assertTrue(
+                        any(
+                            "workspace must copy the plugin marketplace" in problem
+                            for problem in problems
+                        )
+                    )
+
+    def test_mutation_workspace_accepts_extra_string_copy_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            config_path = root / "pyproject.toml"
+            original_config = config_path.read_text(encoding="utf-8")
+            config_path.write_text(
+                original_config.replace(
+                    "also_copy = [\n", 'also_copy = [\n  "fixtures",\n', 1
+                ),
+                encoding="utf-8",
+            )
+
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertFalse(any("mutation workspace" in problem for problem in problems))
+
     def test_mutation_loaders_must_use_canonical_module_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3944,6 +5783,16 @@ class MarkdownLinkValidationTests(unittest.TestCase):
 
 
 class ScaffoldAndArchiveValidationTests(unittest.TestCase):
+    def test_metadata_fixture_root_does_not_rebind_code_under_test(self) -> None:
+        self.assertEqual(
+            (SCRIPT_PATH, WORKFLOW_SCRIPT_PATH, PLUGIN_ROOT),
+            (
+                MODULE_ROOT / "scripts" / "validate_repository.py",
+                MODULE_ROOT / "scripts" / "validate_workflows.py",
+                validate_repository.release_archive_source_root(MODULE_ROOT),
+            ),
+        )
+
     def test_release_archive_uses_only_the_matching_mutation_source_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source_root = Path(directory).resolve()
@@ -4547,9 +6396,63 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
     def test_script_entrypoint_returns_main_status(self) -> None:
         output = StringIO()
         with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
-            runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+            runpy.run_path(
+                str(repository_entrypoint_path(PLUGIN_ROOT)), run_name="__main__"
+            )
 
         self.assertEqual(raised.exception.code, 0)
+
+    def test_repository_entrypoint_uses_only_bound_original_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source_root = Path(directory).resolve()
+            (source_root / ".git").mkdir()
+            generated_root = source_root / "mutants"
+            generated_root.mkdir()
+            for root, status in ((source_root, 0), (generated_root, 23)):
+                script = root / "scripts" / "validate_repository.py"
+                script.parent.mkdir()
+                script.write_text(f"raise SystemExit({status})\n", encoding="utf-8")
+            oversized = generated_root / "instrumented.py"
+            oversized.write_bytes(
+                b"x" * (validate_repository.MAX_VALIDATION_FILE_BYTES + 1)
+            )
+            with self.assertRaisesRegex(OSError, "safety cap"):
+                validate_repository.read_bounded_text(oversized)
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": str(source_root)},
+                ),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                runpy.run_path(
+                    str(repository_entrypoint_path(generated_root)), run_name="__main__"
+                )
+            self.assertEqual(raised.exception.code, 0)
+
+    def test_repository_entrypoint_rejects_unrelated_source_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            unrelated_source = root / "unrelated"
+            unrelated_source.mkdir()
+            (unrelated_source / ".git").mkdir()
+            generated_root = root / "mutants"
+            generated_root.mkdir()
+            for location, status in ((unrelated_source, 0), (generated_root, 23)):
+                script = location / "scripts" / "validate_repository.py"
+                script.parent.mkdir()
+                script.write_text(f"raise SystemExit({status})\n", encoding="utf-8")
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": str(unrelated_source)},
+                ),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                runpy.run_path(
+                    str(repository_entrypoint_path(generated_root)), run_name="__main__"
+                )
+            self.assertEqual(raised.exception.code, 23)
 
 
 class TestQualityContractTests(unittest.TestCase):
@@ -4728,7 +6631,14 @@ class PluginManifestValidationTests(unittest.TestCase):
             )
 
     def test_semver_rejects_empty_and_leading_zero_identifiers(self) -> None:
-        for version in ("1.2.3-..", "1.2.3-01", "1.2.3+.."):
+        for version in (
+            "1.2.3-..",
+            "1.2.3-01",
+            "1.2.3+..",
+            "1.2\u0662.3",
+            "1.2.3-1\u0662",
+            "1.2.3-\u0662alpha",
+        ):
             with self.subTest(version=version):
                 self.assertIsNone(validate_repository.SEMVER.fullmatch(version))
 
@@ -5075,7 +6985,8 @@ class MultiAgentPluginContractTests(unittest.TestCase):
     def write_valid_contract(root: Path) -> None:
         (root / "AGENTS.md").write_text(
             "## Repository purpose\n"
-            "python -m pytest -q\n"
+            "python scripts/run_tests.py full\n"
+            "python scripts/run_tests.py suite\n"
             "python scripts/validate_repository.py\n"
             "python skills/repo-scaffold/scripts/validate_scaffold.py\n"
             "claude plugin validate --strict .\n"
@@ -5227,7 +7138,7 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             problems = validate_repository.validate_maintainer_agent_instructions(root)
 
         self.assertIn(
-            "AGENTS.md: missing maintainer instruction 'python -m pytest -q'",
+            "AGENTS.md: missing maintainer instruction 'python scripts/run_tests.py full'",
             problems,
         )
         self.assertIn(
@@ -5235,6 +7146,26 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "maintainers share one instruction source",
             problems,
         )
+
+    def test_bare_pytest_guidance_cannot_replace_guarded_full_and_suite_checks(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_valid_contract(root)
+            agents = root / "AGENTS.md"
+            agents.write_text(
+                agents.read_text(encoding="utf-8")
+                .replace("python scripts/run_tests.py full", "python -m pytest -q")
+                .replace("python scripts/run_tests.py suite", "python -m pytest -q"),
+                encoding="utf-8",
+            )
+            problems = validate_repository.validate_maintainer_agent_instructions(root)
+            for mode in ("full", "suite"):
+                self.assertIn(
+                    f"AGENTS.md: missing maintainer instruction 'python scripts/run_tests.py {mode}'",
+                    problems,
+                )
 
     def test_reports_unreadable_maintainer_agent_instructions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -5353,6 +7284,34 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "claude plugin uninstall repo-scaffold@repo-scaffold-plugins", readme
         )
         self.assertNotIn("codex plugin remove repo-scaffold@personal", readme)
+
+    def test_readme_update_distinguishes_marketplace_source_and_disabled_state(
+        self,
+    ) -> None:
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        update = readme.split("## 7. Update", 1)[1].split("## 8. Uninstall", 1)[0]
+        self.assertIn("Git-backed", update)
+        self.assertIn("local-directory", update)
+        self.assertIn("disabled", update)
+        self.assertIn("do not run", update)
+        self.assertIn("explicit approval", update)
+        self.assertEqual(update.count("if ($LASTEXITCODE -ne 0)"), 4)
+        self.assertNotIn(
+            "After the local marketplace source and plugin version have been updated",
+            update,
+        )
+
+    def test_mutation_source_build_guidance_keeps_platform_evidence_explicit(
+        self,
+    ) -> None:
+        contribution = (PLUGIN_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        for document in (contribution, readme):
+            self.assertIn("source distribution", document)
+            self.assertIn("Rust", document)
+            self.assertIn("native build tools", document)
+            self.assertIn("isolated", document)
+            self.assertIn("not proof", document)
 
     def test_codex_local_installation_uses_a_clean_package_source(self) -> None:
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
@@ -5874,6 +7833,53 @@ jobs:
         ).read_text(encoding="utf-8")
         self.assertIn("Before changing `pull-request-title-pattern`", generation)
         self.assertIn("update each existing release PR title", generation)
+
+    def test_vietnamese_release_template_matches_canonical_locale(self) -> None:
+        skill_root = PLUGIN_ROOT / "skills" / "repo-scaffold"
+        config = json.loads(
+            (skill_root / "assets" / "release-please-config.vi.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        setup = (skill_root / "references" / "github-setup.md").read_text(
+            encoding="utf-8"
+        )
+        expected_text = {
+            "pull-request-title-pattern": "chore${scope}: phát hành${component} ${version}",
+            "pull-request-header": ":robot: Release Please đã tạo PR phát hành tự động này.",
+        }
+        for field, expected in expected_text.items():
+            with self.subTest(field=field):
+                self.assertIn(f"`{expected}`", setup)
+                self.assertEqual(config[field], expected)
+        footer_lead = "PR này được tạo tự động bằng"
+        self.assertIn(f"`{footer_lead}`", setup)
+        self.assertTrue(config["pull-request-footer"].startswith(footer_lead + " "))
+        headings = [
+            ("feat", "Tính năng"),
+            ("feature", "Tính năng"),
+            ("fix", "Sửa lỗi"),
+            ("perf", "Cải thiện hiệu năng"),
+            ("revert", "Hoàn tác"),
+            ("docs", "Tài liệu"),
+            ("style", "Định dạng mã"),
+            ("chore", "Bảo trì khác"),
+            ("refactor", "Tái cấu trúc mã"),
+            ("test", "Kiểm thử"),
+            ("build", "Hệ thống xây dựng"),
+            ("ci", "Tích hợp liên tục"),
+        ]
+        expected_sections = []
+        for index, (commit_type, heading) in enumerate(headings):
+            self.assertIn(f"`{heading}`", setup)
+            section: dict[str, object] = {"type": commit_type, "section": heading}
+            if index >= 5:
+                section["hidden"] = True
+            expected_sections.append(section)
+        self.assertEqual(config["changelog-sections"], expected_sections)
+        self.assertIs(config["draft"], True)
+        self.assertIs(config["force-tag-creation"], True)
+        self.assertEqual(config["packages"], {".": {}})
 
     def test_skill_resolves_one_language_per_project(self) -> None:
         skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
@@ -6412,6 +8418,44 @@ class PrivilegedWorkflowPermissionTests(unittest.TestCase):
 
 
 class SecurityManualDispatchTests(unittest.TestCase):
+    def test_scorecard_default_branch_gate_rejects_same_name_tag_dispatch(self) -> None:
+        for relative in (
+            ".github/workflows/scorecard.yml",
+            "skills/repo-scaffold/assets/workflows/scorecard.yml",
+        ):
+            workflow = validate_repository.load_yaml(PLUGIN_ROOT / relative)
+            condition = workflow["jobs"]["analysis"]["if"]
+            for ref_type, ref_name, expected in (
+                ("branch", "main", True),
+                ("tag", "main", False),
+                ("branch", "feature", False),
+                ("tag", "v1.0.0", False),
+                ("", "main", False),
+            ):
+                with self.subTest(path=relative, ref_type=ref_type, ref_name=ref_name):
+                    context = {
+                        "github.ref_type": ref_type,
+                        "github.ref_name": ref_name,
+                        "github.event.repository.default_branch": "main",
+                    }
+                    values = []
+                    for term in condition.split("&&"):
+                        comparison = re.fullmatch(
+                            r"\s*(github\.[\w.]+)\s*==\s*(github\.[\w.]+|'[^']*')\s*",
+                            term,
+                        )
+                        self.assertIsNotNone(comparison, condition)
+                        assert comparison is not None
+                        left = context[comparison[1]]
+                        right = (
+                            comparison[2][1:-1]
+                            if comparison[2].startswith("'")
+                            else context[comparison[2]]
+                        )
+                        # GitHub expression string equality is case-insensitive.
+                        values.append(left.casefold() == right.casefold())
+                    self.assertIs(all(values), expected)
+
     def test_scorecard_workflows_support_manual_security_scans(self) -> None:
         self.assertEqual(
             validate_repository.validate_scorecard_manual_dispatch(PLUGIN_ROOT), []
@@ -6587,6 +8631,67 @@ class RequiredCheckConcurrencyTests(unittest.TestCase):
 
 
 class CodeScanningGateContractTests(unittest.TestCase):
+    def test_validator_rejects_closed_noop_under_the_required_check_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relatives = (
+                Path(".github/code-scanning-allowlist.json"),
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+                Path("scripts/check_code_scanning_alerts.py"),
+            )
+            for relative in relatives:
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            self.assertEqual(
+                validate_repository.validate_code_scanning_gate_contract(root), []
+            )
+            for relative in relatives[1:3]:
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "'code-scanning-gate-closed-pr'", "'code-scanning-gate'"
+                    ),
+                    encoding="utf-8",
+                )
+            problems = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertEqual(
+                sum("unconditional trusted code-scanning" in item for item in problems),
+                2,
+            )
+
+    def test_validator_rejects_closed_pr_guard_that_exempts_open_prs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relatives = (
+                Path(".github/code-scanning-allowlist.json"),
+                Path(".github/workflows/code-scanning-gate.yml"),
+                Path("skills/repo-scaffold/assets/workflows/code-scanning-gate.yml"),
+                Path("scripts/check_code_scanning_alerts.py"),
+            )
+            for relative in relatives:
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PLUGIN_ROOT / relative, destination)
+            self.assertEqual(
+                validate_repository.validate_code_scanning_gate_contract(root), []
+            )
+            for relative in relatives[1:3]:
+                path = root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        'closed) echo "Code scanning gate is not applicable',
+                        'open) echo "Code scanning gate is not applicable',
+                    ),
+                    encoding="utf-8",
+                )
+            problems = validate_repository.validate_code_scanning_gate_contract(root)
+            self.assertEqual(
+                sum("only base-branch alert-gate code" in item for item in problems),
+                2,
+            )
+
     def test_validator_reports_missing_malformed_and_unsafe_gate_contracts(
         self,
     ) -> None:
@@ -7012,6 +9117,38 @@ class PullRequestBodySyncWorkflowContractTests(unittest.TestCase):
             validate_repository.validate_pr_body_sync_workflow_contract(PLUGIN_ROOT),
             [],
         )
+
+    def test_body_sync_validator_rejects_removed_numeric_receipt_binding(self) -> None:
+        workflow_path = PLUGIN_ROOT / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+        workflow = yaml.load(
+            workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+        )
+        for field in (
+            'payload["number"] != expected_ids["PR_NUMBER"]',
+            'base_repository["id"] != expected_ids["REPOSITORY_ID"]',
+            'head_repository["id"] != expected_ids["PR_HEAD_REPOSITORY_ID"]',
+            'base_repository.get("archived") is not False',
+            'base_repository.get("disabled") is not False',
+            "object_pairs_hook=unique_object",
+        ):
+            candidate = copy.deepcopy(workflow)
+            candidate["jobs"]["update"]["steps"][1]["run"] = candidate["jobs"][
+                "update"
+            ]["steps"][1]["run"].replace(field, "REMOVED_RECEIPT_GUARD", 1)
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                destination = root / validate_repository.PR_BODY_SYNC_WORKFLOW_PATH
+                destination.parent.mkdir(parents=True)
+                destination.write_text(
+                    yaml.safe_dump(candidate, sort_keys=False), encoding="utf-8"
+                )
+                problems = validate_repository.validate_pr_body_sync_workflow_contract(
+                    root
+                )
+                self.assertIn(
+                    ".github/workflows/pr-body-sync.yml: body-sync must reject ambiguous, inactive, or unbound numeric PR/repository evidence at every boundary",
+                    problems,
+                )
 
     def test_body_sync_asset_matches_repository_workflow(self) -> None:
         self.assertEqual(
@@ -9413,6 +11550,73 @@ body:
             any("issue form contains unsupported keys" in item for item in problems)
         )
 
+    def test_issue_template_names_are_unique_within_each_template_directory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            document = {
+                "name": "Report fixture",
+                "description": "A report",
+                "body": [{"type": "input", "attributes": {"label": "Summary"}}],
+            }
+            (forms / "report.yml").write_text(
+                yaml.safe_dump(document), encoding="utf-8"
+            )
+            for name in ("Report fixture", "Different fixture"):
+                for extension in (".yml", ".md"):
+                    with self.subTest(name=name, extension=extension):
+                        path = forms / ("second" + extension)
+                        content = (
+                            yaml.safe_dump({**document, "name": name})
+                            if extension == ".yml"
+                            else f"---\nname: {name}\nabout: A report\n---\nBody\n"
+                        )
+                        path.write_text(content, encoding="utf-8")
+                        problems = validate_repository.validate_issue_templates(root)
+                        self.assertEqual(
+                            any(
+                                "name must be unique among issue templates" in item
+                                for item in problems
+                            ),
+                            name == document["name"],
+                        )
+                        path.unlink()
+
+    def test_legacy_issue_template_names_reject_duplicates_and_untyped_names(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            for name in ("first.md", "second.md"):
+                (forms / name).write_text(
+                    "---\nname: Report fixture\nabout: Report\n---\nBody\n",
+                    encoding="utf-8",
+                )
+            (forms / "missing.md").write_text(
+                "---\nabout: Report\n---\nBody\n", encoding="utf-8"
+            )
+            (forms / "untyped.md").write_text(
+                "---\nname: []\nabout: Report\n---\nBody\n", encoding="utf-8"
+            )
+            problems = validate_repository.validate_issue_templates(root)
+            self.assertTrue(
+                any(
+                    "second.md: name must be unique among issue templates" in item
+                    for item in problems
+                )
+            )
+            self.assertTrue(
+                any("missing.md: name must be nonempty" in item for item in problems)
+            )
+            self.assertTrue(
+                any("untyped.md: name must be nonempty" in item for item in problems)
+            )
+
     def test_legacy_issue_templates_and_chooser_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -10906,6 +13110,58 @@ class CommunityHealthTrackingValidationTests(unittest.TestCase):
 
 
 class FreshnessTrackingContractTests(unittest.TestCase):
+    def test_freshness_validator_accepts_reviewed_vietnamese_display_values(
+        self,
+    ) -> None:
+        original = (
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows/freshness.yml"
+        ).read_text(encoding="utf-8")
+        translations = {
+            "# Repository freshness report": "# Báo cáo freshness của repository",
+            "The checker failed before it could produce a report. Inspect this workflow run.": "Checker đã lỗi trước khi tạo báo cáo. Hãy kiểm tra workflow run này.",
+            "Repository freshness update required": "Cần cập nhật các đầu vào bảo trì repository",
+            "Found multiple open freshness reminder issues.": "Có nhiều issue nhắc bảo trì freshness đang mở.",
+            "Freshness checker returned an unexpected exit status: %s": "Checker freshness trả về exit status không hợp lệ: %s",
+            "Freshness checker was indeterminate; no reminder issue was changed.": "Checker freshness chưa xác định được kết quả; không thay đổi issue nhắc bảo trì.",
+        }
+        localized = original
+        for english, vietnamese in translations.items():
+            localized = localized.replace(english, vietnamese)
+        for argument in ("--language vi", "--language=vi", "--language en"):
+            with self.subTest(argument=argument):
+                rendered = localized.replace(
+                    "--repository-root .", f"--repository-root . {argument}"
+                )
+                self.assertTrue(
+                    validate_repository.has_freshness_job_reconciliation(
+                        validate_repository.load_yaml_text(rendered), rendered
+                    )
+                )
+        for argument in (
+            "--language",
+            "--language fr",
+            "--language=fr",
+            "--language vi --language en",
+        ):
+            with self.subTest(argument=argument):
+                rendered = localized.replace(
+                    "--repository-root .", f"--repository-root . {argument}"
+                )
+                self.assertFalse(
+                    validate_repository.has_freshness_job_reconciliation(
+                        validate_repository.load_yaml_text(rendered), rendered
+                    )
+                )
+        unsafe = localized.replace(
+            "Có nhiều issue nhắc bảo trì freshness đang mở.",
+            "$(gh issue create --title bypass)",
+        )
+        self.assertFalse(
+            validate_repository.has_freshness_job_reconciliation(
+                validate_repository.load_yaml_text(unsafe), unsafe
+            )
+        )
+
     def test_freshness_requires_preparation_before_audit(self) -> None:
         for relative in (
             ".github/workflows/freshness.yml",
@@ -11906,7 +14162,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "--json-output report.json --markdown-output report.md"
             )
         )
-        jq_expression = ".items[].number"
+        jq_expression = validate_repository.FRESHNESS_REMINDER_API_JQ_LEGACY
         api_lookup = (
             "gh api --hostname github.com "
             '"search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" '
@@ -13056,7 +15312,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                     )
                 )
         ignored_api_output_text = contract_text.replace(
-            '          if [[ -n "$issue_numbers_output" ]]; then\n'
+            "          if [[ \"$issue_numbers_output\" != 'none' ]]; then\n"
             '            read -r -a issue_numbers <<< "$issue_numbers_output"\n'
             "          fi\n",
             "",
@@ -14164,7 +16420,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
         nonempty_guard = (
             "\n".join(
                 (
-                    'if [[ -n "$issue_numbers_output" ]]; then',
+                    "if [[ \"$issue_numbers_output\" != 'none' ]]; then",
                     '  read -r -a issue_numbers <<< "$issue_numbers_output"',
                     "fi",
                 )
@@ -14212,6 +16468,7 @@ class FreshnessTrackingContractTests(unittest.TestCase):
                 "shell_command_segments",
                 return_value=[
                     ["set", "-euo", "pipefail"],
+                    list(validate_repository.FRESHNESS_EMPTY_SEARCH_PRINTF),
                     [
                         "printf",
                         "Found multiple open freshness reminder issues.\\n",
@@ -14572,9 +16829,18 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
             registry_path = root / ".github" / "official-docs-trackers.json"
             cases = {
                 "github-actions-dependabot": "skills/repo-scaffold/assets/dependabot.yml",
-                "github-dependabot-auto-merge": "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
+                "github-dependabot-auto-merge": [
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
+                ],
                 "github-dependency-review": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
-                "github-dependency-graph-sbom-api": "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                "github-dependency-graph-sbom-api": [
+                    "skills/repo-scaffold/SKILL.md",
+                    "skills/repo-scaffold/references/github-setup.md",
+                    "skills/repo-scaffold/scripts/codeql_preflight.py",
+                    "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+                ],
                 "github-actions-permissions-api": [
                     "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
                     "skills/repo-scaffold/scripts/advanced_codeql_preflight.py",
@@ -15053,6 +17319,28 @@ class OfficialDocumentationTrackingContractTests(unittest.TestCase):
 
 
 class WorkflowScriptCopyContractTests(unittest.TestCase):
+    def test_documentation_policy_companion_keeps_real_lint_enabled(self) -> None:
+        companion = (
+            Path("skills/repo-scaffold/assets/workflows/documentation.yml"),
+            Path("skills/repo-scaffold/assets/markdownlint-cli2.jsonc"),
+            "assets/markdownlint-cli2.jsonc",
+            Path(".markdownlint-cli2.jsonc"),
+            False,
+        )
+        self.assertIn(companion, validate_repository.WORKFLOW_SCRIPT_COPY_CONTRACT)
+        policy = json.loads((PLUGIN_ROOT / companion[1]).read_text(encoding="utf-8"))
+        self.assertIs(policy["config"]["default"], True)
+        self.assertEqual(
+            policy["config"]["MD033"]["allowed_elements"], ["div", "p", "img"]
+        )
+        self.assertIs(policy["config"]["MD013"], False)
+        self.assertIs(policy["config"]["MD041"], False)
+        self.assertEqual(policy["config"]["MD012"], {"maximum": 2})
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/scaffold-generation.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Do not replace an existing project lint", reference)
+
     def test_current_workflow_script_copy_contract_is_valid(self) -> None:
         self.assertEqual(
             validate_repository.validate_workflow_script_copy_contract(PLUGIN_ROOT), []
@@ -15452,6 +17740,162 @@ class MarkdownBodyPreflightDistributionTests(unittest.TestCase):
 
 
 class ReminderBodyPreflightContractTests(unittest.TestCase):
+    def test_inactive_lookup_cannot_authorize_reused_issue_state(self) -> None:
+        document = validate_repository.load_yaml_text(
+            (PLUGIN_ROOT / ".github/workflows/freshness.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        command = document["jobs"]["audit"]["steps"][-1]["run"]
+        begin = command.index("issue_numbers_output=$(")
+        end = command.index("if (( ${#issue_numbers[@]} > 1 )); then", begin)
+        inactive = (
+            command[:begin]
+            + "issue_numbers_output=41\nissue_numbers=(41)\nif false; then\n"
+            + command[begin:end]
+            + "fi\n"
+            + command[end:]
+        )
+        self.assertFalse(
+            validate_repository.has_repo_bound_issue_reconciliation(inactive)
+        )
+
+    def test_malformed_duplicate_issue_guard_is_rejected_with_valid_receipt(
+        self,
+    ) -> None:
+        document = validate_repository.load_yaml_text(
+            (PLUGIN_ROOT / ".github/workflows/freshness.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        command = document["jobs"]["audit"]["steps"][-1]["run"]
+        self.assertTrue(
+            validate_repository.freshness_shell_control_flow_is_safe(command)
+        )
+        self.assertFalse(
+            validate_repository.freshness_shell_control_flow_is_safe(
+                command.replace(
+                    "Found multiple open freshness reminder issues.",
+                    "Invalid duplicate diagnostic",
+                    1,
+                )
+            )
+        )
+
+    def test_receipt_binding_rejects_missing_lookup_closure_and_prior_mutation(
+        self,
+    ) -> None:
+        original = (PLUGIN_ROOT / ".github/workflows/freshness.yml").read_text(
+            encoding="utf-8"
+        )
+        for label, text in (
+            (
+                "missing assignment",
+                original.replace("issue_numbers_output=$(", "other_output=$(", 1),
+            ),
+            ("missing closure", original.replace("          )\n", "", 1)),
+            (
+                "prior mutation",
+                "gh issue close 41 --repo github.com/synthetic/example\n" + original,
+            ),
+        ):
+            with self.subTest(case=label):
+                self.assertFalse(
+                    validate_repository.managed_issue_search_projections_are_safe(text)
+                )
+
+    def test_all_managed_reminder_receipts_fail_closed_without_empty_output_guard(
+        self,
+    ) -> None:
+        guard = (
+            "\n".join(
+                " " * (12 if index in {1, 2} else 10) + line
+                for index, line in enumerate(
+                    validate_repository.FRESHNESS_EMPTY_SEARCH_GUARD
+                )
+            )
+            + "\n"
+        )
+        for directory in (
+            PLUGIN_ROOT / ".github/workflows",
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows",
+        ):
+            for path in directory.iterdir():
+                if path.suffix not in {".yml", ".yaml"}:
+                    continue
+                text = path.read_text(encoding="utf-8")
+                if "search/issues?" not in text:
+                    continue
+                self.assertIn(guard, text)
+                with self.subTest(workflow=path.relative_to(PLUGIN_ROOT).as_posix()):
+                    self.assertFalse(
+                        validate_repository.has_repo_bound_issue_reconciliation(
+                            text.replace(guard, "", 1)
+                        )
+                    )
+
+    def test_search_projection_scope_preserves_unmanaged_repository_queries(
+        self,
+    ) -> None:
+        self.assertFalse(
+            validate_repository.managed_issue_search_projections_are_safe(
+                "gh api 'unterminated"
+            )
+        )
+        self.assertTrue(
+            validate_repository.managed_issue_search_projections_are_safe(
+                'gh api "search/issues?q=repo:owner/repo-scaffold-plugin+is:issue+label:bug" --jq ".items[].number"'
+            )
+        )
+        self.assertTrue(
+            validate_repository.managed_issue_search_projections_are_safe(
+                "echo ordinary-workflow"
+            )
+        )
+        base = 'gh api "search/issues?q=repo:synthetic/example+is:issue+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2"'
+        for query in (
+            validate_repository.FRESHNESS_REMINDER_API_JQ,
+            validate_repository.FRESHNESS_REMINDER_API_JQ_LEGACY,
+        ):
+            with self.subTest(query=query):
+                self.assertTrue(
+                    validate_repository.managed_issue_search_projections_are_safe(
+                        base + f" --jq '{query}'"
+                    )
+                )
+        self.assertFalse(
+            validate_repository.managed_issue_search_projections_are_safe(base)
+        )
+        self.assertFalse(
+            validate_repository.managed_issue_search_projections_are_safe(
+                base + ' --jq ".items[].number"'
+            )
+        )
+
+    def test_every_reminder_contract_rejects_unverified_search_projection(self) -> None:
+        for directory in (
+            PLUGIN_ROOT / ".github/workflows",
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/workflows",
+        ):
+            for path in sorted(directory.iterdir()):
+                if path.suffix not in {".yml", ".yaml"}:
+                    continue
+                text = path.read_text(encoding="utf-8")
+                if "search/issues?" not in text:
+                    continue
+                with self.subTest(workflow=path.relative_to(PLUGIN_ROOT).as_posix()):
+                    query = re.search(r"--jq\s+'([^']+)'", text)
+                    assert query is not None
+                    self.assertTrue(
+                        validate_repository.has_repo_bound_issue_reconciliation(text)
+                    )
+                    unsafe = text.replace(
+                        query.group(1), '[.items[].number] | join(" ")', 1
+                    )
+                    self.assertFalse(
+                        validate_repository.has_repo_bound_issue_reconciliation(unsafe)
+                    )
+
     def test_reminder_contracts_reject_job_execution_controls(self) -> None:
         self.assertFalse(validate_repository.job_execution_controls_are_safe(None))
         self.assertFalse(

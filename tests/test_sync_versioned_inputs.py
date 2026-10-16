@@ -10,6 +10,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -27,6 +28,77 @@ SPEC.loader.exec_module(versioned_inputs)
 
 
 class VersionedInputSyncTests(unittest.TestCase):
+    def test_batch_invalid_callback_release_preserves_workflows_and_configs(
+        self,
+    ) -> None:
+        for repository in ("actions/checkout", "googleapis/release-please"):
+            with (
+                self.subTest(repository=repository),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.write_repository(root)
+                original = {
+                    path: path.read_bytes()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                }
+
+                def lookup(name: str) -> object:
+                    if name == repository:
+                        return SimpleNamespace(tag="v1.0.1", sha="invalid")
+                    return self.release_lookup(name)
+
+                with self.assertRaisesRegex(ValueError, "supported bounded tag"):
+                    versioned_inputs.synchronize_versioned_inputs(
+                        root, lookup, write=True
+                    )
+                self.assertTrue(
+                    all(
+                        path.read_bytes() == payload
+                        for path, payload in original.items()
+                    )
+                )
+
+    def test_invalid_batch_write_control_rejects_before_inventory_or_lookups(
+        self,
+    ) -> None:
+        values: tuple[object, ...] = (None, "false", "true", 0, 1, [], {}, [True])
+        for value in values:
+            with (
+                self.subTest(write=value),
+                mock.patch.object(
+                    versioned_inputs.audit_freshness, "load_trackers"
+                ) as discovery,
+                self.assertRaisesRegex(ValueError, "Boolean"),
+            ):
+                lookup = mock.Mock()
+                versioned_inputs.synchronize_versioned_inputs(
+                    Path("."),
+                    lookup,
+                    write=value,  # type: ignore[arg-type]
+                )
+            discovery.assert_not_called()
+            lookup.assert_not_called()
+
+    def test_invalid_schema_write_control_rejects_before_reading_config(self) -> None:
+        values: tuple[object, ...] = (None, "false", "true", 0, 1, [], {}, [True])
+        for value in values:
+            with (
+                self.subTest(write=value),
+                mock.patch.object(
+                    versioned_inputs.audit_freshness, "tracked_path"
+                ) as reader,
+                self.assertRaisesRegex(ValueError, "Boolean"),
+            ):
+                versioned_inputs.synchronize_release_please_schemas(
+                    Path("."),
+                    (Path("release-please-config.json"),),
+                    "v17.11.2",
+                    write=value,  # type: ignore[arg-type]
+                )
+            reader.assert_not_called()
+
     def write_repository(self, root: Path) -> None:
         registry = {
             "schema-version": 1,

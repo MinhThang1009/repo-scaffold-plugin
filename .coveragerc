@@ -12,6 +12,7 @@ omit =
     skills/repo-scaffold/scripts/sync_action_pins.py
 
 [report]
+include_namespace_packages = True
 fail_under = 100
 precision = 2
 show_missing = True

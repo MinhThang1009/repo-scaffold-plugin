@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   code_scanning_gate:
-    name: code-scanning-gate
+    name: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.state == 'closed' && 'code-scanning-gate-closed-pr' || 'code-scanning-gate' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -32,6 +32,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
+          PR_STATE: ${{ github.event.pull_request.state }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -39,6 +40,14 @@ jobs:
           MERGE_GROUP_SHA: ${{ github.sha }}
         shell: bash
         run: |
+          # A closed PR has no merge admission to gate and may have no queryable ref.
+          if [[ "$EVENT_NAME" == 'pull_request_target' ]]; then
+            case "$PR_STATE" in
+              closed) echo "Code scanning gate is not applicable to a closed pull request."; exit 0 ;;
+              open) ;;
+              *) echo "::error::Pull request state must be open or closed."; exit 1 ;;
+            esac
+          fi
           if [[ "$EVENT_NAME" == 'pull_request_target' ]]; then
             python scripts/check_code_scanning_alerts.py \
               --pull-request "$PR_NUMBER" \

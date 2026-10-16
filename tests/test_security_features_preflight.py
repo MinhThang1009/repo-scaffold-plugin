@@ -3,8 +3,13 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import re
 import runpy
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -57,11 +62,22 @@ class FakeClient:
             raise self.raw_error
         return ""
 
+    def require_empty_response(self, endpoint: str, expected_status: int) -> None:
+        payload = self.raw(endpoint)
+        if not payload:
+            payload = "HTTP/2.0 204 No Content\n\n"
+        transport = mock.Mock()
+        transport._run.return_value = payload
+        codeql_preflight.GitHubClient.require_empty_response(
+            transport, endpoint, expected_status
+        )
+
 
 def arguments(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "hostname": "github.com",
         "repository": "octo/example",
+        "expected_repository_id": 42,
         "dependabot_alerts": False,
         "automated_security_fixes": False,
         "secret_scanning": False,
@@ -76,6 +92,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
 def repository(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "full_name": "octo/example",
+        "id": 42,
         "archived": False,
         "disabled": False,
         "permissions": {"admin": True},
@@ -93,6 +110,549 @@ def repository(**overrides: object) -> dict[str, object]:
 
 
 class SecurityFeaturesPreflightTests(unittest.TestCase):
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_security_consent_rejects_truthy_non_booleans_before_constructing_requests(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        beginning = "# Set each value only from explicit user approval."
+        source = (
+            beginning
+            + reference.split(beginning, 1)[1].split(
+                "function Assert-SecurityFeaturePreflightSchema", 1
+            )[0]
+        )
+        for field in (
+            "enableDependabotAlertsRequested",
+            "enableAutomatedSecurityFixesRequested",
+            "enableSecretScanningRequested",
+            "enablePushProtectionRequested",
+            "enablePrivateVulnerabilityReportingRequested",
+            "confirmPrivateSecretProtectionEligibility",
+        ):
+            for value in ("false", 1, [True], None):
+                with (
+                    self.subTest(field=field, value=value),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    fixture = root / "consent.json"
+                    fixture.write_text(json.dumps({"value": value}), encoding="utf-8")
+                    body = source.replace(
+                        "$" + field + " = $false",
+                        "$"
+                        + field
+                        + " = (Get-Content -Raw -LiteralPath $env:FIXTURE | ConvertFrom-Json).value",
+                    )
+                    if field == "confirmPrivateSecretProtectionEligibility":
+                        body = body.replace(
+                            "$enableSecretScanningRequested = $false",
+                            "$enableSecretScanningRequested = $true",
+                        )
+                    command = root / "security-choice.ps1"
+                    command.write_bytes(
+                        (
+                            "$ErrorActionPreference='Stop'\n$SELECTED_REPOSITORY_ID=42\n$failure=$null\ntry {\n"
+                            + body
+                            + "\n} catch { $failure=$_.Exception.Message }\n@{failure=$failure} | ConvertTo-Json -Compress\n"
+                        ).encode("utf-8-sig")
+                    )
+                    result = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(command),
+                        ],
+                        env={**os.environ, "FIXTURE": str(fixture)},
+                        capture_output=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    observed = json.loads(
+                        result.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                    )
+                    self.assertIsNotNone(observed["failure"], observed)
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_native_security_verdict_schema_prevents_coerced_initial_and_fresh_approval(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        identity = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert identity is not None
+        schema = (
+            "function Assert-SecurityFeaturePreflightSchema {"
+            + reference.split("function Assert-SecurityFeaturePreflightSchema {", 1)[
+                1
+            ].split("\n$securityPreflightResult =", 1)[0]
+        )
+        consumer = (
+            "function Get-ValidatedSecurityFeaturePreflight {"
+            + reference.split("function Get-ValidatedSecurityFeaturePreflight {", 1)[
+                1
+            ].split("\n```", 1)[0]
+        )
+        self.assertIn(
+            "Assert-SecurityFeaturePreflightSchema -Verdict $securityPreflightResult",
+            reference,
+        )
+        self.assertIn(
+            "Assert-SecurityFeaturePreflightSchema -Verdict $result", consumer
+        )
+        valid: dict[str, object] = {
+            "inspection_complete": True,
+            "decision": "may-configure-security-features",
+            "repository": "OWNER/REPO",
+            "repository_id": 42,
+            "administration_permission": True,
+            "requested_features": ["dependabot_alerts"],
+            "visibility": "public",
+            "owner_type": "Organization",
+            "is_fork": False,
+            "private_security_feature_eligibility": "not-required",
+            "dependabot_alerts_precondition": None,
+            "security_and_analysis": {
+                "dependabot_security_updates": None,
+                "secret_scanning": "disabled",
+                "secret_scanning_push_protection": None,
+            },
+        }
+        cases: list[tuple[str, dict[str, object], int]] = [("positive", valid, 1)]
+        cases.extend(
+            (
+                (
+                    "private-reporting",
+                    {
+                        **valid,
+                        "requested_features": ["private_vulnerability_reporting"],
+                        "visibility": "private",
+                    },
+                    0,
+                ),
+                (
+                    "public-reporting",
+                    {
+                        **valid,
+                        "requested_features": ["private_vulnerability_reporting"],
+                        "is_fork": True,
+                    },
+                    1,
+                ),
+                (
+                    "push-disabled",
+                    {**valid, "requested_features": ["push_protection"]},
+                    0,
+                ),
+                (
+                    "push-observed",
+                    {
+                        **valid,
+                        "requested_features": ["push_protection"],
+                        "security_and_analysis": {
+                            "dependabot_security_updates": None,
+                            "secret_scanning": "enabled",
+                            "secret_scanning_push_protection": None,
+                        },
+                    },
+                    1,
+                ),
+                (
+                    "fixes-unobserved",
+                    {
+                        **valid,
+                        "requested_features": ["automated_security_fixes"],
+                        "dependabot_alerts_precondition": "requested-for-prior-enable",
+                    },
+                    0,
+                ),
+                (
+                    "fixes-observed",
+                    {
+                        **valid,
+                        "requested_features": ["automated_security_fixes"],
+                        "dependabot_alerts_precondition": "verified-enabled",
+                    },
+                    1,
+                ),
+            )
+        )
+        for field, value in (
+            ("administration_permission", False),
+            ("administration_permission", "false"),
+            ("repository", ["OWNER/REPO"]),
+            ("requested_features", "dependabot_alerts"),
+            ("requested_features", ["dependabot_alerts", "dependabot_alerts"]),
+            ("requested_features", ["unknown"]),
+            ("visibility", ["public"]),
+            ("owner_type", "unknown"),
+            ("is_fork", "false"),
+            ("security_and_analysis", {}),
+            ("dependabot_alerts_precondition", "verified-enabled"),
+            ("decision", "bind-repository-identity-before-mutation"),
+            ("repository_id", 43),
+        ):
+            cases.append((field, {**valid, field: value}, 0))
+        for field in ("administration_permission", "dependabot_alerts_precondition"):
+            cases.append(
+                (
+                    "missing:" + field,
+                    {key: value for key, value in valid.items() if key != field},
+                    0,
+                )
+            )
+        prelude = r"""
+$ErrorActionPreference='Stop'
+$SELECTED_REPOSITORY_ID=42; $securityFeaturesPreflight='synthetic'
+function python { $global:LASTEXITCODE=0; Get-Content -LiteralPath $env:FIXTURE -Raw -Encoding UTF8 }
+function Write-Warning { param([string]$Message) }
+"""
+        suffix = r"""
+$mutations=0; $failure=$null
+try {
+ $result=Get-ValidatedSecurityFeaturePreflight -FeatureArguments @($env:FEATURE_ARGUMENT) -ExpectedFeature $env:EXPECTED_FEATURE
+ if ($null -ne $result) { $mutations++ }
+} catch { $failure=$_.Exception.Message }
+@{mutations=$mutations;failure=$failure} | ConvertTo-Json -Compress
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "consumer.ps1"
+            script.write_bytes(
+                (prelude + identity[0] + schema + consumer + suffix).encode("utf-8-sig")
+            )
+            for label, verdict, expected in cases:
+                with self.subTest(case=label):
+                    selected_feature = (
+                        "private_vulnerability_reporting"
+                        if label in {"private-reporting", "public-reporting"}
+                        else "push_protection"
+                        if label in {"push-disabled", "push-observed"}
+                        else "automated_security_fixes"
+                        if label in {"fixes-unobserved", "fixes-observed"}
+                        else "dependabot_alerts"
+                    )
+                    fixture = root / "fixture.json"
+                    fixture.write_text(json.dumps(verdict), encoding="utf-8")
+                    result = subprocess.run(
+                        [
+                            str(shutil.which("powershell.exe") or shutil.which("pwsh")),
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-File",
+                            str(script),
+                        ],
+                        env={
+                            **os.environ,
+                            "FIXTURE": str(fixture),
+                            "EXPECTED_FEATURE": selected_feature,
+                            "FEATURE_ARGUMENT": "--enable-"
+                            + selected_feature.replace("_", "-"),
+                        },
+                        capture_output=True,
+                        check=False,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    response = json.loads(
+                        result.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                    )
+                    self.assertEqual(response["mutations"], expected, response)
+
+    def test_dependabot_prerequisite_loss_on_final_read_is_inconclusive(self) -> None:
+        FakeClient.response = repository()
+        with (
+            mock.patch.object(security_features_preflight, "GitHubClient", FakeClient),
+            mock.patch.object(
+                FakeClient,
+                "raw",
+                side_effect=[
+                    "",
+                    security_features_preflight.InspectionError("HTTP 404"),
+                ],
+            ),
+            self.assertRaises(security_features_preflight.InspectionError),
+        ):
+            security_features_preflight.run(arguments(automated_security_fixes=True))
+
+    def test_dependabot_prerequisite_cannot_accept_arbitrary_success_body(self) -> None:
+        FakeClient.response = repository()
+        for response in (
+            'HTTP/2.0 200 OK\nContent-Type: application/json\n\n{"enabled":false}',
+            'HTTP/2.0 204 No Content\n\n{"enabled":false}',
+            "incomplete transport envelope",
+        ):
+            with (
+                self.subTest(response=response),
+                mock.patch.object(
+                    security_features_preflight, "GitHubClient", FakeClient
+                ),
+                mock.patch.object(FakeClient, "raw", return_value=response),
+                self.assertRaises(security_features_preflight.InspectionError),
+            ):
+                security_features_preflight.run(
+                    arguments(automated_security_fixes=True)
+                )
+
+    def test_multi_read_security_verdict_rejects_changed_target_or_prerequisite(
+        self,
+    ) -> None:
+        original = repository()
+        for final in (
+            repository(id=43),
+            repository(archived=True),
+            repository(disabled=True),
+            repository(permissions={"admin": False}),
+            repository(visibility="private"),
+            repository(owner={"type": "User"}),
+            repository(
+                security_and_analysis={"secret_scanning": {"status": "enabled"}}
+            ),
+            None,
+        ):
+
+            class ChangingClient(FakeClient):
+                def __init__(self, hostname: str) -> None:
+                    super().__init__(hostname)
+                    self.metadata_reads = 0
+
+                def json(self, endpoint: str) -> object:
+                    self.request_count += 1
+                    self.metadata_reads += 1
+                    return original if self.metadata_reads == 1 else final
+
+            FakeClient.raw_error = None
+            with (
+                self.subTest(final=final),
+                mock.patch.object(
+                    security_features_preflight, "GitHubClient", ChangingClient
+                ),
+                self.assertRaises(security_features_preflight.InspectionError),
+            ):
+                security_features_preflight.run(
+                    arguments(automated_security_fixes=True)
+                )
+
+    def test_public_fork_reporting_eligibility_preserves_identity_and_admin_gates(
+        self,
+    ) -> None:
+        for owner_type in ("User", "Organization"):
+            FakeClient.response = repository(fork=True, owner={"type": owner_type})
+            with (
+                self.subTest(owner=owner_type),
+                mock.patch.object(
+                    security_features_preflight, "GitHubClient", FakeClient
+                ),
+            ):
+                result = security_features_preflight.run(
+                    arguments(private_vulnerability_reporting=True)
+                )
+                self.assertEqual(result["decision"], "may-configure-security-features")
+                self.assertEqual(result["repository_id"], 42)
+                self.assertIs(result["is_fork"], True)
+                self.assertEqual(
+                    result["requested_features"], ["private_vulnerability_reporting"]
+                )
+        for changes in (
+            {"visibility": "private"},
+            {"visibility": "internal"},
+            {"permissions": {"admin": False}},
+            {"id": 43},
+            {"archived": True},
+            {"disabled": True},
+        ):
+            FakeClient.response = repository(fork=True, **changes)
+            with (
+                self.subTest(changes=changes),
+                mock.patch.object(
+                    security_features_preflight, "GitHubClient", FakeClient
+                ),
+                self.assertRaises(security_features_preflight.InspectionError),
+            ):
+                security_features_preflight.run(
+                    arguments(private_vulnerability_reporting=True)
+                )
+
+    def test_unbound_identity_inspection_does_not_authorize_a_mutation(self) -> None:
+        FakeClient.response = repository()
+        with mock.patch.object(security_features_preflight, "GitHubClient", FakeClient):
+            result = security_features_preflight.run(
+                arguments(secret_scanning=True, expected_repository_id=None)
+            )
+        self.assertEqual(result["decision"], "bind-repository-identity-before-mutation")
+        self.assertEqual(result["repository_id"], 42)
+
+    def test_repository_id_binds_repeated_inspection_to_the_selected_target(
+        self,
+    ) -> None:
+        FakeClient.response = repository(id=42)
+        args = arguments(secret_scanning=True, expected_repository_id=42)
+        with mock.patch.object(security_features_preflight, "GitHubClient", FakeClient):
+            result = security_features_preflight.run(args)
+        self.assertEqual(result.get("repository_id"), 42)
+        for changed in (43, None, True, "42", 0, -1, 42.5):
+            with self.subTest(identity=changed):
+                FakeClient.response = repository(id=changed)
+                with (
+                    mock.patch.object(
+                        security_features_preflight, "GitHubClient", FakeClient
+                    ),
+                    self.assertRaisesRegex(
+                        security_features_preflight.InspectionError,
+                        "repository ID|repository identity",
+                    ),
+                ):
+                    security_features_preflight.run(args)
+
+    @unittest.skipUnless(
+        shutil.which("powershell.exe") or shutil.which("pwsh"), "requires PowerShell"
+    )
+    def test_documented_security_writers_verify_failed_ack_and_strict_readback(
+        self,
+    ) -> None:
+        reference = (
+            PLUGIN_ROOT / "skills/repo-scaffold/references/github-setup.md"
+        ).read_text(encoding="utf-8")
+        identity_helper = re.search(
+            r"function Assert-SelectedRepositoryId \{.*?\n\}", reference, re.DOTALL
+        )
+        assert identity_helper is not None
+        sections = (
+            ("- **Dependabot alerts**:", "- **Secret scanning + push protection**:", 2),
+            (
+                "- **Secret scanning + push protection**:",
+                "- **CodeQL advanced setup**:",
+                2,
+            ),
+            (
+                "- **Private vulnerability reporting**:",
+                "- **Dependency review workflow**:",
+                1,
+            ),
+        )
+        prelude = r"""
+$ErrorActionPreference='Stop'
+$script:writes=0; $script:reads=0; $script:warnings=@()
+$global:LASTEXITCODE=0
+$enableDependabotAlertsRequested=$true
+$enableAutomatedSecurityFixesRequested=$true
+$enableSecretScanningRequested=$true
+$enablePushProtectionRequested=$true
+$enablePrivateVulnerabilityReportingRequested=$true
+$confirmPrivateSecretProtectionEligibility=$false
+function Write-Warning { param([string]$Message); $script:warnings += $Message }
+function Get-ValidatedSecurityFeaturePreflight {
+ param([string[]]$FeatureArguments,[string]$ExpectedFeature,[switch]$ConfirmPrivateSecretProtectionEligibility)
+ if($env:CASE -eq 'denied') { return $null }
+ return @{inspection_complete=$true;repository='OWNER/REPO';requested_features=@($ExpectedFeature)}
+}
+function gh {
+ $arguments=@($args); $global:LASTEXITCODE=0
+ if($arguments -contains 'PUT' -or $arguments -contains 'edit') {
+  $script:writes += 1
+  if($env:CASE -eq 'failed-ack') { $global:LASTEXITCODE=1 }
+  return 'Synthetic acknowledgment'
+ }
+ $script:reads += 1
+ if($env:CASE -eq 'read-unavailable') { $global:LASTEXITCODE=1; return 'Synthetic read failure' }
+ if($arguments -contains 'repos/OWNER/REPO/vulnerability-alerts') {
+  if($env:CASE -eq 'wrong-alert-status') { return "HTTP/2.0 200 OK`n`n" }
+  if($env:CASE -eq 'alert-body') { return "HTTP/2.0 204 No Content`n`n{}" }
+  return "HTTP/2.0 204 No Content`n`n"
+ }
+ if($arguments -contains 'repos/OWNER/REPO/automated-security-fixes') {
+  if($env:CASE -eq 'malformed') { return '{"enabled":"true","paused":"false"}' }
+  return '{"enabled":true,"paused":false}'
+ }
+ if($arguments -contains 'repos/OWNER/REPO/private-vulnerability-reporting') {
+  if($arguments -contains '.enabled') { return 'true' }
+  if($env:CASE -eq 'malformed') { return '{"enabled":"true"}' }
+  return '{"enabled":true}'
+ }
+ if($arguments -contains '.security_and_analysis.secret_scanning.status') { return 'enabled' }
+ if($env:CASE -eq 'malformed') { return '{"id":42,"full_name":"OWNER/REPO","security_and_analysis":{"secret_scanning":{"status":["enabled"]},"secret_scanning_push_protection":{"status":["enabled"]}},"secret_scanning":["enabled"],"push_protection":["enabled"]}' }
+ return '{"id":42,"full_name":"OWNER/REPO","security_and_analysis":{"secret_scanning":{"status":"enabled"},"secret_scanning_push_protection":{"status":"enabled"}},"secret_scanning":"enabled","push_protection":"enabled"}'
+}
+"""
+        postlude = "\n@{writes=$script:writes;reads=$script:reads;warnings=@($script:warnings)} | ConvertTo-Json -Depth 10 -Compress\n"
+        for start, end, count in sections:
+            section = reference.split(start, 1)[1].split(end, 1)[0]
+            block = re.search(r"```powershell\n(.*?)\n\s*```", section, re.DOTALL)
+            assert block is not None
+            consumer = "\n".join(
+                line[2:] if line.startswith("  ") else line
+                for line in block[1].splitlines()
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                script = Path(directory) / "consumer.ps1"
+                script.write_bytes(
+                    (
+                        prelude
+                        + "\n$SELECTED_REPOSITORY_ID=42\n"
+                        + identity_helper[0]
+                        + "\n"
+                        + consumer
+                        + postlude
+                    ).encode("utf-8-sig")
+                )
+                for case in (
+                    "positive",
+                    "failed-ack",
+                    "malformed",
+                    "read-unavailable",
+                    "denied",
+                    *(
+                        ("wrong-alert-status", "alert-body")
+                        if start == "- **Dependabot alerts**:"
+                        else ()
+                    ),
+                ):
+                    with self.subTest(section=start, case=case):
+                        environment = os.environ.copy()
+                        environment["CASE"] = case
+                        result = subprocess.run(
+                            [
+                                str(
+                                    shutil.which("powershell.exe")
+                                    or shutil.which("pwsh")
+                                ),
+                                "-NoProfile",
+                                "-NonInteractive",
+                                "-File",
+                                str(script),
+                            ],
+                            env=environment,
+                            capture_output=True,
+                            timeout=30,
+                            check=False,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        state = json.loads(
+                            result.stdout.decode("utf-8-sig").strip().splitlines()[-1]
+                        )
+                        self.assertEqual(
+                            state["writes"], 0 if case == "denied" else count
+                        )
+                        self.assertEqual(
+                            state["reads"], 0 if case == "denied" else count
+                        )
+                        if case == "positive":
+                            self.assertEqual(state["warnings"], [])
+                        elif case != "denied":
+                            self.assertTrue(state["warnings"])
+
     def test_runs_for_verified_repository_and_exposes_requested_plan(self) -> None:
         FakeClient.response = repository()
         args = arguments(
@@ -206,12 +766,12 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             (
                 arguments(private_vulnerability_reporting=True),
                 repository(visibility="private"),
-                "public non-fork",
+                "public repositories",
             ),
             (
                 arguments(private_vulnerability_reporting=True),
-                repository(fork=True),
-                "public non-fork",
+                repository(visibility="internal", fork=True),
+                "public repositories",
             ),
         ]
         for args, response, message in cases:
@@ -313,7 +873,7 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
                 arguments(automated_security_fixes=True)
             )
         self.assertEqual(result["dependabot_alerts_precondition"], "verified-enabled")
-        self.assertEqual(result["github_api_requests"], 2)
+        self.assertEqual(result["github_api_requests"], 4)
 
         FakeClient.raw_error = security_features_preflight.InspectionError("not found")
         with mock.patch.object(security_features_preflight, "GitHubClient", FakeClient):
@@ -451,7 +1011,8 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
         self.assertIn("--enable-push-protection", security)
         self.assertIn("--confirm-private-secret-protection-eligibility", security)
         self.assertIn("Secret Protection eligibility", security)
-        self.assertIn("non-fork repository", security)
+        self.assertIn("public repository", security)
+        self.assertNotIn("public non-fork", security)
         self.assertIn("Dependabot alerts before automated security fixes", security)
         self.assertIn("administration permission", security)
         self.assertIn("$requestedSecurityFeatures", security)
@@ -509,7 +1070,7 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
                 "- **CodeQL advanced setup**",
                 "--enable-secret-scanning-push-protection",
                 "--enable-secret-scanning-push-protection",
-                "push_protection: .security_and_analysis.secret_scanning_push_protection.status",
+                "$pushProtectionState.security_and_analysis.secret_scanning_push_protection.status",
                 "if ($enablePushProtectionRequested)",
             ),
             (
@@ -517,7 +1078,7 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
                 "- **Dependency review workflow**",
                 "-X PUT",
                 "repos/OWNER/REPO/private-vulnerability-reporting",
-                "--jq '.enabled'",
+                "$reportingState.enabled -isnot [bool]",
                 "if ($enablePrivateVulnerabilityReportingRequested)",
             ),
         )
@@ -558,10 +1119,12 @@ class SecurityFeaturesPreflightTests(unittest.TestCase):
             1
         ].split("- **CodeQL advanced setup**", 1)[0]
         self.assertIn(
-            '$pushProtectionState.secret_scanning -cne "enabled"', push_protection
+            '$pushProtectionState.security_and_analysis.secret_scanning.status -cne "enabled"',
+            push_protection,
         )
         self.assertIn(
-            '$pushProtectionState.push_protection -cne "enabled"', push_protection
+            '$pushProtectionState.security_and_analysis.secret_scanning_push_protection.status -cne "enabled"',
+            push_protection,
         )
 
 

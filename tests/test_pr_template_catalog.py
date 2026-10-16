@@ -59,3 +59,29 @@ class PullRequestTemplateCatalogDocumentationTests(unittest.TestCase):
                 validate_repository.validate_pr_template_catalog_documentation(root),
                 ["README PR-template catalog has no focused templates to document"],
             )
+
+    def test_all_checked_in_templates_remind_about_optional_closing_keywords(
+        self,
+    ) -> None:
+        template_paths = [
+            PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+            *sorted((PLUGIN_ROOT / ".github" / "PULL_REQUEST_TEMPLATE").glob("*.md")),
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/PULL_REQUEST_TEMPLATE.md",
+            PLUGIN_ROOT / "skills/repo-scaffold/assets/PULL_REQUEST_TEMPLATE.vi.md",
+            *sorted(
+                (
+                    PLUGIN_ROOT / "skills/repo-scaffold/assets/PULL_REQUEST_TEMPLATE"
+                ).glob("*.md")
+            ),
+            *sorted(
+                (
+                    PLUGIN_ROOT / "skills/repo-scaffold/assets/PULL_REQUEST_TEMPLATE.vi"
+                ).glob("*.md")
+            ),
+        ]
+        for path in template_paths:
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("Fixes #<issue>", text)
+                self.assertIn("Closes #<issue>", text)
+                self.assertIn("Resolves #<issue>", text)

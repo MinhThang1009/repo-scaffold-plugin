@@ -37,3 +37,5 @@ Liệt kê chính xác các kiểm tra cài đặt, dependency review, test và 
 ## Issue liên quan
 
 Liên kết issue hoặc advisory khi phù hợp.
+
+<!-- Nếu phù hợp, hãy dùng một dòng đóng issue riêng: Fixes #<issue>, Closes #<issue>, hoặc Resolves #<issue>. -->
