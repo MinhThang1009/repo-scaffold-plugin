@@ -989,8 +989,6 @@ class PytestCompletionTests(unittest.TestCase):
                 run_tests.guarded_pytest_command(["-m", "pytest", "tests"], root)
 
     def test_coverage_bootstrap_analyzes_literal_sources_before_pytest(self) -> None:
-        from coverage import Coverage
-
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             sources = ["scripts/a.py", "scripts/quote'\\caf\u00e9.PYW"]
@@ -1001,14 +999,21 @@ class PytestCompletionTests(unittest.TestCase):
             order = mock.Mock()
             order.attach_mock(measurement.analysis2, "analyze")
             with (
-                mock.patch.object(Coverage, "current", return_value=measurement),
+                mock.patch("coverage.Coverage", return_value=measurement) as factory,
                 mock.patch("pytest.main", return_value=0) as execute,
                 mock.patch.object(sys, "argv", command),
                 self.assertRaises(SystemExit) as raised,
             ):
+                factory.current.return_value = mock.Mock()
                 order.attach_mock(execute, "pytest")
                 runpy.run_path(command[0], run_name="__main__")
             self.assertEqual(raised.exception.code, 0)
+            factory.assert_called_once_with(
+                config_file=str(root / ".coveragerc"), data_file=None
+            )
+            measurement.set_option.assert_called_once_with(
+                "run:data_file", str(root / ".source-analysis")
+            )
             self.assertEqual(
                 order.mock_calls[:2], [mock.call.analyze(source) for source in sources]
             )
@@ -1016,7 +1021,6 @@ class PytestCompletionTests(unittest.TestCase):
             self.assertTrue(receipt.is_file())
 
     def test_coverage_bootstrap_analysis_failures_stop_before_pytest(self) -> None:
-        from coverage import Coverage
         from coverage.exceptions import NotPython
 
         for failure in (
@@ -1035,12 +1039,17 @@ class PytestCompletionTests(unittest.TestCase):
                     ["-m", "pytest", "tests"], Path(directory), sources=["scripts/a.PY"]
                 )
                 with (
-                    mock.patch.object(Coverage, "current", return_value=measurement),
+                    mock.patch(
+                        "coverage.Coverage", return_value=measurement
+                    ) as factory,
                     mock.patch("pytest.main") as execute,
                     mock.patch.object(sys, "argv", command),
                     redirect_stderr(StringIO()) as errors,
                     self.assertRaises(SystemExit) as raised,
                 ):
+                    factory.current.return_value = (
+                        None if measurement is None else mock.Mock()
+                    )
                     runpy.run_path(command[0], run_name="__main__")
                 self.assertEqual(raised.exception.code, 1)
                 execute.assert_not_called()

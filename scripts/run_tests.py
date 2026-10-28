@@ -106,6 +106,9 @@ class Completion:
 
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         self.collected = Counter(item.nodeid for item in session.items)
+        # Fixture inspection emits finish events without running test bodies.
+        if session.config.getoption("--setup-only", default=False) or session.config.getoption("--setup-plan", default=False):
+            self.failed = True
 
     def pytest_runtest_logfinish(self, nodeid: str) -> None:
         self.finished[nodeid] += 1
@@ -113,17 +116,18 @@ class Completion:
 
 
 COVERAGE_SOURCE_PREFLIGHT = """
-def validate_coverage_sources(sources: list[str]) -> None:
+def validate_coverage_sources(sources: list[str], configuration: str) -> None:
     from coverage import Coverage
     from coverage.exceptions import CoverageException
 
-    measurement = Coverage.current()
-    if measurement is None:
+    if Coverage.current() is None:
         print("error: coverage source analysis requires active measurement", file=sys.stderr)
         raise SystemExit(1)
+    analysis = Coverage(config_file=configuration, data_file=None)
+    analysis.set_option("run:data_file", str(Path(configuration).with_name(".source-analysis")))
     for source in sources:
         try:
-            measurement.analysis2(source)
+            analysis.analysis2(source)
         except (CoverageException, RecursionError):
             print(f"error: coverage source cannot be analyzed: {source}", file=sys.stderr)
             raise SystemExit(1)
@@ -150,7 +154,10 @@ def guarded_pytest_command(
         stream.write(PYTEST_BOOTSTRAP)
         if sources is not None:
             stream.write(COVERAGE_SOURCE_PREFLIGHT)
-            stream.write(f"\nvalidate_coverage_sources({sources!r})\n")
+            configuration = str(directory / ".coveragerc")
+            stream.write(
+                f"\nvalidate_coverage_sources({sources!r}, {configuration!r})\n"
+            )
         stream.write(PYTEST_EXECUTION)
     return [str(bootstrap), str(receipt), *pytest], receipt
 

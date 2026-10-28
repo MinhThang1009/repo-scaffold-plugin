@@ -351,6 +351,41 @@ class NativeRunTestsTests(unittest.TestCase):
                 self.assertIn("1 skipped", result.stdout)
                 self.assertIn("1 xfailed", result.stdout)
 
+    def test_measured_fixture_inspection_cannot_certify_unexecuted_test_bodies(
+        self,
+    ) -> None:
+        for option in ("--setup-only", "--setup-plan"):
+            for origin in ("config", "environment"):
+                with (
+                    self.subTest(option=option, origin=origin),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    self.project(root, addopts=option if origin == "config" else "")
+                    (root / "scripts/decision.py").write_text(
+                        "value = 1\n", encoding="utf-8"
+                    )
+                    (root / "tests/test_good.py").write_text(
+                        "from scripts.decision import value\n"
+                        "def test_good():\n    assert value == 2\n",
+                        encoding="utf-8",
+                    )
+                    result = self.run_runner(
+                        root,
+                        "focused",
+                        addopts=option if origin == "environment" else "",
+                        arguments=[
+                            "tests/test_good.py",
+                            "--source",
+                            "scripts/decision.py",
+                        ],
+                    )
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertIn("pytest completion", result.stderr)
+                    self.assertNotIn("TOTAL", result.stdout)
+
     def test_session_errors_cannot_be_relabelled_as_success(self) -> None:
         for mode in ("suite", "full", "focused"):
             for exception, native_status in (
@@ -801,6 +836,48 @@ class NativeRunTestsTests(unittest.TestCase):
                     self.assertIn("coverage source cannot be compiled", result.stderr)
                     self.assertNotIn("1 passed", result.stdout)
                     self.assertNotIn("TOTAL", result.stdout)
+
+    def test_source_analysis_preserves_warning_policy_and_owned_data_paths(
+        self,
+    ) -> None:
+        for mode in ("full", "focused"):
+            for warning_policy in ("default", "error"):
+                with (
+                    self.subTest(mode=mode, warning_policy=warning_policy),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    container = Path(directory)
+                    root = container / "project"
+                    root.mkdir()
+                    self.project(root)
+                    outside = container / "must-not-create" / ".coverage"
+                    (root / ".coveragerc").write_text(
+                        POLICY.replace(
+                            "[run]",
+                            f"[run]\nparallel = true\ndata_file = {outside.as_posix()}",
+                        ),
+                        encoding="utf-8",
+                    )
+                    (root / ".coverage").write_bytes(b"preserve-existing-data")
+                    arguments = (
+                        ["tests/test_good.py", "--source", "scripts/decision.py"]
+                        if mode == "focused"
+                        else []
+                    )
+                    result = self.run_runner(
+                        root,
+                        mode,
+                        arguments=arguments,
+                        coverage_environment={"PYTHONWARNINGS": warning_policy},
+                    )
+                    self.assertEqual(
+                        result.returncode, 0, result.stdout + result.stderr
+                    )
+                    self.assertNotIn("no-data-collected", result.stderr)
+                    self.assertFalse(outside.parent.exists())
+                    self.assertEqual(
+                        (root / ".coverage").read_bytes(), b"preserve-existing-data"
+                    )
 
     def test_report_parser_failures_cannot_drop_compilable_sources(self) -> None:
         for mode in ("full", "focused"):

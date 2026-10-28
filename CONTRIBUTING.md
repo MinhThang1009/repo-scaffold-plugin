@@ -368,6 +368,11 @@ directly outside the guarded runner.
 Guarded runs also require a fresh, bounded completion receipt in owned temporary
 state, not only process status zero. A bootstrap invokes pytest's public API and
 tracks collection and each test-finish event, preserving duplicate node counts.
+Fixture-only inspection (`--setup-only`/`--setup-plan`) cannot certify a guarded
+run even when pytest emits every finish event and collection imports cover the
+selected source. Measured-focused receipts reject these modes; full/suite still
+clear inherited selection options. Unmeasured focused debugging and normal
+`--setup-show` execution remain supported, as do ordinary skips and xfails.
 Failed reports, internal-error/interruption events and the original nonzero
 session-finish status invalidate the receipt,
 with events/status observed by wrappers before their ordinary hooks run,
@@ -427,7 +432,10 @@ every report source before starting pytest. Compilability alone is insufficient:
 Coverage can parse a valid form-feed-containing source differently and silently
 skip a report parse error for uppercase `.PY`/`.PYW` suffixes. Any analysis failure
 invalidates the run instead of shrinking its denominator. This check uses the
-active measurement's frozen policy and unoptimized child interpreter, performs
+same frozen policy and unoptimized child interpreter, with a separate in-memory
+Coverage instance that is never started and retains an owned data filename.
+It does not harvest the active measurement before tests, emit a premature
+`no-data-collected` warning, or override the caller's warning policy. It performs
 no source execution and leaves suite/unmeasured-focused applicability unchanged.
 The coverage denominator includes unimported Python files inside namespace-package
 directories. Both the runner
