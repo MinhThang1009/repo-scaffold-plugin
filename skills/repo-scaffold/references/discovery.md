@@ -24,6 +24,19 @@ selected `github.com/OWNER/REPO` and `--hostname github.com` explicitly to
 every GitHub CLI call, and require returned `nameWithOwner` to match it. A fork
 requires this confirmation because GitHub CLI can default to its parent.
 
+Read the selected repository's REST `id` as an actual positive integer and
+retain it alongside the canonical host/name throughout the approved lifecycle.
+Use the identity setup and `Assert-SelectedRepositoryId` in `github-setup.md`.
+Pass `--expected-repository-id` to repository-settings, security-feature,
+merge-settings, dependency-review, Scorecard, release, workflow-installation
+and CodeQL default/advanced and branch-protection
+preflights; their
+unbound discovery result is not mutation
+authorization. Reject ID change, absence or coercion at every supported result
+consumer. Do not silently reseed identity from a replacement repository at the
+same name. Revalidation reduces but does not invent atomic named-REST write
+preconditions; record any residual identity race explicitly.
+
 Inspect supported community-health locations in GitHub precedence order:
 `.github/`, root, then `docs/`. Preserve the selected active path and do not
 create a higher-precedence duplicate. Inspect effective inherited policy for a

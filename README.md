@@ -73,7 +73,7 @@ before installing those assets. This plugin does not change that remote policy.
 - [`gh`](https://cli.github.com/) (GitHub CLI), authenticated to GitHub.com (`gh auth status --active --hostname github.com`) — used for GitHub repository discovery, configuration, and user-approved remote mutations.
 - `git`.
 - `actionlint` and ShellCheck are required for local workflow validation. CI obtains their reviewed versions, release metadata, archive layout, and asset digests from the centralized [CI toolchain policy](.github/ci-toolchain.json).
-- Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with the hash-locked development dependencies, for deterministic tests, branch coverage, scaffold validation, and fail-closed preflights. The CodeQL preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime, and requires separate confirmation that no external or indirect process uploads CodeQL results. The classic branch-protection preflight binds the repository/default branch, proves an exact remote workflow producer and event coverage, then uses a recent successful Check Run on GitHub's controlling representative PR SHA (test-merge when it has any checks/statuses, otherwise head). It joins the Check Run to its Actions workflow run and verifies the path, commit, and eligible event before using that run's GitHub App ID; no same-name Commit Status may exist on the controlling SHA. It rejects inactive targets and requires current administration permission. The merge-settings preflight preserves methods required by effective rules, requires separate confirmation before disabling an enabled method, and rejects auto-merge assets when a merge queue applies or no effective required status-check gate can be verified. The security-features preflight binds the exact requested features to an active repository with administration permission, enforces the secret-scanning prerequisite for push protection, limits private vulnerability reporting to public non-forks, and proves Dependabot alerts are enabled before automated security fixes unless alerts were approved for prior enablement. The workflow-installation preflight compares each supplied, SHA-pinned `uses:` reference with the effective selected-actions policy before allowing a restricted workflow asset. Without the applicable proof, the plugin skips that mutation and reports the verification gap.
+- Use a CPython feature release declared in the centralized [Python support policy](.github/python-support.json), with the hash-locked development dependencies, for deterministic tests, branch coverage, scaffold validation, and fail-closed preflights. The CodeQL preflight bounds workflow inputs, GitHub CLI output, API calls, and total runtime, and requires separate confirmation that no external or indirect process uploads CodeQL results. The classic branch-protection preflight binds the repository/default branch, proves an exact remote workflow producer and event coverage, then uses a recent successful Check Run on GitHub's controlling representative PR SHA (test-merge when it has any checks/statuses, otherwise head). It joins the Check Run to its Actions workflow run and verifies the path, commit, and eligible event before using that run's GitHub App ID; no same-name Commit Status may exist on the controlling SHA. It rejects inactive targets and requires current administration permission. The merge-settings preflight preserves methods required by effective rules, requires separate confirmation before disabling an enabled method, and rejects auto-merge assets when a merge queue applies or no effective required status-check gate can be verified. The security-features preflight binds the exact requested features to an active repository with administration permission, enforces the secret-scanning prerequisite for push protection, limits private vulnerability reporting to public repositories (including forks), and proves Dependabot alerts are enabled before automated security fixes unless alerts were approved for prior enablement. The workflow-installation preflight compares each supplied, SHA-pinned `uses:` reference with the effective selected-actions policy before allowing a restricted workflow asset. Without the applicable proof, the plugin skips that mutation and reports the verification gap.
 - When an effective merge queue applies, branch-protection preflight also requires a recent successful Check Run on a verified `merge_group` SHA, from the same workflow blob and GitHub App as the selected PR check; otherwise setup stops.
 - The repository-settings preflight independently binds description/topics, Issues/Discussions, and label creation to the exact GitHub.com repository, rejects archived or disabled targets, and requires current administration permission before `gh repo edit` or `gh label create` can run.
 - Node.js 22 or later with `npx` is required only to reproduce the markdownlint package pinned by the [CI toolchain policy](.github/ci-toolchain.json).
@@ -168,14 +168,37 @@ marketplace.
 
 ## 7. Update
 
-After the local marketplace source and plugin version have been updated, reinstall the plugin and start a new Codex thread:
+Check the configured marketplace source with `codex plugin marketplace list`
+before updating. For a Git-backed marketplace, refresh its snapshot:
 
 ```powershell
 codex plugin marketplace upgrade repo-scaffold-plugins
-codex plugin remove repo-scaffold@repo-scaffold-plugins
+if ($LASTEXITCODE -ne 0) { throw "Marketplace refresh failed; do not reinstall from a stale snapshot." }
+```
+
+For a local-directory marketplace, skip `marketplace upgrade`: that command
+requires a Git source. Replace the clean extracted package at the registered
+path with the reviewed new version instead; do not edit a released version in
+place or point the source at a live development checkout.
+
+Check and preserve the plugin's enabled state before reinstalling. If the Codex
+plugin is disabled, do not run the reinstall block automatically: `plugin add`
+can enable it. Leave it disabled and report the update as deferred, or obtain
+explicit approval to re-enable it. For an already-enabled Codex plugin:
+
+```powershell
 codex plugin add repo-scaffold@repo-scaffold-plugins
+if ($LASTEXITCODE -ne 0) { throw "Plugin reinstall failed; do not claim the update succeeded." }
+```
+
+For Claude Code, refresh the listing and update the installed plugin separately;
+updating only the marketplace listing does not update its installed version:
+
+```powershell
 claude plugin marketplace update repo-scaffold-plugins
+if ($LASTEXITCODE -ne 0) { throw "Marketplace refresh failed; stop before updating the installed plugin." }
 claude plugin update repo-scaffold@repo-scaffold-plugins
+if ($LASTEXITCODE -ne 0) { throw "Plugin update failed; retain the old state and report the failure." }
 ```
 
 Restart Codex or Claude Code after updating. Existing sessions keep the skill
@@ -251,6 +274,8 @@ repo-scaffold/
 │   ├── prepare_mutation_cache.py
 │   ├── python_support.py
 │   ├── run_mutation_testing.py
+│   ├── run_tests.py
+│   ├── coverage_policy.py
 │   ├── audit_freshness.py
 │   ├── audit_official_docs.py
 │   ├── pr_template_preflight.py
@@ -289,21 +314,54 @@ SKILL.md → Resources identifies the shipped resource groups and their purpose.
 
 ## 10. Development validation
 
+For fast local feedback, run `python scripts/run_tests.py focused <test-path>`.
+Add `--source <python-file>` for a coverage check limited to a `.py` or `.pyw`
+source file. Finish
+the change with `python scripts/run_tests.py full`, which runs all tests and
+enforces the repository coverage floor in one invocation. For runtime-only
+verification, use `python scripts/run_tests.py suite`. Full/suite checks bind
+the canonical pytest config, override selection flags, reject discovery
+overrides/inherited plugins and reject changed input
+fingerprints. Measured runs use isolated, fresh data and a frozen coverage
+policy; report filters that hide uncovered files are rejected. All modes report
+slow test phases.
+Measured checks require both declared source directories. Full reports use the
+bounded inventory's Python files, including dotfiles; focused reports explicitly
+name each selected canonical file rather than filtering discovered data alone.
+Selection filenames reject alternate data streams and colon-delimited components;
+absolute Windows drive paths and separate pytest node IDs remain supported.
+The full denominator includes unimported namespace-package files; environment
+coverage overrides, branch exemptions and source-identity aliases cannot weaken
+the gate. Explicit test/source selections remain inside their repository trees.
+Freshness checks include source and fixtures inside those trees even when a
+subdirectory has a dependency/cache name such as `vendor` or `build`.
+Measured runs admit omitted copies only after byte comparison; focused selections
+of those copies report against their canonical source. Guarded config cannot
+redirect pytest log/cache or coverage debug output to unrelated paths.
+Nonregular entries in first-party input trees are rejected before execution.
+Guarded child runs use fresh private bytecode caches, preserving existing caches
+while preventing stale code reuse from weakening current-source evidence.
+Pytest cache and fixture temp directories are also bound to that run's owned
+runtime root, preserving shared state and ignoring inherited output redirects.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the feedback loop and cache limits.
+
 The plugin has no compilation step. Its validation tests require a CPython release from the [Python support policy](.github/python-support.json) and the hash-locked development toolchain, including Coverage.py, markdown-it-py for CommonMark parsing, PyYAML, and pytest. Run the repository checks from its root:
 
 ```powershell
 python -m pip install --require-hashes --requirement requirements-dev.txt
-python -m coverage erase
-python -m coverage run -m pytest -q
-python -m coverage report
+python scripts/run_tests.py full
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/coverage_policy.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_tests.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py
 python scripts/validate_repository.py
 ```
+
+On Windows, CI uses PyYAML's pure-Python build path for dependency
+installation, so the supported Python matrix does not require a local C
+compiler for the optional libyaml extension.
 
 Workflow validation runs actionlint and then runs the reviewed ShellCheck binary
 separately against extracted Bash blocks from installed and templated workflows.
@@ -327,6 +385,10 @@ then fails on undeclared-version drift so support changes require a reviewed
 policy update. The test job uses `matrix.os`, so the policy can exercise all
 declared hosted platforms without duplicating runner lists in workflow YAML.
 Repository validation rejects policy, workflow, scaffold, and documentation drift.
+Policy version identifiers are ASCII and bounded to 64 characters before
+numeric parsing. Contiguity validation compares adjacent declared versions;
+it must not allocate a list proportional to a numeric endpoint supplied by
+the policy. These admission checks do not establish runtime compatibility.
 Scheduled/manual canaries maintain one reminder Issue when
 either reviewed policy needs attention. The quality job also runs formatting, lint, type, compile,
 workflow, metadata, link, and release-archive checks.
@@ -402,6 +464,12 @@ duplicate, or incomplete shard results before enforcing the evidence-backed
 mutation score floor documented in `CONTRIBUTING.md`. It retains generated
 mutants and metadata for diagnosis. Native Windows is not supported by mutmut;
 contributors can use WSL for the same check.
+
+When no compatible LibCST wheel exists, the lock can select a source distribution.
+That path needs a compatible Rust toolchain and platform native build tools in
+an isolated environment, as described in [CONTRIBUTING.md](CONTRIBUTING.md).
+Hash-verified metadata is not proof of a successful native build or mutation run;
+record actual platform/toolchain evidence or explicitly defer the check.
 
 ## 11. Releases
 

@@ -5,9 +5,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from typing import Any
 
-from codeql_preflight import GitHubClient, InspectionError, split_repository
+from codeql_preflight import (
+    request_metrics,
+    GitHubClient,
+    InspectionError,
+    split_repository,
+    verified_repository_id,
+)
 
 
 MUTATIONS = (
@@ -17,6 +24,8 @@ MUTATIONS = (
     "discussions",
     "labels",
 )
+MAX_REPOSITORY_TOPICS = 20
+TOPIC_NAME = re.compile(r"[a-z0-9-]{1,50}\Z", re.IGNORECASE | re.ASCII)
 
 
 def require_boolean(document: dict[str, Any], field: str) -> bool:
@@ -24,6 +33,27 @@ def require_boolean(document: dict[str, Any], field: str) -> bool:
     if not isinstance(value, bool):
         raise InspectionError(f"Repository response has an invalid {field!r} value.")
     return value
+
+
+def validated_topics(values: object) -> list[str]:
+    """Validate GitHub's bounded topic-name collection without changing requests."""
+    if not isinstance(values, list):
+        raise InspectionError("Topics must be strings in an array.")
+    if len(values) > MAX_REPOSITORY_TOPICS:
+        raise InspectionError("A repository may have at most 20 topics.")
+    topics: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise InspectionError("Topics must be strings.")
+        if TOPIC_NAME.fullmatch(value) is None:
+            raise InspectionError(
+                "Topics must be non-empty single tokens using letters, numbers, "
+                "and hyphens, with at most 50 characters."
+            )
+        topics.append(value)
+    if len({topic.casefold() for topic in topics}) != len(topics):
+        raise InspectionError("Topics must be unique without regard to case.")
+    return topics
 
 
 def requested_mutations(args: argparse.Namespace) -> list[str]:
@@ -47,16 +77,7 @@ def requested_mutations(args: argparse.Namespace) -> list[str]:
             raise InspectionError(
                 "Provide at least one topic when topics are requested."
             )
-        if any(not isinstance(topic, str) for topic in args.topic):
-            raise InspectionError("Topics must be strings.")
-        normalized = [topic.casefold() for topic in args.topic]
-        if any(
-            not topic.strip() or any(character.isspace() for character in topic)
-            for topic in args.topic
-        ):
-            raise InspectionError("Topics must be non-empty single tokens.")
-        if len(set(normalized)) != len(normalized):
-            raise InspectionError("Topics must be unique without regard to case.")
+        validated_topics(args.topic)
     if args.create_label:
         if any(
             not isinstance(label, str) or not label.strip()
@@ -84,6 +105,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         or full_name.casefold() != args.repository.casefold()
     ):
         raise InspectionError("GitHub returned a different repository than requested.")
+    repository_id = verified_repository_id(
+        repository, getattr(args, "expected_repository_id", None)
+    )
     if require_boolean(repository, "archived"):
         raise InspectionError("Archived repositories cannot have settings changed.")
     if require_boolean(repository, "disabled"):
@@ -98,6 +122,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "Repository administration permission is required to change settings."
         )
 
+    current_topics = validated_topics(repository.get("topics")) if args.topics else None
+    if current_topics is not None:
+        resulting_topics = {topic.casefold() for topic in current_topics + args.topic}
+        if len(resulting_topics) > MAX_REPOSITORY_TOPICS:
+            raise InspectionError(
+                "The combined topic set exceeds GitHub's 20-topic limit; "
+                "preserve existing topics and revise the requested additions."
+            )
+
     current_features = {
         "issues": require_boolean(repository, "has_issues"),
         "discussions": require_boolean(repository, "has_discussions"),
@@ -111,18 +144,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     return {
         "inspection_complete": True,
-        "decision": "may-configure-repository-settings",
+        "decision": (
+            "bind-repository-identity-before-mutation"
+            if getattr(args, "expected_repository_id", None) is None
+            else "may-configure-repository-settings"
+        ),
         "requested_mutations": requested,
         "requested_settings": requested_settings,
         "repository": args.repository,
+        "repository_id": repository_id,
         "current_features": current_features,
-        "github_api_requests": client.request_count,
+        "current_topics": current_topics,
+        **request_metrics(client.request_count),
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--hostname", default="github.com")
     parser.add_argument("--set-description", dest="description", action="store_true")
     parser.add_argument("--description", dest="description_value")

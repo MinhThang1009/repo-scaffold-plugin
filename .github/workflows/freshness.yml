@@ -70,10 +70,14 @@ jobs:
           issue_numbers_output=$(
             gh api --hostname github.com \
               "search/issues?q=repo:$GITHUB_REPOSITORY+is:issue+is:open+in:body+%22%3C%21--+repo-scaffold-freshness-audit+--%3E%22&per_page=2" \
-              --jq '[.items[].number] | join(" ")'
+              --jq 'if type == "object" and .incomplete_results == false and (.total_count | type) == "number" and .total_count >= 0 and .total_count == (.total_count | floor) and (.items | type) == "array" and (.items | length) == ([.total_count, 2] | min) and all(.items[]; type == "object" and (.number | type) == "number" and .number > 0 and .number == (.number | floor)) and ([.items[].number] | unique | length) == (.items | length) then if (.items | length) == 0 then "none" else [.items[].number] | join(" ") end else error("Incomplete or invalid issue search response") end'
           )
+          if [[ -z "$issue_numbers_output" ]]; then
+            printf 'Issue search returned no verified result.\n' >&2
+            exit 1
+          fi
           issue_numbers=()
-          if [[ -n "$issue_numbers_output" ]]; then
+          if [[ "$issue_numbers_output" != 'none' ]]; then
             read -r -a issue_numbers <<< "$issue_numbers_output"
           fi
           if (( ${#issue_numbers[@]} > 1 )); then

@@ -31,11 +31,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -59,6 +61,13 @@ jobs:
             printf 'Invalid pull-request base SHA.\n' >&2
             exit 1
           fi
+
+          for identity in "$REPOSITORY_ID" "$PR_HEAD_REPOSITORY_ID"; do
+            if [[ ! "$identity" =~ ^[1-9][0-9]{0,19}$ ]]; then
+              printf 'Invalid numeric repository binding.\n' >&2
+              exit 1
+            fi
+          done
 
           payload="$RUNNER_TEMP/pr-body-pull-request.json"
           commits="$RUNNER_TEMP/pr-body-commits.json"
@@ -97,15 +106,48 @@ jobs:
           expected_repository = sys.argv[4]
           expected_title = sys.argv[5]
           expected_base_sha = sys.argv[6]
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise SystemExit("Pull-request JSON contains duplicate members.")
+                  result[key] = value
+              return result
+
           raw = payload_path.read_bytes()
           if len(raw) > 2 * 1024 * 1024:
               raise SystemExit("Pull-request API payload exceeds the safety cap.")
           try:
-              payload = json.loads(raw.decode("utf-8"))
+              payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
           except (UnicodeDecodeError, json.JSONDecodeError) as error:
               raise SystemExit(f"Pull-request API payload is invalid: {error}") from error
           head = payload.get("head") if isinstance(payload, dict) else None
           base = payload.get("base") if isinstance(payload, dict) else None
+          import os
+          expected_ids = {}
+          for name in ("PR_NUMBER", "REPOSITORY_ID", "PR_HEAD_REPOSITORY_ID"):
+              value = os.environ.get(name, "")
+              if not value.isascii() or not value.isdigit() or len(value) > 20 or int(value) <= 0:
+                  raise SystemExit("Pull-request numeric identity binding is invalid.")
+              expected_ids[name] = int(value)
+          base_repository = base.get("repo") if isinstance(base, dict) else None
+          head_repository = head.get("repo") if isinstance(head, dict) else None
+          if (
+              not isinstance(payload, dict)
+              or type(payload.get("number")) is not int
+              or payload["number"] != expected_ids["PR_NUMBER"]
+              or not isinstance(base_repository, dict)
+              or type(base_repository.get("id")) is not int
+              or base_repository["id"] != expected_ids["REPOSITORY_ID"]
+              or not isinstance(base_repository.get("full_name"), str)
+              or base_repository["full_name"].casefold() != os.environ["REPOSITORY"].casefold()
+              or base_repository.get("archived") is not False
+              or base_repository.get("disabled") is not False
+              or not isinstance(head_repository, dict)
+              or type(head_repository.get("id")) is not int
+              or head_repository["id"] != expected_ids["PR_HEAD_REPOSITORY_ID"]
+          ):
+              raise SystemExit("Pull-request identity or active repository state is unbound.")
           actual_repository = (
               head.get("repo", {}).get("full_name")
               if isinstance(head, dict) and isinstance(head.get("repo"), dict)
@@ -158,11 +200,19 @@ jobs:
 
           path = Path(sys.argv[1])
           kind = sys.argv[2]
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise SystemExit("Pull-request JSON contains duplicate members.")
+                  result[key] = value
+              return result
+
           raw = path.read_bytes()
           if len(raw) > 10 * 1024 * 1024:
               raise SystemExit("Paginated API response exceeds the safety cap.")
           try:
-              payload = json.loads(raw.decode("utf-8"))
+              payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
           except (UnicodeDecodeError, json.JSONDecodeError) as error:
               raise SystemExit(f"Paginated API response is invalid: {error}") from error
           if kind == "checks":
@@ -192,6 +242,14 @@ jobs:
           output_path = Path(sys.argv[2])
           total_limit = int(sys.argv[3])
           paths = sorted(directory.glob("*.json"), key=lambda path: int(path.stem))
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise SystemExit("Pull-request JSON contains duplicate members.")
+                  result[key] = value
+              return result
+
           encoded_pages = []
           total_bytes = 2
           for path in paths:
@@ -200,7 +258,7 @@ jobs:
               if len(raw) > 10485760:
                   raise SystemExit("Paginated API response exceeds the safety cap.")
               try:
-                  page_payload = json.loads(raw.decode("utf-8"))
+                  page_payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
               except (UnicodeDecodeError, json.JSONDecodeError) as error:
                   raise SystemExit(f"Paginated API response is invalid: {error}") from error
               if not isinstance(page_payload, list):
@@ -248,20 +306,57 @@ jobs:
           expected_title = sys.argv[5]
           expected_base_sha = sys.argv[6]
           expected_payload_path = Path(sys.argv[7])
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise SystemExit("Pull-request JSON contains duplicate members.")
+                  result[key] = value
+              return result
+
           raw = payload_path.read_bytes()
           if len(raw) > 2 * 1024 * 1024:
               raise SystemExit("Pull-request API payload exceeds the safety cap.")
           try:
-              payload = json.loads(raw.decode("utf-8"))
+              payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
           except (UnicodeDecodeError, json.JSONDecodeError) as error:
               raise SystemExit(f"Pull-request API payload is invalid: {error}") from error
           expected_raw = expected_payload_path.read_bytes()
+          if len(expected_raw) > 2 * 1024 * 1024:
+              raise SystemExit("Initial pull-request payload exceeds the safety cap.")
           try:
-              expected_payload = json.loads(expected_raw.decode("utf-8"))
+              expected_payload = json.loads(expected_raw.decode("utf-8"), object_pairs_hook=unique_object)
           except (UnicodeDecodeError, json.JSONDecodeError) as error:
               raise SystemExit(f"Initial pull-request API payload is invalid: {error}") from error
+          if not isinstance(expected_payload, dict):
+              raise SystemExit("Initial pull-request payload is not an object.")
           head = payload.get("head") if isinstance(payload, dict) else None
           base = payload.get("base") if isinstance(payload, dict) else None
+          import os
+          expected_ids = {}
+          for name in ("PR_NUMBER", "REPOSITORY_ID", "PR_HEAD_REPOSITORY_ID"):
+              value = os.environ.get(name, "")
+              if not value.isascii() or not value.isdigit() or len(value) > 20 or int(value) <= 0:
+                  raise SystemExit("Pull-request numeric identity binding is invalid.")
+              expected_ids[name] = int(value)
+          base_repository = base.get("repo") if isinstance(base, dict) else None
+          head_repository = head.get("repo") if isinstance(head, dict) else None
+          if (
+              not isinstance(payload, dict)
+              or type(payload.get("number")) is not int
+              or payload["number"] != expected_ids["PR_NUMBER"]
+              or not isinstance(base_repository, dict)
+              or type(base_repository.get("id")) is not int
+              or base_repository["id"] != expected_ids["REPOSITORY_ID"]
+              or not isinstance(base_repository.get("full_name"), str)
+              or base_repository["full_name"].casefold() != os.environ["REPOSITORY"].casefold()
+              or base_repository.get("archived") is not False
+              or base_repository.get("disabled") is not False
+              or not isinstance(head_repository, dict)
+              or type(head_repository.get("id")) is not int
+              or head_repository["id"] != expected_ids["PR_HEAD_REPOSITORY_ID"]
+          ):
+              raise SystemExit("Pull-request identity or active repository state is unbound.")
           actual_repository = (
               head.get("repo", {}).get("full_name")
               if isinstance(head, dict) and isinstance(head.get("repo"), dict)
@@ -278,7 +373,16 @@ jobs:
           ):
               raise SystemExit("Pull-request ref, title, or state changed during body preparation.")
           for field in ("commits", "changed_files"):
-              if payload.get(field) != expected_payload.get(field):
+              value = payload.get(field)
+              expected_value = expected_payload.get(field)
+              limit = 250 if field == "commits" else 3000
+              if (
+                  type(value) is not int
+                  or type(expected_value) is not int
+                  or value < 0
+                  or value > limit
+                  or value != expected_value
+              ):
                   raise SystemExit("Pull-request inventory changed during body preparation; retry the workflow.")
           body = payload.get("body")
           if body is None:
@@ -308,20 +412,57 @@ jobs:
           expected_title = sys.argv[5]
           expected_base_sha = sys.argv[6]
           expected_payload_path = Path(sys.argv[7])
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise SystemExit("Pull-request JSON contains duplicate members.")
+                  result[key] = value
+              return result
+
           raw = payload_path.read_bytes()
           if len(raw) > 2 * 1024 * 1024:
               raise SystemExit("Pull-request API payload exceeds the safety cap.")
           try:
-              payload = json.loads(raw.decode("utf-8"))
+              payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
           except (UnicodeDecodeError, json.JSONDecodeError) as error:
               raise SystemExit(f"Pull-request API payload is invalid: {error}") from error
           expected_raw = expected_payload_path.read_bytes()
+          if len(expected_raw) > 2 * 1024 * 1024:
+              raise SystemExit("Initial pull-request payload exceeds the safety cap.")
           try:
-              expected_payload = json.loads(expected_raw.decode("utf-8"))
+              expected_payload = json.loads(expected_raw.decode("utf-8"), object_pairs_hook=unique_object)
           except (UnicodeDecodeError, json.JSONDecodeError) as error:
               raise SystemExit(f"Initial pull-request API payload is invalid: {error}") from error
+          if not isinstance(expected_payload, dict):
+              raise SystemExit("Initial pull-request payload is not an object.")
           head = payload.get("head") if isinstance(payload, dict) else None
           base = payload.get("base") if isinstance(payload, dict) else None
+          import os
+          expected_ids = {}
+          for name in ("PR_NUMBER", "REPOSITORY_ID", "PR_HEAD_REPOSITORY_ID"):
+              value = os.environ.get(name, "")
+              if not value.isascii() or not value.isdigit() or len(value) > 20 or int(value) <= 0:
+                  raise SystemExit("Pull-request numeric identity binding is invalid.")
+              expected_ids[name] = int(value)
+          base_repository = base.get("repo") if isinstance(base, dict) else None
+          head_repository = head.get("repo") if isinstance(head, dict) else None
+          if (
+              not isinstance(payload, dict)
+              or type(payload.get("number")) is not int
+              or payload["number"] != expected_ids["PR_NUMBER"]
+              or not isinstance(base_repository, dict)
+              or type(base_repository.get("id")) is not int
+              or base_repository["id"] != expected_ids["REPOSITORY_ID"]
+              or not isinstance(base_repository.get("full_name"), str)
+              or base_repository["full_name"].casefold() != os.environ["REPOSITORY"].casefold()
+              or base_repository.get("archived") is not False
+              or base_repository.get("disabled") is not False
+              or not isinstance(head_repository, dict)
+              or type(head_repository.get("id")) is not int
+              or head_repository["id"] != expected_ids["PR_HEAD_REPOSITORY_ID"]
+          ):
+              raise SystemExit("Pull-request identity or active repository state is unbound.")
           actual_repository = (
               head.get("repo", {}).get("full_name")
               if isinstance(head, dict) and isinstance(head.get("repo"), dict)
@@ -338,7 +479,16 @@ jobs:
           ):
               raise SystemExit("Pull-request ref, title, or state changed during the body update.")
           for field in ("commits", "changed_files"):
-              if payload.get(field) != expected_payload.get(field):
+              value = payload.get(field)
+              expected_value = expected_payload.get(field)
+              limit = 250 if field == "commits" else 3000
+              if (
+                  type(value) is not int
+                  or type(expected_value) is not int
+                  or value < 0
+                  or value > limit
+                  or value != expected_value
+              ):
                   raise SystemExit("Pull-request inventory changed during the body update; retry the workflow.")
           actual_body = payload.get("body")
           expected_body = expected_body_path.read_bytes().decode("utf-8")

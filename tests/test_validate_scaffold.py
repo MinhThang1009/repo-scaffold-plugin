@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import os
 import runpy
 import shutil
@@ -10,6 +11,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import yaml
@@ -1057,6 +1059,356 @@ class TemplateContractTests(unittest.TestCase):
                 any("template body must be nonempty" in item for item in problems)
             )
             self.assertFalse(any(item.startswith("valid.md") for item in problems))
+
+    def test_issue_form_name_length_matches_the_chooser_visibility_requirement(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            document = {
+                "name": "Report",
+                "description": "A report",
+                "body": [{"type": "input", "attributes": {"label": "Summary"}}],
+            }
+            for name in ("A", "AB", "Bug", " Bug ", "Report", "Bugs"):
+                with self.subTest(name=name):
+                    (forms / "report.yml").write_text(
+                        yaml.safe_dump({**document, "name": name}), encoding="utf-8"
+                    )
+                    problems = validate_scaffold.validate_issue_forms(root)
+                    self.assertEqual(
+                        any(
+                            "name must be more than 3 characters" in item
+                            for item in problems
+                        ),
+                        len(name.strip()) <= 3,
+                    )
+
+    def test_issue_form_names_are_unique_across_yaml_and_markdown_templates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            document = {
+                "name": "Report fixture",
+                "description": "A report",
+                "body": [{"type": "input", "attributes": {"label": "Summary"}}],
+            }
+            (forms / "report.yml").write_text(
+                yaml.safe_dump(document), encoding="utf-8"
+            )
+            for name in ("Report fixture", "Different fixture"):
+                for extension in (".yml", ".md"):
+                    with self.subTest(name=name, extension=extension):
+                        path = forms / ("second" + extension)
+                        content = (
+                            yaml.safe_dump({**document, "name": name})
+                            if extension == ".yml"
+                            else f"---\nname: {name}\nabout: A report\n---\nBody\n"
+                        )
+                        path.write_text(content, encoding="utf-8")
+                        problems = validate_scaffold.validate_issue_forms(root)
+                        self.assertEqual(
+                            any(
+                                "name must be unique among issue templates" in item
+                                for item in problems
+                            ),
+                            name == document["name"],
+                        )
+                        path.unlink()
+
+    def test_issue_form_name_inventory_handles_invalid_and_duplicate_markdown(
+        self,
+    ) -> None:
+        cases = (
+            (b"not front matter\n", "missing complete YAML front matter"),
+            (b"---\nname: [\n---\nBody\n", "invalid YAML front matter"),
+            (b"\xff", "unreadable UTF-8 Markdown"),
+            (b"---\n- value\n---\nBody\n", None),
+            (b"---\nabout: Report\n---\nBody\n", None),
+            (b"---\nname: []\n---\nBody\n", None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            path = forms / "legacy.md"
+            for content, diagnostic in cases:
+                with self.subTest(content=content):
+                    path.write_bytes(content)
+                    problems = validate_scaffold.validate_issue_forms(root)
+                    if diagnostic is not None:
+                        self.assertTrue(
+                            any(diagnostic in problem for problem in problems)
+                        )
+                    else:
+                        self.assertEqual(problems, [])
+            path.write_text(
+                "---\nname: Report fixture\nabout: Report\n---\nBody\n",
+                encoding="utf-8",
+            )
+            (forms / "second.md").write_bytes(path.read_bytes())
+            self.assertIn(
+                ".github/ISSUE_TEMPLATE/second.md: name must be unique among issue templates",
+                validate_scaffold.validate_issue_forms(root),
+            )
+
+    def test_issue_form_partial_documents_return_diagnostics_instead_of_raising(
+        self,
+    ) -> None:
+        valid: dict[str, Any] = {
+            "name": "Report",
+            "description": "A report",
+            "body": [
+                {"type": "input", "id": "summary", "attributes": {"label": "Summary"}}
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            for missing in ("name", "description", "body"):
+                with self.subTest(missing=missing):
+                    document = {
+                        key: value for key, value in valid.items() if key != missing
+                    }
+                    (forms / "report.yml").write_text(
+                        yaml.safe_dump(document), encoding="utf-8"
+                    )
+                    problems = validate_scaffold.validate_issue_forms(root)
+                    self.assertTrue(
+                        any("form must contain" in problem for problem in problems)
+                    )
+
+    def test_issue_form_optional_metadata_preserves_strings_and_arrays_but_rejects_coercion(
+        self,
+    ) -> None:
+        valid: dict[str, Any] = {
+            "name": "Report",
+            "description": "A report",
+            "body": [{"type": "input", "attributes": {"label": "Summary"}}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            path = forms / "report.yml"
+            path.write_text(yaml.safe_dump(valid), encoding="utf-8")
+            self.assertEqual(validate_scaffold.validate_issue_forms(root), [])
+            positives: tuple[dict[str, Any], ...] = (
+                {"title": ""},
+                {"title": "[Bug]: ", "labels": "bug, triage"},
+                {"labels": []},
+                {"labels": ""},
+                {"labels": ["bug", "triage"]},
+                {"assignees": "octocat, hubot"},
+                {"assignees": []},
+                {"projects": ["octo-org/1", "octo-org/42"]},
+                {"projects": "octo-org/1"},
+            )
+            for metadata in positives:
+                with self.subTest(metadata=metadata):
+                    path.write_text(
+                        yaml.safe_dump({**valid, **metadata}), encoding="utf-8"
+                    )
+                    self.assertEqual(validate_scaffold.validate_issue_forms(root), [])
+            for field, value in (
+                ("title", []),
+                ("title", False),
+                ("title", None),
+                ("labels", [7]),
+                ("assignees", 7),
+                ("projects", [False]),
+                ("labels", None),
+                ("assignees", {}),
+                ("projects", ["octo-org/1", []]),
+            ):
+                with self.subTest(field=field, value=value):
+                    path.write_text(
+                        yaml.safe_dump({**valid, field: value}), encoding="utf-8"
+                    )
+                    self.assertTrue(validate_scaffold.validate_issue_forms(root))
+
+    def test_typed_issue_yaml_rejects_duplicate_or_unhashable_keys(self) -> None:
+        for content in (
+            "name: First\nname: Second\n",
+            "? [a, b]\n: value\n",
+            "!!map [unexpected]\n",
+            "!!map unexpected\n",
+        ):
+            with self.subTest(content=content), self.assertRaises(yaml.YAMLError):
+                validate_scaffold.load_yaml_text(content, typed=True)
+
+    def test_issue_form_attribute_and_validation_types_are_not_string_coerced(
+        self,
+    ) -> None:
+        valid: dict[str, Any] = {
+            "name": "Report",
+            "description": "A report",
+            "body": [
+                {
+                    "type": "textarea",
+                    "id": "summary",
+                    "attributes": {"label": "Summary"},
+                }
+            ],
+        }
+        variants = []
+        for changes in (
+            {"attributes": {"label": "Summary", "description": 7}},
+            {"validations": None},
+            {"validations": {"min_length": "0"}},
+            {"validations": {"min_length": True}},
+            {"validations": {"min_length": -1}},
+            {"type": "upload", "validations": {"accept": "txt"}},
+            {"type": "upload", "validations": {"accept": []}},
+            {
+                "type": "dropdown",
+                "attributes": {
+                    "label": "Summary",
+                    "options": ["stable", "n/a"],
+                    "default": 0,
+                },
+            },
+            {
+                "type": "checkboxes",
+                "attributes": {
+                    "label": "Summary",
+                    "options": [
+                        {"label": "Terms", "required": True, "unsupported": True}
+                    ],
+                },
+            },
+        ):
+            variant = copy.deepcopy(valid)
+            variant["body"][0].update(changes)
+            variants.append(variant)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            for variant in variants:
+                with self.subTest(variant=variant):
+                    (forms / "report.yml").write_text(
+                        yaml.safe_dump(variant), encoding="utf-8"
+                    )
+                    self.assertTrue(validate_scaffold.validate_issue_forms(root))
+
+    def test_issue_form_runtime_types_and_dropdown_constraints_match_upstream(
+        self,
+    ) -> None:
+        valid: dict[str, Any] = {
+            "name": "Report",
+            "description": "A report",
+            "body": [
+                {
+                    "type": "dropdown",
+                    "id": "version",
+                    "attributes": {
+                        "label": "Version",
+                        "options": ["stable", "preview"],
+                        "multiple": False,
+                        "default": 0,
+                    },
+                    "validations": {"required": True},
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            path = forms / "report.yml"
+            path.write_text(yaml.safe_dump(valid), encoding="utf-8")
+            self.assertEqual(validate_scaffold.validate_issue_forms(root), [])
+            for field, value in (
+                ("options", ["stable", "stable"]),
+                ("options", [1, 2]),
+                ("multiple", "true"),
+                ("default", "0"),
+                ("default", True),
+                ("default", 2),
+                ("default", -1),
+                ("unsupported", "value"),
+            ):
+                with self.subTest(field=field, value=value):
+                    changed = copy.deepcopy(valid)
+                    changed["body"][0]["attributes"][field] = value
+                    path.write_text(yaml.safe_dump(changed), encoding="utf-8")
+                    self.assertTrue(validate_scaffold.validate_issue_forms(root))
+            for field, value in (
+                ("required", "true"),
+                ("min_length", -1),
+                ("unsupported", True),
+            ):
+                with self.subTest(validation=field, value=value):
+                    changed = copy.deepcopy(valid)
+                    changed["body"][0]["validations"][field] = value
+                    path.write_text(yaml.safe_dump(changed), encoding="utf-8")
+                    self.assertTrue(validate_scaffold.validate_issue_forms(root))
+
+    def test_issue_forms_accept_optional_ids_and_typed_input_upload_validation(
+        self,
+    ) -> None:
+        elements = [
+            {"type": "markdown", "attributes": {"value": "Provide context"}},
+            {
+                "type": "input",
+                "attributes": {"label": "Summary"},
+                "validations": {"required": True, "min_length": 0},
+            },
+            {
+                "type": "textarea",
+                "id": "details",
+                "attributes": {"label": "Details", "render": "shell"},
+                "validations": {"min_length": 5},
+            },
+            {
+                "type": "checkboxes",
+                "attributes": {
+                    "label": "Terms",
+                    "options": [{"label": "No secrets", "required": True}],
+                },
+            },
+            {
+                "type": "upload",
+                "attributes": {"label": "Evidence"},
+                "validations": {"required": False, "accept": ".log,.txt"},
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forms = root / ".github/ISSUE_TEMPLATE"
+            forms.mkdir(parents=True)
+            path = forms / "report.yml"
+            valid: dict[str, Any] = {
+                "name": "Report",
+                "description": "A report",
+                "body": elements,
+            }
+            path.write_text(yaml.safe_dump(valid), encoding="utf-8")
+            self.assertEqual(validate_scaffold.validate_issue_forms(root), [])
+            for position, field, value in (
+                (1, "min_length", -1),
+                (1, "min_length", True),
+                (1, "min_length", "0"),
+                (4, "accept", [".txt"]),
+                (3, "required", "true"),
+            ):
+                with self.subTest(position=position, field=field, value=value):
+                    changed = copy.deepcopy(valid)
+                    if position == 3:
+                        changed["body"][position]["attributes"]["options"][0][field] = (
+                            value
+                        )
+                    else:
+                        changed["body"][position]["validations"][field] = value
+                    path.write_text(yaml.safe_dump(changed), encoding="utf-8")
+                    self.assertTrue(validate_scaffold.validate_issue_forms(root))
 
     def test_issue_forms_accept_valid_schema_and_reject_invalid_forms(self) -> None:
         valid_form = """\

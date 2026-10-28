@@ -36,3 +36,5 @@ List the focused security and regression checks run without exposing sensitive d
 ## Related issue
 
 Link a public issue only when disclosure is appropriate.
+
+<!-- If applicable, use a standalone closing line: Fixes #<issue>, Closes #<issue>, or Resolves #<issue>. -->

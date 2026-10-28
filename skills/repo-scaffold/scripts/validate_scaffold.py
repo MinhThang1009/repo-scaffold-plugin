@@ -67,6 +67,14 @@ ISSUE_FORM_INPUT_TYPES = {
     "upload",
 }
 ISSUE_FORM_BODY_KEYS = {"attributes", "id", "type", "validations"}
+ISSUE_FORM_ATTRIBUTES = {
+    "markdown": {"value"},
+    "input": {"label", "description", "placeholder", "value"},
+    "textarea": {"label", "description", "placeholder", "value", "render"},
+    "dropdown": {"label", "description", "multiple", "options", "default"},
+    "checkboxes": {"label", "description", "options"},
+    "upload": {"label", "description"},
+}
 PULL_REQUEST_TEMPLATE_LOCATIONS = (Path("."), Path("docs"), Path(".github"))
 PULL_REQUEST_TEMPLATE_EXTENSIONS = {".md", ".markdown", ".txt"}
 MAX_FOCUSED_PULL_REQUEST_TEMPLATES = 128
@@ -103,10 +111,48 @@ class UniqueKeyBaseLoader(yaml.BaseLoader):
         return mapping
 
 
-def load_yaml_text(text: str) -> Any:
+class UniqueKeySafeLoader(yaml.SafeLoader):
+    """Parse data-only YAML with actual scalar types and no duplicate members."""
+
+    def construct_mapping(
+        self, node: yaml.nodes.MappingNode, deep: bool = False
+    ) -> dict[Any, Any]:
+        if not isinstance(node, yaml.nodes.MappingNode):
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"expected a mapping node, but found {node.id}",
+                node.start_mark,
+            )
+        mapping: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in mapping
+            except TypeError as error:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found an unhashable mapping key",
+                    key_node.start_mark,
+                ) from error
+            if duplicate:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
+def load_yaml_text(text: str, *, typed: bool = False) -> Any:
     """Parse YAML while converting recursive parser failures into YAML errors."""
     try:
-        return yaml.load(text, Loader=UniqueKeyBaseLoader)
+        return yaml.load(
+            text, Loader=UniqueKeySafeLoader if typed else UniqueKeyBaseLoader
+        )
     except RecursionError as error:
         raise yaml.YAMLError("YAML nesting exceeds parser limit") from error
 
@@ -759,6 +805,34 @@ def validate_issue_forms(
         entries = bounded_template_directory_entries(template_root, repository_root)
     except (OSError, ValueError) as error:
         return [str(error)]
+    template_names: set[str] = set()
+    for path in sorted(
+        entry for entry in entries if entry.is_file() and entry.suffix.lower() == ".md"
+    ):
+        relative = path.relative_to(repository_root).as_posix()
+        text, problem = read_markdown(
+            path, label=relative, repository_root=repository_root
+        )
+        if problem is not None:
+            problems.append(problem)
+            continue
+        assert text is not None
+        match = re.match(r"\A---\r?\n(.*?)\r?\n---\r?\n(.*)\Z", text, re.DOTALL)
+        if match is None:
+            problems.append(f"{relative}: missing complete YAML front matter")
+            continue
+        try:
+            metadata = load_yaml_text(match.group(1))
+        except yaml.YAMLError as error:
+            problems.append(f"{relative}: invalid YAML front matter: {error}")
+            continue
+        if isinstance(metadata, dict) and isinstance(metadata.get("name"), str):
+            name = metadata["name"]
+            if name in template_names:
+                problems.append(
+                    f"{relative}: name must be unique among issue templates"
+                )
+            template_names.add(name)
     for path in sorted(
         (
             entry
@@ -784,7 +858,9 @@ def validate_issue_forms(
             )
             continue
         try:
-            document = load_yaml_text(read_bounded_utf8(path, label=relative))
+            document = load_yaml_text(
+                read_bounded_utf8(path, label=relative), typed=True
+            )
         except (OSError, UnicodeError, ValueError, yaml.YAMLError) as error:
             problems.append(f"{relative}: invalid issue form YAML: {error}")
             continue
@@ -800,14 +876,36 @@ def validate_issue_forms(
                 f"supported keys {sorted(supported)}"
             )
         if not all(
-            isinstance(document[field], str) and document[field].strip()
+            isinstance(document.get(field), str) and document[field].strip()
             for field in ("name", "description")
         ):
             problems.append(f"{relative}: name and description must be nonempty")
+        name = document.get("name")
+        if isinstance(name, str):
+            if len(name.strip()) <= 3:
+                problems.append(f"{relative}: name must be more than 3 characters")
+            if name in template_names:
+                problems.append(
+                    f"{relative}: name must be unique among issue templates"
+                )
+            template_names.add(name)
         if "type" in document and (
             not isinstance(document["type"], str) or not document["type"].strip()
         ):
             problems.append(f"{relative}: type must be a nonempty string")
+        if "title" in document and not isinstance(document["title"], str):
+            problems.append(f"{relative}: title must be a string")
+        for field in ("labels", "assignees", "projects"):
+            if field not in document:
+                continue
+            value = document[field]
+            if not isinstance(value, str) and (
+                not isinstance(value, list)
+                or not all(isinstance(entry, str) for entry in value)
+            ):
+                problems.append(
+                    f"{relative}: {field} must be a string array or comma-delimited string"
+                )
 
         body = document.get("body")
         if not isinstance(body, list) or not body:
@@ -833,7 +931,11 @@ def validate_issue_forms(
                 has_input = True
                 required_attribute = "label"
                 item_id = item.get("id")
-                if not isinstance(item_id, str) or not ISSUE_FORM_ID.fullmatch(item_id):
+                if "id" not in item:
+                    pass
+                elif not isinstance(item_id, str) or not ISSUE_FORM_ID.fullmatch(
+                    item_id
+                ):
                     problems.append(
                         f"{prefix}.id may contain only letters, numbers, -, and _"
                     )
@@ -845,6 +947,11 @@ def validate_issue_forms(
             if not isinstance(attributes, dict):
                 problems.append(f"{prefix}.attributes must be a mapping")
                 continue
+            if set(attributes) - ISSUE_FORM_ATTRIBUTES[item_type]:
+                problems.append(f"{prefix}.attributes contains unsupported keys")
+            for field in ("description", "placeholder", "value", "render"):
+                if field in attributes and not isinstance(attributes[field], str):
+                    problems.append(f"{prefix}.attributes.{field} must be a string")
             if (
                 not isinstance(attributes.get(required_attribute), str)
                 or not attributes[required_attribute].strip()
@@ -869,6 +976,25 @@ def validate_issue_forms(
                 problems.append(
                     f"{prefix}.attributes.options must be a nonempty string list"
                 )
+            elif item_type == "dropdown":
+                assert isinstance(options, list)
+                if len(set(options)) != len(options):
+                    problems.append(f"{prefix}.attributes.options must be distinct")
+                if (
+                    "multiple" in attributes
+                    and type(attributes["multiple"]) is not bool
+                ):
+                    problems.append(f"{prefix}.attributes.multiple must be a boolean")
+                if "default" in attributes:
+                    selected = attributes["default"]
+                    if type(selected) is not int or not 0 <= selected < len(options):
+                        problems.append(
+                            f"{prefix}.attributes.default must be a valid integer option index"
+                        )
+                    if any(option.casefold() in {"none", "n/a"} for option in options):
+                        problems.append(
+                            f"{prefix}.attributes.default cannot accompany None or n/a options"
+                        )
             if item_type == "checkboxes" and (
                 not isinstance(options, list)
                 or not options
@@ -876,7 +1002,8 @@ def validate_issue_forms(
                     isinstance(option, dict)
                     and isinstance(option.get("label"), str)
                     and option["label"].strip()
-                    and option.get("required", "false") in ("true", "false")
+                    and type(option.get("required", False)) is bool
+                    and not (set(option) - {"label", "required"})
                     for option in options
                 )
             ):
@@ -897,11 +1024,42 @@ def validate_issue_forms(
                     else:
                         seen_labels.add(label)
             validations = item.get("validations")
-            if validations is not None and (
-                not isinstance(validations, dict)
-                or validations.get("required", "false") not in ("true", "false")
-            ):
-                problems.append(f"{prefix}.validations.required must be a boolean")
+            if "validations" in item:
+                if not isinstance(validations, dict):
+                    problems.append(
+                        f"{prefix}.validations.required must be a boolean mapping"
+                    )
+                    continue
+                supported_validations = (
+                    set() if item_type == "markdown" else {"required"}
+                )
+                if item_type in {"input", "textarea"}:
+                    supported_validations.add("min_length")
+                if item_type == "upload":
+                    supported_validations.add("accept")
+                if set(validations) - supported_validations:
+                    problems.append(f"{prefix}.validations contains unsupported keys")
+                if type(validations.get("required", False)) is not bool:
+                    problems.append(f"{prefix}.validations.required must be a boolean")
+                if "min_length" in validations and (
+                    type(validations["min_length"]) is not int
+                    or validations["min_length"] < 0
+                ):
+                    problems.append(
+                        f"{prefix}.validations.min_length must be a non-negative integer"
+                    )
+                if "accept" in validations and (
+                    not isinstance(validations["accept"], str)
+                    or not all(
+                        re.fullmatch(
+                            r"\.[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*", extension.strip()
+                        )
+                        for extension in validations["accept"].split(",")
+                    )
+                ):
+                    problems.append(
+                        f"{prefix}.validations.accept must be a comma-separated extension string"
+                    )
         if not has_input:
             problems.append(f"{relative}: body must contain a non-markdown input")
     return problems

@@ -16,6 +16,9 @@ không có mapping bắt buộc, thêm `--template security`, `--template deploy
 hoặc `--template dependency-update`.
 
 Sau khi chuẩn bị tệp body UTF-8, chạy lại preflight với `--body-file <path>` để chặn prose bị hard-wrap trước khi thay đổi GitHub.
+Nếu PR này cần đóng issue sau khi merge, hãy thêm một dòng riêng `Fixes #123`,
+`Closes #123` hoặc `Resolves #123`. Preflight sẽ kiểm tra cú pháp khi dòng này
+xuất hiện, nhưng không bắt buộc mọi PR phải tham chiếu issue.
 
 Khi đã cài PR-body sync, ghi các field có nhãn rõ ràng `Why:`, `Root cause:`,
 `Changes:` và `Verification:` trong commit body. Viết giá trị bằng ngôn ngữ dự

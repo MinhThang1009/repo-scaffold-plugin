@@ -32,4 +32,4 @@
 - [ ] Updated tests, documentation, migration, rollback, performance, accessibility, or release guidance
 <!-- repo-scaffold:optional-checklist:end -->
 
-<!-- Closes #<issue> if applicable -->
+<!-- If applicable, use a standalone closing line: Fixes #<issue>, Closes #<issue>, or Resolves #<issue>. -->

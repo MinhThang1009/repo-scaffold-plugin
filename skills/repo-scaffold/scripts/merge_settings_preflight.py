@@ -8,7 +8,17 @@ import json
 from typing import Any
 from urllib.parse import quote
 
-from branch_protection_preflight import GitHubClient, InspectionError, split_repository
+from branch_protection_preflight import (
+    GitHubClient,
+    InspectionError,
+    rules_binding,
+    split_repository,
+)
+from codeql_preflight import (
+    request_metrics,
+    revalidate_repository_state,
+    verified_repository_id,
+)
 
 
 SUPPORTED_MERGE_METHODS = frozenset({"merge", "squash", "rebase"})
@@ -156,6 +166,9 @@ def branch_has_status_checks(payload: Any, branch: str) -> bool:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    for control in ("require_auto_merge_workflows", "confirm_disable_merge_methods"):
+        if type(getattr(args, control, None)) is not bool:
+            raise InspectionError(f"Merge control {control} must be a Boolean.")
     if not isinstance(args.hostname, str) or args.hostname.casefold() != "github.com":
         raise InspectionError("Merge-settings preflight supports GitHub.com only.")
     if not isinstance(args.default_branch, str) or not args.default_branch.strip():
@@ -171,6 +184,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         or full_name.casefold() != args.repository.casefold()
     ):
         raise InspectionError("GitHub returned a different repository than requested.")
+    repository_id = verified_repository_id(
+        repository, getattr(args, "expected_repository_id", None)
+    )
     if require_boolean(repository, "archived"):
         raise InspectionError(
             "Archived repositories cannot have merge settings changed."
@@ -229,6 +245,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         has_merge_queue,
         ruleset_status_checks_required,
     ) = parse_effective_rules(rules)
+    original_rules = rules_binding(rules)
     desired = {
         "squash": True,
         "merge": "merge" in required_methods,
@@ -271,10 +288,59 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         decision = "enable-auto-merge-before-installing-workflows"
     else:
         decision = "may-configure-merge-settings"
+    fresh_rules = client.json(
+        f"repos/{owner}/{repo}/rules/branches/"
+        f"{quote(args.default_branch, safe='')}?per_page=100"
+    )
+    if rules_binding(fresh_rules) != original_rules:
+        raise InspectionError("Effective merge rules changed during inspection.")
+    if classic_status_checks_required is not None:
+        fresh_branch = client.json(
+            f"repos/{owner}/{repo}/branches/{quote(args.default_branch, safe='')}"
+        )
+        if (
+            branch_has_status_checks(fresh_branch, args.default_branch)
+            != classic_status_checks_required
+        ):
+            raise InspectionError(
+                "Classic status-check prerequisite changed during inspection."
+            )
+        if rules_binding(fresh_branch.get("protection")) != rules_binding(
+            default_branch.get("protection")
+        ):
+            raise InspectionError(
+                "Classic protection evidence changed during inspection."
+            )
+    revalidate_repository_state(
+        client,
+        args.repository,
+        repository,
+        (
+            "default_branch",
+            "archived",
+            "disabled",
+            "permissions.admin",
+            "allow_squash_merge",
+            "allow_merge_commit",
+            "allow_rebase_merge",
+            "allow_auto_merge",
+            *(("delete_branch_on_merge",) if request_delete_branch else ()),
+            *(
+                ("squash_merge_commit_title",)
+                if requested_squash_title is not None
+                else ()
+            ),
+        ),
+    )
     return {
         "inspection_complete": True,
-        "decision": decision,
+        "decision": (
+            "bind-repository-identity-before-mutation"
+            if getattr(args, "expected_repository_id", None) is None
+            else decision
+        ),
         "repository": args.repository,
+        "repository_id": repository_id,
         "default_branch": args.default_branch,
         "required_merge_methods": sorted(required_methods),
         "current_merge_methods": current,
@@ -292,13 +358,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "administration_permission": True,
         "auto_merge_enabled": auto_merge_enabled,
         "auto_merge_workflows_eligible": auto_merge_workflows_eligible,
-        "github_api_requests": client.request_count,
+        **request_metrics(client.request_count),
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--expected-repository-id", type=int)
     parser.add_argument("--default-branch", required=True)
     parser.add_argument("--hostname", default="github.com")
     parser.add_argument("--require-auto-merge-workflows", action="store_true")
