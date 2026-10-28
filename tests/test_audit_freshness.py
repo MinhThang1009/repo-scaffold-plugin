@@ -137,8 +137,14 @@ class FreshnessTests(unittest.TestCase):
         project = {
             "info": {"version": "7.17.0"},
             "releases": {
+                "not-a-version": [],
+                "7.18.0rc1": [],
+                "7.18.0.post1.dev1": [],
                 "7.17.0": [{"requires_python": ">=3.11", "yanked": False}],
-                "7.16.2": [{"requires_python": ">=3.10", "yanked": False}],
+                "7.16.2": [
+                    {"requires_python": ">=3.10", "yanked": False},
+                    {"requires_python": ">=3.11", "yanked": False},
+                ],
                 "7.16.1": [{"requires_python": ">=3.10", "yanked": True}],
             },
         }
@@ -156,6 +162,148 @@ class FreshnessTests(unittest.TestCase):
                 "7.17.0",
             )
             self.assertEqual(freshness.latest_pypi_release("coverage"), "7.17.0")
+
+    def test_latest_pypi_release_rejects_oversized_or_invalid_metadata(self) -> None:
+        matrix = ("3.10",)
+        project = {
+            "info": {"version": "1.0"},
+            "releases": {"1.0": [{"requires_python": None, "yanked": False}]},
+        }
+        with mock.patch.object(freshness, "read_json", return_value=project):
+            for invalid_matrix in (
+                (),
+                ("3.x",),
+                ("3.10", "3.10"),
+                tuple(f"3.{minor}" for minor in range(33)),
+            ):
+                with self.subTest(invalid_matrix=invalid_matrix):
+                    with self.assertRaisesRegex(
+                        freshness.AuditError, "supported Python version matrix"
+                    ):
+                        freshness.latest_pypi_release(
+                            "coverage", supported_python_versions=invalid_matrix
+                        )
+            self.assertEqual(
+                freshness.latest_pypi_release(
+                    "coverage", supported_python_versions=matrix
+                ),
+                "1.0",
+            )
+
+        for malformed_project, message in (
+            (
+                {"info": {"version": "1.0"}, "releases": {}},
+                "release inventory",
+            ),
+            (
+                {"info": {"version": "2.0"}, "releases": {"1.0": "invalid"}},
+                "file inventory",
+            ),
+            (
+                {
+                    "info": {"version": "2.0"},
+                    "releases": {"1.0": [{"yanked": 1}]},
+                },
+                "yanked metadata",
+            ),
+            (
+                {
+                    "info": {"version": "2.0"},
+                    "releases": {"1.0": [{"requires_python": 7}]},
+                },
+                "Requires-Python metadata",
+            ),
+            (
+                {
+                    "info": {"version": "2.0"},
+                    "releases": {"1.0": [{"requires_python": ""}]},
+                },
+                "Requires-Python metadata",
+            ),
+            (
+                {"info": {"version": "2.0"}, "releases": {"1.0": [None]}},
+                "file metadata",
+            ),
+            (
+                {
+                    "info": {"version": "2.0"},
+                    "releases": {"1.0": [{"requires_python": None, "yanked": 1}]},
+                },
+                "yanked metadata",
+            ),
+        ):
+            with (
+                self.subTest(project=malformed_project),
+                mock.patch.object(
+                    freshness, "read_json", return_value=malformed_project
+                ),
+            ):
+                with self.assertRaisesRegex(freshness.AuditError, message):
+                    freshness.latest_pypi_release(
+                        "coverage", supported_python_versions=matrix
+                    )
+
+        with (
+            mock.patch.object(freshness, "MAX_PYPI_RELEASES", 1),
+            mock.patch.object(
+                freshness,
+                "read_json",
+                return_value={
+                    "info": {"version": "2.0"},
+                    "releases": {"1.0": [], "2.0": []},
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(freshness.AuditError, "release limit"):
+                freshness.latest_pypi_release(
+                    "coverage", supported_python_versions=matrix
+                )
+
+        with (
+            mock.patch.object(freshness, "MAX_PYPI_RELEASE_FILES", 0),
+            mock.patch.object(freshness, "read_json", return_value=project),
+        ):
+            with self.assertRaisesRegex(freshness.AuditError, "file inventory"):
+                freshness.latest_pypi_release(
+                    "coverage", supported_python_versions=matrix
+                )
+
+        with (
+            mock.patch.object(freshness, "MAX_TOTAL_PYPI_RELEASE_FILES", 0),
+            mock.patch.object(freshness, "read_json", return_value=project),
+        ):
+            with self.assertRaisesRegex(freshness.AuditError, "safety limit"):
+                freshness.latest_pypi_release(
+                    "coverage", supported_python_versions=matrix
+                )
+
+    def test_latest_pypi_release_fails_closed_for_yanked_only_matrix_releases(
+        self,
+    ) -> None:
+        project = {
+            "info": {"version": "1.0"},
+            "releases": {"1.0": [{"requires_python": None, "yanked": True}]},
+        }
+        with mock.patch.object(freshness, "read_json", return_value=project):
+            with self.assertRaisesRegex(
+                freshness.AuditError, "no stable coverage release"
+            ):
+                freshness.latest_pypi_release(
+                    "coverage", supported_python_versions=("3.10",)
+                )
+
+    def test_latest_pypi_release_accepts_unrestricted_python_metadata(self) -> None:
+        project = {
+            "info": {"version": "1.0"},
+            "releases": {"1.0": [{"requires_python": None, "yanked": False}]},
+        }
+        with mock.patch.object(freshness, "read_json", return_value=project):
+            self.assertEqual(
+                freshness.latest_pypi_release(
+                    "coverage", supported_python_versions=("3.10", "3.11")
+                ),
+                "1.0",
+            )
 
     def test_latest_pypi_release_fails_closed_when_matrix_metadata_is_indeterminate(
         self,
@@ -207,6 +355,186 @@ class FreshnessTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(freshness.AuditError, "Python support policy"):
                 freshness.supported_python_versions(root)
+
+    def test_supported_python_versions_rejects_invalid_policy_contracts(self) -> None:
+        valid = {
+            "schema-version": 1,
+            "implementation": "cpython",
+            "versions": ["3.10", "3.11"],
+            "full-coverage-os": ["ubuntu-latest"],
+            "boundary-coverage-os": ["windows-latest", "macos-latest"],
+        }
+        invalid_documents: list[object] = [
+            [],
+            {**valid, "unexpected": True},
+            {**valid, "schema-version": True},
+            {**valid, "schema-version": 2},
+            {key: value for key, value in valid.items() if key != "implementation"},
+            {**valid, "implementation": "pypy"},
+            {**valid, "versions": []},
+            {**valid, "versions": "3.10"},
+            {**valid, "versions": ["3.x"]},
+            {**valid, "versions": ["3.10", "3.10"]},
+            {**valid, "versions": ["3.10", "3.12"]},
+            {**valid, "versions": ["3.10", *[f"3.{minor}" for minor in range(11, 43)]]},
+            {**valid, "full-coverage-os": None},
+            {**valid, "full-coverage-os": []},
+            {**valid, "full-coverage-os": [1]},
+            {**valid, "full-coverage-os": ["ubuntu-latest", "ubuntu-latest"]},
+            {**valid, "full-coverage-os": ["unsupported-runner"]},
+            {
+                **valid,
+                "full-coverage-os": [
+                    "ubuntu-latest",
+                    "windows-latest",
+                    "macos-latest",
+                    "ubuntu-latest",
+                ],
+            },
+            {**valid, "boundary-coverage-os": []},
+            {**valid, "boundary-coverage-os": None},
+            {**valid, "boundary-coverage-os": [1]},
+            {**valid, "boundary-coverage-os": ["windows-latest", "windows-latest"]},
+            {
+                **valid,
+                "boundary-coverage-os": [
+                    "ubuntu-latest",
+                    "windows-latest",
+                    "macos-latest",
+                    "windows-latest",
+                ],
+            },
+            {**valid, "boundary-coverage-os": ["unsupported-runner"]},
+            {**valid, "boundary-coverage-os": ["ubuntu-latest"]},
+            {
+                **valid,
+                "full-coverage-os": ["ubuntu-latest"],
+                "boundary-coverage-os": ["ubuntu-latest"],
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = root / ".github/python-support.json"
+            policy.parent.mkdir()
+            for document in invalid_documents:
+                with self.subTest(document=document):
+                    policy.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(freshness.AuditError):
+                        freshness.supported_python_versions(root)
+
+    def test_supported_python_versions_rejects_linked_and_unreadable_policy_paths(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = root / ".github/python-support.json"
+            policy.parent.mkdir()
+            policy.write_text("{}", encoding="utf-8")
+            with mock.patch.object(
+                freshness.sync_action_pins,
+                "_path_has_link_or_reparse",
+                return_value=True,
+            ):
+                with self.assertRaisesRegex(freshness.AuditError, "linked or unsafe"):
+                    freshness.supported_python_versions(root)
+            with mock.patch.object(
+                freshness.sync_action_pins,
+                "_path_has_link_or_reparse",
+                side_effect=OSError("metadata unavailable"),
+            ):
+                with self.assertRaisesRegex(
+                    freshness.AuditError, "could not be inspected"
+                ):
+                    freshness.supported_python_versions(root)
+
+    def test_audit_binds_package_freshness_to_valid_python_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_repository(root)
+            policy = root / ".github/python-support.json"
+            policy.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 1,
+                        "implementation": "cpython",
+                        "versions": ["3.10", "3.11"],
+                        "full-coverage-os": ["ubuntu-latest"],
+                        "boundary-coverage-os": ["windows-latest", "macos-latest"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = mock.Mock()
+            client.latest_release.return_value = release("v17.6.0", "a" * 40)
+            latest_calls: list[tuple[str, tuple[str, ...] | None]] = []
+
+            def latest_lookup(
+                package: str,
+                *,
+                supported_python_versions: tuple[str, ...] | None = None,
+            ) -> str:
+                latest_calls.append((package, supported_python_versions))
+                return "1.0.0"
+
+            def consume_latest(
+                _root: Path,
+                _sources: Any,
+                lookup: Any,
+                _errors: list[str],
+            ) -> list[dict[str, str]]:
+                lookup("coverage")
+                return []
+
+            def run_audit(requirement_side_effect: Any) -> dict[str, Any]:
+                with (
+                    mock.patch.object(
+                        freshness.sync_action_pins,
+                        "GitHubReleaseClient",
+                        return_value=client,
+                    ),
+                    mock.patch.object(freshness, "action_findings", return_value=[]),
+                    mock.patch.object(
+                        freshness, "release_please_findings", return_value=[]
+                    ),
+                    mock.patch.object(
+                        freshness,
+                        "requirement_findings",
+                        side_effect=requirement_side_effect,
+                    ),
+                    mock.patch.object(
+                        freshness, "ci_toolchain_findings", return_value=[]
+                    ),
+                    mock.patch.object(
+                        freshness, "code_scanning_allowlist_findings", return_value=[]
+                    ),
+                    mock.patch.object(
+                        freshness, "latest_pypi_release", side_effect=latest_lookup
+                    ),
+                ):
+                    return freshness.audit(root, "synthetic-token")
+
+            report = run_audit(consume_latest)
+            self.assertEqual(latest_calls, [("coverage", ("3.10", "3.11"))])
+            self.assertEqual(report["status"], "current")
+
+            latest_calls.clear()
+            policy.write_text(
+                json.dumps(
+                    {
+                        "schema-version": True,
+                        "implementation": "cpython",
+                        "versions": ["3.10"],
+                        "full-coverage-os": ["ubuntu-latest"],
+                        "boundary-coverage-os": ["windows-latest", "macos-latest"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = run_audit(lambda *_args: [])
+            self.assertEqual(report["status"], "indeterminate")
+            self.assertIn(
+                "Python support policy has an invalid schema", report["errors"]
+            )
 
     def test_read_json_validates_network_size_shape_and_encoding(self) -> None:
         with mock.patch.object(

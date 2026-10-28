@@ -515,13 +515,17 @@ def supported_python_versions(repository_root: Path) -> tuple[str, ...] | None:
     relative = Path(".github/python-support.json")
     path = repository_root / relative
     try:
-        if sync_action_pins._path_has_link_or_reparse(path, repository_root):
-            raise AuditError("Python support policy is linked or unsafe")
-        path.lstat()
+        unsafe_boundary = sync_action_pins._path_has_link_or_reparse(
+            path, repository_root
+        )
+        if not unsafe_boundary:
+            path.lstat()
     except FileNotFoundError:
         return None
     except (OSError, RuntimeError, ValueError) as error:
         raise AuditError("Python support policy could not be inspected") from error
+    if unsafe_boundary:
+        raise AuditError("Python support policy is linked or unsafe")
     source = tracked_path(repository_root, relative, kind="Python support policy")
     try:
         document = json.loads(
