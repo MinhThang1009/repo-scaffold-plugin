@@ -5226,6 +5226,18 @@ def validate_development_dependency_contract(repository_root: Path) -> list[str]
 
     quality = jobs.get("quality") if isinstance(jobs, dict) else None
     quality_steps = quality.get("steps") if isinstance(quality, dict) else None
+    quality_timeout = (
+        quality.get("timeout-minutes") if isinstance(quality, dict) else None
+    )
+    if (
+        not isinstance(quality_timeout, str)
+        or re.fullmatch(r"[1-9][0-9]{0,2}", quality_timeout) is None
+        or int(quality_timeout) < 30
+    ):
+        problems.append(
+            ".github/workflows/ci.yml: quality timeout must allow the full "
+            "coverage gate to finish"
+        )
     expected_coverage = "python scripts/run_tests.py full"
     if (
         not required_ci_execution_is_safe(quality)

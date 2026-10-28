@@ -125,12 +125,15 @@ def validate_coverage_sources(sources: list[str], configuration: str) -> None:
         raise SystemExit(1)
     analysis = Coverage(config_file=configuration, data_file=None)
     analysis.set_option("run:data_file", str(Path(configuration).with_name(".source-analysis")))
-    for source in sources:
-        try:
-            analysis.analysis2(source)
-        except (CoverageException, RecursionError):
-            print(f"error: coverage source cannot be analyzed: {source}", file=sys.stderr)
-            raise SystemExit(1)
+    try:
+        for source in sources:
+            try:
+                analysis.analysis2(source)
+            except (CoverageException, RecursionError):
+                print(f"error: coverage source cannot be analyzed: {source}", file=sys.stderr)
+                raise SystemExit(1)
+    finally:
+        analysis.get_data().close()
 """
 
 

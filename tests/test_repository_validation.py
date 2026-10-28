@@ -3336,6 +3336,37 @@ class DevelopmentDependencyContractTests(unittest.TestCase):
             [],
         )
 
+    def test_quality_coverage_gate_requires_a_timeout_with_runtime_headroom(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            workflow = root / ".github/workflows/ci.yml"
+            document = validate_repository.load_yaml(workflow)
+            document["jobs"]["quality"]["timeout-minutes"] = 20
+            workflow.write_text(
+                yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+            )
+
+            problems = validate_repository.validate_development_dependency_contract(
+                root
+            )
+            document["jobs"]["quality"]["timeout-minutes"] = 30
+            workflow.write_text(
+                yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+            )
+            self.assertEqual(
+                validate_repository.validate_development_dependency_contract(root),
+                [],
+            )
+
+        self.assertIn(
+            ".github/workflows/ci.yml: quality timeout must allow the full "
+            "coverage gate to finish",
+            problems,
+        )
+
     def test_pytest_policy_nesting_limit_is_reported_without_crashing_validator(
         self,
     ) -> None:
