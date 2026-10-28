@@ -18,6 +18,9 @@ from typing import Any, Hashable, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
+
 import sync_action_pins
 
 
@@ -31,8 +34,23 @@ MAX_UPSTREAM_FETCH_WORKERS = 8
 MAX_REQUIREMENTS_BYTES = 1024 * 1024
 MAX_REQUIREMENT_PINS = 512
 MAX_TOTAL_REQUIREMENT_PINS = 4096
+MAX_PYPI_RELEASES = 10_000
+MAX_PYPI_RELEASE_FILES = 2_048
+MAX_TOTAL_PYPI_RELEASE_FILES = 50_000
 MAX_RELEASE_PLEASE_CONFIG_BYTES = 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
+MAX_PYTHON_SUPPORT_POLICY_BYTES = 64 * 1024
+MAX_SUPPORTED_PYTHON_VERSIONS = 32
+PYTHON_SUPPORT_POLICY_KEYS = frozenset(
+    {
+        "schema-version",
+        "implementation",
+        "versions",
+        "full-coverage-os",
+        "boundary-coverage-os",
+    }
+)
+GITHUB_HOSTED_RUNNERS = frozenset({"ubuntu-latest", "windows-latest", "macos-latest"})
 MAX_TRACKER_ENTRIES = 256
 MAX_TRACKED_INPUT_PATHS = 500
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
@@ -389,8 +407,10 @@ def read_json(url: str) -> dict[str, Any]:
     return document
 
 
-def latest_pypi_release(package: str) -> str:
-    """Return PyPI's current stable default release for one validated package."""
+def latest_pypi_release(
+    package: str, *, supported_python_versions: tuple[str, ...] | None = None
+) -> str:
+    """Return latest stable release applicable to every supported Python version."""
     if PACKAGE_NAME.fullmatch(package) is None:
         raise AuditError(f"unsafe Python package name: {package!r}")
     document = read_json(f"{PYPI_ROOT}/{package}/json")
@@ -398,7 +418,166 @@ def latest_pypi_release(package: str) -> str:
     version = info.get("version") if isinstance(info, dict) else None
     if not isinstance(version, str) or not version.strip():
         raise AuditError(f"PyPI response has no current version for {package}")
-    return version
+    if supported_python_versions is None:
+        return version
+    if (
+        not supported_python_versions
+        or len(supported_python_versions) > 32
+        or not all(
+            isinstance(supported_version, str)
+            and re.fullmatch(r"[0-9]+\.[0-9]+", supported_version) is not None
+            for supported_version in supported_python_versions
+        )
+        or len(set(supported_python_versions)) != len(supported_python_versions)
+    ):
+        raise AuditError("supported Python version matrix is invalid")
+    releases = document.get("releases")
+    if not isinstance(releases, dict) or not releases:
+        raise AuditError(f"PyPI response has no release inventory for {package}")
+    if len(releases) > MAX_PYPI_RELEASES:
+        raise AuditError(
+            f"PyPI release inventory exceeds the {MAX_PYPI_RELEASES}-release limit "
+            f"for {package}"
+        )
+    candidates: list[tuple[Version, str]] = []
+    for release_version, files in releases.items():
+        try:
+            parsed_version = Version(release_version)
+        except (InvalidVersion, TypeError):
+            continue
+        if parsed_version.is_prerelease or parsed_version.is_devrelease:
+            continue
+        if not isinstance(files, list) or len(files) > MAX_PYPI_RELEASE_FILES:
+            raise AuditError(
+                f"PyPI file inventory is invalid for {package} {release_version}"
+            )
+        candidates.append((parsed_version, release_version))
+    total_file_count = 0
+    for parsed_version, release_version in sorted(
+        candidates, key=lambda item: (item[0], item[1]), reverse=True
+    ):
+        files = releases[release_version]
+        total_file_count += len(files)
+        if total_file_count > MAX_TOTAL_PYPI_RELEASE_FILES:
+            raise AuditError(
+                f"PyPI file inventory exceeds the {MAX_TOTAL_PYPI_RELEASE_FILES}-file "
+                f"safety limit for {package}"
+            )
+        compatible = [False] * len(supported_python_versions)
+        for file_info in files:
+            if not isinstance(file_info, dict):
+                raise AuditError(
+                    f"PyPI file metadata is invalid for {package} {release_version}"
+                )
+            yanked = file_info.get("yanked", False)
+            if not isinstance(yanked, (bool, str)):
+                raise AuditError(
+                    f"PyPI yanked metadata is invalid for {package} {release_version}"
+                )
+            if yanked:
+                continue
+            requires_python = file_info.get("requires_python")
+            if requires_python is not None and (
+                not isinstance(requires_python, str) or not requires_python.strip()
+            ):
+                raise AuditError(
+                    f"PyPI Requires-Python metadata is invalid for {package} "
+                    f"{release_version}"
+                )
+            try:
+                specifier = (
+                    SpecifierSet(requires_python)
+                    if requires_python is not None
+                    else None
+                )
+            except InvalidSpecifier as error:
+                raise AuditError(
+                    f"PyPI Requires-Python metadata is invalid for {package} "
+                    f"{release_version}"
+                ) from error
+            for index, supported_version in enumerate(supported_python_versions):
+                if compatible[index]:
+                    continue
+                if specifier is None or specifier.contains(
+                    Version(supported_version), prereleases=True
+                ):
+                    compatible[index] = True
+        if compatible and all(compatible):
+            return str(parsed_version)
+    raise AuditError(
+        f"PyPI has no stable {package} release supporting the repository's "
+        "complete Python matrix"
+    )
+
+
+def supported_python_versions(repository_root: Path) -> tuple[str, ...] | None:
+    """Read the repository's validated-shape Python matrix when one is present."""
+    relative = Path(".github/python-support.json")
+    path = repository_root / relative
+    try:
+        if sync_action_pins._path_has_link_or_reparse(path, repository_root):
+            raise AuditError("Python support policy is linked or unsafe")
+        path.lstat()
+    except FileNotFoundError:
+        return None
+    except (OSError, RuntimeError, ValueError) as error:
+        raise AuditError("Python support policy could not be inspected") from error
+    source = tracked_path(repository_root, relative, kind="Python support policy")
+    try:
+        document = json.loads(
+            read_bounded_utf8(
+                source,
+                MAX_PYTHON_SUPPORT_POLICY_BYTES,
+                kind="Python support policy",
+            ),
+            object_pairs_hook=unique_json_object,
+        )
+    except (UnicodeError, ValueError, RecursionError) as error:
+        raise AuditError("Python support policy is invalid") from error
+    if (
+        not isinstance(document, dict)
+        or set(document) != PYTHON_SUPPORT_POLICY_KEYS
+        or type(document["schema-version"]) is not int
+        or document["schema-version"] != 1
+        or document["implementation"] != "cpython"
+    ):
+        raise AuditError("Python support policy has an invalid schema")
+    versions = document.get("versions")
+    if (
+        not isinstance(versions, list)
+        or not versions
+        or len(versions) > MAX_SUPPORTED_PYTHON_VERSIONS
+        or not all(
+            isinstance(version, str)
+            and re.fullmatch(r"3\.(0|[1-9][0-9]*)", version) is not None
+            and len(version) <= 64
+            for version in versions
+        )
+        or len(set(versions)) != len(versions)
+        or any(
+            int(current.split(".")[1]) != int(previous.split(".")[1]) + 1
+            for previous, current in zip(versions, versions[1:])
+        )
+    ):
+        raise AuditError("Python support policy has an invalid versions matrix")
+    full_coverage_os = document.get("full-coverage-os")
+    boundary_coverage_os = document.get("boundary-coverage-os")
+    if (
+        not isinstance(full_coverage_os, list)
+        or not full_coverage_os
+        or len(full_coverage_os) > len(GITHUB_HOSTED_RUNNERS)
+        or not all(isinstance(runner, str) for runner in full_coverage_os)
+        or len(set(full_coverage_os)) != len(full_coverage_os)
+        or not isinstance(boundary_coverage_os, list)
+        or not boundary_coverage_os
+        or len(boundary_coverage_os) > len(GITHUB_HOSTED_RUNNERS)
+        or not all(isinstance(runner, str) for runner in boundary_coverage_os)
+        or len(set(boundary_coverage_os)) != len(boundary_coverage_os)
+        or not set(full_coverage_os + boundary_coverage_os) <= GITHUB_HOSTED_RUNNERS
+        or set(full_coverage_os) & set(boundary_coverage_os)
+    ):
+        raise AuditError("Python support policy has invalid runner coverage")
+    return tuple(versions)
 
 
 def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
@@ -964,6 +1143,19 @@ def audit(
         errors.append(str(error))
         trackers = None
     if trackers is not None:
+        python_versions: tuple[str, ...] | None = None
+        try:
+            python_versions = supported_python_versions(root)
+        except AuditError as error:
+            errors.append(str(error))
+
+        def latest_compatible_python_release(package: str) -> str:
+            if python_versions is None:
+                return latest_pypi_release(package)
+            return latest_pypi_release(
+                package, supported_python_versions=python_versions
+            )
+
         try:
             client = sync_action_pins.GitHubReleaseClient(token)
         except (OSError, ValueError, AuditError) as error:
@@ -1006,7 +1198,7 @@ def audit(
                 requirement_findings(
                     root,
                     trackers.requirement_sources,
-                    latest_pypi_release,
+                    latest_compatible_python_release,
                     errors,
                 )
             )

@@ -46,9 +46,10 @@ project-specific content generated from the repository itself. External GitHub
 Actions are pinned to immutable commit SHAs. Dependabot keeps installed
 workflows current; a weekly PR-only synchronizer mirrors reviewed releases to
 scaffold workflow assets. A separate scheduled freshness audit compares action
-pins, Release Please schemas, direct Python pins, and time-bounded code-scanning
-allowlist exceptions with their authoritative or recorded review inputs, then
-maintains one reminder issue until the drift is resolved.
+pins, Release Please schemas, Python pins against the latest release compatible
+with every declared runtime, and time-bounded code-scanning allowlist exceptions
+with their authoritative or recorded review inputs, then maintains one reminder
+issue until the drift is resolved.
 An independent weekly official-documentation review validates the allowlisted
 GitHub, OpenAI, and Claude Code source pages, their claim markers, and the
 review interval recorded for each affected plugin document. It opens one

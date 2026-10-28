@@ -131,6 +131,83 @@ class FreshnessTests(unittest.TestCase):
             with self.assertRaisesRegex(freshness.AuditError, "no current version"):
                 freshness.latest_pypi_release("example-package")
 
+    def test_latest_pypi_release_respects_the_complete_supported_python_matrix(
+        self,
+    ) -> None:
+        project = {
+            "info": {"version": "7.17.0"},
+            "releases": {
+                "7.17.0": [{"requires_python": ">=3.11", "yanked": False}],
+                "7.16.2": [{"requires_python": ">=3.10", "yanked": False}],
+                "7.16.1": [{"requires_python": ">=3.10", "yanked": True}],
+            },
+        }
+        with mock.patch.object(freshness, "read_json", return_value=project):
+            self.assertEqual(
+                freshness.latest_pypi_release(
+                    "coverage", supported_python_versions=("3.10", "3.11", "3.12")
+                ),
+                "7.16.2",
+            )
+            self.assertEqual(
+                freshness.latest_pypi_release(
+                    "coverage", supported_python_versions=("3.11", "3.12")
+                ),
+                "7.17.0",
+            )
+            self.assertEqual(freshness.latest_pypi_release("coverage"), "7.17.0")
+
+    def test_latest_pypi_release_fails_closed_when_matrix_metadata_is_indeterminate(
+        self,
+    ) -> None:
+        for project in (
+            {"info": {"version": "1.0"}},
+            {
+                "info": {"version": "2.0"},
+                "releases": {"2.0": [{"requires_python": ">=3.11", "yanked": False}]},
+            },
+            {
+                "info": {"version": "2.0"},
+                "releases": {"2.0": [{"requires_python": ">=>", "yanked": False}]},
+            },
+        ):
+            with (
+                self.subTest(project=project),
+                mock.patch.object(freshness, "read_json", return_value=project),
+            ):
+                with self.assertRaises(freshness.AuditError):
+                    freshness.latest_pypi_release(
+                        "coverage", supported_python_versions=("3.10",)
+                    )
+
+    def test_supported_python_versions_rejects_unsafe_or_ambiguous_policy(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = root / ".github/python-support.json"
+            policy.parent.mkdir()
+            policy.write_text(
+                json.dumps(
+                    {
+                        "schema-version": 1,
+                        "implementation": "cpython",
+                        "versions": ["3.10", "3.11"],
+                        "full-coverage-os": ["ubuntu-latest"],
+                        "boundary-coverage-os": ["windows-latest", "macos-latest"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                freshness.supported_python_versions(root), ("3.10", "3.11")
+            )
+            policy.write_text(
+                '{"versions":["3.10"],"versions":["3.11"]}', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(freshness.AuditError, "Python support policy"):
+                freshness.supported_python_versions(root)
+
     def test_read_json_validates_network_size_shape_and_encoding(self) -> None:
         with mock.patch.object(
             freshness.PYPI_OPENER,
