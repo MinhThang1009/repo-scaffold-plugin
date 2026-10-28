@@ -14,6 +14,8 @@ from markdown_body_preflight import (
     MAX_BODY_FILE_BYTES as MAX_BODY_FILE_BYTES,
     hard_wrapped_prose_lines as _shared_hard_wrapped_prose_lines,
     read_body_file as _shared_read_body_file,
+    split_gfm_lines,
+    strip_html_comments,
 )
 
 MAX_TEMPLATE_DIRECTORY_ENTRIES = 128
@@ -33,6 +35,24 @@ TEMPLATE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
 TEMPLATE_MARKER_PATTERN = re.compile(
     r"^<!-- repo-scaffold:pr-template=([a-z][a-z0-9-]*) -->[ \t]*$",
     re.MULTILINE,
+)
+CLOSING_KEYWORD_PATTERN = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+ISSUE_REFERENCE_PATTERN = (
+    r"(?:#[1-9][0-9]*|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)"
+)
+CLOSING_DIRECTIVE_PATTERN = re.compile(
+    rf"^[ \t]*(?:(?:[-+*]|[0-9]{{1,9}}[.)])[ \t]+)?"
+    rf"{CLOSING_KEYWORD_PATTERN}(?:[ \t]*:[ \t]*|[ \t]+)"
+    rf"{ISSUE_REFERENCE_PATTERN}"
+    rf"(?:[ \t]*,[ \t]*{CLOSING_KEYWORD_PATTERN}"
+    rf"(?:[ \t]*:[ \t]*|[ \t]+){ISSUE_REFERENCE_PATTERN})*"
+    rf"[ \t]*$",
+    re.IGNORECASE,
+)
+CLOSING_KEYWORD_PREFIX_PATTERN = re.compile(
+    rf"^[ \t]*(?:(?:[-+*]|[0-9]{{1,9}}[.)])[ \t]+)?"
+    rf"{CLOSING_KEYWORD_PATTERN}\b(?P<tail>.*)$",
+    re.IGNORECASE,
 )
 
 
@@ -215,6 +235,121 @@ def template_path(repository_root: Path, template: str) -> Path:
     return path
 
 
+def _visible_structure(markdown: str) -> str:
+    """Keep visible Markdown and standalone protocol comments for structure checks."""
+    opaque: set[int] = set()
+    _shared_hard_wrapped_prose_lines(
+        markdown, non_prose_line_numbers=opaque, html_block_line_indexes=set()
+    )
+    visible: list[str] = []
+    comment_open = False
+    protocol = re.compile(
+        r"^<!-- repo-scaffold:(?:pr-template=[a-z][a-z0-9-]*|"
+        r"required-checklist:(?:start|end)|optional-checklist:(?:start|end)) -->$"
+    )
+    for number, line in enumerate(split_gfm_lines(markdown), start=1):
+        if number in opaque:
+            visible.append("")
+        elif not comment_open and protocol.fullmatch(line):
+            visible.append(line)
+        else:
+            line, comment_open, _spans = strip_html_comments(line, comment_open)
+            visible.append(line)
+    return "\n".join(visible)
+
+
+def validate_closing_keyword_syntax(markdown: str) -> tuple[str, ...]:
+    """Validate optional GitHub closing-keyword directives in a PR body."""
+    if not isinstance(markdown, str):
+        raise ValueError("body must be text")
+    visible = _visible_structure(markdown)
+    errors: list[str] = []
+    for line_number, line in enumerate(split_gfm_lines(visible), start=1):
+        candidate = CLOSING_KEYWORD_PREFIX_PATTERN.match(line)
+        if candidate is None:
+            continue
+        tail = candidate.group("tail")
+        stripped_tail = tail.lstrip()
+        if stripped_tail and not (
+            stripped_tail.startswith(("#", ":"))
+            or re.match(r"[A-Za-z0-9_.-]+/", stripped_tail) is not None
+        ):
+            continue
+        if CLOSING_DIRECTIVE_PATTERN.fullmatch(line) is None:
+            errors.append(
+                f"line {line_number}: closing keyword must use a valid issue "
+                'reference such as "Fixes #123"'
+            )
+    return tuple(errors)
+
+
+def validate_body_structure(
+    repository_root: Path,
+    title: str,
+    body: str,
+    *,
+    requested_template: str | None = None,
+) -> None:
+    """Require the selected trusted template's structure, allowing draft checkboxes."""
+    if not isinstance(body, str):
+        raise ValueError("body must be text")
+    if (
+        len(body) > MAX_BODY_FILE_BYTES
+        or len(body.encode("utf-8")) > MAX_BODY_FILE_BYTES
+    ):
+        raise ValueError(f"body exceeds the {MAX_BODY_FILE_BYTES}-byte safety cap")
+    closing_keyword_errors = validate_closing_keyword_syntax(body)
+    if closing_keyword_errors:
+        raise ValueError(
+            "invalid closing keyword syntax: " + "; ".join(closing_keyword_errors)
+        )
+    visible = _visible_structure(body)
+    markers = TEMPLATE_MARKER_PATTERN.findall(visible)
+    if len(markers) != 1:
+        raise ValueError("body must select exactly one trusted template marker")
+    selected = select_template(title, markers[0])
+    if requested_template is not None and selected != select_template(
+        title, requested_template
+    ):
+        raise ValueError("body marker does not match the selected template")
+    template = _visible_structure(
+        read_body_file(template_path(repository_root, selected))
+    )
+    optional = re.compile(
+        r"(?ms)^##[ \t]+(?:If applicable|Khi phù hợp|Danh sách tùy chọn)[ \t]*$\s*"
+        r"<!-- repo-scaffold:optional-checklist:start -->.*?"
+        r"<!-- repo-scaffold:optional-checklist:end -->\s*"
+    )
+    headings = re.compile(r"(?m)^##[ \t]+(.+?)[ \t]*$")
+    checklist = re.compile(
+        r"<!-- repo-scaffold:required-checklist:start -->\s*(.*?)\s*"
+        r"<!-- repo-scaffold:required-checklist:end -->",
+        re.DOTALL,
+    )
+    items = re.compile(r"(?m)^- \[[ xX]\] (.+?)\s*$")
+    required_headings = set(headings.findall(optional.sub("", template)))
+    template_lists = checklist.findall(template)
+    body_lists = checklist.findall(visible)
+    if (
+        not required_headings
+        or len(template_lists) != 1
+        or not items.findall(template_lists[0])
+    ):
+        raise ValueError("trusted template has incomplete required structure")
+    if (
+        len(body_lists) != 1
+        or visible.splitlines().count("<!-- repo-scaffold:required-checklist:start -->")
+        != 1
+        or visible.splitlines().count("<!-- repo-scaffold:required-checklist:end -->")
+        != 1
+    ):
+        raise ValueError("body must contain exactly one required checklist section")
+    if not required_headings <= set(headings.findall(visible)):
+        raise ValueError("body is missing required template headings")
+    if not set(items.findall(template_lists[0])) <= set(items.findall(body_lists[0])):
+        raise ValueError("body is missing required template checklist items")
+
+
 def hard_wrapped_prose_lines(markdown: str) -> tuple[int, ...]:
     """Return line numbers where ordinary Markdown prose is hard-wrapped."""
     return _shared_hard_wrapped_prose_lines(markdown)
@@ -247,6 +382,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="UTF-8 pull-request body to reject when prose is hard-wrapped",
     )
+    parser.add_argument(
+        "--require-structure",
+        action="store_true",
+        help="Require the supplied body to preserve the selected template structure",
+    )
     return parser.parse_args(argv)
 
 
@@ -257,14 +397,28 @@ def main(argv: list[str] | None = None) -> int:
         template = select_template(arguments.title, arguments.template)
         path = template_path(arguments.repository_root, template)
         if arguments.body_file is not None:
-            wrapped_lines = hard_wrapped_prose_lines(
-                read_body_file(arguments.body_file)
-            )
+            body = read_body_file(arguments.body_file)
+            wrapped_lines = hard_wrapped_prose_lines(body)
             if wrapped_lines:
                 lines = ", ".join(str(line) for line in wrapped_lines)
                 raise ValueError(
                     f"body file contains hard-wrapped prose at line(s): {lines}"
                 )
+            closing_keyword_errors = validate_closing_keyword_syntax(body)
+            if closing_keyword_errors:
+                raise ValueError(
+                    "invalid closing keyword syntax: "
+                    + "; ".join(closing_keyword_errors)
+                )
+            if arguments.require_structure:
+                validate_body_structure(
+                    arguments.repository_root,
+                    arguments.title,
+                    body,
+                    requested_template=template,
+                )
+        elif arguments.require_structure:
+            raise ValueError("--require-structure needs --body-file")
     except (OSError, UnicodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

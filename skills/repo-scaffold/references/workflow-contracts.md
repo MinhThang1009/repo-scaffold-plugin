@@ -1,6 +1,64 @@
 # Workflow contracts
 
+Release and tool version validation uses ASCII numeric identifiers. SemVer
+numeric prerelease identifiers cannot contain leading zeros; build metadata
+may contain leading zeros. Link-health comparison exceptions validate both
+the prospective manifest version and the previous tag before inspecting Git
+tags or appending an exact URL to `.lycheeignore`. Preserve existing ignore
+rules and keep repeated valid exceptions idempotent. A version-validation pass
+does not establish release/tag authorization or remote link availability.
+
 Read this reference before installing or modifying GitHub Actions workflows.
+The code-scanning gate's polling controls must be finite and bounded before
+network access or sleeping: integer attempts from 1 to 120 and delays from 0
+to 60 seconds. The shipped 120-attempt, 10-second configuration remains valid.
+The CLI and each wait helper reject malformed controls as inconclusive, not
+passed or not applicable. These bounds do not attest that every network read
+or the entire gate completed within a wall-clock deadline; retain explicit
+request timeouts and the workflow job limit as separate controls.
+One synchronous gate inspection shares a 500-request, 128 MiB response budget
+and 1,200-second elapsed-check boundary across analysis polling, parent/ref
+reads and alert polling. Nested calls reuse that context; independent calls
+discard it on exit, including exceptions. Reads are capped by remaining bytes
+before allocation, retries count even after transient failures, and late
+responses cannot yield a successful verdict. A retry sleep must fit the
+remaining elapsed budget. These repository safety limits preserve the shipped
+configuration but are not GitHub platform limits or a hard interruption of a
+blocked HTTP header/body read. Supported-host transport/cancellation behavior
+and the job's outer timeout still need separate verification.
+The gate explicitly closes owned HTTP error responses before preserving the
+transient/non-transient classification. A cleanup failure is inconclusive and
+not retryable; do not hide it by replaying requests. Freshness, official-doc,
+community-health, toolchain-registry and action-pin clients also close owned
+HTTP error responses before wrapping their existing domain errors. Cleanup
+failure remains observable as a domain error rather than a successful receipt;
+non-HTTP network errors do not imply an owned response stream. Closing synthetic
+streams is resource-ownership evidence, not proof that every platform socket
+was reclaimed or that a blocked network operation was interrupted.
+Redirect refusal must close its owned response even when `Location` is
+malformed before a redirect callback could run. API/registry clients reject
+all supported 30x events before URL normalization or forwarding. The official
+documentation client closes and discards redirect bodies without reading them;
+they are not the final page, and urllib uses `Connection: close`. It retains
+approved HTTPS hosts, native URL normalization and redirect-loop limits.
+Only the final document body is read with the existing size cap. Cleanup or
+malformed-redirect failures remain controlled domain errors, not approvals.
+Native HTTP responses with a nonzero remaining `Content-Length` after the
+bounded read are incomplete and cannot be parsed into trusted documents.
+HTTP parser failures, including incomplete chunked bodies, remain controlled
+domain errors. Complete fixed-length, chunked and close-delimited responses
+remain supported; injected non-HTTP streams have no inferred HTTP length.
+This checks native parser completion, not every invalid/ambiguous framing
+header, TLS truncation or hard network deadline on every host.
+Validate native raw `Content-Length` before reading a body. Values must be
+ASCII decimal without signs, and duplicate/comma-list values must identify
+the same canonical length; leading zeros do not change it. Bound interpretation
+to 100 header fields/members and 8 KiB of length-field text, and compare the
+canonical decimal size against the response cap before integer conversion.
+These are repository resource limits, not HTTP platform limits. Native chunked
+framing retains transfer-coding precedence, while invalid length fields still
+fail closed. Complete fixed-length payloads must match the canonical length
+even when the native parser did not understand a valid identical comma-list.
 
 Install workflows only for a verified GitHub.com repository. Give every job the
 least privilege, set `persist-credentials: false` for checkout unless needed,
@@ -36,6 +94,16 @@ guidance](https://docs.github.com/en/actions/reference/security/securely-using-p
 when the preflight reports that proof is unavailable; selected-actions approval
 does not prove event-policy eligibility, and this plugin does not change remote
 Actions policy.
+Bind workflow-installation inspection to the numeric repository ID retained
+from approved discovery with `--expected-repository-id`. Its typed
+`repository_id` must match at the consumer boundary. An unbound inspection
+cannot authorize asset copies. Revalidate active state, visibility, Issues,
+Actions permissions, selected policy URL/content and applicable inherited event
+policies before returning the verdict; any drift or unavailable final read
+is inconclusive. Follow valid organization/enterprise selected-policy URLs,
+but a numeric repository-scoped URL cannot refer to a different target ID.
+Repeat the exact inspection before each separate asset copy; no atomic API or
+filesystem transaction is implied by these checks.
 Local reusable-workflow call paths must use canonical repository-relative POSIX
 paths without traversal, backslash, or control characters. Calls must be
 supplied from the same workflow directory as their caller; a matching basename
@@ -57,6 +125,43 @@ the download must use HTTPS, verify the policy digest, and use bounded retries
 so transient release-service failures do not turn into avoidable gate failures.
 The link checker must also use bounded retries with backoff for transient
 upstream HTTP failures while continuing to fail on unresolved links.
+Action-pin, schema and batch synchronizers accept only a genuine Boolean
+`write` control at library admission, before inventory, upstream lookup or
+config reads. `False` is dry-run and reports pending paths without replacing
+files; `True` may perform only the authorized scoped replacements. Strings,
+numbers, null and collections are invalid, not alternate consent values.
+CLI `--write` remains an explicit `store_true` flag. Type validity does not
+establish user approval or multi-file atomicity; per-file path/state/readback
+and every downstream publication gate remain separate requirements.
+Snapshot callback release fields before replacement, drift comparison or batch
+cache reuse. The supported tag must be ASCII, match the existing release-tag
+policy and stay within 1,024 characters; the commit field must be a full
+lowercase GitHub SHA-1 ID. Reject missing/wrong-type/invalid fields before any
+file replacement. A malformed callback is inspection failure, not valid drift
+or a pending install. These structural checks preserve YAML and canonical pin
+shape; they do not prove that the commit belongs to the approved upstream or
+that a tag/commit receipt is current, complete and correctly bound.
+The native GitHub release resolver must bind each returned reference's `ref`
+to the exact requested `refs/tags/<tag>` name. When peeling an annotated tag,
+the returned tag object's `sha` must match the queried object ID before its
+target is used. Missing, mismatched or wrong-type identities are inconclusive,
+not substitute releases. Keep lightweight commits, nested annotated tags and
+their existing depth cap supported. These bindings do not prove a stable
+repository name/tag across the whole inspection or final write boundary.
+Stable action-tag selection must not silently discard inventory entries whose
+name is missing, empty or wrong-type, or a matching stable tag whose commit
+is invalid. Such an inventory is inconclusive, not evidence that an older
+usable candidate is latest. A named non-stable tag, such as a CodeQL bundle
+or prerelease, remains outside this selector's applicability and may be
+ignored without inspecting its commit. Validate matching stable tags against
+the bounded ASCII release policy before converting their numeric components.
+The existing pagination cap and complete terminal page remain required;
+these structural checks alone do not establish a concurrent snapshot.
+Repeated stable tag names may be reused only with the same commit identity.
+Conflicting identities within a page or across pages are inconclusive, not
+an order-dependent choice of pin. Identical repeated receipts do not by
+themselves establish completeness or freshness of the overall inventory.
+
 Maintenance readers must bound repository-controlled workflow, release-config,
 and claim-source files before decoding them, then fail closed on oversized or
 invalid UTF-8 input. The action-pin synchronizer also caps its workflow inventory
@@ -90,6 +195,17 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
 
 - Documentation: install the documentation contract with markdownlint and
   `validate_scaffold.py`; obtain its runtime from `ci-toolchain.json`.
+  Copy the reviewed Markdownlint policy in `scaffold-generation.md` to the
+  canonical root path, or preserve and review an existing effective project
+  configuration. Default CLI rules alone conflict with the shipped centered
+  README/template/import contracts. Run the actual linter on rendered targets;
+  a YAML/template pass is not proof that documentation CI will pass.
+  The required `docs-contract` job runs with `always()` and first verifies that
+  policy preparation succeeded and emitted a valid nonempty runtime selector.
+  Failed, cancelled, skipped or indeterminate preparation and missing runtime
+  output must fail that check before checkout, dependency installation or lint.
+  Do not convert a preparation failure into a skipped required check: GitHub can
+  accept skipped jobs as successful status checks.
 - PR template: trust only the base SHA on `pull_request_target`; never execute
   PR head code, and require one trusted marker plus all required headings/items.
   Dependabot exemptions require a bot user type. A Release Please exemption
@@ -104,6 +220,10 @@ and `scheduled/manual drift canary` as enforceable policy outcomes.
   revalidate the PR immediately before `gh pr edit`, and verify the exact
   post-mutation body. Do not use a checked-in narrative body source or execute
   pull-request head code.
+  Bind the PR number and numeric base/head repository IDs at all three API
+  boundaries, require active base state and typed inventory counts before
+  equality, and reject duplicate JSON members. Matching names, hashes or
+  Boolean/integer equality must not authorize a body write on unbound evidence.
   Commits that need richer generated prose may provide `Why:`, `Root cause:`,
   `Changes:`, and `Verification:` fields in their commit body; missing fields
   must use an explicit evidence fallback rather than inferred claims.
@@ -125,7 +245,10 @@ failure for review instead of treating the result as stale state.
 - Branch protection: required-check producers must be unique, executable, and
   event-compatible and backed by regular workflow files; Check Run evidence
   must resolve to one Actions workflow run with the producer's exact path,
-  controlling SHA, and an eligible event. A
+  controlling SHA, and an eligible event. Closed-PR noops must use a separate
+  non-required check name, not success under an admission context. The shipped
+  literal closed-state name expression has a stable fallback for open PRs and
+  merge groups; other dynamic producer names remain inconclusive. A
   trusted `pull_request_target` producer may satisfy
   protected default-branch pull-request coverage only when its exact default
   branch filter, unchanged workflow blob at the representative PR's base, and
@@ -134,6 +257,20 @@ failure for review instead of treating the result as stale state.
   `continue-on-error` controls that can skip or mask the gate must fail closed.
   When an effective merge queue applies, require a recent successful `merge_group`
   Check Run from the same workflow blob and GitHub App as the selected PR check.
+  Before parsing remote YAML, verify its bounded exact UTF-8 bytes against the
+  advertised GitHub SHA-1 blob object ID. Do not normalize line endings or BOM.
+  Reusable files require regular entries at the immutable commit's Git tree;
+  Contents API responses can dereference symlinks and are not regular-file
+  proof. Failed or mismatched bytes must not enter the workflow-signal cache.
+  These object checks do not attest an executed workflow or external approval.
+  Bound the complete root tree entry count before classifying paths. Every
+  entry must be an object with a genuine nonempty path; unknown entries must
+  fail closed before any blob read rather than be discarded as non-workflows.
+  Preserve exclusion of known paths outside the direct-workflow scope.
+  Reusable workflow resolution must preserve a full literal commit pin before
+  cache reuse or downstream file inspection. Foreign returned IDs remain
+  inconclusive even if their bytes hash correctly. Symbolic refs retain their
+  supported lookup behavior; this check is not runtime-source attestation.
 - Links, community-health, and freshness: keep network/upstream checks advisory;
   reminder workflows run only on trusted scheduled/manual events with a
   five-field POSIX cron schedule with an optional valid IANA timezone, and a
@@ -210,9 +347,25 @@ failure for review instead of treating the result as stale state.
   Issue Search API as a bounded GET for open Issues, with `is:issue`, `in:body`,
   the freshness marker, and `per_page=2`; it returns at most the first two
   matching issue numbers so reruns remain idempotent without an unbounded
-  pagination loop. It must use `[.items[].number] | join(" ")` so the bounded
-  result is one shell-safe line, exactly one lookup invocation, and no extra
-  `gh api` arguments. The lookup
+  pagination loop. Before projecting issue numbers, the shipped query must
+  require explicit Boolean `incomplete_results: false`, non-negative integer
+  `total_count`, and exactly `min(total_count, 2)` items with unique positive
+  integer issue numbers. Partial, missing, malformed, or inconsistent evidence
+  must fail before mutation. The checked `[.items[].number] | join(" ")` result
+  is one shell-safe line; a verified zero-match result is the literal `none`.
+  Empty stdout must fail before Issue mutation, even when `gh api` returns
+  success without a JSON body. Retain the canonical empty-output failure guard
+  immediately after lookup, before array initialization. Skip collection only
+  for `none`, and never pass that sentinel as an Issue argument.
+  A checked line-oriented projection must instead use
+  its matching `mapfile` collector. Retain exactly one lookup invocation and no
+  extra `gh api` arguments; an unconditional projection must fail validation.
+  Standalone reminder installation must enforce this check even without a
+  code-scanning gate. The lookup
+  must execute in the same unconditional reconciliation path; do not seed or
+  reuse issue output/number state before it. A declared freshness workflow that
+  fails executable-lifecycle inspection is invalid, not an absent optional
+  companion, and must fail installation authorization. The lookup
   result must be captured and flow into the Issue number passed to a `close` or
   `edit` mutation, directly or through an issue-number array; logging or testing
   the result alone is insufficient. The reconciliation shell must start with
@@ -304,6 +457,11 @@ failure for review instead of treating the result as stale state.
   traversal or control characters. Exceptions must also carry a bounded review date and
   be tracked by freshness; do not install the code-scanning gate without its
   matching allowlist and freshness reminder.
+  Freshness may add exactly one literal `--language en` or `--language vi`
+  audit argument and use the reviewed human-facing translations in
+  `scaffold-generation.md`. Omission preserves English output. This option
+  changes neither JSON/status protocol nor shell guards, paths, token bindings,
+  or the stable job name. Reject unsupported or duplicate language options.
 - CI: create or adapt a stack-valid workflow with real commands and a stable
   aggregate gate. Do not require it while the scaffold sentinel remains. Use one
   machine-readable runtime policy and dependency caching appropriate to the stack.
@@ -314,6 +472,12 @@ failure for review instead of treating the result as stale state.
   commitlint, stale, labeler, and release notes require their documented
   eligibility, permissions, and user approval. Skip an option rather than
   installing a known-failing gate.
+
+The Scorecard scan requires a branch ref before matching the default branch's
+short name. A manual dispatch can target a tag, and a same-name tag is not the
+default branch. Missing ref-type evidence must not pass that guard. This
+namespace check does not attest an executed workflow definition or replace
+the repository's workflow and token authorization policies.
 
 Before making any context required, confirm a real, unique producer, expected
 event coverage (including a trusted `pull_request_target` equivalent only for

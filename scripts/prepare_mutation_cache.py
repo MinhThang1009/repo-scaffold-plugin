@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -315,42 +316,66 @@ def _assert_safe_project_path(repository_root: Path, path: Path) -> None:
             break
 
 
-def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
+def _project_files(
+    repository_root: Path,
+    *,
+    verification: bool = False,
+    directory_paths: list[str] | None = None,
+) -> list[tuple[str, Path]]:
+    """Enumerate admitted files and optionally retain directory identities."""
     repository_root = Path(os.path.abspath(repository_root))
     _assert_safe_project_path(repository_root, repository_root)
     files: list[tuple[str, Path]] = []
     total_bytes = 0
-
-    def fail_on_walk_error(error: OSError) -> None:
-        raise error
-
-    for directory, child_directories, filenames in os.walk(
-        repository_root,
-        topdown=True,
-        followlinks=False,
-        onerror=fail_on_walk_error,
-    ):
-        current = Path(directory)
+    visited_entries = 0
+    pending = [repository_root]
+    while pending:
+        current = pending.pop()
         _assert_safe_project_path(repository_root, current)
-        safe_children: list[str] = []
-        for name in sorted(child_directories):
-            child = current / name
-            relative = child.relative_to(repository_root)
-            if set(relative.parts) & IGNORED_DIRECTORIES:
-                continue
-            _assert_safe_project_path(repository_root, child)
-            safe_children.append(name)
-        child_directories[:] = safe_children
-
-        for name in sorted(filenames):
-            path = current / name
+        entries: list[os.DirEntry[str]] = []
+        with os.scandir(current) as stream:
+            for entry in stream:
+                visited_entries += 1
+                if visited_entries > MAX_PROJECT_FILES:
+                    raise ValueError(
+                        "project inventory exceeds the cache preparation limits"
+                    )
+                entries.append(entry)
+        for entry in sorted(entries, key=lambda item: item.name):
+            path = Path(entry.path)
             relative = path.relative_to(repository_root)
-            if relative.name in IGNORED_FILE_NAMES or relative.name.startswith(
-                IGNORED_FILE_PREFIXES
+            first_party = verification and any(
+                relative == Path(*root.parts) or Path(*root.parts) in relative.parents
+                for root in (*SOURCE_ROOTS, PurePosixPath("tests"))
+            )
+            if (
+                not first_party
+                and path.name in IGNORED_DIRECTORIES
+                and (entry.is_dir(follow_symlinks=False) or entry.is_symlink())
+            ):
+                continue
+            if (
+                first_party
+                and path.suffix in {".pyc", ".pyo"}
+                and entry.is_file(follow_symlinks=False)
+            ):
+                continue
+            if not first_party and (
+                relative.name in IGNORED_FILE_NAMES
+                or relative.name.startswith(IGNORED_FILE_PREFIXES)
             ):
                 continue
             _assert_safe_project_path(repository_root, path)
+            if path.is_dir():
+                if directory_paths is not None:
+                    directory_paths.append(relative.as_posix())
+                pending.append(path)
+                continue
             if not path.is_file():
+                if first_party:
+                    raise ValueError(
+                        f"nonregular verification input: {relative.as_posix()!r}"
+                    )
                 continue
             size = path.stat().st_size
             if size > MAX_FILE_BYTES:
@@ -358,7 +383,7 @@ def _project_files(repository_root: Path) -> list[tuple[str, Path]]:
                     f"project file {relative.as_posix()!r} exceeds the size limit"
                 )
             total_bytes += size
-            if len(files) >= MAX_PROJECT_FILES or total_bytes > MAX_TOTAL_BYTES:
+            if total_bytes > MAX_TOTAL_BYTES:
                 raise ValueError(
                     "project inventory exceeds the cache preparation limits"
                 )
@@ -371,11 +396,18 @@ def snapshot_project(repository_root: Path) -> ProjectSnapshot:
     source_hashes: dict[str, str] = {}
     test_sources: dict[str, str] = {}
     control_hashes: dict[str, str] = {}
+    total_bytes = 0
     for relative, path in _project_files(repository_root):
         posix_path = PurePosixPath(relative)
-        content = _read_bounded_bytes(
-            path, MAX_FILE_BYTES, f"project file {relative!r} exceeds the size limit"
+        remaining_bytes = MAX_TOTAL_BYTES - total_bytes
+        read_limit = min(MAX_FILE_BYTES, remaining_bytes)
+        error_message = (
+            f"project file {relative!r} exceeds the size limit"
+            if MAX_FILE_BYTES <= remaining_bytes
+            else "project inventory exceeds the cache preparation limits"
         )
+        content = _read_bounded_bytes(path, read_limit, error_message)
+        total_bytes += len(content)
         if posix_path.suffix == ".py" and any(
             _is_within(posix_path, root) for root in SOURCE_ROOTS
         ):
@@ -390,6 +422,31 @@ def snapshot_project(repository_root: Path) -> ProjectSnapshot:
         elif posix_path in CACHE_CONTROL_FILES:
             control_hashes[relative] = _sha256(content)
     return ProjectSnapshot(source_hashes, test_sources, control_hashes)
+
+
+def project_input_fingerprint(repository_root: Path) -> str:
+    """Bind input file bytes and directory identities for a fresh local test run."""
+    hashes: dict[str, str] = {}
+    directories: list[str] = []
+    total_bytes = 0
+    for relative, path in _project_files(
+        repository_root, verification=True, directory_paths=directories
+    ):
+        _assert_safe_project_path(repository_root, path)
+        content = _read_bounded_bytes(
+            path,
+            min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - total_bytes),
+            "test input inventory exceeds the size limits",
+        )
+        total_bytes += len(content)
+        hashes[relative] = _sha256(content)
+    return _sha256(
+        json.dumps(
+            {"files": hashes, "directories": sorted(directories)},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
 
 
 def manifest_document(snapshot: ProjectSnapshot) -> dict[str, Any]:
@@ -465,14 +522,41 @@ def _write_json(path: Path, document: dict[str, Any], *, mutation_root: Path) ->
     _assert_safe_cache_path(mutation_root, path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _assert_safe_cache_path(mutation_root, path)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    _assert_safe_cache_path(mutation_root, temporary)
-    temporary.write_text(
-        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    output = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        newline="\n",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
     )
-    _assert_safe_cache_path(mutation_root, path)
-    _assert_safe_cache_path(mutation_root, temporary)
-    os.replace(temporary, path)
+    temporary = Path(output.name)
+    publication_failure: OSError | None = None
+    try:
+        with output:
+            _assert_safe_cache_path(mutation_root, temporary)
+            output.write(json.dumps(document, indent=2, sort_keys=True) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        _assert_safe_cache_path(mutation_root, path)
+        _assert_safe_cache_path(mutation_root, temporary)
+        os.replace(temporary, path)
+    except OSError as error:
+        publication_failure = error
+        raise
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as error:
+            detail = (
+                f" Previous publication failure: {publication_failure}."
+                if publication_failure is not None
+                else " The destination may already have been updated."
+            )
+            raise OSError(
+                f"Could not clean temporary mutation-cache file {temporary}.{detail}"
+            ) from error
 
 
 def _mutation_root(repository_root: Path) -> Path:
@@ -702,9 +786,10 @@ def prepare_cache(repository_root: Path) -> PreparationResult:
             reusable_sources.append(relative)
 
     if invalidated:
-        stats_path = mutation_root / "mutmut-stats.json"
-        _assert_safe_cache_path(mutation_root, stats_path)
-        stats_path.unlink(missing_ok=True)
+        for name in ("mutmut-stats.json", SHARD_PLAN_NAME):
+            stale_path = mutation_root / name
+            _assert_safe_cache_path(mutation_root, stale_path)
+            stale_path.unlink(missing_ok=True)
     _write_json(
         mutation_root / REUSABLE_SOURCES_NAME,
         {

@@ -29,6 +29,15 @@ file riêng tư trên máy. Hãy dùng release package hoặc archive theo tập
 release chuẩn. Xem [tài liệu plugin chính
 thức](https://developers.openai.com/plugins/build/plugins).
 
+Khi cập nhật, phân biệt Git-backed marketplace snapshot với package trong thư
+mục local: `codex plugin marketplace upgrade` chỉ áp dụng cho Git source.
+Cập nhật package sạch tại path đã đăng ký, rồi chỉ cài lại plugin đang enabled
+hoặc đã được chấp thuận rõ việc bật lại. `plugin add` có thể bật plugin đang
+disabled, nên giữ nguyên setting disabled và ghi việc cài lại là deferred thay
+vì coi approval cập nhật là approval bật plugin. Kiểm tra cached package hiện
+tại rồi mở thread mới; session đang chạy có thể giữ skill version đã load.
+Xem [Update](../../../README.md#7-update).
+
 Để public trên OpenAI, hãy nộp release ZIP theo [flow Skills-only cho
 plugin](https://developers.openai.com/plugins/guides/submit-claude-plugin).
 Thư mục `repo-scaffold/` duy nhất trong archive chứa Claude manifest không rỗng

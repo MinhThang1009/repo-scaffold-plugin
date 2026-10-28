@@ -57,6 +57,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "hostname": "github.com",
         "repository": "octo/example",
+        "expected_repository_id": 42,
         "default_branch": "main",
         "with_attestations": False,
         "github_enterprise_cloud": False,
@@ -69,6 +70,7 @@ def arguments(**overrides: object) -> argparse.Namespace:
 def repository(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "full_name": "octo/example",
+        "id": 42,
         "archived": False,
         "disabled": False,
         "fork": False,
@@ -80,6 +82,121 @@ def repository(**overrides: object) -> dict[str, object]:
 
 
 class ReleasePreflightTests(unittest.TestCase):
+    def test_attestation_decision_requires_boolean_requests_and_plan_confirmation(
+        self,
+    ) -> None:
+        values: tuple[object, ...] = (None, "false", "true", 0, 1, [], {}, [True])
+        for value in values:
+            with self.subTest(request=value):
+                with self.assertRaisesRegex(
+                    release_preflight.InspectionError, "Boolean"
+                ):
+                    release_preflight.attestation_decision("private", value, False)  # type: ignore[arg-type]
+            with self.subTest(enterprise=value):
+                with self.assertRaisesRegex(
+                    release_preflight.InspectionError, "Boolean"
+                ):
+                    release_preflight.attestation_decision("private", True, value)  # type: ignore[arg-type]
+
+    def test_boolean_caller_controls_reject_substitutes_before_client_creation(
+        self,
+    ) -> None:
+        values: tuple[object, ...] = (None, "false", "true", 0, 1, [], {}, [True])
+        for control in (
+            "with_attestations",
+            "github_enterprise_cloud",
+            "require_release_please_token",
+        ):
+            for value in values:
+                with (
+                    self.subTest(control=control, value=value),
+                    mock.patch.object(release_preflight, "GitHubClient") as client,
+                    self.assertRaisesRegex(
+                        release_preflight.InspectionError, "Boolean"
+                    ),
+                ):
+                    release_preflight.run(arguments(**{control: value}))
+                client.assert_not_called()
+
+    def test_skill_does_not_convert_unverified_release_verdict_into_no_attestation_approval(
+        self,
+    ) -> None:
+        skill = (PLUGIN_ROOT / "skills/repo-scaffold/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        section = skill.split("Before installing release workflows", 1)[1].split(
+            "Before copying any GitHub Actions asset", 1
+        )[0]
+        self.assertNotIn("otherwise render", section)
+        self.assertIn("render-no-attestation-variant", section)
+        self.assertIn("may-install-release-workflows", section)
+        self.assertIn("inconclusive", section)
+        self.assertIn("bind-repository-identity-before-mutation", section)
+
+    def test_multi_request_verdict_revalidates_identity_and_applicability(self) -> None:
+        original = repository(id=42)
+        for final in (
+            repository(id=43),
+            repository(id=42, full_name="other/target"),
+            repository(id=42, archived=True),
+            repository(id=42, disabled=True),
+            repository(id=42, visibility="private"),
+            None,
+        ):
+            client = FakeClient("github.com")
+            with (
+                self.subTest(final=final),
+                mock.patch.object(
+                    client,
+                    "json",
+                    side_effect=[original, {"name": "RELEASE_PLEASE_TOKEN"}, final],
+                ),
+                mock.patch.object(
+                    release_preflight, "GitHubClient", return_value=client
+                ),
+                self.assertRaisesRegex(
+                    release_preflight.InspectionError,
+                    "repository identity|repository.*changed|revalidation",
+                ),
+            ):
+                release_preflight.run(
+                    arguments(
+                        expected_repository_id=42, require_release_please_token=True
+                    )
+                )
+
+    def test_repository_identity_cannot_change_between_discovery_and_verdict(
+        self,
+    ) -> None:
+        FakeClient.response = repository(id=42)
+        with mock.patch.object(release_preflight, "GitHubClient", FakeClient):
+            positive = release_preflight.run(
+                arguments(expected_repository_id=42, with_attestations=True)
+            )
+        self.assertEqual(positive.get("repository_id"), 42)
+        for identity in (43, None, True, "42", 0, -1, 42.5):
+            FakeClient.response = repository(id=identity)
+            with (
+                self.subTest(identity=identity),
+                mock.patch.object(release_preflight, "GitHubClient", FakeClient),
+                self.assertRaisesRegex(
+                    release_preflight.InspectionError,
+                    "repository ID|repository identity",
+                ),
+            ):
+                release_preflight.run(
+                    arguments(expected_repository_id=42, with_attestations=True)
+                )
+
+    def test_unbound_inspection_returns_discovery_only_not_installation_authorization(
+        self,
+    ) -> None:
+        FakeClient.response = repository(id=42)
+        with mock.patch.object(release_preflight, "GitHubClient", FakeClient):
+            result = release_preflight.run(arguments(expected_repository_id=None))
+        self.assertEqual(result["decision"], "bind-repository-identity-before-mutation")
+        self.assertEqual(result["repository_id"], 42)
+
     def test_accepts_verified_public_repository_for_attestations(self) -> None:
         FakeClient.response = repository()
         with mock.patch.object(release_preflight, "GitHubClient", FakeClient):
@@ -118,7 +235,7 @@ class ReleasePreflightTests(unittest.TestCase):
         with mock.patch.object(release_preflight, "GitHubClient", FakeClient):
             result = release_preflight.run(arguments(require_release_please_token=True))
         self.assertEqual(result["release_please_token"], "verified-present")
-        self.assertEqual(result["github_api_requests"], 2)
+        self.assertEqual(result["github_api_requests"], 3)
 
         for response, message in (
             ([], "did not return"),

@@ -35,3 +35,5 @@ List the exact commands run and their results.
 ## Related issue
 
 Link the issue when applicable.
+
+<!-- If applicable, use a standalone closing line: Fixes #<issue>, Closes #<issue>, or Resolves #<issue>. -->

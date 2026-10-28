@@ -13,8 +13,10 @@ import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from html import unescape
+from http.client import HTTPException, HTTPMessage, HTTPResponse
+from io import BytesIO
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import IO, Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -60,15 +62,60 @@ class ApprovedRedirectHandler(HTTPRedirectHandler):
         new_url: str,
     ) -> Request | None:
         """Reject a redirect before urllib opens a connection to its destination."""
-        redirected_host = hostname(new_url, field="official documentation redirect")
-        if redirected_host not in self.allowed_hosts:
-            raise AuditError(
-                "official documentation redirect leaves approved hosts: "
-                f"{redirected_host}"
-            )
-        return super().redirect_request(
-            request, response, code, message, headers, new_url
+        try:
+            redirected_host = hostname(new_url, field="official documentation redirect")
+            if redirected_host not in self.allowed_hosts:
+                raise AuditError(
+                    "official documentation redirect leaves approved hosts: "
+                    f"{redirected_host}"
+                )
+        except AuditError:
+            if response is not None:
+                try:
+                    response.close()
+                except OSError as error:
+                    raise AuditError("Redirect response could not be closed") from error
+            raise
+        if code == 308 and request.get_method() not in {"GET", "HEAD"}:
+            raise HTTPError(request.full_url, code, message, headers, response)
+        redirected = super().redirect_request(
+            # 308 and 307 both preserve the method; Python 3.10's handler lacks 308.
+            request,
+            response,
+            307 if code == 308 else code,
+            message,
+            headers,
+            new_url,
         )
+        if code == 308 and redirected is not None:
+            redirected.method = request.get_method()
+        return redirected
+
+    def http_error_302(
+        self,
+        req: Request,
+        fp: IO[bytes] | None,
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+    ) -> Any | None:
+        """Discard redirect bodies before urllib's otherwise unbounded drain."""
+        if fp is not None:
+            try:
+                fp.close()
+            except OSError as error:
+                raise AuditError("Redirect response could not be closed") from error
+        # urllib uses Connection: close; the redirect body is not the final page.
+        # Keep its URL normalization, host policy and loop limits, with no drain.
+        with BytesIO() as empty_body:
+            try:
+                return super().http_error_302(req, empty_body, code, msg, headers)
+            except ValueError as error:
+                raise AuditError(
+                    "Official documentation redirect is malformed"
+                ) from error
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
 @dataclass(frozen=True)
@@ -311,6 +358,43 @@ def load_trackers(
     return tuple(claims)
 
 
+def read_http_payload(response: Any, limit: int) -> bytes:
+    """Read bounded bytes without accepting ambiguous native length framing."""
+    expected: int | None = None
+    if isinstance(response, HTTPResponse):
+        values = response.headers.get_all("Content-Length", [])
+        if len(values) > 100 or sum(len(value) for value in values) > 8192:
+            raise ValueError("HTTP Content-Length exceeds the header safety bound")
+        canonical: str | None = None
+        members = 0
+        for value in values:
+            for item in value.split(","):
+                members += 1
+                item = item.strip(" \t")
+                if members > 100 or re.fullmatch(r"[0-9]+", item) is None:
+                    raise ValueError("HTTP Content-Length is invalid")
+                normalized = item.lstrip("0") or "0"
+                if canonical is not None and normalized != canonical:
+                    raise ValueError("HTTP Content-Length values conflict")
+                canonical = normalized
+        if canonical is not None:
+            if len(canonical) > len(str(limit)) or (
+                len(canonical) == len(str(limit)) and canonical > str(limit)
+            ):
+                raise ValueError(
+                    "HTTP Content-Length exceeds the response safety bound"
+                )
+            if not response.chunked:
+                expected = int(canonical)
+    payload: bytes = response.read(limit + 1)
+    if isinstance(response, HTTPResponse) and (
+        response.length not in {None, 0}
+        or (expected is not None and len(payload) != expected)
+    ):
+        raise ValueError("HTTP response is incomplete")
+    return payload
+
+
 def read_document(url: str, allowed_hosts: tuple[str, ...]) -> tuple[str, str]:
     """Fetch one bounded official page and return its resolved URL and UTF-8 text."""
     # GitHub REST Markdown omits permission sections and some response schemas.
@@ -325,9 +409,16 @@ def read_document(url: str, allowed_hosts: tuple[str, ...]) -> tuple[str, str]:
     try:
         opener = build_opener(ApprovedRedirectHandler(allowed_hosts))
         with opener.open(request, timeout=30) as response:  # noqa: S310 - URL is registry-allowlisted
-            payload = response.read(MAX_RESPONSE_BYTES + 1)
+            payload = read_http_payload(response, MAX_RESPONSE_BYTES)
             resolved_url = response.geturl()
-    except (HTTPError, URLError, OSError) as error:
+    except (HTTPError, URLError, OSError, HTTPException, ValueError) as error:
+        if isinstance(error, HTTPError):
+            try:
+                error.close()
+            except OSError as cleanup_error:
+                raise AuditError(
+                    "Official documentation error response could not be closed"
+                ) from cleanup_error
         raise AuditError(
             f"official documentation request failed for {url}: {error}"
         ) from error

@@ -38,3 +38,5 @@ List the exact documentation and link checks run.
 ## Related issue
 
 Link the issue when applicable.
+
+<!-- If applicable, use a standalone closing line: Fixes #<issue>, Closes #<issue>, or Resolves #<issue>. -->

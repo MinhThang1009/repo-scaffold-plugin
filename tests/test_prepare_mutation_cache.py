@@ -26,6 +26,346 @@ SPEC.loader.exec_module(prepare_mutation_cache)
 
 
 class MutationCacheTests(unittest.TestCase):
+    def test_verification_fingerprint_binds_empty_directory_state(self) -> None:
+        for location in (
+            "scripts/vendor/empty",
+            "skills/repo-scaffold/scripts/build/empty",
+            "tests/fixtures/empty",
+            "skills/repo-scaffold/assets/empty",
+        ):
+            with (
+                self.subTest(location=location),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                empty = root / location
+                empty.parent.mkdir(parents=True)
+                before = prepare_mutation_cache.project_input_fingerprint(root)
+                mutation_before = prepare_mutation_cache.mutation_input_fingerprint(
+                    root
+                )
+                empty.mkdir()
+                added = prepare_mutation_cache.project_input_fingerprint(root)
+                self.assertNotEqual(added, before)
+                renamed = empty.with_name("renamed")
+                empty.rename(renamed)
+                self.assertNotEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), added
+                )
+                self.assertEqual(
+                    prepare_mutation_cache.mutation_input_fingerprint(root),
+                    mutation_before,
+                )
+                renamed.rmdir()
+                self.assertEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), before
+                )
+
+    def test_directory_binding_preserves_root_runtime_cache_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = prepare_mutation_cache.project_input_fingerprint(root)
+            for name in (".pytest_cache", ".mypy_cache", "build", "mutants", "vendor"):
+                cache = root / name / "empty"
+                cache.mkdir(parents=True)
+                self.assertEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), before
+                )
+
+    def test_verification_root_casing_follows_the_native_filesystem_contract(
+        self,
+    ) -> None:
+        for relative in (
+            "Scripts/vendor/input.py",
+            "Skills/Repo-Scaffold/Scripts/vendor/input.py",
+            "Tests/vendor/input.json",
+        ):
+            with (
+                self.subTest(relative=relative),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = root / relative
+                source.parent.mkdir(parents=True)
+                source.write_bytes(b"before")
+                before = prepare_mutation_cache.project_input_fingerprint(root)
+                inventory = prepare_mutation_cache._project_files(
+                    root, verification=True
+                )
+                self.assertEqual(
+                    [name for name, _ in inventory],
+                    [relative] if os.name == "nt" else [],
+                )
+                self.assertEqual(prepare_mutation_cache._project_files(root), [])
+                source.write_bytes(b"after")
+                after = prepare_mutation_cache.project_input_fingerprint(root)
+                self.assertEqual(before != after, os.name == "nt")
+
+    def test_verification_inventory_rejects_nonregular_first_party_inputs_before_reading(
+        self,
+    ) -> None:
+        for location in (
+            "scripts/input.py",
+            "skills/repo-scaffold/scripts/input.py",
+            "tests/input.json",
+        ):
+            with (
+                self.subTest(location=location),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                path = root / location
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"synthetic-special-file-state")
+                is_file = Path.is_file
+                with (
+                    mock.patch.object(
+                        Path,
+                        "is_file",
+                        autospec=True,
+                        side_effect=lambda candidate: (
+                            False if candidate == path else is_file(candidate)
+                        ),
+                    ),
+                    mock.patch.object(
+                        prepare_mutation_cache, "_read_bounded_bytes"
+                    ) as read,
+                ):
+                    self.assertEqual(prepare_mutation_cache._project_files(root), [])
+                    with self.assertRaisesRegex(
+                        ValueError, "nonregular verification input"
+                    ):
+                        prepare_mutation_cache.project_input_fingerprint(root)
+                    read.assert_not_called()
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires native POSIX FIFOs")
+    def test_native_fifo_cannot_be_silently_omitted_from_verification_inventory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "scripts/unexecuted.py"
+            path.parent.mkdir()
+            if sys.platform != "win32":
+                os.mkfifo(path)
+            else:
+                self.skipTest("requires native POSIX FIFOs")
+            self.assertFalse(path.is_file())
+            self.assertFalse(path.is_dir())
+            with self.assertRaisesRegex(ValueError, "nonregular verification input"):
+                prepare_mutation_cache.project_input_fingerprint(root)
+
+    def test_verification_bytecode_exclusion_is_not_a_directory_or_fixture_exclusion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "scripts/__pycache__/module.pyc"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"bytecode")
+            before = prepare_mutation_cache.project_input_fingerprint(root)
+            source.write_bytes(b"changed bytecode")
+            self.assertEqual(
+                prepare_mutation_cache.project_input_fingerprint(root), before
+            )
+            for name in (
+                "scripts/cache.pyc/input.py",
+                "tests/.coverage.fixture",
+                "tests/build/input.json",
+            ):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"before")
+                original = prepare_mutation_cache.project_input_fingerprint(root)
+                path.write_bytes(b"after")
+                self.assertNotEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), original
+                )
+
+    def test_verification_inventory_keeps_entry_and_byte_limits_inside_ignored_names(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "scripts/vendor/input.py"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"input")
+            for setting, limit in (
+                ("MAX_PROJECT_FILES", 2),
+                ("MAX_FILE_BYTES", 4),
+                ("MAX_TOTAL_BYTES", 4),
+            ):
+                with (
+                    self.subTest(setting=setting),
+                    mock.patch.object(prepare_mutation_cache, setting, limit),
+                    self.assertRaisesRegex(ValueError, "exceeds"),
+                ):
+                    prepare_mutation_cache.project_input_fingerprint(root)
+
+    def test_verification_inventory_rejects_links_under_normally_ignored_names(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "scripts/vendor/input.py"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"input")
+            with (
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_is_link_or_reparse",
+                    side_effect=lambda candidate: candidate == path.parent,
+                ),
+                self.assertRaisesRegex(ValueError, "symlink or reparse"),
+            ):
+                prepare_mutation_cache.project_input_fingerprint(root)
+
+    def test_verification_inventory_includes_ignored_names_inside_first_party_trees(
+        self,
+    ) -> None:
+        for location in (
+            "scripts/vendor/input.py",
+            "skills/repo-scaffold/scripts/build/input.py",
+            "tests/vendor/input.json",
+            "scripts/__pycache__/input.py",
+        ):
+            with (
+                self.subTest(location=location),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                path = root / location
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"before")
+                original = prepare_mutation_cache.project_input_fingerprint(root)
+                self.assertEqual(prepare_mutation_cache._project_files(root), [])
+                path.write_bytes(b"after")
+                self.assertNotEqual(
+                    prepare_mutation_cache.project_input_fingerprint(root), original
+                )
+
+    def test_test_run_fingerprint_includes_metadata_and_detects_content_changes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = root / "policy.yml"
+            metadata.write_text("value: old\n", encoding="utf-8")
+            before = prepare_mutation_cache.project_input_fingerprint(root)
+            (root / ".coverage").write_bytes(b"irrelevant runtime data")
+            (root / ".pytest_cache").mkdir()
+            (root / ".pytest_cache" / "state").write_bytes(b"irrelevant")
+            self.assertEqual(
+                prepare_mutation_cache.project_input_fingerprint(root), before
+            )
+            metadata.write_text("value: new\n", encoding="utf-8")
+            self.assertNotEqual(
+                prepare_mutation_cache.project_input_fingerprint(root), before
+            )
+
+    def test_test_run_fingerprint_bounds_actual_bytes_after_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.txt"
+            second = root / "second.txt"
+            first.write_bytes(b"123")
+            second.write_bytes(b"456")
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_TOTAL_BYTES", 5),
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_project_files",
+                    return_value=[("first.txt", first), ("second.txt", second)],
+                ),
+                self.assertRaisesRegex(ValueError, "test input inventory"),
+            ):
+                prepare_mutation_cache.project_input_fingerprint(root)
+
+    def test_cache_writer_reports_cleanup_failure_without_claiming_rollback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            mutation_root = Path(directory) / "mutants"
+            mutation_root.mkdir()
+            target = mutation_root / "state.json"
+            target.write_bytes(b"previous state")
+            with (
+                mock.patch.object(
+                    Path, "unlink", side_effect=PermissionError("cleanup denied")
+                ),
+                self.assertRaisesRegex(OSError, "may already have been updated"),
+            ):
+                prepare_mutation_cache._write_json(
+                    target, {"new": "state"}, mutation_root=mutation_root
+                )
+            self.assertEqual(json.loads(target.read_bytes()), {"new": "state"})
+
+    def test_cache_writer_retains_publication_error_when_cleanup_also_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            mutation_root = Path(directory) / "mutants"
+            mutation_root.mkdir()
+            target = mutation_root / "state.json"
+            target.write_bytes(b"previous state")
+            with (
+                mock.patch.object(
+                    prepare_mutation_cache.os,
+                    "replace",
+                    side_effect=PermissionError("replacement denied"),
+                ),
+                mock.patch.object(
+                    Path, "unlink", side_effect=PermissionError("cleanup denied")
+                ),
+                self.assertRaisesRegex(OSError, "replacement denied"),
+            ):
+                prepare_mutation_cache._write_json(
+                    target, {"new": "state"}, mutation_root=mutation_root
+                )
+            self.assertEqual(target.read_bytes(), b"previous state")
+
+    def test_cache_writer_does_not_clean_unallocated_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            mutation_root = Path(directory) / "mutants"
+            mutation_root.mkdir()
+            with (
+                mock.patch.object(
+                    prepare_mutation_cache.tempfile,
+                    "NamedTemporaryFile",
+                    side_effect=PermissionError("allocation denied"),
+                ),
+                mock.patch.object(Path, "unlink") as unlink,
+                self.assertRaisesRegex(OSError, "allocation denied"),
+            ):
+                prepare_mutation_cache._write_json(
+                    mutation_root / "state.json",
+                    {"new": "state"},
+                    mutation_root=mutation_root,
+                )
+            unlink.assert_not_called()
+
+    def test_cache_writer_preserves_destination_and_cleans_temp_on_replace_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            mutation_root = Path(directory) / "mutants"
+            mutation_root.mkdir()
+            target = mutation_root / "state.json"
+            target.write_bytes(b"previous state")
+            with (
+                mock.patch.object(
+                    prepare_mutation_cache.os,
+                    "replace",
+                    side_effect=PermissionError("replacement denied"),
+                ),
+                self.assertRaisesRegex(OSError, "replacement denied"),
+            ):
+                prepare_mutation_cache._write_json(
+                    target, {"new": "state"}, mutation_root=mutation_root
+                )
+            self.assertEqual(target.read_bytes(), b"previous state")
+            self.assertEqual(list(mutation_root.iterdir()), [target])
+
     def test_cache_reader_stops_at_limit_plus_one(self) -> None:
         class TrackingReader(BytesIO):
             def __init__(self) -> None:
@@ -111,7 +451,17 @@ class MutationCacheTests(unittest.TestCase):
             root = Path(directory)
             self.make_repository(root)
             self.write_state(root, "scripts/alpha.py", {"scripts.alpha.killed": 1})
+            self.write_state(root, "scripts/beta.py", {"scripts.beta.killed": 1})
             self.write_shard_plan(root)
+            (root / "mutants" / prepare_mutation_cache.SHARD_PLAN_NAME).write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "shards": [["scripts.alpha.killed", "scripts.beta.killed"]],
+                    }
+                ),
+                encoding="utf-8",
+            )
             (root / "mutants" / "mutmut-stats.json").write_text("{}", encoding="utf-8")
 
             prepare_mutation_cache.record_cache(root)
@@ -129,6 +479,43 @@ class MutationCacheTests(unittest.TestCase):
                 (
                     root / "mutants" / prepare_mutation_cache.REUSABLE_SOURCES_NAME
                 ).is_file()
+            )
+
+    def test_partial_source_cache_drops_plan_before_workflow_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            self.write_state(root, "scripts/alpha.py", {"scripts.alpha.killed": 1})
+            self.write_shard_plan(root)
+            plan = root / "mutants" / prepare_mutation_cache.SHARD_PLAN_NAME
+            plan.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "shards": [["scripts.alpha.killed", "scripts.beta.pending"]],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            prepare_mutation_cache.record_cache(root)
+
+            result = prepare_mutation_cache.prepare_cache(root)
+
+            self.assertEqual(result.invalidated_files, 1)
+            self.assertFalse(plan.exists())
+            self.assertEqual(
+                json.loads(
+                    (root / "mutants/scripts/alpha.py.meta").read_text(encoding="utf-8")
+                )["exit_code_by_key"],
+                {"scripts.alpha.killed": 1},
+            )
+            self.assertEqual(
+                json.loads(
+                    (
+                        root / "mutants" / prepare_mutation_cache.REUSABLE_SOURCES_NAME
+                    ).read_text(encoding="utf-8")
+                )["sources"],
+                ["scripts/alpha.py"],
             )
 
     def test_invalid_shard_plan_forces_full_reset(self) -> None:
@@ -551,18 +938,82 @@ class MutationCacheTests(unittest.TestCase):
                 prepare_mutation_cache._project_files(root)
 
     def test_project_inventory_propagates_walk_errors(self) -> None:
-        def failing_walk(*_args: object, **kwargs: object) -> object:
-            callback = kwargs["onerror"]
-            assert callable(callback)
-            callback(OSError("denied"))
-            return iter(())
-
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch.object(
-                prepare_mutation_cache.os, "walk", side_effect=failing_walk
+                prepare_mutation_cache.os, "scandir", side_effect=OSError("denied")
             ):
                 with self.assertRaisesRegex(OSError, "denied"):
                     prepare_mutation_cache._project_files(Path(directory))
+
+    def test_project_inventory_bounds_empty_directory_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("first", "second", "third"):
+                (root / name).mkdir()
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_PROJECT_FILES", 2),
+                self.assertRaisesRegex(ValueError, "inventory exceeds"),
+            ):
+                prepare_mutation_cache._project_files(root)
+
+    def test_project_inventory_rejects_aggregate_file_bytes_before_snapshot_reads(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "first.txt").write_bytes(b"123")
+            (root / "second.txt").write_bytes(b"456")
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_TOTAL_BYTES", 5),
+                self.assertRaisesRegex(ValueError, "inventory exceeds"),
+            ):
+                prepare_mutation_cache._project_files(root)
+
+    def test_project_inventory_closes_the_iterator_when_the_entry_budget_is_exceeded(
+        self,
+    ) -> None:
+        stream = mock.MagicMock()
+        stream.__enter__.return_value = stream
+        yielded = []
+
+        def entries():
+            for value in (object(), object(), object()):
+                yielded.append(value)
+                yield value
+
+        stream.__iter__.side_effect = entries
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                prepare_mutation_cache.os, "scandir", return_value=stream
+            ),
+            mock.patch.object(prepare_mutation_cache, "MAX_PROJECT_FILES", 1),
+            self.assertRaisesRegex(ValueError, "inventory exceeds"),
+        ):
+            prepare_mutation_cache._project_files(Path(directory))
+        self.assertEqual(len(yielded), 2)
+        stream.__exit__.assert_called_once()
+
+    def test_ignored_directory_names_do_not_hide_regular_input_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file = root / "vendor"
+            file.write_bytes(b"regular metadata")
+            self.assertEqual(
+                prepare_mutation_cache._project_files(root), [("vendor", file)]
+            )
+            entry = mock.Mock(name="ignored-link")
+            entry.name = "vendor"
+            entry.path = str(file)
+            entry.is_dir.return_value = False
+            entry.is_symlink.return_value = True
+            stream = mock.MagicMock()
+            stream.__enter__.return_value = stream
+            stream.__iter__.return_value = iter([entry])
+            with mock.patch.object(
+                prepare_mutation_cache.os, "scandir", return_value=stream
+            ):
+                self.assertEqual(prepare_mutation_cache._project_files(root), [])
 
     def test_project_inventory_skips_dependency_and_build_trees(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -914,6 +1365,132 @@ class MutationCacheTests(unittest.TestCase):
             self.make_repository(root)
             with self.assertRaisesRegex(ValueError, "mutation state"):
                 prepare_mutation_cache.record_cache(root)
+
+    def test_snapshot_consumers_reject_aggregate_growth_after_inventory(self) -> None:
+        consumers = (
+            prepare_mutation_cache.snapshot_project,
+            prepare_mutation_cache.mutation_input_fingerprint,
+            prepare_mutation_cache.prepare_cache,
+            prepare_mutation_cache.record_cache,
+        )
+        enumerate_files = prepare_mutation_cache._project_files
+        for consumer in consumers:
+            with (
+                self.subTest(consumer=consumer.__name__),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                (root / "tests").mkdir()
+                (root / "mutants").mkdir()
+                paths = [root / "tests" / f"test_{name}.py" for name in ("a", "b")]
+                for path in paths:
+                    path.write_bytes(b"x")
+
+                def grow_after_inventory(
+                    repository_root: Path,
+                ) -> list[tuple[str, Path]]:
+                    files = enumerate_files(repository_root)
+                    for path in paths:
+                        path.write_bytes(b"x" * 8)
+                    return files
+
+                with (
+                    mock.patch.object(prepare_mutation_cache, "MAX_FILE_BYTES", 8),
+                    mock.patch.object(prepare_mutation_cache, "MAX_TOTAL_BYTES", 10),
+                    mock.patch.object(
+                        prepare_mutation_cache,
+                        "_project_files",
+                        side_effect=grow_after_inventory,
+                    ),
+                    self.assertRaisesRegex(ValueError, "inventory exceeds"),
+                ):
+                    consumer(root)
+
+    def test_snapshot_limits_read_to_remaining_aggregate_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            first = root / "tests/test_a.py"
+            second = root / "tests/test_b.py"
+            first.write_bytes(b"x")
+            second.write_bytes(b"x")
+            enumerate_files = prepare_mutation_cache._project_files
+
+            def grow_after_inventory(repository_root: Path) -> list[tuple[str, Path]]:
+                files = enumerate_files(repository_root)
+                first.write_bytes(b"x" * 8)
+                second.write_bytes(b"x" * 3)
+                return files
+
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_FILE_BYTES", 8),
+                mock.patch.object(prepare_mutation_cache, "MAX_TOTAL_BYTES", 10),
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_project_files",
+                    side_effect=grow_after_inventory,
+                ),
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_read_bounded_bytes",
+                    wraps=prepare_mutation_cache._read_bounded_bytes,
+                ) as read,
+                self.assertRaisesRegex(ValueError, "inventory exceeds"),
+            ):
+                prepare_mutation_cache.snapshot_project(root)
+
+            self.assertEqual([call.args[1] for call in read.call_args_list], [8, 2])
+
+    def test_snapshot_accepts_exact_aggregate_budget_and_empty_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            expected = {
+                "tests/test_a.py": "x" * 8,
+                "tests/test_b.py": "x" * 2,
+                "tests/test_c.py": "",
+            }
+            for relative, content in expected.items():
+                (root / relative).write_text(content, encoding="utf-8")
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_FILE_BYTES", 8),
+                mock.patch.object(prepare_mutation_cache, "MAX_TOTAL_BYTES", 10),
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_read_bounded_bytes",
+                    wraps=prepare_mutation_cache._read_bounded_bytes,
+                ) as read,
+            ):
+                snapshot = prepare_mutation_cache.snapshot_project(root)
+
+            self.assertEqual(
+                (snapshot.test_sources, [call.args[1] for call in read.call_args_list]),
+                (expected, [8, 2, 0]),
+            )
+
+    def test_snapshot_rejects_per_file_growth_after_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "file.txt"
+            path.write_bytes(b"x")
+            enumerate_files = prepare_mutation_cache._project_files
+
+            def grow_after_inventory(repository_root: Path) -> list[tuple[str, Path]]:
+                files = enumerate_files(repository_root)
+                path.write_bytes(b"x" * 9)
+                return files
+
+            with (
+                mock.patch.object(prepare_mutation_cache, "MAX_FILE_BYTES", 8),
+                mock.patch.object(prepare_mutation_cache, "MAX_TOTAL_BYTES", 16),
+                mock.patch.object(
+                    prepare_mutation_cache,
+                    "_project_files",
+                    side_effect=grow_after_inventory,
+                ),
+                self.assertRaisesRegex(ValueError, "file .* exceeds"),
+            ):
+                prepare_mutation_cache.snapshot_project(root)
 
     def test_snapshot_rejects_symlinks_and_non_utf8_tests(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from http.client import HTTPException, HTTPResponse
+
 import argparse
 import json
 import os
@@ -13,6 +15,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -199,6 +202,28 @@ class ActionRelease:
 
     tag: str
     sha: str
+
+
+def validated_action_release(value: object) -> ActionRelease:
+    """Snapshot supported release fields without treating shape as provenance."""
+    tag = getattr(value, "tag", None)
+    sha = getattr(value, "sha", None)
+    if isinstance(tag, str):
+        tag = str.__str__(tag)
+    if isinstance(sha, str):
+        sha = str.__str__(sha)
+    if (
+        not isinstance(tag, str)
+        or len(tag) > 1024
+        or not tag.isascii()
+        or RELEASE_TAG_PATTERN.fullmatch(tag) is None
+        or not isinstance(sha, str)
+        or SHA_PATTERN.fullmatch(sha) is None
+    ):
+        raise ValueError(
+            "Release result must contain a supported bounded tag and full commit SHA"
+        )
+    return ActionRelease(tag=tag, sha=sha)
 
 
 def action_repository(action: str) -> str:
@@ -982,10 +1007,59 @@ class RejectRedirectHandler(HTTPRedirectHandler):
         headers: Any,
         new_url: str,
     ) -> Request | None:
+        if response is not None:
+            try:
+                response.close()
+            except OSError as error:
+                raise ValueError("Redirect response could not be closed") from error
         raise ValueError("GitHub API redirects are not allowed")
+
+    def http_error_302(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any
+    ) -> Request | None:
+        return self.redirect_request(req, fp, code, msg, headers, req.full_url)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
 GITHUB_API_OPENER = build_opener(RejectRedirectHandler())
+
+
+def read_http_payload(response: Any, limit: int) -> bytes:
+    """Read bounded bytes without accepting ambiguous native length framing."""
+    expected: int | None = None
+    if isinstance(response, HTTPResponse):
+        values = response.headers.get_all("Content-Length", [])
+        if len(values) > 100 or sum(len(value) for value in values) > 8192:
+            raise ValueError("HTTP Content-Length exceeds the header safety bound")
+        canonical: str | None = None
+        members = 0
+        for value in values:
+            for item in value.split(","):
+                members += 1
+                item = item.strip(" \t")
+                if members > 100 or re.fullmatch(r"[0-9]+", item) is None:
+                    raise ValueError("HTTP Content-Length is invalid")
+                normalized = item.lstrip("0") or "0"
+                if canonical is not None and normalized != canonical:
+                    raise ValueError("HTTP Content-Length values conflict")
+                canonical = normalized
+        if canonical is not None:
+            if len(canonical) > len(str(limit)) or (
+                len(canonical) == len(str(limit)) and canonical > str(limit)
+            ):
+                raise ValueError(
+                    "HTTP Content-Length exceeds the response safety bound"
+                )
+            if not response.chunked:
+                expected = int(canonical)
+    payload: bytes = response.read(limit + 1)
+    if isinstance(response, HTTPResponse) and (
+        response.length not in {None, 0}
+        or (expected is not None and len(payload) != expected)
+    ):
+        raise ValueError("HTTP response is incomplete")
+    return payload
 
 
 class GitHubReleaseClient:
@@ -1009,8 +1083,15 @@ class GitHubReleaseClient:
         )
         try:
             with self.opener(request, timeout=30) as response:
-                payload = response.read(MAX_RESPONSE_BYTES + 1)
-        except (OSError, UnicodeError) as error:
+                payload = read_http_payload(response, MAX_RESPONSE_BYTES)
+        except (OSError, UnicodeError, HTTPException, ValueError) as error:
+            if isinstance(error, HTTPError):
+                try:
+                    error.close()
+                except OSError as cleanup_error:
+                    raise ValueError(
+                        "GitHub API error response could not be closed"
+                    ) from cleanup_error
             raise ValueError(
                 f"GitHub API request failed for {path}: {error}"
             ) from error
@@ -1052,36 +1133,40 @@ class GitHubReleaseClient:
     def latest_action_tag(self, repository: str) -> ActionRelease:
         """Resolve the latest stable action tag when releases contain non-action tags."""
         releases: list[tuple[tuple[int, int, int], ActionRelease]] = []
+        seen_tags: dict[str, str] = {}
         for page in range(1, MAX_ACTION_TAG_PAGES + 1):
             tags = self.get_json_list(
                 f"/repos/{repository}/tags?per_page=100&page={page}"
             )
             for tag_document in tags:
                 tag = tag_document.get("name")
+                if not isinstance(tag, str) or not tag:
+                    raise ValueError(
+                        f"action tag inventory has an invalid name: {repository}"
+                    )
+                match = STABLE_ACTION_TAG_PATTERN.fullmatch(tag)
+                if match is None:
+                    continue
                 commit = tag_document.get("commit")
-                match = (
-                    STABLE_ACTION_TAG_PATTERN.fullmatch(tag)
-                    if isinstance(tag, str)
-                    else None
-                )
                 sha = commit.get("sha") if isinstance(commit, dict) else None
-                if (
-                    match is not None
-                    and isinstance(tag, str)
-                    and isinstance(sha, str)
-                    and SHA_PATTERN.fullmatch(sha)
-                ):
-                    version: tuple[int, int, int] = (
-                        int(match.group(1)),
-                        int(match.group(2)),
-                        int(match.group(3)),
+                if not isinstance(sha, str) or SHA_PATTERN.fullmatch(sha) is None:
+                    raise ValueError(
+                        f"action tag inventory has an invalid stable commit: {repository}"
                     )
-                    releases.append(
-                        (
-                            version,
-                            ActionRelease(tag=tag, sha=sha),
-                        )
+                release = validated_action_release(ActionRelease(tag=tag, sha=sha))
+                previous_sha = seen_tags.get(release.tag)
+                if previous_sha is not None and previous_sha != release.sha:
+                    raise ValueError(
+                        "action tag inventory has conflicting commit identities: "
+                        f"{repository}"
                     )
+                seen_tags[release.tag] = release.sha
+                version: tuple[int, int, int] = (
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    int(match.group(3)),
+                )
+                releases.append((version, release))
             if len(tags) < 100:
                 break
         else:
@@ -1105,6 +1190,10 @@ class GitHubReleaseClient:
         reference = self.get_json(
             f"/repos/{repository}/git/ref/tags/{quote(tag, safe='')}"
         )
+        if reference.get("ref") != f"refs/tags/{tag}":
+            raise ValueError(
+                f"latest action release reference identity is invalid: {repository}"
+            )
         object_document = reference.get("object")
         if not isinstance(object_document, dict):
             raise ValueError(f"latest action release has no tag object: {repository}")
@@ -1118,9 +1207,12 @@ class GitHubReleaseClient:
             sha = object_document.get("sha")
             if not isinstance(sha, str) or SHA_PATTERN.fullmatch(sha) is None:
                 break
-            object_document = self.get_json(f"/repos/{repository}/git/tags/{sha}").get(
-                "object"
-            )
+            tag_document = self.get_json(f"/repos/{repository}/git/tags/{sha}")
+            if tag_document.get("sha") != sha:
+                raise ValueError(
+                    f"latest action release tag object identity is invalid: {repository}"
+                )
+            object_document = tag_document.get("object")
             if not isinstance(object_document, dict):
                 raise ValueError(f"latest action release tag is invalid: {repository}")
             tag_depth += 1
@@ -1145,6 +1237,8 @@ def synchronize_action_pins(
     workflow_directories: tuple[Path, ...] = WORKFLOW_DIRECTORIES,
 ) -> list[Path]:
     """Update all allowed action pins after resolving every release."""
+    if type(write) is not bool:
+        raise ValueError("Write authorization must be a Boolean.")
     contents: dict[Path, str] = {}
     total_workflow_bytes = 0
     for path in workflow_paths(repository_root, workflow_directories):
@@ -1164,7 +1258,10 @@ def synchronize_action_pins(
             for repository in action_repositories(path, content)
         }
     )
-    releases = {repository: release_lookup(repository) for repository in repositories}
+    releases = {
+        repository: validated_action_release(release_lookup(repository))
+        for repository in repositories
+    }
 
     def replace(match: re.Match[str]) -> str:
         action = normalized_action_pin_part(match, "action")

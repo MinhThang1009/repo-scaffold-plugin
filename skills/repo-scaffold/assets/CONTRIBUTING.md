@@ -16,6 +16,9 @@ mapping, add `--template security`, `--template deployment`, or
 `--template dependency-update`.
 After preparing the UTF-8 body file, rerun the preflight with `--body-file <path>`
 to reject hard-wrapped prose before the GitHub mutation.
+If this PR should close an issue after merge, add a standalone `Fixes #123`,
+`Closes #123`, or `Resolves #123` line. The preflight validates that syntax when
+present, but does not require every PR to reference an issue.
 
 When PR-body sync is installed, include explicit `Why:`, `Root cause:`,
 `Changes:`, and `Verification:` fields in commit bodies. Values may be

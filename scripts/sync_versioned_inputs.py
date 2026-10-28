@@ -30,6 +30,8 @@ def synchronize_release_please_schemas(
     write: bool,
 ) -> list[Path]:
     """Update only validated Release Please schema URLs without reformatting JSON."""
+    if type(write) is not bool:
+        raise ValueError("Write authorization must be a Boolean.")
     if RELEASE_PLEASE_TAG.fullmatch(latest_tag) is None:
         raise ValueError(
             f"Release Please latest tag is not a stable SemVer tag: {latest_tag}"
@@ -122,12 +124,16 @@ def synchronize_versioned_inputs(
     tracker_registry: Path = audit_freshness.DEFAULT_TRACKER_REGISTRY,
 ) -> list[Path]:
     """Synchronize every registry-selected input with a deterministic upstream."""
+    if type(write) is not bool:
+        raise ValueError("Write authorization must be a Boolean.")
     trackers = audit_freshness.load_trackers(repository_root, tracker_registry)
     releases: dict[str, sync_action_pins.ActionRelease] = {}
 
     def cached_release_lookup(repository: str) -> sync_action_pins.ActionRelease:
         if repository not in releases:
-            releases[repository] = release_lookup(repository)
+            releases[repository] = sync_action_pins.validated_action_release(
+                release_lookup(repository)
+            )
         return releases[repository]
 
     action_changes = sync_action_pins.synchronize_action_pins(

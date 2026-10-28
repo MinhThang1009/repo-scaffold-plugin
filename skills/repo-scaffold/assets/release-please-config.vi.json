@@ -2,8 +2,8 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.11.2/schemas/config.json",
   "release-type": "{{REPO_SCAFFOLD_RELEASE_TYPE_JSON_ESCAPED}}",
   "pull-request-title-pattern": "chore${scope}: phát hành${component} ${version}",
-  "pull-request-header": ":robot: Tôi đã tạo pull request phát hành *beep* *boop*",
-  "pull-request-footer": "PR này được tạo bằng [Release Please](https://github.com/googleapis/release-please). Xem [tài liệu](https://github.com/googleapis/release-please#release-please).",
+  "pull-request-header": ":robot: Release Please đã tạo PR phát hành tự động này.",
+  "pull-request-footer": "PR này được tạo tự động bằng [Release Please](https://github.com/googleapis/release-please). Xem [tài liệu](https://github.com/googleapis/release-please#release-please).",
   "changelog-sections": [
     {
       "type": "feat",
@@ -32,12 +32,12 @@
     },
     {
       "type": "style",
-      "section": "Kiểu dáng",
+      "section": "Định dạng mã",
       "hidden": true
     },
     {
       "type": "chore",
-      "section": "Công việc linh tinh",
+      "section": "Bảo trì khác",
       "hidden": true
     },
     {
@@ -52,7 +52,7 @@
     },
     {
       "type": "build",
-      "section": "Hệ thống build",
+      "section": "Hệ thống xây dựng",
       "hidden": true
     },
     {

@@ -33,4 +33,4 @@
 - [ ] Đã cập nhật release note, tài liệu vận hành, phê duyệt thay đổi, thông báo sự cố hoặc trạng thái
 <!-- repo-scaffold:optional-checklist:end -->
 
-<!-- Đóng #<issue> nếu phù hợp -->
+<!-- Nếu phù hợp, hãy dùng một dòng đóng issue riêng: Fixes #<issue>, Closes #<issue>, hoặc Resolves #<issue>. -->

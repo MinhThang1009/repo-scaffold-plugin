@@ -6,10 +6,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from functools import lru_cache
 from io import StringIO
 from pathlib import Path
 from unittest import mock
+
+from tests.parser_work_budget import guard_text_work
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +20,35 @@ ROOT_PREFLIGHT = PLUGIN_ROOT / "scripts" / "markdown_body_preflight.py"
 SKILL_PREFLIGHT = (
     PLUGIN_ROOT / "skills" / "repo-scaffold" / "scripts" / "markdown_body_preflight.py"
 )
+
+_PARSER_PATCHES: ExitStack | None = None
+
+
+def setUpModule() -> None:
+    """Budget both the comment search and its output-building consumer."""
+    global _PARSER_PATCHES
+    if _PARSER_PATCHES is not None:
+        raise RuntimeError("module parser guards are already active")
+    module = _bundled_module()
+    with ExitStack() as patches:
+        for name in ("html_comment_start", "strip_html_comments"):
+            patches.enter_context(
+                mock.patch.object(
+                    module,
+                    name,
+                    guard_text_work(getattr(module, name), input_name="line"),
+                )
+            )
+        _PARSER_PATCHES = patches.pop_all()
+
+
+def tearDownModule() -> None:
+    """Restore originals and discard the session-local loaded module."""
+    global _PARSER_PATCHES
+    if _PARSER_PATCHES is not None:
+        _PARSER_PATCHES.close()
+        _PARSER_PATCHES = None
+    _bundled_module.cache_clear()
 
 
 def child_test_environment() -> dict[str, str]:
@@ -28,6 +60,84 @@ def child_test_environment() -> dict[str, str]:
 
 
 class MarkdownBodyPreflightTests(unittest.TestCase):
+    def test_comment_search_respects_the_requested_start_offset(self) -> None:
+        line = "<!--first--><!--second-->"
+        module = _bundled_module()
+        self.assertEqual(module.html_comment_start(line, 12, []), 12)
+        self.assertIsNone(module.html_comment_start(line, 24, []))
+        self.assertIsNone(module.html_comment_start("\\<!--escaped-->", 0, []))
+
+    def test_comment_consumer_fixture_bounds_a_backward_search_result(self) -> None:
+        module = _bundled_module()
+        calls = 0
+
+        def backward_search(line: str, start: int, spans: list[tuple[int, int]]) -> int:
+            nonlocal calls
+            calls += 1
+            return 0
+
+        with mock.patch.object(module, "html_comment_start", backward_search):
+            with self.assertRaisesRegex(AssertionError, "linear call budget"):
+                module.strip_html_comments("<!--first--><!--second-->", False, [])
+        self.assertLessEqual(calls, 64 * 24 + 128)
+
+    def test_comment_fixture_restores_functions_and_discards_loaded_state(self) -> None:
+        module = _bundled_module()
+        originals = {
+            name: getattr(module, name).__wrapped__
+            for name in ("html_comment_start", "strip_html_comments")
+        }
+        with self.assertRaisesRegex(RuntimeError, "already active"):
+            setUpModule()
+        try:
+            tearDownModule()
+            for name, original in originals.items():
+                self.assertIs(getattr(module, name), original)
+            self.assertEqual(_bundled_module.cache_info().currsize, 0)
+        finally:
+            setUpModule()
+        self.assertIsNot(_bundled_module(), module)
+
+    def test_root_heading_calls_reuse_code_but_revalidate_each_body(self) -> None:
+        module = runpy.run_path(
+            str(ROOT_PREFLIGHT), run_name="scripts.markdown_body_preflight"
+        )
+        with mock.patch.object(
+            runpy, "run_path", side_effect=AssertionError("must not reload code")
+        ):
+            self.assertEqual(module["visible_body_heading_lines"]("## First\n"), {1})
+            self.assertEqual(
+                module["visible_body_heading_lines"]("```\n## Hidden\n```\n"), set()
+            )
+            self.assertEqual(
+                module["visible_body_heading_lines"]("Paragraph.\n\n## Next\n"), {3}
+            )
+
+    def test_bundled_main_executes_under_the_mutation_namespace(self) -> None:
+        module = _bundled_module()
+        with tempfile.TemporaryDirectory() as directory:
+            body_file = Path(directory) / "body.md"
+            for payload, expected in (
+                (b"A complete paragraph.\n", 0),
+                (b"First line\ncontinued prose\n", 1),
+                (b"\xff", 1),
+            ):
+                body_file.write_bytes(payload)
+                with (
+                    self.subTest(payload=payload),
+                    redirect_stdout(StringIO()),
+                    redirect_stderr(StringIO()),
+                ):
+                    self.assertEqual(
+                        module.main(["--body-file", str(body_file)]), expected
+                    )
+            with (
+                redirect_stderr(StringIO()),
+                self.assertRaises(SystemExit) as missing,
+            ):
+                module.main([])
+            self.assertEqual(missing.exception.code, 2)
+
     def run_preflight(
         self, script: Path, body_text: str
     ) -> subprocess.CompletedProcess[str]:
@@ -50,6 +160,213 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("hard-wrapped prose at line(s): 2", result.stderr)
+
+    def test_link_reference_definitions_are_not_wrapped_prose(self) -> None:
+        cases = (
+            "[alpha]: /one (note)\n[beta]: /two (other)\n",
+            "[//]: # (metadata-start)\n[//]: # (metadata-end)\n",
+            "[alpha]: <>\n[beta]: <my url> 'title'\n",
+            "[alpha]:\n  /one\n  'title'\n[beta]: /two\n",
+            "[alpha]: /one 'first\nsecond\nthird'\n",
+            "[\nalpha\n]: /one\n[beta]: /two\n",
+            "[alpha\\]]: /a(b(c)) 'title (with parentheses)'\n[beta]: /two\n",
+            "> [alpha]: /one\n> [beta]: /two\n",
+            "- [alpha]: /one\n  [beta]: /two\n",
+        )
+        for body in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), ())
+
+    def test_reference_like_prose_keeps_its_wrap_checks(self) -> None:
+        cases = (
+            ("Existing prose\n[alpha]: /one\n", (2,)),
+            ('[alpha]: /one "note" trailing\ncontinued prose\n', (2,)),
+            ("[alpha]: <one>(title)\ncontinued prose\n", (2,)),
+            ("[alpha]: /a(b\ncontinued prose\n", (2,)),
+            ("[]: /one\ncontinued prose\n", (2,)),
+            ("[alpha[nested]]: /one\ncontinued prose\n", (2,)),
+        )
+        for body, expected in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), expected)
+
+    def test_references_do_not_hide_following_prose_or_headings(self) -> None:
+        body = "[alpha]: /one\nFirst visible line\ncontinued prose\n\n## Visible\n"
+        module = _bundled_module()
+        self.assertEqual(
+            (
+                module.hard_wrapped_prose_lines(body),
+                module.visible_body_heading_lines(body),
+            ),
+            ((3,), {5}),
+        )
+
+    def test_reference_label_length_and_whitespace_follow_gfm(self) -> None:
+        cases = (
+            ("[" + "a" * 999 + "]: /one\nvisible prose\n", ()),
+            ("[" + "a" * 1000 + "]: /one\nvisible prose\n", (2,)),
+            ("[ \t]: /one\nvisible prose\n", (2,)),
+            ("[\u00a0]: /one\nvisible prose\n", (2,)),
+            ("[\u03b1]: /one\n[\u03b2]: /two\n", ()),
+            ("[alpha]: /one\x7f\nvisible prose\n", (2,)),
+        )
+        for body, expected in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), expected)
+
+    def test_reference_title_failure_retains_the_destination_only_definition(
+        self,
+    ) -> None:
+        cases = (
+            ('[alpha]: /one\n"note" trailing\ncontinued prose\n', (3,)),
+            ("[alpha]: /one\n(unescaped (nested))\ncontinued prose\n", (3,)),
+            ("[alpha]: /one 'unterminated\ncontinued prose\n", (2,)),
+            ("[alpha]: /one '\n\ncontinued prose\n", ()),
+            ("[alpha]: /one\n\ncontinued prose\n", ()),
+            ("[alpha]:\n\ncontinued prose\n", ()),
+        )
+        for body, expected in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), expected)
+
+    def test_reference_tabs_are_characters_not_expanded_block_columns(self) -> None:
+        cases = (
+            "[" + "a" * 998 + "\t]: /one\nvisible prose\n",
+            "- [" + "a" * 998 + "\t]: /one\n  visible prose\n",
+            "[a\n" + "b" * 996 + "\t]: /one\nvisible prose\n",
+            "- [a\n  " + "b" * 996 + "\t]: /one\n  visible prose\n",
+        )
+        for body in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), ())
+
+    def test_tab_indented_reference_continuations_preserve_literal_tabs(self) -> None:
+        body = "- item\n\n\t[" + "a" * 998 + "\t]: /one\n  visible prose\n"
+        self.assertEqual(_bundled_lines(body), ())
+
+    def test_reference_container_prefix_removal_preserves_content_characters(
+        self,
+    ) -> None:
+        module = _bundled_module()
+        cases = (
+            ("[a\t]: /one", None, False, "[a\t]: /one"),
+            ("-\t[a\t]: /one", 4, True, "[a\t]: /one"),
+            ("\t[a\t]: /one", 2, False, "  [a\t]: /one"),
+            (" [a\t]: /one", 2, False, " [a\t]: /one"),
+            (" ", 2, False, " "),
+            ("", 2, False, ""),
+        )
+        for line, indent, is_item, expected in cases:
+            with self.subTest(line=line, indent=indent, is_item=is_item):
+                self.assertEqual(
+                    module._reference_content_line(line, indent, is_list_item=is_item),
+                    expected,
+                )
+
+    def test_reference_scan_budget_fails_closed(self) -> None:
+        module = _bundled_module()
+        with mock.patch.object(module, "MAX_REFERENCE_SCAN_CHARACTERS", 4):
+            with self.assertRaisesRegex(ValueError, "link-reference scan exceeds"):
+                module.hard_wrapped_prose_lines("[alpha]: /one\n[beta]: /two\n")
+
+    def test_backslashes_do_not_escape_bare_destination_whitespace(self) -> None:
+        cases = (
+            ("[a]: /one\\ two\ncontinued prose\n", (2,)),
+            ("[a]: /one\\\tmore\ncontinued prose\n", (2,)),
+            ('[a]: /one\\ "title"\ncontinued prose\n', ()),
+            ("[a]: /one\\\ncontinued prose\n", ()),
+        )
+        for body, expected in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), expected)
+
+    def test_reference_scan_budget_is_shared_across_definitions(self) -> None:
+        module = _bundled_module()
+        with mock.patch.object(module, "MAX_REFERENCE_SCAN_CHARACTERS", 20):
+            with self.assertRaisesRegex(ValueError, "link-reference scan exceeds"):
+                module.hard_wrapped_prose_lines("[a]: /one\n[b]: /two\n[c]: /three\n")
+
+    def test_reference_title_metadata_does_not_satisfy_heading_checks(self) -> None:
+        module = _bundled_module()
+        body = '[a]: /one\n    "title\n    ## Opaque\n    close"\n\n## Visible\n'
+        opaque: set[int] = set()
+        module.hard_wrapped_prose_lines(body, non_prose_line_numbers=opaque)
+        self.assertEqual(
+            (opaque, module.visible_body_heading_lines(body)), ({1, 2, 3, 4}, {6})
+        )
+
+    def test_reference_escapes_and_incomplete_delimiters(self) -> None:
+        cases = (
+            ("[a]: <one\\>>\n[b]: /two\n", ()),
+            ("[a]: <unclosed\ncontinued prose\n", (2,)),
+            ("[a]: <bad<angle>\ncontinued prose\n", (2,)),
+            ("[a]: <trailing\\\ncontinued prose\n", ()),
+            ("[a]: /one)\ncontinued prose\n", (2,)),
+            ("[a]: /end\\\n[b]: /two\n", ()),
+            ("[a]: /escaped\\(\n[b]: /two\n", ()),
+            ('[a]: /one "escaped\\"quote"\n[b]: /two\n', ()),
+            ("[a]: /one 'trailing\\", ()),
+        )
+        for body, expected in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_bundled_lines(body), expected)
+
+    def test_backtick_indexer_supports_references_without_optional_outputs(
+        self,
+    ) -> None:
+        module = _bundled_module()
+        self.assertEqual(
+            module.backtick_run_lengths_by_line(["[a]: /one", "[b]: /two"])[0],
+            [(), ()],
+        )
+
+    def test_malformed_references_are_not_marked_as_opaque_metadata(self) -> None:
+        module = _bundled_module()
+        for body in (
+            "[a]: <trailing\\\ncontinued prose\n",
+            "[a]: <bad<angle>\ncontinued prose\n",
+            "[a]: /one)\ncontinued prose\n",
+            "[a]: /one 'trailing\\",
+        ):
+            with self.subTest(body=body):
+                opaque: set[int] = set()
+                module.hard_wrapped_prose_lines(body, non_prose_line_numbers=opaque)
+                self.assertNotIn(1, opaque)
+
+    def test_reference_metadata_does_not_create_a_setext_heading(self) -> None:
+        self.assertEqual(_bundled_lines("[alpha]: /one\n===\ncontinued prose\n"), (3,))
+
+    def test_reference_looking_table_headers_keep_table_precedence(self) -> None:
+        module = _bundled_module()
+        body = "[alpha]: /one|two\n---|---\ncell|cell\n"
+        opaque: set[int] = set()
+        module.hard_wrapped_prose_lines(body, non_prose_line_numbers=opaque)
+        self.assertNotIn(1, opaque)
+
+    def test_table_interruptions_do_not_become_reference_title_metadata(self) -> None:
+        module = _bundled_module()
+        body = '[a]: /one "first\na|b\n---|---\nlast"\n'
+        opaque: set[int] = set()
+        module.hard_wrapped_prose_lines(body, non_prose_line_numbers=opaque)
+        self.assertEqual(opaque, set())
+
+    def test_html_comment_blocks_interrupt_reference_titles(self) -> None:
+        module = _bundled_module()
+        references: set[int] = set()
+        module.backtick_run_lengths_by_line(
+            ['[a]: /one "first', "<!-- comment -->", 'last"'],
+            reference_line_indexes=references,
+        )
+        self.assertEqual(references, set())
+
+    def test_indented_comment_text_can_remain_in_a_reference_title(self) -> None:
+        module = _bundled_module()
+        references: set[int] = set()
+        module.backtick_run_lengths_by_line(
+            ['[a]: /one "first', "    <!-- literal comment -->", '    last"'],
+            reference_line_indexes=references,
+        )
+        self.assertEqual(references, {0, 1, 2})
 
     def test_utf8_bom_does_not_hide_the_first_structural_markdown_block(self) -> None:
         body = "\ufeff# Heading\nFirst paragraph line\ncontinued prose\n"
@@ -1287,12 +1604,13 @@ class MarkdownBodyPreflightTests(unittest.TestCase):
                 self.assertEqual(_bundled_lines(body), expected)
 
 
+@lru_cache(maxsize=1)
 def _bundled_module():
-    """Load the bundled parser for focused semantic cases."""
+    """Load one process-local parser; instrumented calls still select each mutant."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "markdown_body_preflight", SKILL_PREFLIGHT
+        "skills.repo-scaffold.scripts.markdown_body_preflight", SKILL_PREFLIGHT
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

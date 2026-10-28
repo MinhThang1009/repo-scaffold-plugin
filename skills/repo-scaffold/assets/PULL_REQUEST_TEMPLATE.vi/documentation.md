@@ -32,4 +32,4 @@
 - [ ] Đã cập nhật nguồn chính thống, điều kiện tiên quyết, giới hạn, migration, localization hoặc hướng dẫn release
 <!-- repo-scaffold:optional-checklist:end -->
 
-<!-- Đóng #<issue> nếu phù hợp -->
+<!-- Nếu phù hợp, hãy dùng một dòng đóng issue riêng: Fixes #<issue>, Closes #<issue>, hoặc Resolves #<issue>. -->

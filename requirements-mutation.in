@@ -3,4 +3,6 @@
 # Windows.
 -r requirements-dev.in
 mutmut==3.8.0
+# LibCST requires this separate YAML provider only on Python 3.13.
+PyYAML-ft==8.0.0; python_version == "3.13"
 toml==0.10.2

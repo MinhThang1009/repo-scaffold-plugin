@@ -20,7 +20,7 @@ Reminder checks could treat indeterminate results as actionable. Body synchroniz
 
 ## Verification
 
-- Full test suite: run `python -m pytest -q` and record the terminal result for the exact source revision.
+- Full test suite and coverage: run `python scripts/run_tests.py full` and record the terminal result for the exact source revision. Bare pytest and focused feedback are not full-gate evidence.
 - Coverage report: 100.00% statement and branch coverage.
 - Repository, scaffold, workflow, Ruff, mypy, compileall, Markdownlint, pip check, and strict Claude plugin validation passed. `pip-compile 7.6.0` regenerated both lockfiles, and hash-locked development dependencies installed successfully.
 - Freshness and official-documentation audits returned current; versioned maintenance inputs had no drift.
