@@ -187,6 +187,39 @@ class FreshnessTests(unittest.TestCase):
             )
             self.assertEqual(freshness.latest_pypi_release("coverage"), "7.17.0")
 
+    def test_applicable_python_versions_validates_policy_and_fails_closed(
+        self,
+    ) -> None:
+        marker = freshness.Marker('python_version == "3.13"')
+        invalid_matrices = (
+            (),
+            tuple(f"3.{minor}" for minor in range(33)),
+            ("3.10", "3.10"),
+            ("3.x",),
+        )
+        for matrix in invalid_matrices:
+            with self.subTest(matrix=matrix):
+                with self.assertRaisesRegex(
+                    freshness.AuditError, "supported Python version matrix"
+                ):
+                    freshness.applicable_python_versions(marker, matrix)
+        self.assertEqual(
+            freshness.applicable_python_versions(marker, ("3.12", "3.13")),
+            ("3.13",),
+        )
+        with (
+            mock.patch.object(
+                freshness.Marker,
+                "evaluate",
+                side_effect=ValueError("marker evaluation failed"),
+            ),
+            self.assertRaisesRegex(
+                freshness.AuditError,
+                "environment marker could not be evaluated safely",
+            ),
+        ):
+            freshness.applicable_python_versions(marker, ("3.13",))
+
     def test_latest_pypi_release_rejects_oversized_or_invalid_metadata(self) -> None:
         matrix = ("3.10",)
         project = {
@@ -1376,6 +1409,58 @@ class FreshnessTests(unittest.TestCase):
             self.assertEqual(calls, [])
             self.assertEqual(len(errors), 1)
             self.assertIn("unsupported variables: sys_platform", errors[0])
+
+    def test_conditional_requirement_rejects_missing_policy_or_resolver(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "requirements.in"
+            source.write_text(
+                'conditional-package==1.0.0 ; python_version == "3.13"\n',
+                encoding="utf-8",
+            )
+            sources = (freshness.RequirementSource(source.relative_to(root), ()),)
+
+            def latest_lookup(name: str) -> str:
+                self.fail(f"unscoped lookup used for conditional package {name}")
+
+            def scoped_lookup(_name: str, _versions: tuple[str, ...]) -> str:
+                return "1.0.0"
+
+            with self.assertRaisesRegex(
+                freshness.AuditError, "Python support policy is required"
+            ):
+                freshness.requirement_findings(
+                    root,
+                    sources,
+                    latest_lookup,
+                    supported_python_versions=None,
+                    latest_python_lookup=scoped_lookup,
+                )
+
+            errors: list[str] = []
+            self.assertEqual(
+                freshness.requirement_findings(
+                    root,
+                    sources,
+                    latest_lookup,
+                    errors,
+                    supported_python_versions=None,
+                    latest_python_lookup=scoped_lookup,
+                ),
+                [],
+            )
+            self.assertEqual(len(errors), 1)
+            self.assertIn("Python support policy is required", errors[0])
+
+            with self.assertRaisesRegex(
+                freshness.AuditError, "marker-aware PyPI lookup is unavailable"
+            ):
+                freshness.requirement_findings(
+                    root,
+                    sources,
+                    latest_lookup,
+                    supported_python_versions=("3.13",),
+                )
 
     def test_requirement_findings_normalizes_package_lookup_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
