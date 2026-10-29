@@ -35,7 +35,7 @@ def policy_document() -> dict[str, object]:
         "npm-tools": {
             "markdownlint-cli2": {
                 "package": "markdownlint-cli2",
-                "version": "0.23.3",
+                "version": "0.24.0",
             }
         },
         "standalone-tools": {
@@ -78,7 +78,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
                 "documentation_python=3.x",
                 "tooling_python_minimum=3.10",
                 "markdownlint_cli2_package=markdownlint-cli2",
-                "markdownlint_cli2_version=0.23.3",
+                "markdownlint_cli2_version=0.24.0",
                 "example_repository=owner/example",
                 "example_version=1.2.3",
                 "example_tag=release-1.2.3",
@@ -151,7 +151,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
                     ci_toolchain.parse_policy(document)
 
     def test_npm_tool_rejects_invalid_names_shapes_fields_and_values(self) -> None:
-        valid = {"package": "markdownlint-cli2", "version": "0.23.3"}
+        valid = {"package": "markdownlint-cli2", "version": "0.24.0"}
         cases = [
             ("Invalid", valid, "invalid npm tool name"),
             ("tool", [], "must be an object"),
@@ -393,7 +393,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
 
         def opener(request: Any, *, timeout: int) -> FakeResponse:
             opener_calls.append((request.full_url, timeout))
-            return FakeResponse(b'{"version":"0.23.3"}')
+            return FakeResponse(b'{"version":"0.24.0"}')
 
         document = ci_toolchain.fetch_latest_npm_tool(tool, opener=opener)
         ci_toolchain.verify_latest_npm_tool(tool, document)
@@ -479,7 +479,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
             mock.patch.object(
                 ci_toolchain,
                 "fetch_latest_npm_tool",
-                return_value={"version": "0.23.3"},
+                return_value={"version": "0.24.0"},
             ) as fetch_npm,
             mock.patch.object(ci_toolchain, "verify_latest_npm_tool") as verify_npm,
             mock.patch.object(
@@ -492,7 +492,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
             ci_toolchain.verify_latest_releases(policy)
 
         fetch_npm.assert_called_once_with(policy.npm_tools[0])
-        verify_npm.assert_called_once_with(policy.npm_tools[0], {"version": "0.23.3"})
+        verify_npm.assert_called_once_with(policy.npm_tools[0], {"version": "0.24.0"})
         fetch_release.assert_called_once_with(policy.tools[0])
         verify_release.assert_called_once_with(
             policy.tools[0], {"tag_name": "release-1.2.3", "assets": []}
@@ -604,7 +604,7 @@ class CiToolchainPolicyTests(unittest.TestCase):
             [
                 "/tools/npx",
                 "--yes",
-                "markdownlint-cli2@0.23.3",
+                "markdownlint-cli2@0.24.0",
                 *ci_toolchain.MARKDOWNLINT_GLOBS,
             ],
             cwd=Path.cwd(),

@@ -20,6 +20,10 @@ from typing import Any, Hashable, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from packaging.markers import InvalidMarker, Marker
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
+
 import sync_action_pins
 
 
@@ -33,8 +37,23 @@ MAX_UPSTREAM_FETCH_WORKERS = 8
 MAX_REQUIREMENTS_BYTES = 1024 * 1024
 MAX_REQUIREMENT_PINS = 512
 MAX_TOTAL_REQUIREMENT_PINS = 4096
+MAX_PYPI_RELEASES = 10_000
+MAX_PYPI_RELEASE_FILES = 2_048
+MAX_TOTAL_PYPI_RELEASE_FILES = 50_000
 MAX_RELEASE_PLEASE_CONFIG_BYTES = 1024 * 1024
 MAX_TRACKER_REGISTRY_BYTES = 1024 * 1024
+MAX_PYTHON_SUPPORT_POLICY_BYTES = 64 * 1024
+MAX_SUPPORTED_PYTHON_VERSIONS = 32
+PYTHON_SUPPORT_POLICY_KEYS = frozenset(
+    {
+        "schema-version",
+        "implementation",
+        "versions",
+        "full-coverage-os",
+        "boundary-coverage-os",
+    }
+)
+GITHUB_HOSTED_RUNNERS = frozenset({"ubuntu-latest", "windows-latest", "macos-latest"})
 MAX_TRACKER_ENTRIES = 256
 MAX_TRACKED_INPUT_PATHS = 500
 MAX_CODE_SCANNING_ALLOWLIST_BYTES = 1024 * 1024
@@ -44,7 +63,7 @@ FRESHNESS_CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PINNED_REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\#;]+)"
-    r"""(?:[ \t]*;[ \t]*python_version[ \t]*==[ \t]*(?P<quote>['"])[0-9]+\.[0-9]+(?P=quote))?"""
+    r"(?:[ \t]*;[ \t]*(?P<marker>.+?))?"
     r"(?:\s+\\)?(?:[ \t]+#[^\r\n]*)?\Z"
 )
 RELEASE_PLEASE_SCHEMA = re.compile(
@@ -111,6 +130,15 @@ class RequirementSource:
 
     path: Path
     locks: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class PinnedRequirement:
+    """One exact package pin and its validated PEP 508 environment marker."""
+
+    name: str
+    version: str
+    marker: Marker | None
 
 
 @dataclass(frozen=True)
@@ -448,8 +476,10 @@ def read_json(url: str) -> dict[str, Any]:
     return document
 
 
-def latest_pypi_release(package: str) -> str:
-    """Return PyPI's current stable default release for one validated package."""
+def latest_pypi_release(
+    package: str, *, supported_python_versions: tuple[str, ...] | None = None
+) -> str:
+    """Return latest stable release applicable to every supported Python version."""
     if PACKAGE_NAME.fullmatch(package) is None:
         raise AuditError(f"unsafe Python package name: {package!r}")
     document = read_json(f"{PYPI_ROOT}/{package}/json")
@@ -457,15 +487,178 @@ def latest_pypi_release(package: str) -> str:
     version = info.get("version") if isinstance(info, dict) else None
     if not isinstance(version, str) or not version.strip():
         raise AuditError(f"PyPI response has no current version for {package}")
-    return version
+    if supported_python_versions is None:
+        return version
+    if (
+        not supported_python_versions
+        or len(supported_python_versions) > 32
+        or not all(
+            isinstance(supported_version, str)
+            and re.fullmatch(r"[0-9]+\.[0-9]+", supported_version) is not None
+            for supported_version in supported_python_versions
+        )
+        or len(set(supported_python_versions)) != len(supported_python_versions)
+    ):
+        raise AuditError("supported Python version matrix is invalid")
+    releases = document.get("releases")
+    if not isinstance(releases, dict) or not releases:
+        raise AuditError(f"PyPI response has no release inventory for {package}")
+    if len(releases) > MAX_PYPI_RELEASES:
+        raise AuditError(
+            f"PyPI release inventory exceeds the {MAX_PYPI_RELEASES}-release limit "
+            f"for {package}"
+        )
+    candidates: list[tuple[Version, str]] = []
+    for release_version, files in releases.items():
+        try:
+            parsed_version = Version(release_version)
+        except (InvalidVersion, TypeError):
+            continue
+        if parsed_version.is_prerelease or parsed_version.is_devrelease:
+            continue
+        if not isinstance(files, list) or len(files) > MAX_PYPI_RELEASE_FILES:
+            raise AuditError(
+                f"PyPI file inventory is invalid for {package} {release_version}"
+            )
+        candidates.append((parsed_version, release_version))
+    total_file_count = 0
+    for parsed_version, release_version in sorted(
+        candidates, key=lambda item: (item[0], item[1]), reverse=True
+    ):
+        files = releases[release_version]
+        total_file_count += len(files)
+        if total_file_count > MAX_TOTAL_PYPI_RELEASE_FILES:
+            raise AuditError(
+                f"PyPI file inventory exceeds the {MAX_TOTAL_PYPI_RELEASE_FILES}-file "
+                f"safety limit for {package}"
+            )
+        compatible = [False] * len(supported_python_versions)
+        for file_info in files:
+            if not isinstance(file_info, dict):
+                raise AuditError(
+                    f"PyPI file metadata is invalid for {package} {release_version}"
+                )
+            yanked = file_info.get("yanked", False)
+            if not isinstance(yanked, (bool, str)):
+                raise AuditError(
+                    f"PyPI yanked metadata is invalid for {package} {release_version}"
+                )
+            if yanked:
+                continue
+            requires_python = file_info.get("requires_python")
+            if requires_python is not None and (
+                not isinstance(requires_python, str) or not requires_python.strip()
+            ):
+                raise AuditError(
+                    f"PyPI Requires-Python metadata is invalid for {package} "
+                    f"{release_version}"
+                )
+            try:
+                specifier = (
+                    SpecifierSet(requires_python)
+                    if requires_python is not None
+                    else None
+                )
+            except InvalidSpecifier as error:
+                raise AuditError(
+                    f"PyPI Requires-Python metadata is invalid for {package} "
+                    f"{release_version}"
+                ) from error
+            for index, supported_version in enumerate(supported_python_versions):
+                if compatible[index]:
+                    continue
+                if specifier is None or specifier.contains(
+                    Version(supported_version), prereleases=True
+                ):
+                    compatible[index] = True
+        if compatible and all(compatible):
+            return str(parsed_version)
+    raise AuditError(
+        f"PyPI has no stable {package} release supporting the repository's "
+        "complete Python matrix"
+    )
 
 
-def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
-    """Inventory all exact pins, including simple Python-version equality markers."""
+def supported_python_versions(repository_root: Path) -> tuple[str, ...] | None:
+    """Read the repository's validated-shape Python matrix when one is present."""
+    relative = Path(".github/python-support.json")
+    path = repository_root / relative
+    try:
+        unsafe_boundary = sync_action_pins._path_has_link_or_reparse(
+            path, repository_root
+        )
+        if not unsafe_boundary:
+            path.lstat()
+    except FileNotFoundError:
+        return None
+    except (OSError, RuntimeError, ValueError) as error:
+        raise AuditError("Python support policy could not be inspected") from error
+    if unsafe_boundary:
+        raise AuditError("Python support policy is linked or unsafe")
+    source = tracked_path(repository_root, relative, kind="Python support policy")
+    try:
+        document = json.loads(
+            read_bounded_utf8(
+                source,
+                MAX_PYTHON_SUPPORT_POLICY_BYTES,
+                kind="Python support policy",
+            ),
+            object_pairs_hook=unique_json_object,
+        )
+    except (UnicodeError, ValueError, RecursionError) as error:
+        raise AuditError("Python support policy is invalid") from error
+    if (
+        not isinstance(document, dict)
+        or set(document) != PYTHON_SUPPORT_POLICY_KEYS
+        or type(document["schema-version"]) is not int
+        or document["schema-version"] != 1
+        or document["implementation"] != "cpython"
+    ):
+        raise AuditError("Python support policy has an invalid schema")
+    versions = document.get("versions")
+    if (
+        not isinstance(versions, list)
+        or not versions
+        or len(versions) > MAX_SUPPORTED_PYTHON_VERSIONS
+        or not all(
+            isinstance(version, str)
+            and re.fullmatch(r"3\.(0|[1-9][0-9]*)", version) is not None
+            and len(version) <= 64
+            for version in versions
+        )
+        or len(set(versions)) != len(versions)
+        or any(
+            int(current.split(".")[1]) != int(previous.split(".")[1]) + 1
+            for previous, current in zip(versions, versions[1:])
+        )
+    ):
+        raise AuditError("Python support policy has an invalid versions matrix")
+    full_coverage_os = document.get("full-coverage-os")
+    boundary_coverage_os = document.get("boundary-coverage-os")
+    if (
+        not isinstance(full_coverage_os, list)
+        or not full_coverage_os
+        or len(full_coverage_os) > len(GITHUB_HOSTED_RUNNERS)
+        or not all(isinstance(runner, str) for runner in full_coverage_os)
+        or len(set(full_coverage_os)) != len(full_coverage_os)
+        or not isinstance(boundary_coverage_os, list)
+        or not boundary_coverage_os
+        or len(boundary_coverage_os) > len(GITHUB_HOSTED_RUNNERS)
+        or not all(isinstance(runner, str) for runner in boundary_coverage_os)
+        or len(set(boundary_coverage_os)) != len(boundary_coverage_os)
+        or not set(full_coverage_os + boundary_coverage_os) <= GITHUB_HOSTED_RUNNERS
+        or set(full_coverage_os) & set(boundary_coverage_os)
+    ):
+        raise AuditError("Python support policy has invalid runner coverage")
+    return tuple(versions)
+
+
+def pinned_requirements(path: Path) -> dict[str, PinnedRequirement]:
+    """Inventory exact pins and preserve markers that scope their applicability."""
     lines = read_bounded_utf8(
         path, MAX_REQUIREMENTS_BYTES, kind="requirements file"
     ).splitlines()
-    pins: dict[str, tuple[str, str]] = {}
+    pins: dict[str, PinnedRequirement] = {}
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped.startswith(("#", "-r", "--requirement", "--hash=")):
@@ -476,18 +669,59 @@ def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
         name = match.group("name")
         key = normalized_name(name)
         version = match.group("version")
+        marker_text = match.group("marker")
+        try:
+            marker = Marker(marker_text.strip()) if marker_text is not None else None
+        except InvalidMarker as error:
+            raise AuditError(
+                f"unsupported environment marker in {path}: {marker_text!r}"
+            ) from error
         previous = pins.get(key)
-        if previous is not None and previous[1] != version:
+        pin = PinnedRequirement(name, version, marker)
+        if previous is not None and previous != pin:
             raise AuditError(f"conflicting direct pins for {name} in {path}")
         if previous is None and len(pins) >= MAX_REQUIREMENT_PINS:
             raise AuditError(
                 "requirements file exceeds the "
                 f"{MAX_REQUIREMENT_PINS}-pin safety cap: {path}"
             )
-        pins[key] = (name, version)
+        pins[key] = pin
     if not pins:
         raise AuditError(f"requirements file has no direct pins: {path}")
     return pins
+
+
+def applicable_python_versions(
+    marker: Marker, supported_versions: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Resolve a marker only when it depends on the declared Python minor."""
+    if (
+        not supported_versions
+        or len(supported_versions) > 32
+        or len(set(supported_versions)) != len(supported_versions)
+        or not all(
+            re.fullmatch(r"[0-9]+\.[0-9]+", version) is not None
+            for version in supported_versions
+        )
+    ):
+        raise AuditError("supported Python version matrix is invalid")
+    marker_text = re.sub(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"", " ", str(marker))
+    variables = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", marker_text))
+    unsupported = variables - {"python_version", "and", "or", "in", "not"}
+    if unsupported:
+        names = ", ".join(sorted(unsupported))
+        raise AuditError(
+            "environment marker cannot be evaluated from the Python support "
+            f"policy (unsupported variables: {names})"
+        )
+    try:
+        return tuple(
+            version
+            for version in supported_versions
+            if marker.evaluate({"python_version": version})
+        )
+    except (KeyError, ValueError) as error:
+        raise AuditError("environment marker could not be evaluated safely") from error
 
 
 def bounded_parallel_lookup(
@@ -921,6 +1155,9 @@ def requirement_findings(
     sources: tuple[RequirementSource, ...],
     latest_lookup: Callable[[str], str],
     errors: list[str] | None = None,
+    *,
+    supported_python_versions: tuple[str, ...] | None = None,
+    latest_python_lookup: Callable[[str, tuple[str, ...]], str] | None = None,
 ) -> list[dict[str, str]]:
     """Compare direct pins without letting one upstream outage hide other reminders."""
     findings: list[dict[str, str]] = []
@@ -928,8 +1165,8 @@ def requirement_findings(
     parsed_sources: list[
         tuple[
             RequirementSource,
-            dict[str, tuple[str, str]],
-            dict[Path, dict[str, tuple[str, str]]],
+            dict[str, PinnedRequirement],
+            dict[Path, dict[str, PinnedRequirement]],
         ]
     ] = []
     for requirement_source in sources:
@@ -949,7 +1186,7 @@ def requirement_findings(
                 "tracked requirements exceed the "
                 f"{MAX_TOTAL_REQUIREMENT_PINS}-pin safety cap"
             )
-        locks: dict[Path, dict[str, tuple[str, str]]] = {}
+        locks: dict[Path, dict[str, PinnedRequirement]] = {}
         for relative in requirement_source.locks:
             try:
                 lock_pins = pinned_requirements(
@@ -969,44 +1206,86 @@ def requirement_findings(
                 locks[relative] = lock_pins
         parsed_sources.append((requirement_source, pins, locks))
 
-    package_names_by_key: dict[str, str] = {}
-    for _, pins, _ in parsed_sources:
-        for key, (name, _) in pins.items():
-            package_names_by_key.setdefault(key, name)
+    lookup_by_pin: dict[tuple[Path, str], tuple[str, tuple[str, ...]] | None] = {}
+    package_names_by_lookup: dict[tuple[str, tuple[str, ...]], str] = {}
+    for requirement_source, pins, _ in parsed_sources:
+        for key, pin in pins.items():
+            lookup_key: tuple[str, tuple[str, ...]] | None
+            if pin.marker is None:
+                lookup_key = (key, ())
+            else:
+                try:
+                    if supported_python_versions is None:
+                        raise AuditError(
+                            "Python support policy is required to evaluate "
+                            "a conditional requirement"
+                        )
+                    applicable_versions = applicable_python_versions(
+                        pin.marker, supported_python_versions
+                    )
+                except AuditError as error:
+                    if errors is None:
+                        raise
+                    errors.append(str(error))
+                    lookup_by_pin[(requirement_source.path, key)] = None
+                    continue
+                lookup_key = (key, applicable_versions) if applicable_versions else None
+            lookup_by_pin[(requirement_source.path, key)] = lookup_key
+            if lookup_key is not None:
+                package_names_by_lookup.setdefault(lookup_key, pin.name)
+
+    def resolve_latest(lookup_key: tuple[str, tuple[str, ...]]) -> str:
+        package = package_names_by_lookup[lookup_key]
+        python_versions = lookup_key[1]
+        if not python_versions:
+            return latest_lookup(package)
+        if latest_python_lookup is None:
+            raise AuditError(
+                "marker-aware PyPI lookup is unavailable for a conditional requirement"
+            )
+        return latest_python_lookup(package, python_versions)
+
     latest_versions, failed_lookups = bounded_parallel_lookup(
-        tuple(package_names_by_key),
-        lambda key: latest_lookup(package_names_by_key[key]),
+        tuple(package_names_by_lookup),
+        resolve_latest,
         error_types=(AuditError,),
         errors=errors,
     )
     for requirement_source, pins, locks in parsed_sources:
-        for key, (name, current) in pins.items():
+        for key, pin in pins.items():
             for lock_relative, lock_pins in locks.items():
                 locked = lock_pins.get(key)
-                if locked is None or locked[1] != current:
+                if (
+                    locked is None
+                    or locked.version != pin.version
+                    or locked.marker != pin.marker
+                ):
                     findings.append(
                         {
                             "kind": "lock-consistency",
                             "path": lock_relative.as_posix(),
-                            "subject": name,
-                            "current": locked[1] if locked is not None else "absent",
-                            "latest": current,
+                            "subject": pin.name,
+                            "current": locked.version
+                            if locked is not None
+                            else "absent",
+                            "latest": pin.version,
                             "details": (
                                 "Must match direct pin in "
                                 f"{requirement_source.path.as_posix()}."
                             ),
                         }
                     )
-            if key in failed_lookups:
+            lookup_key = lookup_by_pin[(requirement_source.path, key)]
+            if lookup_key is None or lookup_key in failed_lookups:
                 continue
-            latest = latest_versions[key]
-            if current != latest:
+            latest = latest_versions[lookup_key]
+            if pin.version != latest:
                 findings.append(
                     {
                         "kind": "python-package",
                         "path": requirement_source.path.as_posix(),
-                        "subject": name,
-                        "current": current,
+                        "subject": pin.name,
+                        "current": pin.version,
                         "latest": latest,
                         "details": "Direct pin differs from PyPI's current release.",
                     }
@@ -1026,6 +1305,20 @@ def audit(
         errors.append(str(error))
         trackers = None
     if trackers is not None:
+        python_versions: tuple[str, ...] | None = None
+        try:
+            python_versions = supported_python_versions(root)
+        except AuditError as error:
+            errors.append(str(error))
+
+        def latest_compatible_python_release(
+            package: str, versions: tuple[str, ...] | None = None
+        ) -> str:
+            versions = versions if versions is not None else python_versions
+            if versions is None:
+                return latest_pypi_release(package)
+            return latest_pypi_release(package, supported_python_versions=versions)
+
         try:
             client = sync_action_pins.GitHubReleaseClient(token)
         except (OSError, ValueError, AuditError) as error:
@@ -1070,8 +1363,10 @@ def audit(
                 requirement_findings(
                     root,
                     trackers.requirement_sources,
-                    latest_pypi_release,
+                    latest_compatible_python_release,
                     errors,
+                    supported_python_versions=python_versions,
+                    latest_python_lookup=latest_compatible_python_release,
                 )
             )
         except AuditError as error:
