@@ -34,7 +34,7 @@ when you ask to set up a new repository's standard files. It:
 - Generates community-health and repository-maintenance files tailored to the project and enabled repository features: README, CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, LICENSE, CODEOWNERS, issue templates, a default PR template plus focused `feature.md`, `bugfix.md`, `documentation.md`, `security.md`, `deployment.md`, and `dependency-update.md` templates, Dependabot, CHANGELOG, `.editorconfig`, `.gitignore`, and `.gitattributes`.
 - For a verified GitHub.com remote, adds deterministic documentation checks, weekly community-health upstream reminders, pull-request and scheduled link checks, a CI workflow tailored to the detected stack, and a release workflow with provenance attestations when the repository is eligible, plus optional ones (release-please, repository-managed CodeQL advanced setup, dependency review, Dependabot and label-gated auto-merge, commitlint, stale, labeler).
 - Configures the verified GitHub.com repository: repository description, classic branch protection, and labels. Existing repository or organization rulesets are inspected as effective policy but are not modified.
-- Produces either English or Vietnamese project-facing content. Before generation, it requires one explicit project-output language choice, `en` or `vi`; active project instructions and existing documentation can inform the choice but do not replace that confirmation.
+- Produces English, Vietnamese, or both. In bilingual mode, the user also chooses the primary language for canonical GitHub files; translated documents are linked sidecars, and issue/PR templates are available in both languages. Canonical upstream legal text follows its verified source-language rules.
 - Creates one shared `AGENTS.md` instruction entry point for supported agents and
   a minimal `CLAUDE.md` adapter that imports it, so Claude Code and agents that
   consume `AGENTS.md` follow the same project guidance without duplicated rules.
@@ -91,10 +91,12 @@ agent:
 
 - "scaffold this repo"
 - "scaffold this repo in English"
+- "scaffold this repo in English and Vietnamese, with English primary"
 - "set up the repo to production standard"
 - "dựng repo chuẩn GitHub bằng tiếng Việt"
+- "dựng repo song ngữ Anh-Việt, lấy tiếng Việt làm ngôn ngữ chính"
 
-The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. Before generation, it asks the user to confirm one supported project language (`en` or `vi`) and applies that choice consistently to documentation, templates, and release metadata. Requests for another language are reported as unsupported by the reviewed assets; the skill does not silently fall back or mix languages. It never overwrites existing files without asking, leaves changes unstaged and uncommitted unless you explicitly request Git operations, and confirms outward-facing actions first.
+The skill activates automatically and walks through: survey → decisions → file generation → workflows → GitHub configuration → handoff → verification. Before generation, it asks the user to choose `en`, `vi`, or both; bilingual output also requires a primary language for canonical GitHub files. The primary language controls fixed-path documents and configuration, while translated documents are linked under `docs/locales/<language>/` and issue/PR templates are separately selectable by locale. Requests for unsupported languages fail closed. The skill does not mix languages in a single file, overwrite existing files without asking, or perform Git operations unless requested; outward-facing actions require confirmation.
 
 For supported adapters, invocation, and generic Agent Skills use, read the
 [agent compatibility guidance](skills/repo-scaffold/references/agent-compatibility.md)

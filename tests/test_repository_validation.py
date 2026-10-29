@@ -7912,7 +7912,7 @@ jobs:
         self.assertIs(config["force-tag-creation"], True)
         self.assertEqual(config["packages"], {".": {}})
 
-    def test_skill_resolves_one_language_per_project(self) -> None:
+    def test_skill_supports_single_or_bilingual_project_output(self) -> None:
         skill = (PLUGIN_ROOT / "skills" / "repo-scaffold" / "SKILL.md").read_text(
             encoding="utf-8"
         )
@@ -7933,51 +7933,93 @@ jobs:
             / "references"
             / "agent-compatibility.md"
         ).read_text(encoding="utf-8")
+        compatibility_vi = (
+            PLUGIN_ROOT
+            / "skills"
+            / "repo-scaffold"
+            / "references"
+            / "agent-compatibility.vi.md"
+        ).read_text(encoding="utf-8")
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         skill_flat = " ".join(skill.split())
         generation_flat = " ".join(generation.split())
         compatibility_flat = " ".join(compatibility.split())
+        compatibility_vi_flat = " ".join(compatibility_vi.split())
         readme_flat = " ".join(readme.split())
 
-        self.assertIn("Before generation, ask the user", skill_flat)
-        self.assertIn("A valid `en` or `vi` answer is required", skill_flat)
+        self.assertIn("ask the user to choose `en`, `vi`, or both", skill_flat)
+        self.assertIn(
+            "require an explicit primary language of `en` or `vi`", skill_flat
+        )
         self.assertIn(
             "reviewed assets currently support only `en` and `vi`", skill_flat
         )
-        self.assertIn("do not silently fall back, mix languages", skill_flat)
-        self.assertIn("Set `SCAFFOLD_LANGUAGE` from the confirmed answer", skill_flat)
         self.assertIn(
-            "Which project-output language should I use, en or vi?", skill_flat
+            "do not silently fall back, mix languages in one file", skill_flat
         )
-        self.assertIn("Before generation, ask", generation_flat)
-        self.assertIn("`SCAFFOLD_LANGUAGE`, either `en` or `vi`", generation_flat)
-        self.assertIn("A valid answer is required", generation_flat)
+        self.assertIn(
+            "Set `SCAFFOLD_LANGUAGES` to the confirmed language set", skill_flat
+        )
+        self.assertIn(
+            "`SCAFFOLD_LANGUAGE` to the confirmed primary language", skill_flat
+        )
+        self.assertIn(
+            "Which project-output language should I use: en, vi, or both?", skill_flat
+        )
+        self.assertIn("Accept only `en`, `vi`, or `both`", generation_flat)
+        self.assertIn(
+            "in `both` mode, require the primary language explicitly", generation_flat
+        )
         self.assertIn(
             "reviewed assets currently support only `en` and `vi`", generation_flat
         )
-        self.assertIn("do not silently fall", generation_flat)
+        self.assertIn("Set `SCAFFOLD_LANGUAGES` to the confirmed set", generation_flat)
+        self.assertIn("`SCAFFOLD_LANGUAGE` to its primary language", generation_flat)
         self.assertIn(
             "Project instructions and existing documentation", generation_flat
         )
-        self.assertIn("Never leave an", generation_flat)
-        self.assertIn("English/Vietnamese hybrid", generation_flat)
+        self.assertIn(
+            "do not combine translations inside a single file", generation_flat
+        )
+        self.assertIn("docs/locales/<secondary-language>/", generation_flat)
+        self.assertIn(
+            "secondary-language README from the same confirmed project facts",
+            generation_flat,
+        )
+        self.assertIn("AGENTS.translation.md", generation_flat)
+        self.assertIn(
+            "Do not use special active basenames such as `AGENTS.md`", generation_flat
+        )
+        self.assertIn("Keep exactly one `config.yml`", generation_flat)
+        self.assertIn("`.github/PULL_REQUEST_TEMPLATE/`", generation_flat)
+        self.assertIn("`template` query parameter", generation_flat)
+        self.assertIn(
+            "do not create an unofficial legal-policy translation", generation_flat
+        )
         self.assertIn("commit, pull-request,", generation_flat)
+        self.assertIn("commit, pull-request, or release text", generation_flat)
         self.assertIn(
-            "or release text created as part of an authorized scaffold", generation_flat
-        )
-        self.assertIn(
-            "ask the user to choose exactly one project-output language",
+            "ask the user to choose `en`, `vi`, or both",
             compatibility_flat,
         )
         self.assertIn(
-            "reviewed assets currently support only `en` and `vi`",
+            "require a primary language for canonical GitHub files",
             compatibility_flat,
         )
-        self.assertIn("does not silently fall back or mix languages", readme_flat)
+        self.assertIn("chọn `en`, `vi` hoặc cả hai", compatibility_vi_flat)
+        self.assertIn("ngôn ngữ chính cho các file GitHub", compatibility_vi_flat)
         self.assertIn(
-            "Before generation, it requires one explicit project-output language choice",
-            readme_flat,
+            "không trộn hai ngôn ngữ trong cùng một file", compatibility_vi_flat
         )
+        self.assertIn("Produces English, Vietnamese, or both", readme_flat)
+        self.assertIn("primary language for canonical GitHub files", readme_flat)
+        self.assertIn("issue/PR templates are available in both languages", readme_flat)
+        self.assertIn("does not mix languages in a single file", readme_flat)
+        self.assertIn(
+            "scaffold this repo in English and Vietnamese, with English primary",
+            readme,
+        )
+        self.assertIn("dựng repo song ngữ Anh-Việt", readme)
         self.assertNotIn(
             "English is the default when no preference exists", readme_flat
         )

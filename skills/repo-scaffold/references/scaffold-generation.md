@@ -105,25 +105,59 @@ CodeQL or code-scanning gate asset creates it.
 The gate polls the Pull Request API for GitHub's mergeable test commit before
 checking CodeQL uploads. Do not substitute the event payload's
 `merge_commit_sha`, which can be absent while GitHub is calculating mergeability.
-For English, use canonical assets. For Vietnamese, render the matching `.vi`
-sidecar to its canonical target name, including `AGENTS.md`, community-health
-files, issue and PR templates, `CITATION.cff`, release config, and
-release-please config. Never leave a locale suffix on a generated target. Keep
-the language-neutral `CLAUDE.md` adapter unchanged so it imports `AGENTS.md`.
+Before generation, ask: "Which project-output language should I use: en, vi, or
+both? If both, which should be primary for canonical GitHub files?" Accept only
+`en`, `vi`, or `both`; in `both` mode, require the primary language explicitly.
+Set `SCAFFOLD_LANGUAGES` to the confirmed set and `SCAFFOLD_LANGUAGE` to its
+primary language. For `en`, use canonical assets. For `vi`, render the matching
+`.vi` sidecar to its canonical target name. Keep the language-neutral
+`CLAUDE.md` adapter unchanged so it imports the canonical `AGENTS.md`.
 
-Render every project-authored, human-facing surface in one
-`SCAFFOLD_LANGUAGE`, either `en` or `vi`: documentation, templates, workflow
-messages, labels, changelog headings, release notes, and commit, pull-request,
-or release text created as part of an authorized scaffold. Before generation, ask
-the user to choose exactly one supported language with: "Which project-output
-language should I use, en or vi?" A valid answer is required even when project
-evidence suggests a language. If the user requests another language, explain that
-the reviewed assets currently support only `en` and `vi`; do not silently fall
-back, mix languages, or generate until the user chooses a supported language or
-stops. Set `SCAFFOLD_LANGUAGE` from the confirmed answer. Project instructions
+In `both` mode, do not combine translations inside a single file. Use the primary
+language for canonical project-authored paths and single-location configuration,
+including `AGENTS.md`, community-health files, `CITATION.cff`, release
+configuration, workflow messages, labels, changelog headings, and authorized
+commit, pull-request, or release text. Canonical upstream legal text follows its
+separate source-language rule below. The primary language also controls
+`.github/ISSUE_TEMPLATE/config.yml` and the default
+`.github/PULL_REQUEST_TEMPLATE.md`.
+
+Generate a secondary-language README from the same confirmed project facts under
+`docs/locales/<secondary-language>/README.md`. Render the other translated
+documents from their reviewed locale assets in that directory, using the names
+`AGENTS.translation.md`, `CONTRIBUTING.translation.md`,
+`SECURITY.translation.md`, `SUPPORT.translation.md`,
+`CHANGELOG.translation.md`, and `GOVERNANCE.translation.md` as applicable. Do not
+use special active basenames such as `AGENTS.md`, `CLAUDE.md`, `SECURITY.md`, or
+`CONTRIBUTING.md` in that directory. Add language links in the root README and in
+each generated canonical document that has a translation. Do not create inactive
+locale copies of `CITATION.cff`, release configuration, or workflow files. Keep the
+`CODE_OF_CONDUCT` and other canonical upstream text in its verified source language
+unless a reviewed translation exists; do not create an unofficial legal-policy
+translation.
+
+When both locales are selected, provide both translations as distinct GitHub
+templates. Put issue forms under `.github/ISSUE_TEMPLATE/` with locale-prefixed
+filenames such as `en-bug-report.yml` and `vi-bug-report.yml`, preserving each
+asset's localized `name` and `description`. Keep exactly one `config.yml`, rendered
+in the primary language; never copy `config.vi.yml` as an extra issue form. Keep
+the primary default PR template at `.github/PULL_REQUEST_TEMPLATE.md`. Put both
+locales of each focused PR template and the secondary default template in
+`.github/PULL_REQUEST_TEMPLATE/` with locale-prefixed names, such as
+`en-feature.md`, `vi-feature.md`, and `vi-default.md`. GitHub supports multiple
+issue templates in `.github/ISSUE_TEMPLATE/` and multiple PR templates in a
+`PULL_REQUEST_TEMPLATE/` subdirectory; PR variants are selected with GitHub's
+`template` query parameter. Do not imply that the default PR body automatically
+offers a language chooser.
+
+For a single-language selection, preserve the existing behavior: render all
+project-authored human-facing content in `SCAFFOLD_LANGUAGE`, and do not create
+alternate-language outputs. If another language is requested, explain that the
+reviewed assets currently support only `en` and `vi`; do not silently fall back or
+generate until the user selects a supported option or stops. Project instructions
 and existing documentation may inform the recommendation but may not replace this
-confirmation. Never leave an English/Vietnamese hybrid, and do not infer English
-from identifiers or technical literals.
+confirmation. Do not infer English from identifiers or technical literals. A
+multilingual project uses separate linked files; it must not leave a hybrid file.
 
 For the freshness workflow, keep the English asset for `en`. For `vi`, render
 the same canonical `.github/workflows/freshness.yml` using YAML data, add exactly
@@ -156,7 +190,9 @@ Library calls preserve caller-supplied text streams.
 | `Freshness checker was indeterminate; no reminder issue was changed.` | `Checker freshness chưa xác định được kết quả; không thay đổi issue nhắc bảo trì.` |
 | `The scheduled freshness audit is clean, so this reminder is closing automatically.` | `Kiểm tra freshness định kỳ không phát hiện đầu vào lỗi thời, nên tự động đóng issue nhắc bảo trì này.` |
 
-The Vietnamese mappings are:
+The following Vietnamese mappings are canonical targets for single-language `vi`
+or when `vi` is the primary language. In `both` mode, use these mappings for the
+primary target and the secondary-language paths described above for translations:
 
 - `AGENTS.vi.md` → `AGENTS.md`
 - `CONTRIBUTING.vi.md` → `CONTRIBUTING.md`
