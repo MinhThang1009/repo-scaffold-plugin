@@ -505,6 +505,7 @@ class FreshnessTests(unittest.TestCase):
                 _sources: Any,
                 lookup: Any,
                 _errors: list[str],
+                **_kwargs: Any,
             ) -> list[dict[str, str]]:
                 lookup("coverage")
                 return []
@@ -554,7 +555,7 @@ class FreshnessTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            report = run_audit(lambda *_args: [])
+            report = run_audit(lambda *_args, **_kwargs: [])
             self.assertEqual(report["status"], "indeterminate")
             self.assertIn(
                 "Python support policy has an invalid schema", report["errors"]
@@ -608,11 +609,13 @@ class FreshnessTests(unittest.TestCase):
             path = Path(directory) / "requirements.in"
             path.write_text("ruff==1.0.0\n", encoding="utf-8")
             self.assertEqual(
-                freshness.pinned_requirements(path), {"ruff": ("ruff", "1.0.0")}
+                freshness.pinned_requirements(path),
+                {"ruff": freshness.PinnedRequirement("ruff", "1.0.0", None)},
             )
             path.write_text("ruff==1.0.0  # retained rationale\n", encoding="utf-8")
             self.assertEqual(
-                freshness.pinned_requirements(path), {"ruff": ("ruff", "1.0.0")}
+                freshness.pinned_requirements(path),
+                {"ruff": freshness.PinnedRequirement("ruff", "1.0.0", None)},
             )
             for content, message in (
                 ("", "no direct pins"),
@@ -652,7 +655,15 @@ class FreshnessTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         freshness.pinned_requirements(path),
-                        {"example-package": ("example-package", "1.2.3")},
+                        {
+                            "example-package": freshness.PinnedRequirement(
+                                "example-package",
+                                "1.2.3",
+                                freshness.Marker('python_version == "3.13"')
+                                if "3.13" in suffix
+                                else freshness.Marker("python_version == '3.10'"),
+                            )
+                        },
                     )
             for suffix in (
                 "; python_version == 3.13",
@@ -1267,6 +1278,104 @@ class FreshnessTests(unittest.TestCase):
                     freshness.requirement_findings(
                         root, source_with_lock, latest_lookup
                     )
+
+    def test_requirement_findings_scopes_marked_pins_and_checks_lock_markers(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "requirements.in"
+            lock = root / "requirements.txt"
+            pin = 'PyYAML-ft==8.0.0 ; python_version == "3.13"\n'
+            source.write_text(pin, encoding="utf-8")
+            lock.write_text(pin, encoding="utf-8")
+            sources = (
+                freshness.RequirementSource(
+                    source.relative_to(root), (lock.relative_to(root),)
+                ),
+            )
+            matrix = ("3.10", "3.11", "3.12", "3.13", "3.14", "3.15")
+            calls: list[tuple[str, tuple[str, ...]]] = []
+
+            def latest_lookup(name: str) -> str:
+                self.fail(f"unscoped lookup used for conditional package {name}")
+
+            def latest_python_lookup(name: str, versions: tuple[str, ...]) -> str:
+                calls.append((name, versions))
+                return "8.0.0"
+
+            findings = freshness.requirement_findings(
+                root,
+                sources,
+                latest_lookup,
+                supported_python_versions=matrix,
+                latest_python_lookup=latest_python_lookup,
+            )
+            self.assertEqual(findings, [])
+            self.assertEqual(calls, [("PyYAML-ft", ("3.13",))])
+
+            lock.write_text(
+                'PyYAML-ft==8.0.0 ; python_version >= "3.13"\n',
+                encoding="utf-8",
+            )
+            findings = freshness.requirement_findings(
+                root,
+                sources,
+                latest_lookup,
+                supported_python_versions=matrix,
+                latest_python_lookup=latest_python_lookup,
+            )
+            self.assertEqual([item["kind"] for item in findings], ["lock-consistency"])
+
+    def test_requirement_findings_skips_not_applicable_and_fails_closed_for_unknown_markers(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "requirements.in"
+            source.write_text(
+                'future-package==1.0.0 ; python_version >= "4.0"\n',
+                encoding="utf-8",
+            )
+            sources = (freshness.RequirementSource(source.relative_to(root), ()),)
+            matrix = ("3.10", "3.11", "3.12", "3.13", "3.14", "3.15")
+            calls: list[str] = []
+
+            def latest_lookup(name: str) -> str:
+                calls.append(name)
+                return "1.0.0"
+
+            self.assertEqual(
+                freshness.requirement_findings(
+                    root,
+                    sources,
+                    latest_lookup,
+                    supported_python_versions=matrix,
+                    latest_python_lookup=lambda name, _versions: latest_lookup(name),
+                ),
+                [],
+            )
+            self.assertEqual(calls, [])
+
+            source.write_text(
+                'future-package==1.0.0 ; sys_platform == "linux"\n',
+                encoding="utf-8",
+            )
+            errors: list[str] = []
+            self.assertEqual(
+                freshness.requirement_findings(
+                    root,
+                    sources,
+                    latest_lookup,
+                    errors,
+                    supported_python_versions=matrix,
+                    latest_python_lookup=lambda name, _versions: latest_lookup(name),
+                ),
+                [],
+            )
+            self.assertEqual(calls, [])
+            self.assertEqual(len(errors), 1)
+            self.assertIn("unsupported variables: sys_platform", errors[0])
 
     def test_requirement_findings_normalizes_package_lookup_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

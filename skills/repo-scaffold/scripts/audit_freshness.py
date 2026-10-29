@@ -20,6 +20,7 @@ from typing import Any, Hashable, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from packaging.markers import InvalidMarker, Marker
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
@@ -62,7 +63,7 @@ FRESHNESS_CODE_SCANNING_ALLOWLIST_KEYS = frozenset({"schema-version", "allowlist
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 PINNED_REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\#;]+)"
-    r"""(?:[ \t]*;[ \t]*python_version[ \t]*==[ \t]*(?P<quote>['"])[0-9]+\.[0-9]+(?P=quote))?"""
+    r"(?:[ \t]*;[ \t]*(?P<marker>.+?))?"
     r"(?:\s+\\)?(?:[ \t]+#[^\r\n]*)?\Z"
 )
 RELEASE_PLEASE_SCHEMA = re.compile(
@@ -129,6 +130,15 @@ class RequirementSource:
 
     path: Path
     locks: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class PinnedRequirement:
+    """One exact package pin and its validated PEP 508 environment marker."""
+
+    name: str
+    version: str
+    marker: Marker | None
 
 
 @dataclass(frozen=True)
@@ -643,12 +653,12 @@ def supported_python_versions(repository_root: Path) -> tuple[str, ...] | None:
     return tuple(versions)
 
 
-def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
-    """Inventory all exact pins, including simple Python-version equality markers."""
+def pinned_requirements(path: Path) -> dict[str, PinnedRequirement]:
+    """Inventory exact pins and preserve markers that scope their applicability."""
     lines = read_bounded_utf8(
         path, MAX_REQUIREMENTS_BYTES, kind="requirements file"
     ).splitlines()
-    pins: dict[str, tuple[str, str]] = {}
+    pins: dict[str, PinnedRequirement] = {}
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped.startswith(("#", "-r", "--requirement", "--hash=")):
@@ -659,18 +669,59 @@ def pinned_requirements(path: Path) -> dict[str, tuple[str, str]]:
         name = match.group("name")
         key = normalized_name(name)
         version = match.group("version")
+        marker_text = match.group("marker")
+        try:
+            marker = Marker(marker_text.strip()) if marker_text is not None else None
+        except InvalidMarker as error:
+            raise AuditError(
+                f"unsupported environment marker in {path}: {marker_text!r}"
+            ) from error
         previous = pins.get(key)
-        if previous is not None and previous[1] != version:
+        pin = PinnedRequirement(name, version, marker)
+        if previous is not None and previous != pin:
             raise AuditError(f"conflicting direct pins for {name} in {path}")
         if previous is None and len(pins) >= MAX_REQUIREMENT_PINS:
             raise AuditError(
                 "requirements file exceeds the "
                 f"{MAX_REQUIREMENT_PINS}-pin safety cap: {path}"
             )
-        pins[key] = (name, version)
+        pins[key] = pin
     if not pins:
         raise AuditError(f"requirements file has no direct pins: {path}")
     return pins
+
+
+def applicable_python_versions(
+    marker: Marker, supported_versions: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Resolve a marker only when it depends on the declared Python minor."""
+    if (
+        not supported_versions
+        or len(supported_versions) > 32
+        or len(set(supported_versions)) != len(supported_versions)
+        or not all(
+            re.fullmatch(r"[0-9]+\.[0-9]+", version) is not None
+            for version in supported_versions
+        )
+    ):
+        raise AuditError("supported Python version matrix is invalid")
+    marker_text = re.sub(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"", " ", str(marker))
+    variables = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", marker_text))
+    unsupported = variables - {"python_version", "and", "or", "in", "not"}
+    if unsupported:
+        names = ", ".join(sorted(unsupported))
+        raise AuditError(
+            "environment marker cannot be evaluated from the Python support "
+            f"policy (unsupported variables: {names})"
+        )
+    try:
+        return tuple(
+            version
+            for version in supported_versions
+            if marker.evaluate({"python_version": version})
+        )
+    except (KeyError, ValueError) as error:
+        raise AuditError("environment marker could not be evaluated safely") from error
 
 
 def bounded_parallel_lookup(
@@ -1104,6 +1155,9 @@ def requirement_findings(
     sources: tuple[RequirementSource, ...],
     latest_lookup: Callable[[str], str],
     errors: list[str] | None = None,
+    *,
+    supported_python_versions: tuple[str, ...] | None = None,
+    latest_python_lookup: Callable[[str, tuple[str, ...]], str] | None = None,
 ) -> list[dict[str, str]]:
     """Compare direct pins without letting one upstream outage hide other reminders."""
     findings: list[dict[str, str]] = []
@@ -1111,8 +1165,8 @@ def requirement_findings(
     parsed_sources: list[
         tuple[
             RequirementSource,
-            dict[str, tuple[str, str]],
-            dict[Path, dict[str, tuple[str, str]]],
+            dict[str, PinnedRequirement],
+            dict[Path, dict[str, PinnedRequirement]],
         ]
     ] = []
     for requirement_source in sources:
@@ -1132,7 +1186,7 @@ def requirement_findings(
                 "tracked requirements exceed the "
                 f"{MAX_TOTAL_REQUIREMENT_PINS}-pin safety cap"
             )
-        locks: dict[Path, dict[str, tuple[str, str]]] = {}
+        locks: dict[Path, dict[str, PinnedRequirement]] = {}
         for relative in requirement_source.locks:
             try:
                 lock_pins = pinned_requirements(
@@ -1152,44 +1206,86 @@ def requirement_findings(
                 locks[relative] = lock_pins
         parsed_sources.append((requirement_source, pins, locks))
 
-    package_names_by_key: dict[str, str] = {}
-    for _, pins, _ in parsed_sources:
-        for key, (name, _) in pins.items():
-            package_names_by_key.setdefault(key, name)
+    lookup_by_pin: dict[tuple[Path, str], tuple[str, tuple[str, ...]] | None] = {}
+    package_names_by_lookup: dict[tuple[str, tuple[str, ...]], str] = {}
+    for requirement_source, pins, _ in parsed_sources:
+        for key, pin in pins.items():
+            lookup_key: tuple[str, tuple[str, ...]] | None
+            if pin.marker is None:
+                lookup_key = (key, ())
+            else:
+                try:
+                    if supported_python_versions is None:
+                        raise AuditError(
+                            "Python support policy is required to evaluate "
+                            "a conditional requirement"
+                        )
+                    applicable_versions = applicable_python_versions(
+                        pin.marker, supported_python_versions
+                    )
+                except AuditError as error:
+                    if errors is None:
+                        raise
+                    errors.append(str(error))
+                    lookup_by_pin[(requirement_source.path, key)] = None
+                    continue
+                lookup_key = (key, applicable_versions) if applicable_versions else None
+            lookup_by_pin[(requirement_source.path, key)] = lookup_key
+            if lookup_key is not None:
+                package_names_by_lookup.setdefault(lookup_key, pin.name)
+
+    def resolve_latest(lookup_key: tuple[str, tuple[str, ...]]) -> str:
+        package = package_names_by_lookup[lookup_key]
+        python_versions = lookup_key[1]
+        if not python_versions:
+            return latest_lookup(package)
+        if latest_python_lookup is None:
+            raise AuditError(
+                "marker-aware PyPI lookup is unavailable for a conditional requirement"
+            )
+        return latest_python_lookup(package, python_versions)
+
     latest_versions, failed_lookups = bounded_parallel_lookup(
-        tuple(package_names_by_key),
-        lambda key: latest_lookup(package_names_by_key[key]),
+        tuple(package_names_by_lookup),
+        resolve_latest,
         error_types=(AuditError,),
         errors=errors,
     )
     for requirement_source, pins, locks in parsed_sources:
-        for key, (name, current) in pins.items():
+        for key, pin in pins.items():
             for lock_relative, lock_pins in locks.items():
                 locked = lock_pins.get(key)
-                if locked is None or locked[1] != current:
+                if (
+                    locked is None
+                    or locked.version != pin.version
+                    or locked.marker != pin.marker
+                ):
                     findings.append(
                         {
                             "kind": "lock-consistency",
                             "path": lock_relative.as_posix(),
-                            "subject": name,
-                            "current": locked[1] if locked is not None else "absent",
-                            "latest": current,
+                            "subject": pin.name,
+                            "current": locked.version
+                            if locked is not None
+                            else "absent",
+                            "latest": pin.version,
                             "details": (
                                 "Must match direct pin in "
                                 f"{requirement_source.path.as_posix()}."
                             ),
                         }
                     )
-            if key in failed_lookups:
+            lookup_key = lookup_by_pin[(requirement_source.path, key)]
+            if lookup_key is None or lookup_key in failed_lookups:
                 continue
-            latest = latest_versions[key]
-            if current != latest:
+            latest = latest_versions[lookup_key]
+            if pin.version != latest:
                 findings.append(
                     {
                         "kind": "python-package",
                         "path": requirement_source.path.as_posix(),
-                        "subject": name,
-                        "current": current,
+                        "subject": pin.name,
+                        "current": pin.version,
                         "latest": latest,
                         "details": "Direct pin differs from PyPI's current release.",
                     }
@@ -1215,12 +1311,13 @@ def audit(
         except AuditError as error:
             errors.append(str(error))
 
-        def latest_compatible_python_release(package: str) -> str:
-            if python_versions is None:
+        def latest_compatible_python_release(
+            package: str, versions: tuple[str, ...] | None = None
+        ) -> str:
+            versions = versions if versions is not None else python_versions
+            if versions is None:
                 return latest_pypi_release(package)
-            return latest_pypi_release(
-                package, supported_python_versions=python_versions
-            )
+            return latest_pypi_release(package, supported_python_versions=versions)
 
         try:
             client = sync_action_pins.GitHubReleaseClient(token)
@@ -1268,6 +1365,8 @@ def audit(
                     trackers.requirement_sources,
                     latest_compatible_python_release,
                     errors,
+                    supported_python_versions=python_versions,
+                    latest_python_lookup=latest_compatible_python_release,
                 )
             )
         except AuditError as error:
