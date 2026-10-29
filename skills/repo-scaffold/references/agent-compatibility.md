@@ -121,9 +121,11 @@ the scaffold workflow or create agent-specific language variants.
 ## Language policy
 
 Agent-facing compatibility documentation is available in English and Vietnamese.
-For every target repository, ask the user to choose exactly one project-output
-language before generation. The reviewed assets currently support only `en` and
-`vi`; if another language is requested, explain the limitation and wait for an
-`en` or `vi` choice, or stop. Do not silently fall back or mix languages. The
-confirmed choice affects generated project-facing files, not the selected agent
-adapter.
+For every target repository, ask the user to choose `en`, `vi`, or both before
+generation. When both are selected, require a primary language for canonical
+GitHub files. The reviewed assets currently support only `en` and `vi`; if another
+language is requested, explain the limitation and wait for a supported choice, or
+stop. In both mode, keep canonical files in the primary language, provide linked
+secondary-language document translations and locale-specific issue/PR templates,
+and do not combine languages inside one file. The language selection does not
+change the shared `AGENTS.md` and `CLAUDE.md` host-adapter contract.

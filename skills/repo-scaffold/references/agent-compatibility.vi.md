@@ -123,8 +123,10 @@ hoặc tạo biến thể ngôn ngữ riêng cho từng agent.
 
 ## Chính sách ngôn ngữ
 
-Với mỗi repository đích, hãy hỏi user chọn đúng một ngôn ngữ đầu ra trước khi
-dựng. Các asset đã review hiện chỉ hỗ trợ `en` và `vi`; nếu user yêu cầu ngôn
-ngữ khác, hãy giải thích giới hạn và chờ user chọn `en` hoặc `vi`, hoặc dừng.
-Không tự động fallback hoặc trộn ngôn ngữ. Lựa chọn đã xác nhận ảnh hưởng file
-hướng tới người dùng của dự án, không ảnh hưởng adapter agent.
+Với mỗi repository đích, hãy hỏi user chọn `en`, `vi` hoặc cả hai trước khi dựng.
+Nếu chọn cả hai, phải xác nhận ngôn ngữ chính cho các file GitHub có đường dẫn cố
+định. Asset đã review hiện chỉ hỗ trợ `en` và `vi`; nếu user yêu cầu ngôn ngữ khác,
+hãy giải thích giới hạn và chờ lựa chọn được hỗ trợ hoặc dừng. Khi chọn cả hai, giữ
+các file chuẩn bằng ngôn ngữ chính, tạo bản dịch tài liệu có liên kết và issue/PR
+template riêng theo ngôn ngữ; không trộn hai ngôn ngữ trong cùng một file. Lựa chọn
+ngôn ngữ không thay đổi contract dùng chung của `AGENTS.md` và adapter `CLAUDE.md`.
