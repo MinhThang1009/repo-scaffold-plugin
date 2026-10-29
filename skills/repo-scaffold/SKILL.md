@@ -13,8 +13,8 @@ Follow the active host, system, developer, and project instructions. Codex can u
 `AGENTS.md`; Claude Code reads `CLAUDE.md`, and v2.1.277 and later can also read
 `AGENTS.md` directly. A `CLAUDE.md` import remains useful for compatibility. Read
 `references/agent-compatibility.md` for host-specific guidance. Before generation,
-ask the user to choose exactly one supported scaffold language, `en` or `vi`, and
-use it consistently.
+ask the user to choose `en`, `vi`, or both. When both are selected, also confirm
+which language is primary for canonical host-managed files.
 
 ## Core principles
 
@@ -54,14 +54,17 @@ security-policy commitments, and optional community features. Preserve existing
 settings and confirm a default branch when the remote does not establish one.
 
 Before making any generation decision, ask the user: "Which project-output
-language should I use, en or vi?" A valid `en` or `vi` answer is required before
-generation, even when project evidence suggests a language. If the user requests
-another language, explain that the reviewed assets currently support only `en` and
-`vi`; do not silently fall back, mix languages, or generate until the user chooses
-a supported language or stops. Set `SCAFFOLD_LANGUAGE` from the confirmed answer.
-Project instructions and existing documentation may inform the recommendation but
-may not replace this confirmation. Do not infer English from identifiers or
-technical literals.
+language should I use: en, vi, or both? If both, which should be primary for
+canonical GitHub files?" Require an explicit `en`, `vi`, or `both` choice before
+generation, even when project evidence suggests a language. If `both` is selected,
+require an explicit primary language of `en` or `vi`. Set `SCAFFOLD_LANGUAGES` to
+the confirmed language set and `SCAFFOLD_LANGUAGE` to the confirmed primary
+language. If the user requests another language, explain that reviewed assets
+currently support only `en` and `vi`; do not silently fall back, mix languages in
+one file, or generate until the user selects a supported option or stops. Project
+instructions and existing documentation may inform the recommendation but may not
+replace this confirmation. Do not infer English from identifiers or technical
+literals.
 
 ### 3. Generate files
 
