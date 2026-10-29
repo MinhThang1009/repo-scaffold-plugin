@@ -719,7 +719,7 @@ class MutationCacheTests(unittest.TestCase):
                 "[tool.mutmut]\npaths_to_mutate = ['scripts']\n", encoding="utf-8"
             ),
             lambda root: (root / "requirements-mutation.txt").write_text(
-                "mutmut==3.8.0\n", encoding="utf-8"
+                "mutmut==3.8.1\n", encoding="utf-8"
             ),
             lambda root: (root / ".github/workflows/mutation-testing.yml").write_text(
                 "name: Changed mutation testing\n", encoding="utf-8"
