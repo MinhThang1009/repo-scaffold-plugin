@@ -7948,18 +7948,28 @@ jobs:
         readme_flat = " ".join(readme.split())
 
         self.assertIn("ask the user to choose `en`, `vi`, or both", skill_flat)
-        self.assertIn("require an explicit primary language of `en` or `vi`", skill_flat)
+        self.assertIn(
+            "require an explicit primary language of `en` or `vi`", skill_flat
+        )
         self.assertIn(
             "reviewed assets currently support only `en` and `vi`", skill_flat
         )
-        self.assertIn("do not silently fall back, mix languages in one file", skill_flat)
-        self.assertIn("Set `SCAFFOLD_LANGUAGES` to the confirmed language set", skill_flat)
-        self.assertIn("`SCAFFOLD_LANGUAGE` to the confirmed primary language", skill_flat)
+        self.assertIn(
+            "do not silently fall back, mix languages in one file", skill_flat
+        )
+        self.assertIn(
+            "Set `SCAFFOLD_LANGUAGES` to the confirmed language set", skill_flat
+        )
+        self.assertIn(
+            "`SCAFFOLD_LANGUAGE` to the confirmed primary language", skill_flat
+        )
         self.assertIn(
             "Which project-output language should I use: en, vi, or both?", skill_flat
         )
         self.assertIn("Accept only `en`, `vi`, or `both`", generation_flat)
-        self.assertIn("in `both` mode, require the primary language explicitly", generation_flat)
+        self.assertIn(
+            "in `both` mode, require the primary language explicitly", generation_flat
+        )
         self.assertIn(
             "reviewed assets currently support only `en` and `vi`", generation_flat
         )
@@ -7968,18 +7978,24 @@ jobs:
         self.assertIn(
             "Project instructions and existing documentation", generation_flat
         )
-        self.assertIn("do not combine translations inside a single file", generation_flat)
+        self.assertIn(
+            "do not combine translations inside a single file", generation_flat
+        )
         self.assertIn("docs/locales/<secondary-language>/", generation_flat)
         self.assertIn(
             "secondary-language README from the same confirmed project facts",
             generation_flat,
         )
         self.assertIn("AGENTS.translation.md", generation_flat)
-        self.assertIn("Do not use special active basenames such as `AGENTS.md`", generation_flat)
+        self.assertIn(
+            "Do not use special active basenames such as `AGENTS.md`", generation_flat
+        )
         self.assertIn("Keep exactly one `config.yml`", generation_flat)
         self.assertIn("`.github/PULL_REQUEST_TEMPLATE/`", generation_flat)
         self.assertIn("`template` query parameter", generation_flat)
-        self.assertIn("do not create an unofficial legal-policy translation", generation_flat)
+        self.assertIn(
+            "do not create an unofficial legal-policy translation", generation_flat
+        )
         self.assertIn("commit, pull-request,", generation_flat)
         self.assertIn("commit, pull-request, or release text", generation_flat)
         self.assertIn(
@@ -7992,7 +8008,9 @@ jobs:
         )
         self.assertIn("chọn `en`, `vi` hoặc cả hai", compatibility_vi_flat)
         self.assertIn("ngôn ngữ chính cho các file GitHub", compatibility_vi_flat)
-        self.assertIn("không trộn hai ngôn ngữ trong cùng một file", compatibility_vi_flat)
+        self.assertIn(
+            "không trộn hai ngôn ngữ trong cùng một file", compatibility_vi_flat
+        )
         self.assertIn("Produces English, Vietnamese, or both", readme_flat)
         self.assertIn("primary language for canonical GitHub files", readme_flat)
         self.assertIn("issue/PR templates are available in both languages", readme_flat)
