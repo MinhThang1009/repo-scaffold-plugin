@@ -181,7 +181,7 @@ Mọi thay đổi đáng chú ý của `repo-scaffold` được ghi lại trong 
 
 * **ci:** gắn code scanning với snapshot của PR ([baa3a8f](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/baa3a8fd2ef5009c2942d34eac5008b0853f2926))
 * **ci:** xử lý các phân tích merge tương đương ([#69](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/69)) ([baa3a8f](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/baa3a8fd2ef5009c2942d34eac5008b0853f2926))
-* **ci:** gỡ chặn cổng code-scanning ([#68](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/68)) ([70b6372](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/70b6372efa287576051c82a2d981cf2b86c07961d))
+* **ci:** gỡ chặn cổng code-scanning ([#68](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/68)) ([70b6372](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/70b6372efa287576051c82a2d981cf2b86c07961))
 
 ## [1.7.2](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.7.1...v1.7.2) (2026-08-24)
 
