@@ -4008,17 +4008,23 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
                 ".github/workflows/ci.yml: prepare_ci must load the centralized policy"
             )
         expected_matrix = "${{ fromJSON(needs.prepare_ci.outputs.matrix) }}"
+        expected_test_name = (
+            "test (${{ matrix.os }}, Python ${{ matrix.python-version }}, "
+            "shard ${{ matrix.test-shard }})"
+        )
         test_steps = test.get("steps") if isinstance(test, dict) else None
         test_run = isinstance(test_steps, list) and any(
             required_ci_execution_is_safe(step)
             and required_ci_command_context_is_safe(workflow, test, step)
-            and step.get("run") == "python scripts/run_tests.py suite"
+            and step.get("env")
+            == {"REPO_SCAFFOLD_TEST_SHARD": "${{ matrix.test-shard }}"}
+            and step.get("run")
+            == 'python scripts/run_tests.py suite --shard "$REPO_SCAFFOLD_TEST_SHARD"'
             for step in test_steps
         )
         if (
             not isinstance(test, dict)
             or not required_ci_execution_is_safe(test)
-            or not test_run
             or test.get("needs") != "prepare_ci"
             or test.get("runs-on") != "${{ matrix.os }}"
             or not isinstance(test.get("strategy"), dict)
@@ -4027,6 +4033,15 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
             problems.append(
                 ".github/workflows/ci.yml: test matrix must come from prepare_ci "
                 "and runs-on must use matrix.os"
+            )
+        if (
+            not test_run
+            or not isinstance(test, dict)
+            or test.get("name") != expected_test_name
+        ):
+            problems.append(
+                ".github/workflows/ci.yml: test jobs must name and pass their "
+                "matrix shard to the guarded runner"
             )
         quality_steps = quality.get("steps") if isinstance(quality, dict) else None
         if (
@@ -4145,7 +4160,7 @@ def validate_python_support_contract(repository_root: Path) -> list[str]:
                 "test",
                 "${{ matrix.python-version }}",
                 "requirements-dev.txt",
-                "python scripts/run_tests.py suite",
+                'python scripts/run_tests.py suite --shard "$REPO_SCAFFOLD_TEST_SHARD"',
             ),
             (
                 "quality",

@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.test_shards import ALL_TEST_SHARD, WINDOWS_TEST_SHARDS
+
 
 POLICY_FIELDS = {
     "schema-version",
@@ -151,20 +156,29 @@ def load_policy(path: Path) -> PythonSupportPolicy:
 
 
 def build_matrix(policy: PythonSupportPolicy) -> dict[str, list[dict[str, str]]]:
-    """Build full primary-OS coverage plus boundary-only secondary coverage."""
-    include = [
-        {"os": runner, "python-version": version}
-        for runner in policy.full_coverage_os
-        for version in policy.versions
-    ]
+    """Build the runtime matrix, splitting Windows test execution by shard."""
+    include: list[dict[str, str]] = []
+    for runner in policy.full_coverage_os:
+        for version in policy.versions:
+            shards = (
+                WINDOWS_TEST_SHARDS if runner == "windows-latest" else (ALL_TEST_SHARD,)
+            )
+            include.extend(
+                {"os": runner, "python-version": version, "test-shard": shard}
+                for shard in shards
+            )
     boundary_versions: tuple[str, ...] = (policy.versions[0],)
     if policy.latest != policy.versions[0]:
         boundary_versions += (policy.latest,)
-    include.extend(
-        {"os": runner, "python-version": version}
-        for runner in policy.boundary_coverage_os
-        for version in boundary_versions
-    )
+    for runner in policy.boundary_coverage_os:
+        for version in boundary_versions:
+            shards = (
+                WINDOWS_TEST_SHARDS if runner == "windows-latest" else (ALL_TEST_SHARD,)
+            )
+            include.extend(
+                {"os": runner, "python-version": version, "test-shard": shard}
+                for shard in shards
+            )
     return {"include": include}
 
 

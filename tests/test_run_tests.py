@@ -13,7 +13,7 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-from scripts import run_tests
+from scripts import run_tests, test_shards
 
 
 class RunTestsTests(unittest.TestCase):
@@ -208,7 +208,79 @@ class RunTestsTests(unittest.TestCase):
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
             run_tests.parse_args([])
         self.assertEqual(raised.exception.code, 2)
-        self.assertEqual(run_tests.parse_args(["suite"]).tests, ["tests"])
+        self.assertEqual(run_tests.parse_args(["suite"]).tests, [])
+
+    def test_suite_shard_uses_guarded_runner_and_exact_selected_paths(self) -> None:
+        selected = ("tests/test_run_tests_native.py",)
+        with (
+            mock.patch.object(
+                test_shards,
+                "suite_test_paths",
+                return_value=selected,
+            ) as resolve_shard,
+            mock.patch.object(
+                run_tests.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ) as execute,
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_tests.main(["suite", "--shard", "native-runner"]), 0)
+
+        resolve_shard.assert_called_once_with(
+            run_tests.REPOSITORY_ROOT, "native-runner"
+        )
+        self.assertEqual(execute.call_args.args[0][-1], selected[0])
+        self.assertEqual(
+            output.getvalue(), "Pytest suite shard native-runner: 1 test files\n"
+        )
+
+    def test_all_suite_shard_keeps_the_full_tests_root(self) -> None:
+        with (
+            mock.patch.object(
+                test_shards, "suite_test_paths", return_value=("tests",)
+            ) as resolve_shard,
+            mock.patch.object(
+                run_tests.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ) as execute,
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_tests.main(["suite", "--shard", "all"]), 0)
+
+        resolve_shard.assert_called_once_with(run_tests.REPOSITORY_ROOT, "all")
+        self.assertEqual(execute.call_args.args[0][-1], "tests")
+        self.assertEqual(output.getvalue(), "Pytest suite: tests\n")
+
+    def test_invalid_suite_shard_fails_before_pytest_starts(self) -> None:
+        with (
+            mock.patch.object(
+                test_shards,
+                "suite_test_paths",
+                side_effect=ValueError("test inventory is invalid"),
+            ),
+            mock.patch.object(run_tests.subprocess, "run") as execute,
+            redirect_stderr(StringIO()) as errors,
+        ):
+            self.assertEqual(run_tests.main(["suite", "--shard", "remainder"]), 2)
+
+        execute.assert_not_called()
+        self.assertIn("test inventory is invalid", errors.getvalue())
+
+    def test_suite_rejects_explicit_paths_combined_with_a_shard(self) -> None:
+        with (
+            mock.patch.object(run_tests.subprocess, "run") as execute,
+            redirect_stderr(StringIO()) as errors,
+        ):
+            self.assertEqual(
+                run_tests.main(
+                    ["suite", "tests/test_run_tests.py", "--shard", "remainder"]
+                ),
+                2,
+            )
+        execute.assert_not_called()
+        self.assertIn("cannot be combined", errors.getvalue())
 
     def test_command_help_distinguishes_feedback_from_final_verification(self) -> None:
         expected_arguments = {
@@ -243,6 +315,14 @@ class RunTestsTests(unittest.TestCase):
                     " ".join(options.split()),
                     "-h, --help show this help message and exit "
                     "--source SOURCE Python file to report coverage for",
+                )
+            elif mode == "suite":
+                options = blocks[-1].split("\n", 1)[1]
+                self.assertEqual(
+                    " ".join(options.split()),
+                    "-h, --help show this help message and exit "
+                    "--shard {all,native-runner,remainder} Select a complete "
+                    "predefined test-file shard",
                 )
 
     def test_configuration_read_is_bounded_and_accepts_the_exact_byte_limit(
