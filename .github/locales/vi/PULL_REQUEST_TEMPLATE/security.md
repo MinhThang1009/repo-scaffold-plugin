@@ -1,7 +1,7 @@
 <!-- repo-scaffold:pr-template=security -->
 <!-- repo-scaffold:pr-guidance: Describe the final PR scope, confirmed cause, material changes, and verification with its revision; keep acceptance and rollout details explicit. -->
 
-**Ngôn ngữ:** [English](../../../PULL_REQUEST_TEMPLATE/security.md) | [Tiếng Việt](security.md)
+**Ngôn ngữ:** [English](https://github.com/MinhThang1009/repo-scaffold-plugin/blob/main/.github/PULL_REQUEST_TEMPLATE/security.md) | [Tiếng Việt](https://github.com/MinhThang1009/repo-scaffold-plugin/blob/main/.github/locales/vi/PULL_REQUEST_TEMPLATE/security.md)
 
 ## Mục đích
 
