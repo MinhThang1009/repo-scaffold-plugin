@@ -965,6 +965,7 @@ class PythonSupportContractValidationTests(unittest.TestCase):
         "requirements-dev.in",
         "ruff.toml",
         "scripts/python_support.py",
+        "scripts/test_shards.py",
         "skills/repo-scaffold/assets/workflows/ci.yml",
         "skills/repo-scaffold/references/workflow-contracts.md",
     )
@@ -1158,6 +1159,42 @@ class PythonSupportContractValidationTests(unittest.TestCase):
             "and runs-on must use matrix.os",
             problems,
         )
+
+    def test_test_job_names_and_passes_its_selected_matrix_shard(self) -> None:
+        for mutation in ("job-name", "step-env", "command"):
+            with (
+                self.subTest(mutation=mutation),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.copy_contract(root)
+                workflow_path = root / ".github" / "workflows" / "ci.yml"
+                workflow = validate_repository.load_yaml(workflow_path)
+                test_job = workflow["jobs"]["test"]
+                run_step = next(
+                    step
+                    for step in test_job["steps"]
+                    if step.get("name") == "Run tests"
+                )
+                if mutation == "job-name":
+                    test_job["name"] = (
+                        "test (${{ matrix.os }}, Python ${{ matrix.python-version }})"
+                    )
+                elif mutation == "step-env":
+                    run_step.pop("env")
+                else:
+                    run_step["run"] = "python scripts/run_tests.py suite"
+                workflow_path.write_text(
+                    yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+                )
+
+                problems = validate_repository.validate_python_support_contract(root)
+
+                self.assertIn(
+                    ".github/workflows/ci.yml: test jobs must name and pass their "
+                    "matrix shard to the guarded runner",
+                    problems,
+                )
 
     def test_scaffold_ci_asset_runs_the_declared_os_matrix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

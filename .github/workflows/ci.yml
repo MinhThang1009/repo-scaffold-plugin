@@ -55,7 +55,7 @@ jobs:
         run: python skills/repo-scaffold/scripts/ci_toolchain.py emit-github-output >> "$GITHUB_OUTPUT"
 
   test:
-    name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: test (${{ matrix.os }}, Python ${{ matrix.python-version }}, shard ${{ matrix.test-shard }})
     needs: prepare_ci
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -92,7 +92,9 @@ jobs:
         run: python -m pip check
 
       - name: Run tests
-        run: python scripts/run_tests.py suite
+        env:
+          REPO_SCAFFOLD_TEST_SHARD: ${{ matrix.test-shard }}
+        run: python scripts/run_tests.py suite --shard "$REPO_SCAFFOLD_TEST_SHARD"
 
   quality:
     name: quality
@@ -165,6 +167,7 @@ jobs:
           scripts/prepare_mutation_cache.py
           scripts/python_support.py
           scripts/run_tests.py
+          scripts/test_shards.py
           scripts/run_mutation_testing.py
           scripts/sync_action_pins.py
           scripts/sync_versioned_inputs.py

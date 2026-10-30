@@ -269,7 +269,12 @@ file or combine earlier results with new code.
 Once the change is complete, run `python scripts/run_tests.py full`. It runs the
 entire suite once under Coverage.py, then checks the unchanged `.coveragerc`
 branch-coverage floor. A separate full pytest invocation would repeat the same
-tests. Repository workflow validation checks execution controls as well as command
+tests. The CI matrix runs the full suite on Ubuntu and boundary runtimes on
+Windows/macOS. Each Windows runtime is split into two guarded shards:
+`native-runner` runs `tests/test_run_tests_native.py`, and `remainder` discovers
+every other pytest test module. The shards are disjoint, new test modules enter
+`remainder` automatically, and `ci-success` waits for every shard. Repository
+workflow validation checks execution controls as well as command
 text: required runtime, coverage and integration checks, and the `ci-success`
 verdict step, must remain foreground, mandatory and failure-propagating. The
 verdict job must retain `always()` so failed or skipped producers are evaluated.
@@ -524,10 +529,12 @@ For a quick retry of failures already recorded in pytest's local cache, use
 no tests, so it supplies no verification evidence. The cache tracks test
 selection, not whether changed code is correct.
 
-Runtime-only checks use `python scripts/run_tests.py suite`, or append explicit
-test paths for a declared subset such as Linux mutation integration. Suite mode
-also rejects inherited selection flags and changed inputs. CI's runtime,
-coverage, canary and integration consumers use these guarded entrypoints.
+Runtime-only checks use `python scripts/run_tests.py suite`, append explicit
+test paths for a declared subset such as Linux mutation integration, or use
+`--shard <id>` for a predefined Windows CI shard. Shard selections are disjoint
+and their union is the complete pytest file inventory. Suite mode also rejects
+inherited selection flags and changed inputs. CI's runtime, coverage, canary and
+integration consumers use these guarded entrypoints.
 
 Run the final full-coverage gate and other repository checks with:
 
@@ -535,7 +542,7 @@ Run the final full-coverage gate and other repository checks with:
 python scripts/run_tests.py full
 python -m ruff format --check skills scripts tests
 python -m ruff check skills scripts tests
-python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/coverage_policy.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_tests.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
+python -m mypy --explicit-package-bases skills/repo-scaffold/scripts/check_community_health.py skills/repo-scaffold/scripts/audit_freshness.py skills/repo-scaffold/scripts/branch_protection_preflight.py skills/repo-scaffold/scripts/advanced_codeql_preflight.py skills/repo-scaffold/scripts/codeql_preflight.py skills/repo-scaffold/scripts/dependency_review_preflight.py skills/repo-scaffold/scripts/scorecard_preflight.py skills/repo-scaffold/scripts/ci_toolchain.py skills/repo-scaffold/scripts/pr_template_preflight.py skills/repo-scaffold/scripts/release_preflight.py skills/repo-scaffold/scripts/merge_settings_preflight.py skills/repo-scaffold/scripts/repository_settings_preflight.py skills/repo-scaffold/scripts/security_features_preflight.py skills/repo-scaffold/scripts/workflow_installation_preflight.py skills/repo-scaffold/scripts/sync_action_pins.py skills/repo-scaffold/scripts/validate_scaffold.py skills/repo-scaffold/scripts/markdown_body_preflight.py skills/repo-scaffold/scripts/render_pr_body_evidence.py scripts/audit_freshness.py scripts/audit_official_docs.py scripts/check_code_scanning_alerts.py scripts/coverage_policy.py scripts/merge_mutation_shards.py scripts/pr_template_preflight.py scripts/markdown_body_preflight.py scripts/prepare_mutation_cache.py scripts/python_support.py scripts/run_tests.py scripts/test_shards.py scripts/run_mutation_testing.py scripts/sync_action_pins.py scripts/sync_versioned_inputs.py scripts/update_pr_body.py scripts/render_pr_body_evidence.py scripts/validate_mutation_results.py scripts/validate_repository.py scripts/validate_workflows.py tests
 python -m compileall -q skills/repo-scaffold/scripts scripts tests
 python skills/repo-scaffold/scripts/ci_toolchain.py run-markdownlint
 python scripts/validate_workflows.py

@@ -31,6 +31,8 @@ from scripts.prepare_mutation_cache import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+ALL_TEST_SHARD = "all"
+WINDOWS_TEST_SHARDS = ("native-runner", "remainder")
 
 
 @contextmanager
@@ -210,8 +212,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     suite.add_argument(
         "tests",
         nargs="*",
-        default=["tests"],
+        default=[],
         help="Explicit test paths, or all tests by default",
+    )
+    suite.add_argument(
+        "--shard",
+        choices=(ALL_TEST_SHARD, *WINDOWS_TEST_SHARDS),
+        help="Select a complete predefined test-file shard",
     )
     return parser.parse_args(argv)
 
@@ -415,7 +422,27 @@ def reject_cli_inspection() -> None:
 def main(argv: list[str] | None = None) -> int:
     """Use fresh coverage data and preserve pytest and coverage failure statuses."""
     arguments = parse_args(argv)
-    tests = arguments.tests if arguments.mode in {"focused", "suite"} else ["tests"]
+    if arguments.mode == "focused":
+        tests = arguments.tests
+    elif arguments.mode == "suite":
+        if arguments.shard is not None:
+            if arguments.tests:
+                print(
+                    "error: --shard cannot be combined with explicit test paths",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                from scripts.test_shards import suite_test_paths
+
+                tests = list(suite_test_paths(REPOSITORY_ROOT, arguments.shard))
+            except (OSError, ValueError) as error:
+                print(f"error: invalid test shard: {error}", file=sys.stderr)
+                return 2
+        else:
+            tests = arguments.tests or ["tests"]
+    else:
+        tests = ["tests"]
     if any(test.startswith("-") for test in tests):
         print(
             "error: supply test paths or node IDs, not pytest options", file=sys.stderr
@@ -429,11 +456,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: invalid test/source selection: {error}", file=sys.stderr)
         return 2
     pytest = ["-m", "pytest", "-q", "--durations=20", *tests]
-    scope = {
-        "full": "Full repository gate",
-        "suite": "Pytest suite: " + ", ".join(tests),
-        "focused": "Focused feedback only",
-    }[arguments.mode]
+    if arguments.mode == "suite" and arguments.shard not in (None, ALL_TEST_SHARD):
+        scope = f"Pytest suite shard {arguments.shard}: {len(tests)} test files"
+    else:
+        scope = {
+            "full": "Full repository gate",
+            "suite": "Pytest suite: " + ", ".join(tests),
+            "focused": "Focused feedback only",
+        }[arguments.mode]
     print(scope, flush=True)
     environment = os.environ.copy()
     environment.pop("PYTHONINSPECT", None)

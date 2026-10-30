@@ -11,6 +11,9 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+from scripts import run_tests
+from scripts.test_shards import ALL_TEST_SHARD, WINDOWS_TEST_SHARDS
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "python_support.py"
@@ -120,14 +123,92 @@ class PythonSupportPolicyTests(unittest.TestCase):
             python_support.build_matrix(policy),
             {
                 "include": [
-                    {"os": "ubuntu-latest", "python-version": "3.10"},
-                    {"os": "ubuntu-latest", "python-version": "3.11"},
-                    {"os": "ubuntu-latest", "python-version": "3.12"},
-                    {"os": "windows-latest", "python-version": "3.10"},
-                    {"os": "windows-latest", "python-version": "3.12"},
+                    {
+                        "os": "ubuntu-latest",
+                        "python-version": "3.10",
+                        "test-shard": "all",
+                    },
+                    {
+                        "os": "ubuntu-latest",
+                        "python-version": "3.11",
+                        "test-shard": "all",
+                    },
+                    {
+                        "os": "ubuntu-latest",
+                        "python-version": "3.12",
+                        "test-shard": "all",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.10",
+                        "test-shard": "native-runner",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.10",
+                        "test-shard": "remainder",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.12",
+                        "test-shard": "native-runner",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.12",
+                        "test-shard": "remainder",
+                    },
                 ]
             },
         )
+
+    def test_windows_matrix_shards_match_the_guarded_runner_contract(self) -> None:
+        policy = python_support.parse_policy(policy_document())
+        matrix = python_support.build_matrix(policy)["include"]
+        windows = [entry for entry in matrix if entry["os"] == "windows-latest"]
+        non_windows = [entry for entry in matrix if entry["os"] != "windows-latest"]
+
+        self.assertEqual(python_support.ALL_TEST_SHARD, ALL_TEST_SHARD)
+        self.assertEqual(run_tests.ALL_TEST_SHARD, ALL_TEST_SHARD)
+        self.assertEqual(
+            python_support.WINDOWS_TEST_SHARDS, run_tests.WINDOWS_TEST_SHARDS
+        )
+        self.assertEqual(
+            {entry["test-shard"] for entry in windows},
+            set(WINDOWS_TEST_SHARDS),
+        )
+        self.assertTrue(
+            all(entry["test-shard"] == ALL_TEST_SHARD for entry in non_windows)
+        )
+        for version in (policy.versions[0], policy.latest):
+            self.assertEqual(
+                sorted(
+                    entry["test-shard"]
+                    for entry in windows
+                    if entry["python-version"] == version
+                ),
+                sorted(WINDOWS_TEST_SHARDS),
+            )
+
+    def test_full_coverage_windows_runtimes_receive_each_shard_once(self) -> None:
+        document = policy_document()
+        document["full-coverage-os"] = ["ubuntu-latest", "windows-latest"]
+        document["boundary-coverage-os"] = ["macos-latest"]
+        policy = python_support.parse_policy(document)
+
+        matrix = python_support.build_matrix(policy)["include"]
+        windows = [entry for entry in matrix if entry["os"] == "windows-latest"]
+
+        self.assertEqual(len(windows), len(policy.versions) * len(WINDOWS_TEST_SHARDS))
+        for version in policy.versions:
+            self.assertEqual(
+                sorted(
+                    entry["test-shard"]
+                    for entry in windows
+                    if entry["python-version"] == version
+                ),
+                sorted(WINDOWS_TEST_SHARDS),
+            )
 
     def test_matrix_accepts_all_supported_github_hosted_os_labels(self) -> None:
         document = policy_document()
@@ -141,6 +222,8 @@ class PythonSupportPolicyTests(unittest.TestCase):
                 "ubuntu-latest",
                 "ubuntu-latest",
                 "ubuntu-latest",
+                "windows-latest",
+                "windows-latest",
                 "windows-latest",
                 "windows-latest",
                 "macos-latest",
@@ -367,8 +450,21 @@ class PythonSupportPolicyTests(unittest.TestCase):
             python_support.build_matrix(policy),
             {
                 "include": [
-                    {"os": "ubuntu-latest", "python-version": "3.12"},
-                    {"os": "windows-latest", "python-version": "3.12"},
+                    {
+                        "os": "ubuntu-latest",
+                        "python-version": "3.12",
+                        "test-shard": "all",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.12",
+                        "test-shard": "native-runner",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.12",
+                        "test-shard": "remainder",
+                    },
                 ]
             },
         )
@@ -390,13 +486,50 @@ class PythonSupportPolicyTests(unittest.TestCase):
                 )
 
             self.assertEqual(result, 0)
+            expected_matrix = {
+                "include": [
+                    {
+                        "os": "ubuntu-latest",
+                        "python-version": "3.10",
+                        "test-shard": "all",
+                    },
+                    {
+                        "os": "ubuntu-latest",
+                        "python-version": "3.11",
+                        "test-shard": "all",
+                    },
+                    {
+                        "os": "ubuntu-latest",
+                        "python-version": "3.12",
+                        "test-shard": "all",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.10",
+                        "test-shard": "native-runner",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.10",
+                        "test-shard": "remainder",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.12",
+                        "test-shard": "native-runner",
+                    },
+                    {
+                        "os": "windows-latest",
+                        "python-version": "3.12",
+                        "test-shard": "remainder",
+                    },
+                ]
+            }
             self.assertEqual(
                 output.getvalue(),
-                'matrix={"include":[{"os":"ubuntu-latest","python-version":'
-                '"3.10"},{"os":"ubuntu-latest","python-version":"3.11"},'
-                '{"os":"ubuntu-latest","python-version":"3.12"},{"os":'
-                '"windows-latest","python-version":"3.10"},{"os":'
-                '"windows-latest","python-version":"3.12"}]}\nlatest=3.12\n',
+                "matrix="
+                + json.dumps(expected_matrix, separators=(",", ":"))
+                + "\nlatest=3.12\n",
             )
 
     def test_command_help_is_a_stable_user_facing_contract(self) -> None:
