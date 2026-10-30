@@ -1,3 +1,5 @@
+**Languages:** [English](SECURITY.md) | [Tiếng Việt](SECURITY.vi.md)
+
 # Security Policy
 
 ## Supported versions

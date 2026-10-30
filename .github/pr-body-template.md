@@ -1,6 +1,7 @@
 <!-- repo-scaffold:pr-template=bugfix -->
 <!-- repo-scaffold:pr-body-managed -->
 <!-- This body is read by legacy template-based body-sync; the API-evidence body-sync does not read it. -->
+<!-- Languages: [English](pr-body-template.md) | [Tiếng Việt](locales/vi/pr-body-template.md) -->
 
 ## Purpose
 

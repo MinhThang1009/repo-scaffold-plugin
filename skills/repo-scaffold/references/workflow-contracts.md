@@ -1,3 +1,5 @@
+**Languages:** [English](workflow-contracts.md) | [Tiếng Việt](workflow-contracts.vi.md)
+
 # Workflow contracts
 
 Release and tool version validation uses ASCII numeric identifiers. SemVer
@@ -86,7 +88,7 @@ so organization and enterprise policy overrides cannot be replaced by a more
 permissive repository endpoint.
 Any asset declaring `pull_request_target` also requires a separate review of the
 applicable GitHub Actions workflow-execution policy. GitHub's default policy for
-public repositories is scheduled to block that event on November 2, 2026 unless
+public repositories is scheduled to block that event on December 2, 2026 unless
 an applicable policy explicitly allows it. The workflow-installation preflight
 reads inherited Actions policies and fails closed unless an active event rule
 allows the event for every supplied workflow path. Inspect the [official

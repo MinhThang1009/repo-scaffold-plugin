@@ -1,6 +1,8 @@
 <!-- repo-scaffold:pr-template=feature -->
 <!-- repo-scaffold:pr-guidance: Describe the final PR scope, confirmed cause, material changes, and verification with its revision; keep acceptance and rollout details explicit. -->
 
+**Languages:** [English](feature.md) | [Tiếng Việt](../locales/vi/PULL_REQUEST_TEMPLATE/feature.md)
+
 ## Purpose
 
 Explain the user or maintainer problem this feature solves.

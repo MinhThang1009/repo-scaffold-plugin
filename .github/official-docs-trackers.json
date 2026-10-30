@@ -24,7 +24,8 @@
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
         "skills/repo-scaffold/scripts/security_features_preflight.py",
-        "tests/test_security_features_preflight.py"
+        "tests/test_security_features_preflight.py",
+        "skills/repo-scaffold/references/github-setup.vi.md"
       ],
       "required-markers": ["Repository security advisories", "public repositories", "fork owns a package"],
       "reviewed-on": "2026-10-04",
@@ -64,7 +65,8 @@
       "paths": [
         "CHANGELOG.md",
         "skills/repo-scaffold/assets/CHANGELOG.md",
-        "skills/repo-scaffold/assets/CHANGELOG.vi.md"
+        "skills/repo-scaffold/assets/CHANGELOG.vi.md",
+        "CHANGELOG.vi.md"
       ],
       "required-markers": ["Keep a Changelog", "All notable changes"],
       "reviewed-on": "2026-08-24",
@@ -85,7 +87,10 @@
       "label": "GitHub CLI availability",
       "url": "https://cli.github.com/",
       "allowed-hosts": ["cli.github.com"],
-      "paths": ["README.md"],
+      "paths": [
+        "README.md",
+        "README.vi.md"
+      ],
       "required-markers": ["Take GitHub to the command line"],
       "reviewed-on": "2026-08-24",
       "review-period-days": 90
@@ -95,7 +100,10 @@
       "label": "GitHub CLI fork default repository behavior",
       "url": "https://cli.github.com/manual/gh_repo_clone",
       "allowed-hosts": ["cli.github.com"],
-      "paths": ["skills/repo-scaffold/references/github-setup.md"],
+      "paths": [
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/references/github-setup.vi.md"
+      ],
       "required-markers": [
         "parent repository will be set as the default remote repository.",
         "--no-upstream"
@@ -131,7 +139,9 @@
         "README.md",
         "PLUGIN_SUBMISSION.md",
         "skills/repo-scaffold/references/agent-compatibility.md",
-        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+        "skills/repo-scaffold/references/agent-compatibility.vi.md",
+        "PLUGIN_SUBMISSION.vi.md",
+        "README.vi.md"
       ],
       "required-markers": [
         "Skills only",
@@ -209,7 +219,9 @@
         "README.md",
         "PLUGIN_SUBMISSION.md",
         "skills/repo-scaffold/references/agent-compatibility.md",
-        "skills/repo-scaffold/references/agent-compatibility.vi.md"
+        "skills/repo-scaffold/references/agent-compatibility.vi.md",
+        "PLUGIN_SUBMISSION.vi.md",
+        "README.vi.md"
       ],
       "required-markers": [
         "developer portal",
@@ -295,14 +307,17 @@
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
         "skills/repo-scaffold/references/workflow-contracts.md",
-        "skills/repo-scaffold/scripts/workflow_installation_preflight.py"
+        "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+        "README.vi.md",
+        "skills/repo-scaffold/SKILL.vi.md",
+        "skills/repo-scaffold/references/workflow-contracts.vi.md"
       ],
       "required-markers": [
         "pull_request_target",
-        "November 2, 2026",
+        "December 2, 2026",
         "default event policy"
       ],
-      "reviewed-on": "2026-09-19",
+      "reviewed-on": "2026-10-30",
       "review-period-days": 90
     },
     {
@@ -312,7 +327,8 @@
       "allowed-hosts": ["docs.github.com"],
       "paths": [
         "skills/repo-scaffold/references/github-setup.md",
-        "skills/repo-scaffold/scripts/workflow_installation_preflight.py"
+        "skills/repo-scaffold/scripts/workflow_installation_preflight.py",
+        "skills/repo-scaffold/references/github-setup.vi.md"
       ],
       "required-markers": [
         "List repository Actions policies",
@@ -345,7 +361,10 @@
       "paths": [
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
-        "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml"
+        "skills/repo-scaffold/assets/workflows/dependabot-auto-merge.yml",
+        "skills/repo-scaffold/SKILL.vi.md",
+        "skills/repo-scaffold/references/github-setup.vi.md",
+        "skills/repo-scaffold/references/workflow-contracts.vi.md"
       ],
       "required-markers": [
         "Dependabot auto-merge",
@@ -379,7 +398,8 @@
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
         "skills/repo-scaffold/scripts/codeql_preflight.py",
-        "skills/repo-scaffold/scripts/dependency_review_preflight.py"
+        "skills/repo-scaffold/scripts/dependency_review_preflight.py",
+        "skills/repo-scaffold/references/github-setup.vi.md"
       ],
       "required-markers": [
         "dependency-graph/sbom",
@@ -496,7 +516,8 @@
         "skills/repo-scaffold/SKILL.md",
         "skills/repo-scaffold/references/github-setup.md",
         "skills/repo-scaffold/assets/workflows/scorecard.yml",
-        "skills/repo-scaffold/scripts/scorecard_preflight.py"
+        "skills/repo-scaffold/scripts/scorecard_preflight.py",
+        "skills/repo-scaffold/references/github-setup.vi.md"
       ],
       "required-markers": [
         "Uploading a SARIF file to GitHub",
@@ -657,7 +678,8 @@
       "paths": [
         "skills/repo-scaffold/references/github-setup.md",
         ".github/workflows/release.yml",
-        "skills/repo-scaffold/assets/workflows/release.yml"
+        "skills/repo-scaffold/assets/workflows/release.yml",
+        "skills/repo-scaffold/references/github-setup.vi.md"
       ],
       "required-markers": [
         "Upload a release asset",
@@ -675,7 +697,8 @@
       "paths": [
         "skills/repo-scaffold/references/github-setup.md",
         ".github/workflows/release.yml",
-        "skills/repo-scaffold/assets/workflows/release.yml"
+        "skills/repo-scaffold/assets/workflows/release.yml",
+        "skills/repo-scaffold/references/github-setup.vi.md"
       ],
       "required-markers": [
         "Conditional requests for unsafe methods",
@@ -695,7 +718,10 @@
         ".github/workflows/release.yml",
         "skills/repo-scaffold/assets/workflows/release.yml",
         "skills/repo-scaffold/references/github-setup.md",
-        "skills/repo-scaffold/references/workflow-contracts.md"
+        "skills/repo-scaffold/references/workflow-contracts.md",
+        "README.vi.md",
+        "skills/repo-scaffold/references/github-setup.vi.md",
+        "skills/repo-scaffold/references/workflow-contracts.vi.md"
       ],
       "required-markers": [
         "associated commit SHA or Git ref",
@@ -718,7 +744,8 @@
         "skills/repo-scaffold/assets/workflows/release-tag.yml",
         "skills/repo-scaffold/references/github-setup.md",
         "skills/repo-scaffold/scripts/branch_protection_preflight.py",
-        "tests/test_branch_protection_preflight.py"
+        "tests/test_branch_protection_preflight.py",
+        "skills/repo-scaffold/references/github-setup.vi.md"
       ],
       "required-markers": [
         "Tip commit pushed to the ref",
@@ -741,7 +768,9 @@
         "skills/repo-scaffold/assets/workflows/release-please.yml",
         "skills/repo-scaffold/assets/workflows/release-tag.yml",
         "skills/repo-scaffold/references/github-setup.md",
-        "skills/repo-scaffold/references/workflow-contracts.md"
+        "skills/repo-scaffold/references/workflow-contracts.md",
+        "skills/repo-scaffold/references/github-setup.vi.md",
+        "skills/repo-scaffold/references/workflow-contracts.vi.md"
       ],
       "required-markers": ["`github` context", "caller workflow"],
       "reviewed-on": "2026-09-25",
@@ -1012,7 +1041,9 @@
       "allowed-hosts": ["docs.github.com"],
       "paths": [
         "skills/repo-scaffold/SKILL.md",
-        "skills/repo-scaffold/references/github-setup.md"
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/SKILL.vi.md",
+        "skills/repo-scaffold/references/github-setup.vi.md"
       ],
       "required-markers": [
         "GitHub Secret Protection",
@@ -1028,7 +1059,9 @@
       "allowed-hosts": ["docs.github.com"],
       "paths": [
         "skills/repo-scaffold/SKILL.md",
-        "skills/repo-scaffold/references/github-setup.md"
+        "skills/repo-scaffold/references/github-setup.md",
+        "skills/repo-scaffold/SKILL.vi.md",
+        "skills/repo-scaffold/references/github-setup.vi.md"
       ],
       "required-markers": ["push protection", "Secret Protection"],
       "reviewed-on": "2026-09-25",
@@ -1173,7 +1206,10 @@
       "label": "GitHub issue and pull request line breaks",
       "url": "https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax",
       "allowed-hosts": ["docs.github.com"],
-      "paths": ["skills/repo-scaffold/references/pull-request-contract.md"],
+      "paths": [
+        "skills/repo-scaffold/references/pull-request-contract.md",
+        "skills/repo-scaffold/references/pull-request-contract.vi.md"
+      ],
       "required-markers": ["Line breaks", "render a line break automatically"],
       "reviewed-on": "2026-09-22",
       "review-period-days": 90

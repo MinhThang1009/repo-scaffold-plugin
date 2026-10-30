@@ -1,6 +1,8 @@
 <!-- repo-scaffold:pr-template=deployment -->
 <!-- repo-scaffold:pr-guidance: Describe the final PR scope, confirmed cause, material changes, and verification with its revision; keep acceptance and rollout details explicit. -->
 
+**Languages:** [English](deployment.md) | [Tiếng Việt](../locales/vi/PULL_REQUEST_TEMPLATE/deployment.md)
+
 ## Purpose
 
 <!-- Describe the deployment scope, target environment, and intended outcome. -->

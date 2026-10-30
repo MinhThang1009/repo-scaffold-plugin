@@ -1,6 +1,8 @@
 <!-- repo-scaffold:pr-template=default -->
 <!-- repo-scaffold:pr-guidance: Describe the final PR scope, confirmed cause, material changes, and verification with its revision; keep acceptance and rollout details explicit. -->
 
+**Languages:** [English](PULL_REQUEST_TEMPLATE.md) | [Tiếng Việt](locales/vi/PULL_REQUEST_TEMPLATE.md)
+
 ## Purpose
 
 Explain what this pull request changes and why it is needed.

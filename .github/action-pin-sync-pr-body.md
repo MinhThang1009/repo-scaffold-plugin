@@ -1,4 +1,5 @@
 <!-- repo-scaffold:pr-template=default -->
+<!-- Languages: [English](action-pin-sync-pr-body.md) | [Tiếng Việt](locales/vi/action-pin-sync-pr-body.md) -->
 
 ## Purpose
 

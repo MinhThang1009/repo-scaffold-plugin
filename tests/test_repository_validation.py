@@ -6204,6 +6204,21 @@ class ScaffoldAndArchiveValidationTests(unittest.TestCase):
             r"(?m)^/scripts/check_code_scanning_alerts\.py -export-ignore$",
         )
 
+    def test_release_archive_retains_root_readme_locale_targets(self) -> None:
+        self.assertTrue(
+            {
+                "README.vi.md",
+                "CODE_OF_CONDUCT.vi.md",
+                "CONTRIBUTING.vi.md",
+                "GOVERNANCE.vi.md",
+                "PLUGIN_SUBMISSION.vi.md",
+                "PRIVACY.vi.md",
+                "SECURITY.vi.md",
+                "SUPPORT.vi.md",
+                "TERMS.vi.md",
+            }.issubset(set(validate_repository.RELEASE_ARCHIVE_PATHS))
+        )
+
     def test_release_archive_rejects_missing_markdown_link_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

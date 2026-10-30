@@ -3,6 +3,8 @@ name: repo-scaffold
 description: Scaffold or update a repository to production GitHub.com standards ("dựng repo chuẩn GitHub"), including community-health files, English/Vietnamese project content, pinned Actions, Dependabot, releases, and repository settings. Use for new repo setup or full scaffold updates. Do not use for audits, isolated documentation edits, or general Git/GitHub troubleshooting.
 ---
 
+**Languages:** [English](SKILL.md) | [Tiếng Việt](SKILL.vi.md)
+
 # Repo Scaffold
 
 Set up or update a repository to production GitHub.com standard. Generate
@@ -277,7 +279,7 @@ top-level caller.
 For public repositories, a supplied workflow that declares `pull_request_target`
 also needs an applicable GitHub Actions workflow-execution policy that explicitly
 allows that event. GitHub's default public-repository policy is scheduled to
-block `pull_request_target` on November 2, 2026. Review the [official policy
+block `pull_request_target` on December 2, 2026. Review the [official policy
 guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
 The workflow-installation preflight reads inherited Actions policies and fails
 closed unless an active event rule allows the event for every supplied workflow

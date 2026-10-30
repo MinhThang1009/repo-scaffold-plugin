@@ -1,3 +1,5 @@
+**Ngôn ngữ:** [English](agent-compatibility.md) | [Tiếng Việt](agent-compatibility.vi.md)
+
 # Tương thích agent
 
 Repo Scaffold có một core theo chuẩn [Agent Skills](https://agentskills.io) tại

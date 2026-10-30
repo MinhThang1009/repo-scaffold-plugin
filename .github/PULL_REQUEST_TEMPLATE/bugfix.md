@@ -1,6 +1,8 @@
 <!-- repo-scaffold:pr-template=bugfix -->
 <!-- repo-scaffold:pr-guidance: Describe the final PR scope, confirmed cause, material changes, and verification with its revision; keep acceptance and rollout details explicit. -->
 
+**Languages:** [English](bugfix.md) | [Tiếng Việt](../locales/vi/PULL_REQUEST_TEMPLATE/bugfix.md)
+
 ## Purpose
 
 Describe the bug, affected behavior, and why this change is needed.

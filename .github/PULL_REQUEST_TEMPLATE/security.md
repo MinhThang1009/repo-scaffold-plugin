@@ -1,6 +1,8 @@
 <!-- repo-scaffold:pr-template=security -->
 <!-- repo-scaffold:pr-guidance: Describe the final PR scope, confirmed cause, material changes, and verification with its revision; keep acceptance and rollout details explicit. -->
 
+**Languages:** [English](security.md) | [Tiếng Việt](../locales/vi/PULL_REQUEST_TEMPLATE/security.md)
+
 ## Purpose
 
 Describe the security impact at a level safe for public disclosure.

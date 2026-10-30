@@ -1,3 +1,5 @@
+**Languages:** [English](CHANGELOG.md) | [Tiếng Việt](CHANGELOG.vi.md)
+
 # Changelog
 
 All notable changes to `repo-scaffold` are documented in this file.

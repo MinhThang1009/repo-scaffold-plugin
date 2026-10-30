@@ -1,3 +1,5 @@
+**Languages:** [English](scaffold-generation.md) | [Tiếng Việt](scaffold-generation.vi.md)
+
 # Scaffold generation contract
 
 Read this reference before generating or updating files.

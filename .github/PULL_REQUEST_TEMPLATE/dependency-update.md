@@ -1,6 +1,8 @@
 <!-- repo-scaffold:pr-template=dependency-update -->
 <!-- repo-scaffold:pr-guidance: Describe the final PR scope, confirmed cause, material changes, and verification with its revision; keep acceptance and rollout details explicit. -->
 
+**Languages:** [English](dependency-update.md) | [Tiếng Việt](../locales/vi/PULL_REQUEST_TEMPLATE/dependency-update.md)
+
 ## Purpose
 
 Describe the dependency update, why it is needed, and the affected scope.

@@ -1,3 +1,5 @@
+**Languages:** [English](CONTRIBUTING.md) | [Tiếng Việt](CONTRIBUTING.vi.md)
+
 # Contributing to repo-scaffold
 
 Thank you for helping improve `repo-scaffold`. This repository contains a shared

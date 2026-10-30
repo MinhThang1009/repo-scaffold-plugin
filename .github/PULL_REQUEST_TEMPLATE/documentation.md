@@ -1,6 +1,8 @@
 <!-- repo-scaffold:pr-template=documentation -->
 <!-- repo-scaffold:pr-guidance: Describe the final PR scope, confirmed cause, material changes, and verification with its revision; keep acceptance and rollout details explicit. -->
 
+**Languages:** [English](documentation.md) | [Tiếng Việt](../locales/vi/PULL_REQUEST_TEMPLATE/documentation.md)
+
 ## Purpose
 
 Explain the documentation need and its intended audience.
