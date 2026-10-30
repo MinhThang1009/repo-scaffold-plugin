@@ -4,6 +4,13 @@ All notable changes to `repo-scaffold` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.11.0](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.17...v1.11.0) (2026-10-29)
+
+
+### Features
+
+* **scaffold:** add bilingual language selection ([#148](https://github.com/MinhThang1009/repo-scaffold-plugin/issues/148)) ([e768c61](https://github.com/MinhThang1009/repo-scaffold-plugin/commit/e768c615efdaae432424925970636b43ccee41dc))
+
 ## [1.10.17](https://github.com/MinhThang1009/repo-scaffold-plugin/compare/v1.10.16...v1.10.17) (2026-10-28)
 
 
