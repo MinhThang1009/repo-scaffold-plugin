@@ -4683,12 +4683,15 @@ class MutationTestingContractTests(unittest.TestCase):
         )
 
     def test_python313_provider_cannot_be_enabled_for_other_runtimes(self) -> None:
-        for filename in ("requirements-mutation.in", "requirements-mutation.txt"):
-            for marker in ("", '; python_version == "3.14"'):
-                with self.subTest(filename=filename, marker=marker):
-                    with tempfile.TemporaryDirectory() as directory:
-                        root = Path(directory)
-                        self.copy_contract(root)
+        for marker in ("", '; python_version == "3.14"'):
+            with self.subTest(marker=marker):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.copy_contract(root)
+                    for filename in (
+                        "requirements-mutation.in",
+                        "requirements-mutation.txt",
+                    ):
                         path = root / filename
                         path.write_text(
                             path.read_text(encoding="utf-8").replace(
@@ -4696,40 +4699,46 @@ class MutationTestingContractTests(unittest.TestCase):
                             ),
                             encoding="utf-8",
                         )
-                        problems = (
-                            validate_repository.validate_mutation_testing_contract(root)
-                        )
-                    self.assertTrue(
-                        any(
-                            "pyyaml-ft" in problem and "Python 3.13" in problem
-                            for problem in problems
-                        )
-                    )
-
-    def test_mutation_base_packages_cannot_be_made_conditional(self) -> None:
-        for filename in ("requirements-mutation.in", "requirements-mutation.txt"):
-            with self.subTest(filename=filename):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    self.copy_contract(root)
-                    path = root / filename
-                    path.write_text(
-                        re.sub(
-                            r"(?m)^(toml==[^\s;\\]+)",
-                            r'\1; python_version == "3.13"',
-                            path.read_text(encoding="utf-8"),
-                        ),
-                        encoding="utf-8",
-                    )
                     problems = validate_repository.validate_mutation_testing_contract(
                         root
                     )
-                self.assertTrue(
-                    any(
-                        "unconditional" in problem or "use exact pins" in problem
-                        for problem in problems
-                    )
+                self.assertIn(
+                    "requirements-mutation.in: must extend requirements-dev.in "
+                    "and use exact pins for mutmut, toml, and the Python 3.13-only "
+                    "pyyaml-ft provider",
+                    problems,
                 )
+                self.assertIn(
+                    "requirements-mutation.txt: pyyaml-ft must apply only to "
+                    "Python 3.13",
+                    problems,
+                )
+
+    def test_mutation_base_packages_cannot_be_made_conditional(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_contract(root)
+            for filename in ("requirements-mutation.in", "requirements-mutation.txt"):
+                path = root / filename
+                path.write_text(
+                    re.sub(
+                        r"(?m)^(toml==[^\s;\\]+)",
+                        r'\1; python_version == "3.13"',
+                        path.read_text(encoding="utf-8"),
+                    ),
+                    encoding="utf-8",
+                )
+            problems = validate_repository.validate_mutation_testing_contract(root)
+
+        self.assertIn(
+            "requirements-mutation.in: must extend requirements-dev.in and use "
+            "exact pins for mutmut, toml, and the Python 3.13-only pyyaml-ft provider",
+            problems,
+        )
+        self.assertIn(
+            "requirements-mutation.txt: toml must remain unconditional",
+            problems,
+        )
 
     def test_mutation_dependency_versions_are_not_hardcoded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -5028,30 +5037,26 @@ jobs:
                 "          trap 'kill \"$heartbeat_pid\" 2>/dev/null || true' EXIT\n",
             ),
         )
+        fixture_path = (
+            PLUGIN_ROOT / "tests" / "fixtures" / "mutation-testing-legacy.yml"
+        )
+        original_workflow = fixture_path.read_text(encoding="utf-8")
+        baseline = validate_repository.load_yaml_text(original_workflow)
+        self.assertTrue(
+            validate_repository._legacy_mutation_run_step_is_bounded_and_resumable(
+                baseline["jobs"]["mutation-quality"]["steps"]
+            )
+        )
         for original, replacement in replacements:
             with self.subTest(replacement=replacement.strip()):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    self.copy_contract(root)
-                    workflow_path = (
-                        root / ".github" / "workflows" / "mutation-testing.yml"
+                self.assertEqual(original_workflow.count(original), 1)
+                candidate = validate_repository.load_yaml_text(
+                    original_workflow.replace(original, replacement, 1)
+                )
+                self.assertFalse(
+                    validate_repository._legacy_mutation_run_step_is_bounded_and_resumable(
+                        candidate["jobs"]["mutation-quality"]["steps"]
                     )
-                    workflow = workflow_path.read_text(encoding="utf-8").replace(
-                        original,
-                        replacement,
-                        1,
-                    )
-                    workflow_path.write_text(workflow, encoding="utf-8")
-
-                    problems = validate_repository.validate_mutation_testing_contract(
-                        root
-                    )
-
-                self.assertIn(
-                    ".github/workflows/mutation-testing.yml: mutation run must "
-                    "expose the tracked source root, heartbeat, bounded resumable "
-                    "step, and skip only for a verified clean cache hit",
-                    problems,
                 )
 
     def test_mutation_concurrency_must_preserve_active_progress(self) -> None:
@@ -5468,54 +5473,67 @@ jobs:
         )
 
     def test_mutation_workspace_copies_required_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.copy_contract(root)
-            config_path = root / "pyproject.toml"
-            original_config = config_path.read_text(encoding="utf-8")
-            for copied_path in (".agents", ".claude", "AGENTS.md"):
-                with self.subTest(copied_path=copied_path):
-                    config_path.write_text(
-                        original_config.replace(f'  "{copied_path}",\n', "", 1),
-                        encoding="utf-8",
+        required_paths = (
+            ".agents",
+            ".claude",
+            "AGENTS.md",
+            "requirements-mutation.txt",
+            "requirements-mutation.in",
+        )
+        self.assertTrue(
+            validate_repository._mutation_workspace_copy_paths_are_valid(
+                list(required_paths)
+            )
+        )
+        for copied_path in required_paths:
+            with self.subTest(copied_path=copied_path):
+                remaining = [path for path in required_paths if path != copied_path]
+                self.assertFalse(
+                    validate_repository._mutation_workspace_copy_paths_are_valid(
+                        remaining
                     )
-
-                    problems = validate_repository.validate_mutation_testing_contract(
-                        root
-                    )
-
-                    self.assertTrue(
-                        any(
-                            "workspace must copy the plugin marketplace" in problem
-                            for problem in problems
-                        )
-                    )
+                )
 
     def test_mutation_workspace_rejects_nonstring_copy_paths(self) -> None:
+        required_paths = [
+            ".agents",
+            ".claude",
+            "AGENTS.md",
+            "requirements-mutation.txt",
+            "requirements-mutation.in",
+        ]
+        for value in (["nested"], {"path": "nested"}, 1, False, []):
+            with self.subTest(value=value):
+                self.assertFalse(
+                    validate_repository._mutation_workspace_copy_paths_are_valid(
+                        [*required_paths, value]
+                    )
+                )
+        for value in (None, {}, (), "nested"):
+            with self.subTest(non_list=value):
+                self.assertFalse(
+                    validate_repository._mutation_workspace_copy_paths_are_valid(value)
+                )
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.copy_contract(root)
             config_path = root / "pyproject.toml"
             original_config = config_path.read_text(encoding="utf-8")
-            for value in ('["nested"]', '{path = "nested"}', "1", "false", "[]"):
-                with self.subTest(value=value):
-                    config_path.write_text(
-                        original_config.replace(
-                            "also_copy = [\n", f"also_copy = [\n  {value},\n", 1
-                        ),
-                        encoding="utf-8",
-                    )
+            malformed_config = original_config.replace('  ".agents",\n', "", 1).replace(
+                "also_copy = [\n",
+                'also_copy = [\n  ["nested"],\n',
+                1,
+            )
+            config_path.write_text(malformed_config, encoding="utf-8")
+            problems = validate_repository.validate_mutation_testing_contract(root)
 
-                    problems = validate_repository.validate_mutation_testing_contract(
-                        root
-                    )
-
-                    self.assertTrue(
-                        any(
-                            "workspace must copy the plugin marketplace" in problem
-                            for problem in problems
-                        )
-                    )
+        self.assertIn(
+            "pyproject.toml: mutation workspace must copy the plugin "
+            "marketplace, maintainer instructions, and both mutation "
+            "requirement files using only string paths in also_copy",
+            problems,
+        )
 
     def test_mutation_workspace_accepts_extra_string_copy_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
