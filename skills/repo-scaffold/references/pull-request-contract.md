@@ -1,3 +1,5 @@
+**Languages:** [English](pull-request-contract.md) | [Tiếng Việt](pull-request-contract.vi.md)
+
 # Pull-request contract
 
 Read this reference only for authorized PR creation or body updates.

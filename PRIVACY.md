@@ -1,3 +1,5 @@
+**Languages:** [English](PRIVACY.md) | [Tiếng Việt](PRIVACY.vi.md)
+
 # Privacy Policy
 
 Effective date: August 13, 2026

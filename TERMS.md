@@ -1,3 +1,5 @@
+**Languages:** [English](TERMS.md) | [Tiếng Việt](TERMS.vi.md)
+
 # Terms of Use
 
 Effective date: August 13, 2026

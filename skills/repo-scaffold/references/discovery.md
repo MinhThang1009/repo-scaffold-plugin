@@ -1,3 +1,5 @@
+**Languages:** [English](discovery.md) | [Tiếng Việt](discovery.vi.md)
+
 # Discovery and path safety
 
 Read this reference during the survey phase.
