@@ -119,7 +119,7 @@ def native_search_fixture(
 
 
 class ReminderWorkflowTests(unittest.TestCase):
-    @unittest.skipUnless(NATIVE_GH and BASH, "requires GitHub CLI and Bash")
+    @unittest.skipUnless(BASH, "requires Bash (Git Bash on Windows)")
     def test_missing_search_response_cannot_masquerade_as_checked_empty_lookup(
         self,
     ) -> None:
@@ -130,14 +130,15 @@ class ReminderWorkflowTests(unittest.TestCase):
       if [[ "$1" == --jq ]]; then shift; query="$1"; break; fi
       shift
     done
-    "$TEST_NATIVE_GH" api "$TEST_FIXTURE_URL" --method GET --jq "$query"
-    return $?
+    if [[ -z "$query" ]]; then return 64; fi
+    printf 'SEARCH_CHECKED' >> "$SEARCH_CALLS_FILE"
+    return 0
   fi
   printf 'MUTATION:%s\n' "$2"
 }
 python() { "$TEST_PYTHON" "$@"; }
 """
-        with native_search_fixture(204) as (url, fixture_environment, _response):
+        with native_search_fixture(204) as (_url, fixture_environment, _response):
             for relative, script in search_reconciliation_scripts():
                 with (
                     self.subTest(workflow=relative),
@@ -160,9 +161,8 @@ python() { "$TEST_PYTHON" "$@"; }
                         )
                     environment = {
                         **fixture_environment,
-                        "TEST_NATIVE_GH": str(NATIVE_GH).replace("\\", "/"),
                         "TEST_PYTHON": sys.executable.replace("\\", "/"),
-                        "TEST_FIXTURE_URL": url,
+                        "SEARCH_CALLS_FILE": str(root / "search-calls.txt"),
                         "REPOSITORY": "synthetic/example",
                         "GITHUB_REPOSITORY": "synthetic/example",
                         "RUNNER_TEMP": ".",
@@ -183,6 +183,10 @@ python() { "$TEST_PYTHON" "$@"; }
                         timeout=20,
                         check=False,
                     )
+                    search_calls = Path(environment["SEARCH_CALLS_FILE"]).read_text(
+                        encoding="utf-8"
+                    )
+                    self.assertIn("SEARCH_CHECKED", search_calls)
                     self.assertNotIn("MUTATION:", process.stdout)
                     self.assertNotEqual(process.returncode, 0)
 
@@ -315,6 +319,33 @@ python() { "$TEST_PYTHON" "$@"; }
                                 else expected
                             )
                             self.assertEqual(result.stdout.strip(), selected)
+
+    @unittest.skipUnless(NATIVE_GH, "requires the GitHub CLI query engine")
+    def test_native_search_http_204_produces_no_result(self) -> None:
+        scripts = search_reconciliation_scripts()
+        self.assertTrue(scripts)
+        expressions = re.findall(r"--jq\s+'([^']+)'", scripts[0][1])
+        self.assertEqual(len(expressions), 1)
+        with native_search_fixture(status=204) as (url, environment, _response):
+            result = subprocess.run(
+                [
+                    str(NATIVE_GH),
+                    "api",
+                    url,
+                    "--method",
+                    "GET",
+                    "--jq",
+                    expressions[0],
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=15,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
 
     @unittest.skipUnless(NATIVE_GH and BASH, "requires GitHub CLI and Bash")
     def test_search_evidence_controls_every_real_reminder_mutation(self) -> None:

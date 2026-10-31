@@ -54,6 +54,18 @@ CACHE_DIRECTORIES = {
     ".venv",
 }
 MUTATION_PLAN_TIMEOUT_MINUTES = "360"
+_MUTATION_REQUIRED_WORKSPACE_COPY_PATHS = frozenset(
+    {
+        ".agents",
+        ".claude",
+        "AGENTS.md",
+        "requirements-mutation.txt",
+        "requirements-mutation.in",
+    }
+)
+_MUTATION_REQUIRED_CACHE_CONDITION = (
+    "${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' }}"
+)
 MAX_CODE_SCANNING_ALLOWLIST_ENTRIES = 256
 MAX_CODE_SCANNING_ALLOWLIST_REVIEW_DAYS = 366
 MAX_VALIDATION_FILE_BYTES = 8 * 1024 * 1024
@@ -5671,6 +5683,52 @@ def validate_sharded_mutation_workflow(workflow: object) -> list[str]:
     return []
 
 
+def _mutation_workspace_copy_paths_are_valid(also_copy: object) -> bool:
+    return (
+        isinstance(also_copy, list)
+        and all(isinstance(path, str) for path in also_copy)
+        and _MUTATION_REQUIRED_WORKSPACE_COPY_PATHS.issubset(also_copy)
+    )
+
+
+def _legacy_mutation_run_step_is_bounded_and_resumable(steps: object) -> bool:
+    mutation_run_steps = [
+        step
+        for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict) and step.get("name") == "Run mutation testing"
+    ]
+    expected_mutation_environment = {
+        "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
+    }
+    required_heartbeat_fragments = (
+        "heartbeat() {",
+        "while sleep 60; do",
+        "::notice::mutation testing is still running at %s UTC\\n",
+        "$(date --utc +%FT%TZ)",
+        "heartbeat &",
+        "heartbeat_pid=$!",
+        'trap \'kill "$heartbeat_pid" 2>/dev/null || true; '
+        'wait "$heartbeat_pid" 2>/dev/null || true\' EXIT',
+        "::notice::mutation testing started\\n",
+        "python scripts/run_mutation_testing.py --max-children 4",
+    )
+    mutation_run = mutation_run_steps[0] if len(mutation_run_steps) == 1 else {}
+    mutation_run_script = mutation_run.get("run")
+    return (
+        len(mutation_run_steps) == 1
+        and mutation_run.get("id") == "mutation-run"
+        and mutation_run.get("env") == expected_mutation_environment
+        and mutation_run.get("if") == _MUTATION_REQUIRED_CACHE_CONDITION
+        and mutation_run.get("continue-on-error") == "true"
+        and mutation_run.get("timeout-minutes") == "150"
+        and mutation_run.get("shell") == "bash"
+        and isinstance(mutation_run_script, str)
+        and all(
+            fragment in mutation_run_script for fragment in required_heartbeat_fragments
+        )
+    )
+
+
 def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     """Validate the isolated, evidence-preserving mutation-testing configuration."""
     relative_paths = (
@@ -6037,44 +6095,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
             ".github/workflows/mutation-testing.yml: downloaded mutation state "
             "must be recorded before conservative cache preparation"
         )
-    mutation_run_steps = [
-        step
-        for step in steps
-        if isinstance(step, dict) and step.get("name") == "Run mutation testing"
-    ]
-    expected_mutation_environment = {
-        "REPO_SCAFFOLD_MUTATION_SOURCE_ROOT": "${{ github.workspace }}"
-    }
-    mutation_required_condition = (
-        "${{ steps.mutation-clean-cache.outputs.cache-hit != 'true' }}"
-    )
-    required_heartbeat_fragments = (
-        "heartbeat() {",
-        "while sleep 60; do",
-        "::notice::mutation testing is still running at %s UTC\\n",
-        "$(date --utc +%FT%TZ)",
-        "heartbeat &",
-        "heartbeat_pid=$!",
-        'trap \'kill "$heartbeat_pid" 2>/dev/null || true; wait "$heartbeat_pid" 2>/dev/null || true\' EXIT',
-        "::notice::mutation testing started\\n",
-        "python scripts/run_mutation_testing.py --max-children 4",
-    )
-    mutation_run = mutation_run_steps[0] if len(mutation_run_steps) == 1 else {}
-    mutation_run_script = mutation_run.get("run")
-    if (
-        len(mutation_run_steps) != 1
-        or mutation_run.get("id") != "mutation-run"
-        or mutation_run.get("env") != expected_mutation_environment
-        or mutation_run.get("if") != mutation_required_condition
-        or mutation_run.get("continue-on-error") != "true"
-        or mutation_run.get("timeout-minutes") != "150"
-        or mutation_run.get("shell") != "bash"
-        or not isinstance(mutation_run_script, str)
-        or any(
-            fragment not in mutation_run_script
-            for fragment in required_heartbeat_fragments
-        )
-    ):
+    if not _legacy_mutation_run_step_is_bounded_and_resumable(steps):
         problems.append(
             ".github/workflows/mutation-testing.yml: mutation run must expose "
             "the tracked source root, heartbeat, bounded resumable step, and skip "
@@ -6311,7 +6332,7 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
     )
     if (
         len(prepare_cache_steps) != 1
-        or prepare_cache_steps[0].get("if") != mutation_required_condition
+        or prepare_cache_steps[0].get("if") != _MUTATION_REQUIRED_CACHE_CONDITION
         or len(record_cache_steps) != 1
         or record_cache_steps[0].get("if") != record_condition
     ):
@@ -6391,17 +6412,8 @@ def validate_mutation_testing_contract(repository_root: Path) -> list[str]:
                     f"pyproject.toml: mutation setting {restriction!r} must not "
                     "exclude production code"
                 )
-        also_copy = mutation_config.get("also_copy")
-        if (
-            not isinstance(also_copy, list)
-            or not all(isinstance(path, str) for path in also_copy)
-            or not {
-                ".agents",
-                ".claude",
-                "AGENTS.md",
-                "requirements-mutation.txt",
-                "requirements-mutation.in",
-            }.issubset(also_copy)
+        if not _mutation_workspace_copy_paths_are_valid(
+            mutation_config.get("also_copy")
         ):
             problems.append(
                 "pyproject.toml: mutation workspace must copy the plugin "
