@@ -1,5 +1,7 @@
 # GitHub Configuration Reference
 
+**Languages:** [English](github-setup.md) | [Tiếng Việt](github-setup.vi.md)
+
 Exact `gh` commands for step 5 (configure GitHub). Confirm each outward-facing action before running it.
 
 This reference supports GitHub.com only. Before using any command, verify the remote host is exactly `github.com`, record its canonical `OWNER/REPO`, and substitute `github.com/OWNER/REPO` for repository CLI commands plus `--hostname github.com` for API commands. Stop remote configuration for GitHub Enterprise Server or GHE.com; the bundled workflows and commands are not a portable enterprise-host setup. Do not rely on `GH_HOST`, the current directory, or gh's default repository.
@@ -500,7 +502,7 @@ The supplied local call graph must also stay within GitHub's 10 workflow levels
 and 50 unique nested workflows per top-level caller.
 Any supplied workflow that declares `pull_request_target` needs a separate
 event-policy review for public repositories. GitHub's default policy is scheduled
-to block that event on November 2, 2026 unless an applicable workflow-execution
+to block that event on December 2, 2026 unless an applicable workflow-execution
 policy explicitly allows it. Inspect the applicable inherited policies with the
 read-only [Actions policies API](https://docs.github.com/en/rest/actions/policies).
 The workflow-installation preflight performs this check and requires an active

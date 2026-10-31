@@ -10,6 +10,8 @@ to production GitHub.com standard.
 
 </div>
 
+**Languages:** [English](README.md) | [Tiếng Việt](README.vi.md)
+
 ## Table of Contents
 
 - [1. What it does](#1-what-it-does)
@@ -61,7 +63,7 @@ repository policy.
 Public repositories that install an asset using `pull_request_target` also need
 an applicable GitHub Actions workflow-execution policy that explicitly allows
 that event. GitHub's default public-repository policy is scheduled to block
-`pull_request_target` on November 2, 2026; the workflow-installation preflight's
+`pull_request_target` on December 2, 2026; the workflow-installation preflight's
 selected-actions result does not prove event-policy eligibility. The
 workflow-installation preflight now reads inherited Actions policies and fails
 closed unless an active event rule allows the event for every supplied workflow

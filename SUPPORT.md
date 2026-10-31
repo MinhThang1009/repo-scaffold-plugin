@@ -1,3 +1,5 @@
+**Languages:** [English](SUPPORT.md) | [Tiếng Việt](SUPPORT.vi.md)
+
 # Support
 
 ## Usage help

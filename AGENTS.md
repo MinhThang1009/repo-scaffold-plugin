@@ -1,3 +1,5 @@
+**Languages:** [English](AGENTS.md) | [Tiếng Việt](AGENTS.vi.md)
+
 # Maintainer instructions
 
 ## Repository purpose

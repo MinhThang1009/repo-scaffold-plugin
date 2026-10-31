@@ -1,3 +1,5 @@
+**Languages:** [English](CODE_OF_CONDUCT.md) | [Tiếng Việt](CODE_OF_CONDUCT.vi.md)
+
 # Contributor Covenant 3.0 Code of Conduct
 
 ## Our Pledge

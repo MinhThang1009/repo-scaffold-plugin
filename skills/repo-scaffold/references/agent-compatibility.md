@@ -1,3 +1,5 @@
+**Languages:** [English](agent-compatibility.md) | [Tiếng Việt](agent-compatibility.vi.md)
+
 # Agent Compatibility
 
 Repo Scaffold has one [Agent Skills](https://agentskills.io) core at

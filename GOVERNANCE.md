@@ -1,3 +1,5 @@
+**Languages:** [English](GOVERNANCE.md) | [Tiếng Việt](GOVERNANCE.vi.md)
+
 # Governance
 
 ## Maintainer

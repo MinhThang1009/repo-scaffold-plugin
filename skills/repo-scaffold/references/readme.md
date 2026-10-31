@@ -1,3 +1,5 @@
+**Languages:** [English](readme.md) | [Tiếng Việt](readme.vi.md)
+
 # README structure
 
 Generate the README from the real project (do not invent features). Place it in the repo root — GitHub surfaces a README from `.github`, the root, or `docs/`, in that order of precedence (`.github` > root > `docs/`). The root is the conventional choice.

@@ -1,3 +1,5 @@
+**Languages:** [English](PLUGIN_SUBMISSION.md) | [Tiếng Việt](PLUGIN_SUBMISSION.vi.md)
+
 # Public Plugin Submission Dossier
 
 This file records the repository-backed material for submitting Repo Scaffold
