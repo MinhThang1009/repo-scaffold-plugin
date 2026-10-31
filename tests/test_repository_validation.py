@@ -5509,10 +5509,13 @@ jobs:
                         [*required_paths, value]
                     )
                 )
-        for value in (None, {}, (), "nested"):
-            with self.subTest(non_list=value):
+        non_list_values: tuple[object, ...] = (None, {}, (), "nested")
+        for non_list_value in non_list_values:
+            with self.subTest(non_list=non_list_value):
                 self.assertFalse(
-                    validate_repository._mutation_workspace_copy_paths_are_valid(value)
+                    validate_repository._mutation_workspace_copy_paths_are_valid(
+                        non_list_value
+                    )
                 )
 
         with tempfile.TemporaryDirectory() as directory:
