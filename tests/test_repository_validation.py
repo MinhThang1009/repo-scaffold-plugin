@@ -7314,7 +7314,7 @@ class MultiAgentPluginContractTests(unittest.TestCase):
             "HEAD -- .agents .claude-plugin .codex-plugin skills",
             ".github/ci-toolchain.json",
             ".github/workflows/official-docs.yml",
-            "SUPPORT.md TERMS.md",
+            "SUPPORT.md SUPPORT.vi.md TERMS.md TERMS.vi.md",
         ):
             self.assertIn(fragment, workflow)
 
