@@ -66,9 +66,7 @@ ast-serialize==0.13.1 \
 colorama==0.4.6 \
     --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
     --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
-    # via
-    #   -r requirements-dev.in
-    #   pytest
+    # via -r requirements-dev.in
 coverage==7.16.2 \
     --hash=sha256:00d3eb96e9988c45f50cccd1f1496571ac5c1f91386ac02c4d55516eeda19a24 \
     --hash=sha256:01c6908bc613b420c26c818fe948e1b97dfd041a53c98b01c63bd8321f5c9aae \
@@ -192,9 +190,9 @@ coverage==7.16.2 \
     --hash=sha256:fb9d92ecfe2d5b494367c67f7446f8b75b68d8d0c8cf3bc3e6997478be25d9e2 \
     --hash=sha256:fd3d72233eb8b48acc94fa57d44e2d32ce8e7abed02882ccb6d855ccc4ed33ec
     # via -r requirements-dev.in
-exceptiongroup==1.3.1 \
-    --hash=sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219 \
-    --hash=sha256:a7a39a3bd276781e98394987d3a5701d0c4edffb633bb7a5144577f82c773598
+exceptiongroup==1.3.2 \
+    --hash=sha256:41c6a70dfec22050d3d8b43386b059a4dc0bca3f3d40a40971cb206fff1785af \
+    --hash=sha256:ca82e69f0cb535fbde934885744b67669a3efddd50fe7bc00d3398839fcaddec
     # via -r requirements-dev.in
 iniconfig==2.3.0 \
     --hash=sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730 \
